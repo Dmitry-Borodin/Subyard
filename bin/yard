@@ -10,7 +10,16 @@ YARD_VERSION="0.1.0-dev"
 PROG="${0##*/}"
 
 # Command names, in order, for --help and --list.
-COMMANDS=(setup check import sync export remove clone code list status up down)
+COMMANDS=(setup check import sync export remove clone code list status logs up down)
+
+# Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
+# layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
+audit() {
+  local dir="${SUBYARD_HOME:-$HOME/.subyard}/logs"
+  install -d -m 700 "$dir" 2>/dev/null || return 0
+  printf '%s pid=%s cwd=%s -- %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PWD" "$*" >>"$dir/yard.log" 2>/dev/null || true
+}
 
 version() { printf '%s %s\n' "$PROG" "$YARD_VERSION"; }
 
@@ -37,6 +46,7 @@ Project commands (code projects in the yard; default path '.'):
   code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
   list            list projects currently in the yard
   status          read-only overview (yard + projects + agents)
+  logs            tail the yard's runtime logs (systemd journal + docker)
   up | down       start / stop the yard
 
 Options:
@@ -59,14 +69,19 @@ case "${1:-}" in
 esac
 
 cmd="$1"; shift
+audit "$cmd" "$@"
 
-# Reserved but not wired yet (Phase 7b). Friendlier than "unknown command".
+# Reserved but not wired yet. Friendlier than "unknown command".
 soon() { printf "%s: '%s' is planned for %s — not implemented yet.\n" "$PROG" "$1" "$2" >&2; exit 2; }
 
 case "$cmd" in
   setup | init) exec "$S/setup.sh" "$@" ;;
   check)     exec "$S/00-check-host.sh" "$@" ;;
-  import | sync | export | remove | clone | code | list | status) soon "$cmd" "Phase 7b (project ingestion)" ;;
+  import)    exec "$S/project-import.sh" import "$@" ;;
+  sync)      exec "$S/project-import.sh" sync "$@" ;;
+  list)      exec "$S/project-list.sh" "$@" ;;
+  logs)      exec "$S/yard-logs.sh" "$@" ;;
+  export | remove | clone | code | status) soon "$cmd" "Phase 7b (project ingestion)" ;;
   up | down) soon "$cmd" "Phase 2/7 (yard lifecycle)" ;;
   help)      usage ;;
   *) printf "%s: unknown command '%s'\nTry '%s --help'.\n" "$PROG" "$cmd" "$PROG" >&2; exit 2 ;;

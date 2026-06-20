@@ -66,6 +66,14 @@ else
   ok "launched $INSTANCE_NAME"
 fi
 
+# Ensure it's RUNNING — covers resume after a partial setup or a host reboot
+# (provision uses `incus exec`, which needs a running instance).
+state="$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -c s -f csv 2>/dev/null || true)"
+if [ "$state" != RUNNING ]; then
+  info "starting $INSTANCE_NAME (was: ${state:-unknown})"
+  incus start "$INSTANCE_NAME" "${PROJ[@]}"
+fi
+
 # --- 2. /dev/kvm passthrough (container only) --------------------------------
 echo "KVM:"
 if [ "$INSTANCE_TYPE" = vm ]; then

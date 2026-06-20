@@ -10,7 +10,7 @@ YARD_VERSION="0.1.0-dev"
 PROG="${0##*/}"
 
 # Command names, in order, for --help and --list.
-COMMANDS=(check install project create mounts provision import sync export remove clone code list status up down)
+COMMANDS=(setup check import sync export remove clone code list status up down)
 
 version() { printf '%s %s\n' "$PROG" "$YARD_VERSION"; }
 
@@ -22,13 +22,11 @@ $PROG $YARD_VERSION — a local yard for isolated agent machines.
 
 Usage: $PROG [option] <command> [args]
 
-Bring-up commands (run in order; each says what it will do and asks first):
-  check        verify the host can run a yard                 (00-check-host.sh)
-  install      install + initialize Incus          [needs sudo](01-install-incus.sh)
-  project      create the restricted Incus project           (02-create-project.sh)
-  create       create the yard instance + /srv + kvm         (03-create-subyard.sh)
-  mounts       create host dirs and mount them     [needs sudo](05-mount-host-paths.sh)
-  provision    provision the yard (pkgs, Docker, user, …)    (04-provision-subyard.sh)
+Bring-up (says what it will do and asks first; root steps self-elevate):
+  setup        install everything: Incus → project → yard → mounts → provision  [alias: init]
+  check        verify the host can run a yard (read-only preflight)
+
+  (setup runs the phases in scripts/00-05; run those directly only for debugging.)
 
 Project commands (code projects in the yard; default path '.'):
   import [path]   bring a project into the yard (sync default; --bind opt-in)
@@ -66,12 +64,8 @@ cmd="$1"; shift
 soon() { printf "%s: '%s' is planned for %s — not implemented yet.\n" "$PROG" "$1" "$2" >&2; exit 2; }
 
 case "$cmd" in
+  setup | init) exec "$S/setup.sh" "$@" ;;
   check)     exec "$S/00-check-host.sh" "$@" ;;
-  install)   exec "$S/01-install-incus.sh" "$@" ;;
-  project)   exec "$S/02-create-project.sh" "$@" ;;   # Incus project (namespace), not a code project
-  create)    exec "$S/03-create-subyard.sh" "$@" ;;
-  mounts)    exec "$S/05-mount-host-paths.sh" "$@" ;;
-  provision) exec "$S/04-provision-subyard.sh" "$@" ;;
   import | sync | export | remove | clone | code | list | status) soon "$cmd" "Phase 7b (project ingestion)" ;;
   up | down) soon "$cmd" "Phase 2/7 (yard lifecycle)" ;;
   help)      usage ;;

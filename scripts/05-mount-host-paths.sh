@@ -1,21 +1,8 @@
 #!/usr/bin/env bash
-#
-# 05-mount-host-paths.sh — Phase 2: create the narrow host area and mount it.
-#
-# Creates the single allowed host-mount prefix ($HOST_BASE = /srv/subyard) with
-# strict permissions, then attaches its subdirectories into the yard under
-# /mnt/host/* with UID/GID shifting. Secrets and devcontainers are read-only.
-# Idempotent: safe to re-run.
-#
-# Must run as root: it creates directories under /srv (host root fs) and adds
-# Incus devices. §18 invariant: the host exposes ONLY $HOST_BASE to the yard —
-# never $HOME, ~/.ssh, ~/.config, /var/run/docker.sock, /etc, /, etc.
-#
-# Decision #21: SHIFT_MODE=shift (idmapped, confirmed on host); acl is the
-# fallback if a filesystem/kernel cannot do idmapped mounts.
-#
-# Config: config/incus.project.env + config/subyard.env (sourced if present).
-#
+# 05-mount-host-paths.sh — Phase 2: create $HOST_BASE (/srv/subyard) and mount its
+# subdirs into the yard as /mnt/host/* (secrets/devcontainers RO, shift). Root; idempotent.
+# §18: host exposes ONLY $HOST_BASE. Decision #21 (SHIFT_MODE=shift|acl).
+# Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -76,7 +63,6 @@ for d in host-secrets host-memory host-devcontainers backups; do
 done
 
 # --- 2. attach host-mount devices (idempotent) -------------------------------
-# name  hostsubdir          guestpath               extra-opts
 echo "Host mounts → yard:"
 add_mount() {
   local name="$1" sub="$2" path="$3" ro="$4"

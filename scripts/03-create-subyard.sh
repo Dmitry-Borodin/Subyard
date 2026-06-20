@@ -1,20 +1,7 @@
 #!/usr/bin/env bash
-#
-# 03-create-subyard.sh — Phase 2: create the yard instance + /dev/kvm + /srv volume.
-#
-# Launches the yard (system container by default; vm via INSTANCE_TYPE=vm),
-# passes /dev/kvm through (container), and attaches a persistent custom volume
-# at /srv that survives an instance rebuild. Idempotent: safe to re-run.
-#
-# Runs as the operator (must be in incus-admin — no sudo). Host directories and
-# host-mount devices come next, in scripts/05-mount-host-paths.sh.
-#
-# Decisions encoded: container default + vm parameter (#1); Debian 13 base, Ubuntu
-# fallback (#17); no cpu/memory limits by default (#18); qemu installed lazily for
-# vm only (#25). Host mounts and the kvm-gid fix happen in later phases.
-#
-# Config: config/incus.project.env + config/subyard.env (sourced if present).
-#
+# 03-create-subyard.sh — Phase 2: launch the yard instance, pass /dev/kvm, attach /srv volume.
+# Operator (incus-admin, no sudo). Idempotent. Decisions #1/#17/#18/#25.
+# Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh

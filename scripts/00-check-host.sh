@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-#
-# 00-check-host.sh — Phase 0: verify the host can run a Subyard yard.
-#
-# Prints a report of hard requirements (must pass) and soft checks (warnings).
-# Exits 0 only when every hard requirement is met, non-zero otherwise.
-#
-# Environment:
-#   STORAGE_PATH   Where the yard's persistent storage will live (default: /srv)
-#   MIN_DISK_GIB   Minimum free space required under STORAGE_PATH (default: 50)
-#
+# 00-check-host.sh — Phase 0: report whether the host can run a yard (exit 0 = ready).
+# Env: STORAGE_PATH (default /srv), MIN_DISK_GIB (default 50).
 set -euo pipefail
 
 STORAGE_PATH="${STORAGE_PATH:-/srv}"

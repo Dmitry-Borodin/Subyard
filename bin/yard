@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-#
-# yard — Subyard host CLI (early scaffold; a thin dispatcher over scripts/).
-#
-# Resolves the repo from its own location, so it works via a symlink on $PATH.
-# Each subcommand announces what it will do and asks before changing anything
-# (pass -y/--yes to skip the prompt; some need sudo and will tell you so).
-#
+# yard — Subyard host CLI: a thin dispatcher over scripts/ (resolves the repo from
+# its own path, so it works via a symlink on PATH).
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]:-$0}")"

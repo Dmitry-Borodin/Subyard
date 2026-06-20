@@ -1,20 +1,7 @@
 #!/usr/bin/env bash
-#
-# 02-create-project.sh — Phase 1: create the restricted Incus project for the yard.
-#
-# Creates the isolated Incus project (default: subyard) and applies the §5
-# restricted.* policy so security-sensitive features stay off by default, with
-# only the narrow exceptions Subyard needs: container nesting (Docker in the
-# yard), host disk mounts limited to one prefix, and unix-char + proxy devices.
-# Idempotent: safe to re-run.
-#
-# Runs as the operator (must be in incus-admin — no sudo). If Incus is not
-# reachable, run scripts/01-install-incus.sh and re-login (newgrp incus-admin).
-#
-# Config: config/incus.project.env (sourced if present). Environment overrides win.
-#   INCUS_PROJECT          project name              (default: subyard)
-#   RESTRICTED_DISK_PATHS  allowed host-mount prefix (default: /srv/subyard)
-#
+# 02-create-project.sh — Phase 1: create the restricted Incus project (§5 policy).
+# Operator (incus-admin, no sudo). Idempotent.
+# Config: config/incus.project.env — INCUS_PROJECT (subyard), RESTRICTED_DISK_PATHS (/srv/subyard).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -49,8 +36,7 @@ else
 fi
 
 # --- 2. apply restricted.* policy (§5) ---------------------------------------
-# restricted=true keeps sensitive features off; the rest re-enable only what the
-# yard needs. restricted.devices.disk.paths is the key host-mount constraint.
+# restricted=true keeps sensitive features off; re-enable only what the yard needs.
 echo "Restricted policy (§5):"
 set_key() {
   incus project set "$INCUS_PROJECT" "$1" "$2"

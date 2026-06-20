@@ -1,40 +1,14 @@
 #!/usr/bin/env bash
-#
-# 01-install-incus.sh — Phase 1: install and initialize Incus for a Subyard yard.
-#
-# Ensures Incus is present, grants the operator user access to the Incus socket,
-# and initializes a minimal Incus with the yard's storage pool under
-# $HOME/.subyard. Idempotent: safe to re-run.
-#
-# Host footprint is kept minimal: only Incus is installed here. We never install
-# anything "just in case" — qemu-system (VM mode) is installed lazily by the vm
-# path (03-create-subyard.sh) when INSTANCE_TYPE=vm; KVM is diagnosed by
-# 00-check-host.sh, so cpu-checker is not needed. Decision #25.
-#
-# Must run as root (apt + usermod + incus admin init) — the script tells you so
-# and prints the exact sudo command if you forget. Announces what it will do and
-# asks before proceeding (pass --yes / ASSUME_YES=1 to skip the prompt).
-#
-# Flags:   -y | --yes   proceed and install without prompting
-# Environment (all optional, sane defaults):
-#   ASSUME_YES      Same as --yes when set to 1        (default: 0)
-#   SUBYARD_USER    Operator user to grant incus-admin (default: $SUDO_USER or invoking user)
-#   SUBYARD_HOME    Base dir for yard state            (default: <user home>/.subyard)
-#   STORAGE_POOL    Incus storage pool name            (default: default)
-#   STORAGE_PATH    dir-backend pool source            (default: $SUBYARD_HOME/storage)
-#   INCUS_BRIDGE    Managed bridge name                (default: incusbr0)
-#
-# Decisions encoded: pool under $HOME/.subyard/storage (#19); incus-admin only to
-# the operator's host user (#20); idmapped mounts / SHIFT_MODE=shift (#21);
-# minimal host install, detect/advise/offer, nothing "just in case" (#25).
-#
+# 01-install-incus.sh — Phase 1: install Incus, grant the operator incus-admin,
+# init a dir pool under $HOME/.subyard. Idempotent. Self-elevates via sudo.
+# Only `incus` is installed here (qemu is lazy in vm mode). Decisions #19/#20/#25.
+# Env: SUBYARD_USER, SUBYARD_HOME, STORAGE_POOL, STORAGE_PATH, INCUS_BRIDGE; flag -y.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-# Who gets incus-admin. Under sudo this is $SUDO_USER (the real operator, NOT root);
-# falls back to the invoking $USER, and only to 'root' in a bare root shell.
+# Grant incus-admin to the real operator (SUDO_USER under sudo), not root.
 OPERATOR_USER="${SUBYARD_USER:-${SUDO_USER:-${USER:-root}}}"
 if [ "$OPERATOR_USER" = root ]; then
   warn "operator user resolved to 'root' (running as root without sudo?); set SUBYARD_USER=<you> to grant your own account"

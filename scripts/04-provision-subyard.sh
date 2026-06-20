@@ -1,22 +1,8 @@
 #!/usr/bin/env bash
-#
-# 04-provision-subyard.sh — Phase 3: provision the yard userspace.
-#
-# Drives provisioning INSIDE the yard via `incus exec`: core packages, Docker
-# Engine + Compose (rootful, Stage 1), the unprivileged 'dev' user + groups, the
-# /srv skeleton with group-shared permissions, and ssh/docker services. Then,
-# back on the host, fixes the /dev/kvm device GID to the in-yard 'kvm' group.
-# Idempotent: safe to re-run.
-#
-# Runs as the operator (incus-admin — no sudo). The in-yard steps run as root
-# inside the container, which does not touch host systemd (§20).
-#
-# Scope = generic core only. Toolchain specifics (JDK, Android SDK, etc.) are
-# installed by the dependency profile (Phase 4), NOT here.
-# Decision #2: Stage 1 rootful Docker; agents never get the Docker socket.
-#
-# Config: config/incus.project.env + config/subyard.env (sourced if present).
-#
+# 04-provision-subyard.sh — Phase 3: provision the yard via `incus exec` (core pkgs,
+# Docker Stage 1, user 'dev', /srv layout, ssh/docker) + host-side kvm-gid fix. Idempotent.
+# Core only — toolchain is per-profile (Phase 4). Decision #2 (agents never get the Docker socket).
+# Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh

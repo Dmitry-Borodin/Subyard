@@ -1,38 +1,20 @@
 #!/usr/bin/env bash
-#
 # lib.sh — shared helpers for Subyard scripts. Source it; do not execute.
-#
-#   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-#   . "$SCRIPT_DIR/lib.sh"
-#
-# Human-friendly conventions provided here:
-#   - colored status lines (info/ok/warn/die);
-#   - require_root: a clear message + the exact sudo command, instead of a crash;
-#   - announce / announce_confirm: an explicit "this is what I will do" banner
-#     before consequential actions, with a y/N gate (skipped by -y / ASSUME_YES);
-#   - confirm: a reusable yes/no prompt that auto-yes under -y / ASSUME_YES.
-#
-# Honors -y/--yes (and ASSUME_YES=1) parsed from the calling script's arguments.
+# Honors -y/--yes (and ASSUME_YES=1) from the calling script's args.
 
-# Guard against double-sourcing.
 [ -n "${SUBYARD_LIB_SOURCED:-}" ] && return 0
 SUBYARD_LIB_SOURCED=1
 
-# Capture how the caller was invoked (for the sudo hint). At source time $0 is
-# the calling script and $* are its arguments.
+# How the caller was invoked (for sudo re-exec): $0/$@ are the caller's here.
 SUBYARD_SCRIPT_PATH="$0"
-SUBYARD_SCRIPT_ARGS="$*"
+SUBYARD_SCRIPT_ARGV=("$@")
 
-# --- options -----------------------------------------------------------------
 ASSUME_YES="${ASSUME_YES:-0}"
 for _arg in "$@"; do
-  case "$_arg" in
-    -y | --yes) ASSUME_YES=1 ;;
-  esac
+  case "$_arg" in -y | --yes) ASSUME_YES=1 ;; esac
 done
 unset _arg
 
-# --- colors / status ---------------------------------------------------------
 if [ -t 1 ]; then
   C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'
   C_HEAD=$'\033[1m'; C_OFF=$'\033[0m'
@@ -44,8 +26,7 @@ ok()   { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
 warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
 die()  { printf '  %s[fail]%s %s\n' "$C_BAD" "$C_OFF" "$*" >&2; exit 1; }
 
-# --- confirm <prompt> --------------------------------------------------------
-# Yes if --yes/ASSUME_YES; otherwise ask on a TTY; otherwise (no TTY) treat as no.
+# Yes under -y/ASSUME_YES; else ask on a TTY; else no.
 confirm() {
   [ "$ASSUME_YES" = 1 ] && return 0
   if [ -t 0 ]; then
@@ -56,41 +37,41 @@ confirm() {
   return 1
 }
 
-# --- require_root "<why>" ----------------------------------------------------
-# If not root, print a friendly message with the exact sudo command, then exit.
+# require_root "<why>" — call AFTER announce. Not root → re-exec self under sudo
+# by absolute path (sudo drops ~/.local/bin from PATH, so `sudo yard` fails). The
+# password is consent → elevated run skips banner/prompt via SUBYARD_ELEVATED.
 require_root() {
   [ "$(id -u)" -eq 0 ] && return 0
   local why="${1:-it changes the host system}"
-  printf '\n%sThis script needs root:%s %s\n' "$C_WARN" "$C_OFF" "$why" >&2
-  printf '  Re-run with sudo:\n    %ssudo %s %s%s\n\n' \
-    "$C_HEAD" "$SUBYARD_SCRIPT_PATH" "$SUBYARD_SCRIPT_ARGS" "$C_OFF" >&2
+  if command -v sudo >/dev/null 2>&1; then
+    warn "this needs root: $why"
+    info "re-running under sudo (you'll be asked for your password)…"
+    exec sudo -- env SUBYARD_ELEVATED=1 "$SUBYARD_SCRIPT_PATH" \
+      ${SUBYARD_SCRIPT_ARGV[@]+"${SUBYARD_SCRIPT_ARGV[@]}"}
+  fi
+  printf '\n%sNeeds root and sudo is not installed — run as root:%s\n    %s%s %s%s\n\n' \
+    "$C_WARN" "$C_OFF" "$C_HEAD" "$SUBYARD_SCRIPT_PATH" "${SUBYARD_SCRIPT_ARGV[*]:-}" "$C_OFF" >&2
   exit 1
 }
 
-# --- announce "<title>" "<line>"... ------------------------------------------
-# Print an explicit banner of what the script is about to do.
+# Banner of what the script will do. Skipped on a sudo re-run.
 announce() {
+  [ "${SUBYARD_ELEVATED:-0}" = 1 ] && return 0
   local title="$1"; shift
-  printf '\n%s%s%s\n' "$C_HEAD" "$title" "$C_OFF"
-  printf '%sThis will:%s\n' "$C_HEAD" "$C_OFF"
+  printf '\n%s%s%s\n%sThis will:%s\n' "$C_HEAD" "$title" "$C_OFF" "$C_HEAD" "$C_OFF"
   local line
   for line in "$@"; do printf '  • %s\n' "$line"; done
   printf '\n'
 }
 
-# --- proceed_or_die ----------------------------------------------------------
-# A "do you agree? [y/N]" gate. NOTHING mutating may run before this returns.
-# Auto-yes under -y/ASSUME_YES; aborts cleanly otherwise. Call it AFTER announce
-# (and, for root scripts, after require_root) so the user has read the plan and
-# understands why sudo was needed before being asked to proceed.
+# y/N gate — nothing mutating runs before it returns. Skipped on a sudo re-run.
 proceed_or_die() {
+  [ "${SUBYARD_ELEVATED:-0}" = 1 ] && return 0
   confirm "Proceed?" || die "aborted by user (pass --yes to skip this prompt)"
 }
 
-# --- announce_confirm "<title>" "<line>"... ----------------------------------
-# Convenience for non-root mutating scripts: banner + gate in one call. Root
-# scripts should instead do: announce ... ; require_root ... ; proceed_or_die
-# so the sudo notice appears AFTER the banner (once the "why" is clear).
+# Banner + gate for non-root mutating scripts. Root scripts use:
+# announce ... ; require_root ... ; proceed_or_die.
 announce_confirm() {
   announce "$@"
   proceed_or_die

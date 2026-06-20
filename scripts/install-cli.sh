@@ -1,18 +1,7 @@
 #!/usr/bin/env bash
-#
-# install-cli.sh — put the `yard` command (and `sy` alias) on the operator's PATH.
-#
-# Symlinks bin/yard into ~/.local/bin and makes sure that directory is on PATH.
-# Runs as the operator — NO sudo: it only touches your home (~/.local/bin and,
-# if needed, your shell rc). Announces what it will do and asks first (-y skips).
-#
-# Note: a child process cannot change THIS shell's PATH. After installing, you
-# activate the current shell once — the script prints the exact command.
-#
-# Environment:
-#   YARD_BIN_DIR    where to link the command  (default: ~/.local/bin)
-#   YARD_SHELL_RC   rc file to update if PATH needs it (default: ~/.bashrc or ~/.zshrc)
-#
+# install-cli.sh — symlink `yard`/`sy` into ~/.local/bin and ensure it's on PATH.
+# Operator, no sudo. A child can't change the current shell's PATH — it prints the
+# one activation command. Env: YARD_BIN_DIR, YARD_SHELL_RC; flag -y.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh

@@ -46,9 +46,9 @@ The core is switchable without a rewrite.
 scripts/            Host + yard lifecycle scripts (00-check-host.sh, …)
 config/             Environment + port configuration
 config/profiles/    Dependency profiles (android.env is the example)
-devhost/compose/    Docker Compose for gateway / app / agents
-devhost/bin/        The yard CLI (alias sy) and helpers
-devhost/systemd/    Unit files run inside the yard
+subyard/compose/    Docker Compose for gateway / app / agents
+subyard/bin/        The yard CLI (alias sy) and helpers
+subyard/systemd/    Unit files run inside the yard
 cloud-init/         Yard provisioning
 ```
 

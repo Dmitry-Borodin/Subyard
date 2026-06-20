@@ -10,7 +10,7 @@ YARD_VERSION="0.1.0-dev"
 PROG="${0##*/}"
 
 # Command names, in order, for --help and --list.
-COMMANDS=(setup check import sync export remove clone code list status logs up down)
+COMMANDS=(setup check import sync export remove clone code ssh list status logs up down)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -44,8 +44,9 @@ Project commands (code projects in the yard; default path '.'):
   remove [path]   take a project out of the yard (--purge also deletes the copy)
   clone  <url>    clone a repo straight into the yard
   code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
+  ssh    [args]   open a shell in the yard as the dev user (or run a command)
   list            list projects currently in the yard
-  status          read-only overview (yard + projects + agents)
+  status          read-only overview (yard + ssh + mounts + services + projects)
   logs            tail the yard's runtime logs (systemd journal + docker)
   up | down       start / stop the yard
 
@@ -81,8 +82,11 @@ case "$cmd" in
   sync)      exec "$S/project-import.sh" sync "$@" ;;
   list)      exec "$S/project-list.sh" "$@" ;;
   logs)      exec "$S/yard-logs.sh" "$@" ;;
-  export | remove | clone | code | status) soon "$cmd" "Phase 7b (project ingestion)" ;;
-  up | down) soon "$cmd" "Phase 2/7 (yard lifecycle)" ;;
+  up | down | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;
+  code)      exec "$S/project-code.sh" "$@" ;;
+  remove)    exec "$S/project-remove.sh" "$@" ;;
+  ssh)       host=yard; [ -r "$REPO/config/subyard.env" ] && host="$( . "$REPO/config/subyard.env" >/dev/null 2>&1; printf '%s' "${SSH_HOST:-yard}")"; exec ssh "$host" "$@" ;;
+  export | clone) soon "$cmd" "a Phase 7b follow-up" ;;
   help)      usage ;;
   *) printf "%s: unknown command '%s'\nTry '%s --help'.\n" "$PROG" "$cmd" "$PROG" >&2; exit 2 ;;
 esac

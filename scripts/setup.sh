@@ -25,6 +25,7 @@ have_instance() { reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/nu
 have_network()  { [ -n "$(reachable && incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]; }
 have_mounts()   { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx host-secrets; }
 have_provision(){ reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c 'command -v docker >/dev/null && id dev >/dev/null' >/dev/null 2>&1; }
+have_ssh()      { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
 in_admin_db()   { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
 
 # Incus installed + daemon unreachable + you ARE in incus-admin (per the group db)
@@ -56,6 +57,7 @@ step have_instance  "Create the yard instance (+ /dev/kvm, /srv volume)"
 step have_network   "Open host DHCP/DNS for the yard bridge (ufw; needs root)"
 step have_mounts    "Create host dirs under $HOST_BASE and mount them (needs root)"
 step have_provision "Provision the yard (packages, Docker, user, services)"
+step have_ssh       "Set up SSH access into the yard (proxy + your key)"
 printf '\n'
 
 if [ "$pending" = 0 ]; then
@@ -90,6 +92,7 @@ info "→ yard instance"; "$SCRIPT_DIR/03-create-subyard.sh" --yes
 info "→ host network";  "$SCRIPT_DIR/06-network.sh" --yes
 info "→ host mounts";   "$SCRIPT_DIR/05-mount-host-paths.sh" --yes
 info "→ provision";     "$SCRIPT_DIR/04-provision-subyard.sh" --yes
+info "→ ssh access";    "$SCRIPT_DIR/07-ssh-access.sh" --yes
 
 echo
 ok "Subyard is up."
@@ -98,4 +101,5 @@ cat <<'MSG'
 Next:
   yard status
   yard import .     # bring a code project into the yard
+  yard code .       # open it in VS Code (Remote-SSH into the yard)
 MSG

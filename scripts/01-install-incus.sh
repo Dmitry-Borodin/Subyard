@@ -135,5 +135,5 @@ cat <<MSG
 Next:
   - Re-login (or run 'newgrp incus-admin') so $OPERATOR_USER can use 'incus'
     without sudo, then verify:  incus list
-  - Phase 1 cont.: scripts/02-create-project.sh (project 'agent-dev' + restricted config)
+  - Phase 1 cont.: scripts/02-create-project.sh (project 'subyard' + restricted config)
 MSG

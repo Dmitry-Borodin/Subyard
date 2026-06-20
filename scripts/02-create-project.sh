@@ -2,7 +2,7 @@
 #
 # 02-create-project.sh — Phase 1: create the restricted Incus project for the yard.
 #
-# Creates the isolated Incus project (default: agent-dev) and applies the §5
+# Creates the isolated Incus project (default: subyard) and applies the §5
 # restricted.* policy so security-sensitive features stay off by default, with
 # only the narrow exceptions Subyard needs: container nesting (Docker in the
 # yard), host disk mounts limited to one prefix, and unix-char + proxy devices.
@@ -12,7 +12,7 @@
 # reachable, run scripts/01-install-incus.sh and re-login (newgrp incus-admin).
 #
 # Config: config/incus.project.env (sourced if present). Environment overrides win.
-#   INCUS_PROJECT          project name              (default: agent-dev)
+#   INCUS_PROJECT          project name              (default: subyard)
 #   RESTRICTED_DISK_PATHS  allowed host-mount prefix (default: /srv/subyard)
 #
 set -euo pipefail
@@ -25,7 +25,7 @@ CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config/incus.project.env}"
 # shellcheck disable=SC1090
 [ -r "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 
-INCUS_PROJECT="${INCUS_PROJECT:-agent-dev}"
+INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 RESTRICTED_DISK_PATHS="${RESTRICTED_DISK_PATHS:-/srv/subyard}"
 
 # --- preconditions -----------------------------------------------------------

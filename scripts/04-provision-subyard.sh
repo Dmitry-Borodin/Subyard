@@ -29,7 +29,7 @@ for cfg in incus.project.env subyard.env; do
   [ -r "$f" ] && . "$f"
 done
 
-INCUS_PROJECT="${INCUS_PROJECT:-agent-dev}"
+INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
 

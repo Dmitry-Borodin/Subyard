@@ -28,7 +28,7 @@ for cfg in incus.project.env subyard.env; do
   [ -r "$f" ] && . "$f"
 done
 
-INCUS_PROJECT="${INCUS_PROJECT:-agent-dev}"
+INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-container}"
 HOST_BASE="${HOST_BASE:-/srv/subyard}"

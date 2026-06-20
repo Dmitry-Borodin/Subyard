@@ -15,7 +15,7 @@ CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config/incus.project.env}"
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 RESTRICTED_DISK_PATHS="${RESTRICTED_DISK_PATHS:-/srv/subyard}"
 ROOT_POOL="${ROOT_POOL:-${SRV_POOL:-default}}"
-INCUS_NETWORK="${INCUS_NETWORK:-incusbr0}"
+INCUS_NETWORK="${INCUS_NETWORK:-${INCUS_BRIDGE:-incusbr0}}"
 
 # --- preconditions -----------------------------------------------------------
 command -v incus >/dev/null 2>&1 \

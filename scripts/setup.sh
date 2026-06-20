@@ -14,6 +14,7 @@ announce "Subyard setup — full bring-up" \
   "Install Incus + add you to incus-admin + init storage (needs root)." \
   "Create the Incus project 'subyard'." \
   "Create the yard instance (+ /dev/kvm, /srv volume)." \
+  "Open host DHCP/DNS for the yard bridge if a firewall blocks it (needs root)." \
   "Create host dirs under /srv/subyard and mount them (needs root)." \
   "Provision the yard (packages, Docker, user, services)." \
   "Idempotent — already-done steps are skipped; safe to re-run."
@@ -42,6 +43,7 @@ fi
 
 info "→ Incus project"; "$SCRIPT_DIR/02-create-project.sh" --yes
 info "→ yard instance"; "$SCRIPT_DIR/03-create-subyard.sh" --yes
+info "→ host network";  "$SCRIPT_DIR/06-network.sh" --yes
 info "→ host mounts";   "$SCRIPT_DIR/05-mount-host-paths.sh" --yes
 info "→ provision";     "$SCRIPT_DIR/04-provision-subyard.sh" --yes
 

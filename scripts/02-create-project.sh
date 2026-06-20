@@ -25,7 +25,7 @@ incus info >/dev/null 2>&1 \
 
 announce_confirm "Subyard Phase 1 — create restricted Incus project" \
   "Create Incus project '$INCUS_PROJECT' (if absent)." \
-  "Apply the restricted policy: nesting allow, host disk mounts limited to '$RESTRICTED_DISK_PATHS', unix-char + proxy allow." \
+  "Apply the restricted policy: nesting allow, host disks/unix-char/proxy allowed (disk sources kept under '$RESTRICTED_DISK_PATHS' by tooling, not Incus policy — needed for idmapped 'shift' mounts)." \
   "Reversible: 'incus project delete $INCUS_PROJECT' removes it."
 
 # --- 1. create project (idempotent) ------------------------------------------
@@ -48,7 +48,14 @@ set_key restricted true
 set_key restricted.containers.nesting allow
 set_key restricted.containers.privilege unprivileged
 set_key restricted.devices.disk allow
-set_key restricted.devices.disk.paths "$RESTRICTED_DISK_PATHS"
+# No Incus source-path allowlist: a restricted disk path forbids `shift` (idmapped
+# mounts), which the host mounts need. Tooling keeps sources under $RESTRICTED_DISK_PATHS.
+if incus project get "$INCUS_PROJECT" restricted.devices.disk.paths 2>/dev/null | grep -q .; then
+  incus project unset "$INCUS_PROJECT" restricted.devices.disk.paths
+  ok "restricted.devices.disk.paths unset (was set; blocks shift)"
+else
+  ok "restricted.devices.disk.paths empty (any source; shift works)"
+fi
 set_key restricted.devices.unix-char allow
 set_key restricted.devices.proxy allow
 

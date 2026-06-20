@@ -18,6 +18,7 @@ done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
+DEV_UID="${DEV_UID:-1000}"
 
 PROJ=(--project "$INCUS_PROJECT")
 
@@ -36,7 +37,7 @@ announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
 # --- 1. provision inside the yard --------------------------------------------
 # Quoted heredoc: nothing expands on the host; vars arrive via --env.
 info "provisioning inside $INSTANCE_NAME (packages, Docker, user, /srv, services)"
-incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" -- bash -euo pipefail -s <<'EOS'
+incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" --env DEV_UID="$DEV_UID" -- bash -euo pipefail -s <<'EOS'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 
@@ -60,9 +61,15 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 # Groups + unprivileged dev user (Stage 1: dev is in docker group; agents are not).
+# dev's uid is pinned to DEV_UID so it lines up with the shift-mapped host-mount owner.
 groupadd -f yard
 groupadd -f kvm
-id -u "$DEV_USER" >/dev/null 2>&1 || useradd -m -s /bin/bash "$DEV_USER"
+if ! id -u "$DEV_USER" >/dev/null 2>&1; then
+  useradd -u "$DEV_UID" -m -s /bin/bash "$DEV_USER" \
+    || { echo "uid $DEV_UID is taken in the yard — set a free DEV_UID in config/subyard.env" >&2; exit 1; }
+elif [ "$(id -u "$DEV_USER")" != "$DEV_UID" ]; then
+  echo "WARNING: $DEV_USER uid $(id -u "$DEV_USER") != DEV_UID $DEV_UID — host mounts won't map to $DEV_USER" >&2
+fi
 usermod -aG yard,kvm,docker "$DEV_USER"
 
 # /srv skeleton (generic core; profile caches like android-sdk come in Phase 4).

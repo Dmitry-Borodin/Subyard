@@ -21,6 +21,7 @@ INSTANCE_TYPE="${INSTANCE_TYPE:-container}"
 HOST_BASE="${HOST_BASE:-/srv/subyard}"
 SHIFT_MODE="${SHIFT_MODE:-shift}"
 DEV_USER="${DEV_USER:-dev}"
+DEV_UID="${DEV_UID:-1000}"
 
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
@@ -29,7 +30,8 @@ device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/
 announce "Subyard Phase 2 — host mounts ($INSTANCE_NAME)" \
   "Create the narrow host area: $HOST_BASE/{host-secrets,host-memory,host-devcontainers,backups}." \
   "Mount it into the yard: /mnt/host/secrets (RO), /mnt/host/memory (RW), /mnt/host/devcontainers (RO)." \
-  "Use UID/GID mode '$SHIFT_MODE'. The host exposes ONLY $HOST_BASE — no \$HOME/.ssh/etc."
+  "Own shared dirs by uid $DEV_UID and mount with '$SHIFT_MODE' so they map 1:1 to '$DEV_USER' in the yard." \
+  "The host exposes ONLY $HOST_BASE — no \$HOME/.ssh/etc."
 proceed_or_die
 require_root "the steps above create directories under /srv and attach host mounts to the yard"
 
@@ -56,10 +58,16 @@ declare -A DIR_MODE=(
   [host-devcontainers]=755
   [backups]=755
 )
-for d in host-secrets host-memory host-devcontainers backups; do
-  install -d -m "${DIR_MODE[$d]}" "$HOST_BASE/$d"
-  ok "$HOST_BASE/$d (${DIR_MODE[$d]})"
+# Shared dirs are owned by DEV_UID so the idmapped ('shift') mount maps them to the
+# yard's 'dev' (host uid == container uid under shift). install -d also fixes an
+# existing dir's owner/mode, so this self-heals dirs left root-owned by an older run.
+for d in host-secrets host-memory host-devcontainers; do
+  install -d -m "${DIR_MODE[$d]}" -o "$DEV_UID" -g "$DEV_UID" "$HOST_BASE/$d"
+  ok "$HOST_BASE/$d (${DIR_MODE[$d]}, owner $DEV_UID)"
 done
+# 'backups' is a host-side backup target, never mounted into the yard — keep it root.
+install -d -m "${DIR_MODE[backups]}" "$HOST_BASE/backups"
+ok "$HOST_BASE/backups (${DIR_MODE[backups]}, root)"
 
 # --- 2. attach host-mount devices (idempotent) -------------------------------
 echo "Host mounts → yard:"

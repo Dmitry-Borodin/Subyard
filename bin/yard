@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# yard — Subyard host CLI (early scaffold; a thin dispatcher over scripts/).
+#
+# Resolves the repo from its own location, so it works via a symlink on $PATH.
+# Each subcommand announces what it will do and asks before changing anything
+# (pass -y/--yes to skip the prompt; some need sudo and will tell you so).
+#
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
+REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
+S="$REPO/scripts"
+
+usage() {
+  cat <<'U'
+yard — Subyard host CLI
+
+Usage: yard <command> [args]
+
+Bring-up (run in order; each says what it will do and asks first):
+  check        verify the host can run a yard                 (00-check-host.sh)
+  install      install + initialize Incus          [needs sudo](01-install-incus.sh)
+  project      create the restricted Incus project           (02-create-project.sh)
+  create       create the yard instance + /srv + kvm         (03-create-subyard.sh)
+  mounts       create host dirs and mount them     [needs sudo](05-mount-host-paths.sh)
+  provision    provision the yard (pkgs, Docker, user, …)    (04-provision-subyard.sh)
+
+  help         show this help
+
+Add -y/--yes to any command to skip its confirmation prompt.
+U
+}
+
+cmd="${1:-help}"
+[ "$#" -gt 0 ] && shift || true
+
+case "$cmd" in
+  check)     exec "$S/00-check-host.sh" "$@" ;;
+  install)   exec "$S/01-install-incus.sh" "$@" ;;
+  project)   exec "$S/02-create-project.sh" "$@" ;;
+  create)    exec "$S/03-create-subyard.sh" "$@" ;;
+  mounts)    exec "$S/05-mount-host-paths.sh" "$@" ;;
+  provision) exec "$S/04-provision-subyard.sh" "$@" ;;
+  help | -h | --help) usage ;;
+  *) printf "yard: unknown command '%s' (try: yard help)\n" "$cmd" >&2; exit 1 ;;
+esac

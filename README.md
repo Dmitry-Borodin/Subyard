@@ -43,12 +43,14 @@ The core is switchable without a rewrite.
 ## Repository layout
 
 ```
+bin/                Host CLI: yard (alias sy) — a dispatcher over scripts/
 scripts/            Host + yard lifecycle scripts (00-check-host.sh, …)
+scripts/install-cli.sh  Put yard/sy on your PATH (~/.local/bin)
 config/             Environment + port configuration
 config/profiles/    Dependency profiles (android.env is the example)
-yard/compose/    Docker Compose for gateway / app / agents
-yard/bin/        The yard CLI (alias sy) and helpers
-yard/systemd/    Unit files run inside the yard
+yard/compose/       Docker Compose for gateway / app / agents
+yard/bin/           In-yard helpers (run inside the yard, not the host)
+yard/systemd/       Unit files run inside the yard
 cloud-init/         Yard provisioning
 ```
 

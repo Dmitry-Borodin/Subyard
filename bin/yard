@@ -28,9 +28,21 @@ Bring-up (run in order; each says what it will do and asks first):
 
   help         show this help
 
+Projects (code projects in the yard — flat verbs, default path '.'):
+  import [path]   bring a project into the yard (sync default; --bind opt-in)
+  sync   [path]   resync a sync-project (host → yard)
+  export [path]   pull a diff/patch from the yard back to the host
+  remove [path]   take a project out of the yard (--purge also deletes the copy)
+  list            list projects currently in the yard
+  status          read-only overview (yard + projects + agents)
+  code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
+
 Add -y/--yes to any command to skip its confirmation prompt.
 U
 }
+
+# Reserved but not wired yet (Phase 7b). Friendlier than "unknown command".
+soon() { printf "yard: '%s' is planned for %s — not implemented yet.\n" "$1" "$2" >&2; exit 2; }
 
 cmd="${1:-help}"
 [ "$#" -gt 0 ] && shift || true
@@ -38,10 +50,12 @@ cmd="${1:-help}"
 case "$cmd" in
   check)     exec "$S/00-check-host.sh" "$@" ;;
   install)   exec "$S/01-install-incus.sh" "$@" ;;
-  project)   exec "$S/02-create-project.sh" "$@" ;;
+  project)   exec "$S/02-create-project.sh" "$@" ;;   # the Incus project (namespace), not a code project
   create)    exec "$S/03-create-subyard.sh" "$@" ;;
   mounts)    exec "$S/05-mount-host-paths.sh" "$@" ;;
   provision) exec "$S/04-provision-subyard.sh" "$@" ;;
+  import | sync | export | remove | clone | code | list | status) soon "$cmd" "Phase 7b (project ingestion)" ;;
+  up | down) soon "$cmd" "Phase 2/7 (yard lifecycle)" ;;
   help | -h | --help) usage ;;
   *) printf "yard: unknown command '%s' (try: yard help)\n" "$cmd" >&2; exit 1 ;;
 esac

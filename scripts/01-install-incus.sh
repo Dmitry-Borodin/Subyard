@@ -2,13 +2,20 @@
 #
 # 01-install-incus.sh — Phase 1: install and initialize Incus for a Subyard yard.
 #
-# Installs Incus (and best-effort VM/KVM tooling), grants the operator user
-# access to the Incus socket, and initializes a minimal Incus with the yard's
-# storage pool under $HOME/.subyard. Idempotent: safe to re-run.
+# Ensures Incus is present (detect → advise → offer to install), grants the
+# operator user access to the Incus socket, and initializes a minimal Incus
+# with the yard's storage pool under $HOME/.subyard. Idempotent: safe to re-run.
+#
+# Host footprint is kept minimal: only Incus is installed here. We never install
+# anything "just in case" — qemu-system (VM mode) is installed lazily by the
+# vm path (03-create-subyard.sh) only when INSTANCE_TYPE=vm; KVM is diagnosed by
+# 00-check-host.sh, so cpu-checker is not needed. Decision #25.
 #
 # Must run as root (apt + usermod + incus admin init). Re-run with sudo.
 #
+# Flags:   -y | --yes   install missing dependencies without prompting
 # Environment (all optional, sane defaults):
+#   ASSUME_YES      Same as --yes when set to 1        (default: 0)
 #   SUBYARD_USER    Operator user to grant incus-admin (default: $SUDO_USER or invoking user)
 #   SUBYARD_HOME    Base dir for yard state            (default: <user home>/.subyard)
 #   STORAGE_POOL    Incus storage pool name            (default: default)
@@ -16,9 +23,18 @@
 #   INCUS_BRIDGE    Managed bridge name                (default: incusbr0)
 #
 # Decisions encoded: pool under $HOME/.subyard/storage (#19); incus-admin only
-# to the operator's host user (#20); idmapped mounts / SHIFT_MODE=shift (#21).
+# to the operator's host user (#20); idmapped mounts / SHIFT_MODE=shift (#21);
+# minimal host install, detect/advise/offer, nothing "just in case" (#25).
 #
 set -euo pipefail
+
+ASSUME_YES="${ASSUME_YES:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) ASSUME_YES=1 ;;
+    *) ;;
+  esac
+done
 
 # --- output helpers ----------------------------------------------------------
 if [ -t 1 ]; then
@@ -30,6 +46,17 @@ info() { printf '  %s[ .. ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
 ok()   { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
 warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
 die()  { printf '  %s[fail]%s %s\n' "$C_BAD" "$C_OFF" "$*" >&2; exit 1; }
+
+# confirm <prompt> — yes if --yes/ASSUME_YES, else ask on a TTY; no otherwise.
+confirm() {
+  [ "$ASSUME_YES" = 1 ] && return 0
+  if [ -t 0 ]; then
+    local ans
+    read -r -p "  $1 [y/N] " ans
+    case "$ans" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+  fi
+  return 1
+}
 
 # --- preconditions -----------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root — re-run with: sudo $0"
@@ -53,31 +80,28 @@ echo "  operator user : $OPERATOR_USER"
 echo "  pool source   : $STORAGE_PATH (driver: dir)"
 echo
 
-# --- 1. install packages -----------------------------------------------------
-echo "Packages:"
+# --- 1. ensure incus (the only host package we install here) -----------------
+# qemu-system is intentionally NOT installed: it is needed only for VM mode and
+# is installed lazily by 03-create-subyard.sh when INSTANCE_TYPE=vm (#25).
+echo "Dependency: incus"
 if command -v incus >/dev/null 2>&1; then
-  ok "incus already installed ($(incus --version 2>/dev/null || echo '?'))"
+  ok "incus present ($(incus --version 2>/dev/null || echo '?'))"
 else
+  warn "missing dependency: incus"
+  echo "    install with: sudo apt-get install incus"
   command -v apt-get >/dev/null 2>&1 \
-    || die "no apt-get; install Incus manually (see linuxcontainers.org/incus) and re-run"
-  info "apt-get update"
-  apt-get update -qq
-  info "installing incus"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus \
-    || die "failed to install incus (on noble/Trixie it is in the distro repos; Zabbly repo is an alternative)"
-  ok "incus installed ($(incus --version 2>/dev/null || echo '?'))"
-fi
-
-# VM mode + KVM tooling are best-effort (only needed for INSTANCE_TYPE=vm / emulator).
-for pkg in qemu-system-x86 cpu-checker; do
-  if dpkg -s "$pkg" >/dev/null 2>&1; then
-    ok "$pkg present"
-  elif DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >/dev/null 2>&1; then
-    ok "$pkg installed"
+    || die "no apt-get; install Incus manually (linuxcontainers.org/incus) and re-run"
+  if confirm "install incus now?"; then
+    info "apt-get update"
+    apt-get update -qq
+    info "installing incus"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus \
+      || die "incus install failed (on noble/Trixie it is in the distro repos; Zabbly is an alternative)"
+    ok "incus installed ($(incus --version 2>/dev/null || echo '?'))"
   else
-    warn "$pkg not installed (only needed for VM mode / emulator) — skipping"
+    die "incus is required — install it and re-run (sudo apt-get install incus), or pass --yes"
   fi
-done
+fi
 
 # --- 2. grant operator access to the Incus socket (#20) ----------------------
 echo "Socket access (incus-admin → operator only):"

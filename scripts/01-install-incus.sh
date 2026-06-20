@@ -27,8 +27,8 @@ announce "Subyard Phase 1 — install & initialize Incus" \
   "Add user '$OPERATOR_USER' to group 'incus-admin' — this grants Incus access ≈ root on this host." \
   "Create the storage pool directory: $STORAGE_PATH" \
   "Run 'incus admin init': dir pool '$STORAGE_POOL' + bridge '$INCUS_BRIDGE' (only if not already initialized)."
-require_root "the steps above install packages, edit group membership, and initialize Incus"
 proceed_or_die
+require_root "the steps above install packages, edit group membership, and initialize Incus"
 
 # --- 1. ensure incus (the only host package we install here) -----------------
 echo "Dependency: incus"

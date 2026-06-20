@@ -37,9 +37,10 @@ confirm() {
   return 1
 }
 
-# require_root "<why>" — call AFTER announce. Not root → re-exec self under sudo
-# by absolute path (sudo drops ~/.local/bin from PATH, so `sudo yard` fails). The
-# password is consent → elevated run skips banner/prompt via SUBYARD_ELEVATED.
+# require_root "<why>" — call AFTER announce + proceed_or_die (user already agreed).
+# Not root → re-exec self under sudo by absolute path (sudo drops ~/.local/bin from
+# PATH, so `sudo yard` fails). The elevated re-run skips banner+prompt (already
+# shown/answered) via SUBYARD_ELEVATED, then does the work.
 require_root() {
   [ "$(id -u)" -eq 0 ] && return 0
   local why="${1:-it changes the host system}"
@@ -64,7 +65,8 @@ announce() {
   printf '\n'
 }
 
-# y/N gate — nothing mutating runs before it returns. Skipped on a sudo re-run.
+# y/N gate (default N) — nothing mutating runs before it returns. Skipped on the
+# sudo re-run (already answered before elevation).
 proceed_or_die() {
   [ "${SUBYARD_ELEVATED:-0}" = 1 ] && return 0
   confirm "Proceed?" || die "aborted by user (pass --yes to skip this prompt)"

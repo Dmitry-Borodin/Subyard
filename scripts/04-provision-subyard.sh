@@ -39,6 +39,9 @@ announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
 info "provisioning inside $INSTANCE_NAME (packages, Docker, user, /srv, services)"
 incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" --env DEV_UID="$DEV_UID" -- bash -euo pipefail -s <<'EOS'
 export DEBIAN_FRONTEND=noninteractive
+# The yard bridge is IPv4-only (ipv6.address=none), so steer apt to IPv4 — mirrors that
+# resolve to AAAA records would otherwise be tried over an unreachable IPv6 path first.
+printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99force-ipv4
 apt-get update -qq
 
 # Core packages only (toolchain specifics belong to the profile, not core).

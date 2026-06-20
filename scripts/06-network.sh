@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 06-network.sh — when a host firewall (ufw) blocks the Incus bridge, the yard can't
-# reach the host's dnsmasq and gets no DHCP/DNS. Open it narrowly: only DHCP (udp/67)
-# and DNS (53) inbound on the bridge — nothing else of the host is exposed to the yard.
-# Root; idempotent. No-op when ufw is inactive (Incus then manages the bridge firewall).
+# reach the host's dnsmasq (no DHCP/DNS) and, with Docker on the host setting FORWARD
+# policy DROP, its TCP egress is dropped too (ICMP/DNS still pass — misleading). Open it
+# narrowly: DHCP (udp/67) + DNS (53) inbound, and route in/out for the bridge. No host
+# services are exposed. Root; idempotent. No-op when ufw is inactive.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -24,18 +25,23 @@ if ! command -v ufw >/dev/null 2>&1 || ! systemctl is-active --quiet ufw 2>/dev/
   exit 0
 fi
 
-announce "Subyard — open host DHCP/DNS for the yard bridge '$BRIDGE'" \
-  "ufw is active and its 'deny incoming' blocks the yard from the host's dnsmasq." \
-  "Add narrow ufw rules: allow inbound on '$BRIDGE' to DHCP (udp/67) and DNS (53) only." \
-  "Nothing else of the host is exposed; interface-scoped, no IPs hardcoded." \
-  "Reversible: 'sudo ufw delete' the two rules ('sudo ufw status numbered' to find them)."
+announce "Subyard — open host DHCP/DNS + egress for the yard bridge '$BRIDGE'" \
+  "ufw is active: 'deny incoming' blocks the yard from the host's dnsmasq, and the host's" \
+  "Docker sets FORWARD policy DROP, which blocks the yard's TCP egress (ICMP/DNS still pass)." \
+  "Add interface-scoped ufw rules (no IPs/subnets): inbound on '$BRIDGE' to DHCP (udp/67) + DNS (53)," \
+  "and route in/out on '$BRIDGE' so the yard reaches the internet. No host services exposed." \
+  "Reversible: 'sudo ufw status numbered' then 'sudo ufw delete' the '$BRIDGE' rules."
 proceed_or_die
 require_root "adding host ufw rules requires root"
 
-echo "ufw rules ($BRIDGE → host, DHCP+DNS only):"
-# ufw is idempotent: re-adding prints "Skipping adding existing rule".
+echo "ufw rules for $BRIDGE (idempotent — re-adds print 'Skipping adding existing rule'):"
+# Host services: only DHCP + DNS to the host's dnsmasq (narrow; nothing else exposed).
 ufw allow in on "$BRIDGE" to any port 67 proto udp
 ufw allow in on "$BRIDGE" to any port 53
+# Egress: let the yard route out. Host Docker's FORWARD policy DROP otherwise drops the
+# yard's new TCP connections (ICMP/DNS still pass, which hides the problem).
+ufw route allow in on "$BRIDGE"
+ufw route allow out on "$BRIDGE"
 
 echo
 ok "Network host-rules done."
@@ -43,5 +49,5 @@ cat <<MSG
 
 Verify:
   sudo ufw status | grep $BRIDGE
-  incus exec yard --project subyard -- getent hosts deb.debian.org   # resolves
+  incus exec yard --project subyard -- curl -4 -sS --max-time 8 -o /dev/null -w 'egress http=%{http_code}\n' https://deb.debian.org/
 MSG

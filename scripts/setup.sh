@@ -7,17 +7,46 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-reachable() { command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; }
+# --- config (names the state probes below need) ------------------------------
+for cfg in incus.project.env subyard.env; do
+  f="$SCRIPT_DIR/../config/$cfg"
+  # shellcheck disable=SC1090
+  [ -r "$f" ] && . "$f"
+done
+INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
+INSTANCE_NAME="${INSTANCE_NAME:-yard}"
+HOST_BASE="${HOST_BASE:-/srv/subyard}"
+PROJ=(--project "$INCUS_PROJECT")
 
-announce "Subyard setup — full bring-up" \
-  "Check the host." \
-  "Install Incus + add you to incus-admin + init storage (needs root)." \
-  "Create the Incus project 'subyard'." \
-  "Create the yard instance (+ /dev/kvm, /srv volume)." \
-  "Open host DHCP/DNS for the yard bridge if a firewall blocks it (needs root)." \
-  "Create host dirs under /srv/subyard and mount them (needs root)." \
-  "Provision the yard (packages, Docker, user, services)." \
-  "Idempotent — already-done steps are skipped; safe to re-run."
+# --- read-only state probes so the plan shows what THIS run will really do ----
+reachable()     { command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; }
+have_project()  { reachable && incus project show "$INCUS_PROJECT" >/dev/null 2>&1; }
+have_instance() { reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; }
+have_network()  { [ -n "$(reachable && incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]; }
+have_mounts()   { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx host-secrets; }
+have_provision(){ reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c 'command -v docker >/dev/null && id dev >/dev/null' >/dev/null 2>&1; }
+
+# Print [skip] if the done-test passes, else [do] and mark work pending.
+step() {  # <done-test> <label>
+  if "$1"; then printf '  %s[skip]%s %s\n' "$C_WARN" "$C_OFF" "$2"
+  else          printf '  %s[do]%s   %s\n' "$C_OK"   "$C_OFF" "$2"; pending=1; fi
+}
+
+printf '\n%sSubyard setup — full bring-up%s\n%sThis run will (already-done steps are skipped):%s\n' \
+  "$C_HEAD" "$C_OFF" "$C_HEAD" "$C_OFF"
+pending=0
+step reachable      "Install Incus + add you to incus-admin + init storage (needs root)"
+step have_project   "Create the Incus project '$INCUS_PROJECT'"
+step have_instance  "Create the yard instance (+ /dev/kvm, /srv volume)"
+step have_network   "Open host DHCP/DNS for the yard bridge (ufw; needs root)"
+step have_mounts    "Create host dirs under $HOST_BASE and mount them (needs root)"
+step have_provision "Provision the yard (packages, Docker, user, services)"
+printf '\n'
+
+if [ "$pending" = 0 ]; then
+  ok "Everything is already set up — nothing to do."
+  exit 0
+fi
 proceed_or_die
 
 STORAGE_PATH="${STORAGE_PATH:-$HOME/.subyard}" "$SCRIPT_DIR/00-check-host.sh"
@@ -33,9 +62,9 @@ if ! reachable; then
     ok "Incus installed and you're added to 'incus-admin'."
     cat <<'MSG'
 
-One step needs a fresh group session. Continue with:
-    sg incus-admin -c 'yard setup'
-  (or re-login / run 'newgrp incus-admin', then: yard setup)
+One step needs a fresh group session. Continue with (already confirmed, so --yes):
+    sg incus-admin -c 'yard setup --yes'
+  (or re-login / run 'newgrp incus-admin', then: yard setup --yes)
 MSG
     exit 0
   fi

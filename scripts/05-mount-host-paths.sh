@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 05-mount-host-paths.sh — Phase 2: create $HOST_BASE (/srv/subyard) and mount its
 # subdirs into the yard as /mnt/host/* (secrets/devcontainers RO, shift). Root; idempotent.
-# §18: host exposes ONLY $HOST_BASE. Decision #21 (SHIFT_MODE=shift|acl).
+# Host exposes ONLY $HOST_BASE. SHIFT_MODE=shift|acl.
 # Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +29,7 @@ device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/
 announce "Subyard Phase 2 — host mounts ($INSTANCE_NAME)" \
   "Create the narrow host area: $HOST_BASE/{host-secrets,host-memory,host-devcontainers,backups}." \
   "Mount it into the yard: /mnt/host/secrets (RO), /mnt/host/memory (RW), /mnt/host/devcontainers (RO)." \
-  "Use UID/GID mode '$SHIFT_MODE'. §18: the host exposes ONLY $HOST_BASE — no \$HOME/.ssh/etc."
+  "Use UID/GID mode '$SHIFT_MODE'. The host exposes ONLY $HOST_BASE — no \$HOME/.ssh/etc."
 proceed_or_die
 require_root "the steps above create directories under /srv and attach host mounts to the yard"
 

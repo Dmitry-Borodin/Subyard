@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 04-provision-subyard.sh — Phase 3: provision the yard via `incus exec` (core pkgs,
 # Docker Stage 1, user 'dev', /srv layout, ssh/docker) + host-side kvm-gid fix. Idempotent.
-# Core only — toolchain is per-profile (Phase 4). Decision #2 (agents never get the Docker socket).
+# Core only — toolchain is per-profile (Phase 4). Agents never get the Docker socket.
 # Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,7 +95,7 @@ echo
 ok "Phase 3 done."
 cat <<MSG
 
-Verify (§21):
+Verify:
   incus exec $INSTANCE_NAME "${PROJ[@]}" -- systemctl --no-pager status ssh docker
   incus exec $INSTANCE_NAME "${PROJ[@]}" -- docker compose version
   incus exec $INSTANCE_NAME "${PROJ[@]}" -- id $DEV_USER          # groups: yard kvm docker

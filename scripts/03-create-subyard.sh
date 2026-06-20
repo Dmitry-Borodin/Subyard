@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 03-create-subyard.sh — Phase 2: launch the yard instance, pass /dev/kvm, attach /srv volume.
-# Operator (incus-admin, no sudo). Idempotent. Decisions #1/#17/#18/#25.
+# Operator (incus-admin, no sudo). Idempotent.
 # Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,7 +44,7 @@ echo "Instance:"
 LAUNCH_FLAGS=()
 if [ "$INSTANCE_TYPE" = vm ]; then
   LAUNCH_FLAGS+=(--vm)
-  # qemu-system is needed only for vm mode — install lazily, never "just in case" (#25).
+  # qemu-system is needed only for vm mode — install lazily, never "just in case".
   if ! dpkg -s qemu-system-x86 >/dev/null 2>&1 && ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     die "vm mode needs qemu — install it and re-run: sudo apt-get install qemu-system-x86"
   fi
@@ -58,10 +58,17 @@ if incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; then
   ok "instance '$INSTANCE_NAME' exists"
 else
   info "launching $INSTANCE_NAME from $BASE_IMAGE"
-  if ! incus launch "$BASE_IMAGE" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" 2>/dev/null; then
-    warn "launch from $BASE_IMAGE failed; trying fallback $BASE_IMAGE_FALLBACK"
+  if err="$(incus launch "$BASE_IMAGE" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" 2>&1)"; then
+    :
+  elif printf '%s' "$err" | grep -qiE 'image|not found|no such|remote'; then
+    # Only the base image looks missing — try the fallback. Other failures (e.g. a
+    # missing root device) would just repeat, so surface them instead of retrying.
+    warn "launch from $BASE_IMAGE failed (image unavailable); trying fallback $BASE_IMAGE_FALLBACK"
     incus launch "$BASE_IMAGE_FALLBACK" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" \
       || die "instance launch failed (check image remotes and INSTANCE_TYPE)"
+  else
+    printf '%s\n' "$err" >&2
+    die "instance launch failed"
   fi
   ok "launched $INSTANCE_NAME"
 fi

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 01-install-incus.sh — Phase 1: install Incus, grant the operator incus-admin,
 # init a dir pool under $HOME/.subyard. Idempotent. Self-elevates via sudo.
-# Only `incus` is installed here (qemu is lazy in vm mode). Decisions #19/#20/#25.
+# Only `incus` is installed here (qemu is lazy in vm mode).
 # Env: SUBYARD_USER, SUBYARD_HOME, STORAGE_POOL, STORAGE_PATH, INCUS_BRIDGE; flag -y.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +46,7 @@ else
   ok "incus installed ($(incus --version 2>/dev/null || echo '?'))"
 fi
 
-# --- 2. grant operator access to the Incus socket (#20) ----------------------
+# --- 2. grant operator access to the Incus socket ---------------------------
 echo "Socket access (incus-admin → operator only):"
 if ! getent group incus-admin >/dev/null 2>&1; then
   warn "group 'incus-admin' missing; creating it"

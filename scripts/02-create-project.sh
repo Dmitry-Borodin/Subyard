@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 02-create-project.sh — Phase 1: create the restricted Incus project (§5 policy).
+# 02-create-project.sh — Phase 1: create the restricted Incus project.
 # Operator (incus-admin, no sudo). Idempotent.
 # Config: config/incus.project.env — INCUS_PROJECT (subyard), RESTRICTED_DISK_PATHS (/srv/subyard).
 set -euo pipefail
@@ -14,6 +14,8 @@ CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config/incus.project.env}"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 RESTRICTED_DISK_PATHS="${RESTRICTED_DISK_PATHS:-/srv/subyard}"
+ROOT_POOL="${ROOT_POOL:-${SRV_POOL:-default}}"
+INCUS_NETWORK="${INCUS_NETWORK:-incusbr0}"
 
 # --- preconditions -----------------------------------------------------------
 command -v incus >/dev/null 2>&1 \
@@ -23,7 +25,7 @@ incus info >/dev/null 2>&1 \
 
 announce_confirm "Subyard Phase 1 — create restricted Incus project" \
   "Create Incus project '$INCUS_PROJECT' (if absent)." \
-  "Apply the §5 restricted policy: nesting allow, host disk mounts limited to '$RESTRICTED_DISK_PATHS', unix-char + proxy allow." \
+  "Apply the restricted policy: nesting allow, host disk mounts limited to '$RESTRICTED_DISK_PATHS', unix-char + proxy allow." \
   "Reversible: 'incus project delete $INCUS_PROJECT' removes it."
 
 # --- 1. create project (idempotent) ------------------------------------------
@@ -35,9 +37,9 @@ else
   ok "created project '$INCUS_PROJECT'"
 fi
 
-# --- 2. apply restricted.* policy (§5) ---------------------------------------
+# --- 2. apply restricted.* policy --------------------------------------------
 # restricted=true keeps sensitive features off; re-enable only what the yard needs.
-echo "Restricted policy (§5):"
+echo "Restricted policy:"
 set_key() {
   incus project set "$INCUS_PROJECT" "$1" "$2"
   ok "$1=$2"
@@ -49,6 +51,25 @@ set_key restricted.devices.disk allow
 set_key restricted.devices.disk.paths "$RESTRICTED_DISK_PATHS"
 set_key restricted.devices.unix-char allow
 set_key restricted.devices.proxy allow
+
+# --- 3. seed the project's default profile (root disk + nic) -----------------
+# restricted.devices.nic defaults to "managed", so a managed bridge ('$INCUS_NETWORK') is allowed.
+echo "Default profile (root + nic):"
+prof_device_exists() {
+  incus profile device list default --project "$INCUS_PROJECT" 2>/dev/null | grep -qx "$1"
+}
+if prof_device_exists root; then
+  ok "root disk already on default profile"
+else
+  incus profile device add default root disk pool="$ROOT_POOL" path=/ --project "$INCUS_PROJECT" >/dev/null
+  ok "added root disk (pool '$ROOT_POOL')"
+fi
+if prof_device_exists eth0; then
+  ok "eth0 nic already on default profile"
+else
+  incus profile device add default eth0 nic network="$INCUS_NETWORK" --project "$INCUS_PROJECT" >/dev/null
+  ok "added eth0 nic (network '$INCUS_NETWORK')"
+fi
 
 # --- summary -----------------------------------------------------------------
 echo

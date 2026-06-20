@@ -35,7 +35,7 @@ if command -v incus >/dev/null 2>&1 && ! incus info >/dev/null 2>&1 && in_admin_
   cat <<'MSG'
 
 Nothing to reinstall — continue in a fresh group session:
-    sg incus-admin -c 'yard setup --yes'
+    sg incus-admin -c 'yard setup'
   (or re-login / run 'newgrp incus-admin', then: yard setup)
 MSG
   exit 0
@@ -77,9 +77,9 @@ if ! reachable; then
     ok "Incus installed and you're added to 'incus-admin'."
     cat <<'MSG'
 
-One step needs a fresh group session. Continue with (already confirmed, so --yes):
-    sg incus-admin -c 'yard setup --yes'
-  (or re-login / run 'newgrp incus-admin', then: yard setup --yes)
+One step needs a fresh group session. Continue with:
+    sg incus-admin -c 'yard setup'
+  (or re-login / run 'newgrp incus-admin', then: yard setup)
 MSG
     exit 0
   fi

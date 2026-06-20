@@ -16,9 +16,11 @@
 # Config: config/incus.project.env + config/subyard.env (sourced if present).
 #
 set -euo pipefail
-
-# --- locate + load config ----------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
+# --- load config -------------------------------------------------------------
 for cfg in incus.project.env subyard.env; do
   f="$SCRIPT_DIR/../config/$cfg"
   # shellcheck disable=SC1090
@@ -36,18 +38,6 @@ HOST_BASE="${HOST_BASE:-/srv/subyard}"
 DEV_USER="${DEV_USER:-dev}"
 
 PROJ=(--project "$INCUS_PROJECT")
-
-# --- output helpers ----------------------------------------------------------
-if [ -t 1 ]; then
-  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'; C_OFF=$'\033[0m'
-else
-  C_OK=''; C_WARN=''; C_BAD=''; C_OFF=''
-fi
-info() { printf '  %s[ .. ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
-ok()   { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
-warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
-die()  { printf '  %s[fail]%s %s\n' "$C_BAD" "$C_OFF" "$*" >&2; exit 1; }
-
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
 
 # --- preconditions -----------------------------------------------------------
@@ -57,11 +47,10 @@ incus info >/dev/null 2>&1 \
 incus project show "$INCUS_PROJECT" >/dev/null 2>&1 \
   || die "project '$INCUS_PROJECT' missing — run scripts/02-create-project.sh first"
 
-echo "Subyard yard instance (Phase 2)"
-echo "  project  : $INCUS_PROJECT"
-echo "  instance : $INSTANCE_NAME ($INSTANCE_TYPE)"
-echo "  base     : $BASE_IMAGE (fallback $BASE_IMAGE_FALLBACK)"
-echo
+announce "Subyard Phase 2 — create yard instance" \
+  "Launch Incus instance '$INSTANCE_NAME' ($INSTANCE_TYPE) from $BASE_IMAGE (fallback $BASE_IMAGE_FALLBACK)." \
+  "Pass /dev/kvm through (container) and attach a persistent '$SRV_VOLUME' volume at /srv." \
+  "Reversible: 'incus delete -f $INSTANCE_NAME ${PROJ[*]}' removes it."
 
 # --- 1. create instance (idempotent) -----------------------------------------
 echo "Instance:"

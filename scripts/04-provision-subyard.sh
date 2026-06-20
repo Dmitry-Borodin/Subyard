@@ -18,9 +18,11 @@
 # Config: config/incus.project.env + config/subyard.env (sourced if present).
 #
 set -euo pipefail
-
-# --- locate + load config ----------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
+# --- load config -------------------------------------------------------------
 for cfg in incus.project.env subyard.env; do
   f="$SCRIPT_DIR/../config/$cfg"
   # shellcheck disable=SC1090
@@ -33,26 +35,17 @@ DEV_USER="${DEV_USER:-dev}"
 
 PROJ=(--project "$INCUS_PROJECT")
 
-# --- output helpers ----------------------------------------------------------
-if [ -t 1 ]; then
-  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'; C_OFF=$'\033[0m'
-else
-  C_OK=''; C_WARN=''; C_BAD=''; C_OFF=''
-fi
-info() { printf '  %s[ .. ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
-ok()   { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
-warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
-die()  { printf '  %s[fail]%s %s\n' "$C_BAD" "$C_OFF" "$*" >&2; exit 1; }
-
 # --- preconditions -----------------------------------------------------------
 command -v incus >/dev/null 2>&1 || die "incus not found — run scripts/01-install-incus.sh first"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run scripts/03-create-subyard.sh first"
 
-echo "Subyard provisioning (Phase 3)"
-echo "  instance : $INSTANCE_NAME"
-echo "  dev user : $DEV_USER"
-echo
+announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
+  "Inside the yard: apt-get install core packages (ssh, git, build tools, python, node…)." \
+  "Inside the yard: install Docker Engine + Compose via the get.docker.com script (downloads & runs it)." \
+  "Inside the yard: create user '$DEV_USER' + groups (yard/kvm/docker), lay out /srv, enable ssh & docker." \
+  "On the host: set the /dev/kvm device GID to the in-yard 'kvm' group." \
+  "This pulls packages from the network and changes the yard's userspace (not the host system)."
 
 # --- 1. provision inside the yard --------------------------------------------
 # Quoted heredoc: nothing expands on the host; vars arrive via --env.

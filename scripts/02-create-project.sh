@@ -16,9 +16,11 @@
 #   RESTRICTED_DISK_PATHS  allowed host-mount prefix (default: /srv/subyard)
 #
 set -euo pipefail
-
-# --- locate + load config ----------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
+# --- load config -------------------------------------------------------------
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config/incus.project.env}"
 # shellcheck disable=SC1090
 [ -r "$CONFIG_FILE" ] && . "$CONFIG_FILE"
@@ -26,26 +28,16 @@ CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config/incus.project.env}"
 INCUS_PROJECT="${INCUS_PROJECT:-agent-dev}"
 RESTRICTED_DISK_PATHS="${RESTRICTED_DISK_PATHS:-/srv/subyard}"
 
-# --- output helpers ----------------------------------------------------------
-if [ -t 1 ]; then
-  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'; C_OFF=$'\033[0m'
-else
-  C_OK=''; C_WARN=''; C_BAD=''; C_OFF=''
-fi
-ok()   { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
-warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
-die()  { printf '  %s[fail]%s %s\n' "$C_BAD" "$C_OFF" "$*" >&2; exit 1; }
-
 # --- preconditions -----------------------------------------------------------
 command -v incus >/dev/null 2>&1 \
   || die "incus not found — run scripts/01-install-incus.sh first"
 incus info >/dev/null 2>&1 \
   || die "cannot talk to the Incus daemon — run 01-install-incus.sh, then re-login (newgrp incus-admin)"
 
-echo "Subyard Incus project (Phase 1)"
-echo "  project    : $INCUS_PROJECT"
-echo "  disk paths : $RESTRICTED_DISK_PATHS"
-echo
+announce "Subyard Phase 1 — create restricted Incus project" \
+  "Create Incus project '$INCUS_PROJECT' (if absent)." \
+  "Apply the §5 restricted policy: nesting allow, host disk mounts limited to '$RESTRICTED_DISK_PATHS', unix-char + proxy allow." \
+  "Reversible: 'incus project delete $INCUS_PROJECT' removes it."
 
 # --- 1. create project (idempotent) ------------------------------------------
 echo "Project:"

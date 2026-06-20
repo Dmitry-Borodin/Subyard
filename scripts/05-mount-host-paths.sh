@@ -17,9 +17,11 @@
 # Config: config/incus.project.env + config/subyard.env (sourced if present).
 #
 set -euo pipefail
-
-# --- locate + load config ----------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
+# --- load config -------------------------------------------------------------
 for cfg in incus.project.env subyard.env; do
   f="$SCRIPT_DIR/../config/$cfg"
   # shellcheck disable=SC1090
@@ -34,21 +36,10 @@ SHIFT_MODE="${SHIFT_MODE:-shift}"
 DEV_USER="${DEV_USER:-dev}"
 
 PROJ=(--project "$INCUS_PROJECT")
-
-# --- output helpers ----------------------------------------------------------
-if [ -t 1 ]; then
-  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'; C_OFF=$'\033[0m'
-else
-  C_OK=''; C_WARN=''; C_BAD=''; C_OFF=''
-fi
-ok()   { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
-warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
-die()  { printf '  %s[fail]%s %s\n' "$C_BAD" "$C_OFF" "$*" >&2; exit 1; }
-
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
 
 # --- preconditions -----------------------------------------------------------
-[ "$(id -u)" -eq 0 ] || die "must run as root (creates dirs under /srv) — re-run with: sudo $0"
+require_root "it creates directories under /srv and mounts host paths into the yard"
 command -v incus >/dev/null 2>&1 || die "incus not found — run scripts/01-install-incus.sh first"
 incus info >/dev/null 2>&1 || die "cannot talk to the Incus daemon (run 01-install-incus.sh, re-login)"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
@@ -64,10 +55,10 @@ if [ "$INSTANCE_TYPE" = vm ]; then
   warn "vm mode uses virtiofs — 'shift' is not applicable (see a1-sensitive-deltas); review before use"
 fi
 
-echo "Subyard host mounts (Phase 2)"
-echo "  host base : $HOST_BASE"
-echo "  shift     : $SHIFT_MODE"
-echo
+announce_confirm "Subyard Phase 2 — host mounts ($INSTANCE_NAME)" \
+  "Create the narrow host area: $HOST_BASE/{host-secrets,host-memory,host-devcontainers,backups}." \
+  "Mount it into the yard: /mnt/host/secrets (RO), /mnt/host/memory (RW), /mnt/host/devcontainers (RO)." \
+  "Use UID/GID mode '$SHIFT_MODE'. §18: the host exposes ONLY $HOST_BASE — no \$HOME/.ssh/etc."
 
 # --- 1. create the narrow host area ------------------------------------------
 echo "Host directories:"

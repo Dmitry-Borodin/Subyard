@@ -78,10 +78,20 @@ announce() {
   printf '\n'
 }
 
+# --- proceed_or_die ----------------------------------------------------------
+# A "do you agree? [y/N]" gate. NOTHING mutating may run before this returns.
+# Auto-yes under -y/ASSUME_YES; aborts cleanly otherwise. Call it AFTER announce
+# (and, for root scripts, after require_root) so the user has read the plan and
+# understands why sudo was needed before being asked to proceed.
+proceed_or_die() {
+  confirm "Proceed?" || die "aborted by user (pass --yes to skip this prompt)"
+}
+
 # --- announce_confirm "<title>" "<line>"... ----------------------------------
-# Same banner, then a y/N gate (auto-yes under -y/ASSUME_YES). Use for scripts
-# that change the host system, filesystem, or pull/install software.
+# Convenience for non-root mutating scripts: banner + gate in one call. Root
+# scripts should instead do: announce ... ; require_root ... ; proceed_or_die
+# so the sudo notice appears AFTER the banner (once the "why" is clear).
 announce_confirm() {
   announce "$@"
-  confirm "Proceed?" || die "aborted by user (pass --yes to skip this prompt)"
+  proceed_or_die
 }

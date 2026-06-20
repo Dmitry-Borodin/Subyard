@@ -47,7 +47,7 @@ incus info >/dev/null 2>&1 \
 incus project show "$INCUS_PROJECT" >/dev/null 2>&1 \
   || die "project '$INCUS_PROJECT' missing — run scripts/02-create-project.sh first"
 
-announce "Subyard Phase 2 — create yard instance" \
+announce_confirm "Subyard Phase 2 — create yard instance" \
   "Launch Incus instance '$INSTANCE_NAME' ($INSTANCE_TYPE) from $BASE_IMAGE (fallback $BASE_IMAGE_FALLBACK)." \
   "Pass /dev/kvm through (container) and attach a persistent '$SRV_VOLUME' volume at /srv." \
   "Reversible: 'incus delete -f $INSTANCE_NAME ${PROJ[*]}' removes it."

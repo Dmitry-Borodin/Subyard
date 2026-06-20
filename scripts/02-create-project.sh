@@ -34,7 +34,7 @@ command -v incus >/dev/null 2>&1 \
 incus info >/dev/null 2>&1 \
   || die "cannot talk to the Incus daemon — run 01-install-incus.sh, then re-login (newgrp incus-admin)"
 
-announce "Subyard Phase 1 — create restricted Incus project" \
+announce_confirm "Subyard Phase 1 — create restricted Incus project" \
   "Create Incus project '$INCUS_PROJECT' (if absent)." \
   "Apply the §5 restricted policy: nesting allow, host disk mounts limited to '$RESTRICTED_DISK_PATHS', unix-char + proxy allow." \
   "Reversible: 'incus project delete $INCUS_PROJECT' removes it."

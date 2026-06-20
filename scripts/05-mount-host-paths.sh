@@ -38,8 +38,13 @@ DEV_USER="${DEV_USER:-dev}"
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
 
-# --- preconditions -----------------------------------------------------------
-require_root "it creates directories under /srv and mounts host paths into the yard"
+# --- announce → sudo → preconditions → confirm -------------------------------
+announce "Subyard Phase 2 — host mounts ($INSTANCE_NAME)" \
+  "Create the narrow host area: $HOST_BASE/{host-secrets,host-memory,host-devcontainers,backups}." \
+  "Mount it into the yard: /mnt/host/secrets (RO), /mnt/host/memory (RW), /mnt/host/devcontainers (RO)." \
+  "Use UID/GID mode '$SHIFT_MODE'. §18: the host exposes ONLY $HOST_BASE — no \$HOME/.ssh/etc."
+require_root "the steps above create directories under /srv and attach host mounts to the yard"
+
 command -v incus >/dev/null 2>&1 || die "incus not found — run scripts/01-install-incus.sh first"
 incus info >/dev/null 2>&1 || die "cannot talk to the Incus daemon (run 01-install-incus.sh, re-login)"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
@@ -55,10 +60,7 @@ if [ "$INSTANCE_TYPE" = vm ]; then
   warn "vm mode uses virtiofs — 'shift' is not applicable (see a1-sensitive-deltas); review before use"
 fi
 
-announce_confirm "Subyard Phase 2 — host mounts ($INSTANCE_NAME)" \
-  "Create the narrow host area: $HOST_BASE/{host-secrets,host-memory,host-devcontainers,backups}." \
-  "Mount it into the yard: /mnt/host/secrets (RO), /mnt/host/memory (RW), /mnt/host/devcontainers (RO)." \
-  "Use UID/GID mode '$SHIFT_MODE'. §18: the host exposes ONLY $HOST_BASE — no \$HOME/.ssh/etc."
+proceed_or_die
 
 # --- 1. create the narrow host area ------------------------------------------
 echo "Host directories:"

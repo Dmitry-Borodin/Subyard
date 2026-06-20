@@ -33,11 +33,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-require_root "it installs packages, edits group membership, and initializes Incus"
-
-OPERATOR_USER="${SUBYARD_USER:-${SUDO_USER:-root}}"
+# Who gets incus-admin. Under sudo this is $SUDO_USER (the real operator, NOT root);
+# falls back to the invoking $USER, and only to 'root' in a bare root shell.
+OPERATOR_USER="${SUBYARD_USER:-${SUDO_USER:-${USER:-root}}}"
 if [ "$OPERATOR_USER" = root ]; then
-  warn "operator user resolved to 'root'; set SUBYARD_USER=<you> to grant your own account instead"
+  warn "operator user resolved to 'root' (running as root without sudo?); set SUBYARD_USER=<you> to grant your own account"
 fi
 OPERATOR_HOME="$(getent passwd "$OPERATOR_USER" | cut -d: -f6)"
 [ -n "$OPERATOR_HOME" ] || die "cannot resolve home dir for user '$OPERATOR_USER'"
@@ -48,11 +48,13 @@ STORAGE_POOL="${STORAGE_POOL:-default}"
 STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/storage}"
 INCUS_BRIDGE="${INCUS_BRIDGE:-incusbr0}"
 
-announce_confirm "Subyard Phase 1 — install & initialize Incus" \
+announce "Subyard Phase 1 — install & initialize Incus" \
   "Install the 'incus' package if missing (apt)." \
   "Add user '$OPERATOR_USER' to group 'incus-admin' — this grants Incus access ≈ root on this host." \
   "Create the storage pool directory: $STORAGE_PATH" \
   "Run 'incus admin init': dir pool '$STORAGE_POOL' + bridge '$INCUS_BRIDGE' (only if not already initialized)."
+require_root "the steps above install packages, edit group membership, and initialize Incus"
+proceed_or_die
 
 # --- 1. ensure incus (the only host package we install here) -----------------
 echo "Dependency: incus"

@@ -3,6 +3,10 @@
 # Env: STORAGE_PATH (default /srv), MIN_DISK_GIB (default 50).
 set -euo pipefail
 
+case "${1:-}" in
+  -h | --help) awk 'NR==1{next} /^#/{sub(/^#[ ]?/,""); print; next} {exit}' "$0"; exit 0 ;;
+esac
+
 STORAGE_PATH="${STORAGE_PATH:-/srv}"
 MIN_DISK_GIB="${MIN_DISK_GIB:-50}"
 

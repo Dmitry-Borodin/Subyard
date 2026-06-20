@@ -9,9 +9,17 @@ SUBYARD_LIB_SOURCED=1
 SUBYARD_SCRIPT_PATH="$0"
 SUBYARD_SCRIPT_ARGV=("$@")
 
+# -h/--help on any script prints its header comment block and exits.
+_yard_help_and_exit() {
+  awk 'NR==1{next} /^#/{sub(/^#[ ]?/,""); print; next} {exit}' "$SUBYARD_SCRIPT_PATH"
+  exit 0
+}
 ASSUME_YES="${ASSUME_YES:-0}"
 for _arg in "$@"; do
-  case "$_arg" in -y | --yes) ASSUME_YES=1 ;; esac
+  case "$_arg" in
+    -y | --yes)  ASSUME_YES=1 ;;
+    -h | --help) _yard_help_and_exit ;;
+  esac
 done
 unset _arg
 

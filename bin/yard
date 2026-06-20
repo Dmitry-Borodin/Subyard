@@ -6,14 +6,23 @@ set -euo pipefail
 SELF="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
 REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
 S="$REPO/scripts"
+YARD_VERSION="0.1.0-dev"
+PROG="${0##*/}"
+
+# Command names, in order, for --help and --list.
+COMMANDS=(check install project create mounts provision import sync export remove clone code list status up down)
+
+version() { printf '%s %s\n' "$PROG" "$YARD_VERSION"; }
+
+list_commands() { printf '%s\n' "${COMMANDS[@]}"; }
 
 usage() {
-  cat <<'U'
-yard — Subyard host CLI
+  cat <<U
+$PROG $YARD_VERSION — a local yard for isolated agent machines.
 
-Usage: yard <command> [args]
+Usage: $PROG [option] <command> [args]
 
-Bring-up (run in order; each says what it will do and asks first):
+Bring-up commands (run in order; each says what it will do and asks first):
   check        verify the host can run a yard                 (00-check-host.sh)
   install      install + initialize Incus          [needs sudo](01-install-incus.sh)
   project      create the restricted Incus project           (02-create-project.sh)
@@ -21,36 +30,50 @@ Bring-up (run in order; each says what it will do and asks first):
   mounts       create host dirs and mount them     [needs sudo](05-mount-host-paths.sh)
   provision    provision the yard (pkgs, Docker, user, …)    (04-provision-subyard.sh)
 
-  help         show this help
-
-Projects (code projects in the yard — flat verbs, default path '.'):
+Project commands (code projects in the yard; default path '.'):
   import [path]   bring a project into the yard (sync default; --bind opt-in)
   sync   [path]   resync a sync-project (host → yard)
   export [path]   pull a diff/patch from the yard back to the host
   remove [path]   take a project out of the yard (--purge also deletes the copy)
+  clone  <url>    clone a repo straight into the yard
+  code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
   list            list projects currently in the yard
   status          read-only overview (yard + projects + agents)
-  code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
+  up | down       start / stop the yard
 
-Add -y/--yes to any command to skip its confirmation prompt.
+Options:
+  -h, --help      show this help and exit
+  -l, --list      list command names (one per line) and exit
+  -V, --version   show version and exit
+  -y, --yes       skip a command's confirmation prompt (pass-through)
+
+Run '$PROG <command> -h' once subcommand help lands.
 U
 }
 
-# Reserved but not wired yet (Phase 7b). Friendlier than "unknown command".
-soon() { printf "yard: '%s' is planned for %s — not implemented yet.\n" "$1" "$2" >&2; exit 2; }
+# --- global options / no command ---------------------------------------------
+case "${1:-}" in
+  ''            ) usage; exit 0 ;;
+  -h | --help   ) usage; exit 0 ;;
+  -l | --list   ) list_commands; exit 0 ;;
+  -V | --version) version; exit 0 ;;
+  -*            ) printf "%s: unknown option '%s'\nTry '%s --help'.\n" "$PROG" "$1" "$PROG" >&2; exit 2 ;;
+esac
 
-cmd="${1:-help}"
-[ "$#" -gt 0 ] && shift || true
+cmd="$1"; shift
+
+# Reserved but not wired yet (Phase 7b). Friendlier than "unknown command".
+soon() { printf "%s: '%s' is planned for %s — not implemented yet.\n" "$PROG" "$1" "$2" >&2; exit 2; }
 
 case "$cmd" in
   check)     exec "$S/00-check-host.sh" "$@" ;;
   install)   exec "$S/01-install-incus.sh" "$@" ;;
-  project)   exec "$S/02-create-project.sh" "$@" ;;   # the Incus project (namespace), not a code project
+  project)   exec "$S/02-create-project.sh" "$@" ;;   # Incus project (namespace), not a code project
   create)    exec "$S/03-create-subyard.sh" "$@" ;;
   mounts)    exec "$S/05-mount-host-paths.sh" "$@" ;;
   provision) exec "$S/04-provision-subyard.sh" "$@" ;;
   import | sync | export | remove | clone | code | list | status) soon "$cmd" "Phase 7b (project ingestion)" ;;
   up | down) soon "$cmd" "Phase 2/7 (yard lifecycle)" ;;
-  help | -h | --help) usage ;;
-  *) printf "yard: unknown command '%s' (try: yard help)\n" "$cmd" >&2; exit 1 ;;
+  help)      usage ;;
+  *) printf "%s: unknown command '%s'\nTry '%s --help'.\n" "$PROG" "$cmd" "$PROG" >&2; exit 2 ;;
 esac

@@ -29,10 +29,21 @@ for a in "$@"; do
     *)           path="$a" ;;
   esac
 done
-[ -e "$path" ] || die "no such path: $path"
-
-id="$(project_id "$path")"
-state_exists "$id" || die "not imported: $(basename "$(realpath "$path")")"
+# Resolve the project: a host directory → hash its realpath (sync/bind); otherwise the
+# argument is a project id or name (git-mode clones have no host path to hash).
+if [ -d "$path" ]; then
+  id="$(project_id "$path")"
+elif state_exists "$path"; then
+  id="$path"
+else
+  id=""
+  while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    [ "$(state_get "$cand" name)" = "$path" ] && { id="$cand"; break; }
+  done < <(state_ids)
+  [ -n "$id" ] || die "no such path, project id, or name: $path"
+fi
+state_exists "$id" || die "not imported: $path"
 name="$(state_get "$id" name)"
 yardPath="$(state_get "$id" yardPath)"
 yardDir="${yardPath%/src}"   # /srv/workspaces/<id>

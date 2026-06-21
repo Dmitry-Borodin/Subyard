@@ -42,6 +42,17 @@ incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ss
 
 uri="vscode-remote://ssh-remote+$host$yardPath"
 if command -v code >/dev/null 2>&1; then
+  # Remote-SSH must be installed, or `code` gets an ssh-remote:// URI it can't handle and
+  # silently no-ops (no SSH connection reaches the yard, no server installs). Block early
+  # with the fix. Act only on a KNOWN-missing extension: if we can't enumerate (empty
+  # list), proceed rather than false-alarm.
+  exts="$(code --list-extensions 2>/dev/null || true)"
+  if [ -n "$exts" ] && ! printf '%s\n' "$exts" | grep -qixF ms-vscode-remote.remote-ssh; then
+    warn "VS Code lacks the Remote-SSH extension — it can't open a remote (ssh) window."
+    info "install it, then re-run 'yard code':"
+    printf '    code --install-extension ms-vscode-remote.remote-ssh\n'
+    die "Remote-SSH extension not installed"
+  fi
   info "opening $host:$yardPath in VS Code …"
   exec code --folder-uri "$uri"
 else

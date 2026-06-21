@@ -15,7 +15,7 @@ _yard_profiles() {
   repo="$(_yard_repo)" || return 0
   d="$repo/config/profiles"
   [[ -d $d ]] || return 0
-  print -r -- ${(@)$(cd "$d" && print -r -- *.env(N:r))}
+  print -r -- ${(@)$(cd "$d" && print -r -- *.conf(N:r))}
 }
 
 _yard() {

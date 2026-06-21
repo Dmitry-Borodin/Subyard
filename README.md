@@ -48,7 +48,8 @@ scripts/            Host + yard lifecycle scripts (00-check-host.sh … 07-ssh-a
 scripts/install-cli.sh  Put yard/sy on your PATH (~/.local/bin) + tab-completion
 completions/        Shell tab-completion for yard/sy (bash, zsh)
 config/             Environment + ports (subyard.env, incus.project.env)
-config/profiles/    Dependency profiles (android.env, openclaw.env)
+config/profiles/    Dependency profiles (android.conf, openclaw.conf; the .conf is the
+                    non-secret contract, an optional gitignored sibling .env carries secrets)
 ```
 
 ## Requirements

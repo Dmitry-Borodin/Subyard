@@ -3,3 +3,7 @@
 
 # Scratch space for local inputs (e.g. third-party devcontainer files); not published.
 /temp/
+
+# Profile secrets: the .conf contract is committed; a sibling .env may carry keys,
+# so its values stay host-only and never land in git.
+/config/profiles/*.env

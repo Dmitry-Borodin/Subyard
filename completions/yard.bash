@@ -15,7 +15,7 @@ _yard_profiles() {
   local repo; repo="$(_yard_repo "$1")" || return 0
   local d="$repo/config/profiles"
   [ -d "$d" ] || return 0
-  ( cd "$d" && ls -1 ./*.env 2>/dev/null | sed 's,^\./,,;s,\.env$,,' )
+  ( cd "$d" && ls -1 ./*.conf 2>/dev/null | sed 's,^\./,,;s,\.conf$,,' )
 }
 
 _yard() {

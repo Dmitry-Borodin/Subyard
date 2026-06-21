@@ -8,8 +8,11 @@
 #   down    [path]                    stop it (keeps it)
 #   destroy [path]                    remove it (workspace/caches in the yard stay)
 #   list                              list agent machines in the yard
-# The profile (config/profiles/<NAME>.env) supplies the base image, shared caches,
-# env, and devices; toolchain install is a later, profile-specific slice.
+# The profile (config/profiles/<NAME>.conf) supplies the base image, shared caches,
+# non-secret env, and devices; toolchain install is a later, profile-specific slice.
+# An optional sibling <NAME>.env (gitignored, values host-only) carries secrets: it
+# is staged into the yard and bind-mounted as a file at /run/subyard/profile.env
+# (never -e), and never reaches the nested coding-sandbox tier.
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,12 +79,19 @@ preflight
 case "$sub" in
   up)
     [ -n "$profile" ] || profile="$(state_get "$id" profile)"
-    [ -n "$profile" ] || die "no profile — pass --profile <name> (have: $(cd "$PROFILES_DIR" && ls *.env 2>/dev/null | sed 's/\.env$//' | tr '\n' ' '))"
-    pf="$PROFILES_DIR/$profile.env"
+    [ -n "$profile" ] || die "no profile — pass --profile <name> (have: $(cd "$PROFILES_DIR" && ls *.conf 2>/dev/null | sed 's/\.conf$//' | tr '\n' ' '))"
+    pf="$PROFILES_DIR/$profile.conf"
     [ -r "$pf" ] || die "no such profile: '$profile' ($pf)"
+    # The .conf is the non-secret contract — safe to source (its keys are exported
+    # below) and to log. The sibling .env may carry secrets, so it is NEVER sourced
+    # here (that would leak its values into the -e injection); it is staged into the
+    # yard and bind-mounted as a file instead.
     # shellcheck disable=SC1090
     . "$pf"
     : "${BASE_IMAGE:?profile $profile has no BASE_IMAGE}"
+    sf="$PROFILES_DIR/$profile.env"; have_secrets=0
+    [ -r "$sf" ] && have_secrets=1
+    ysecret="/srv/agent-secrets/$id/profile.env"   # dev-owned, 0600, inside the yard
 
     if ydocker inspect "$cname" >/dev/null 2>&1; then
       ydocker start "$cname" >/dev/null
@@ -89,20 +99,33 @@ case "$sub" in
       exit 0
     fi
 
+    sec_line=()
+    [ "$have_secrets" = 1 ] && sec_line=("Stage $profile.env secrets into the yard and mount them as a file at /run/subyard/profile.env (ro), never as -e.")
     announce "yard agent up — $name (profile $profile)" \
       "Run a Docker container '$cname' inside the yard from image '$BASE_IMAGE'." \
-      "Mount the project at /workspace, plus shared caches; export the profile env${DEVICES:+ and devices ($DEVICES)}." \
+      "Mount the project at /workspace, plus shared caches; export the profile's non-secret env${DEVICES:+ and devices ($DEVICES)}." \
+      ${sec_line[@]+"${sec_line[@]}"} \
       "Pulls the image into the yard's Docker on first run."
     proceed_or_die
 
     # shared caches (persistent under the yard's /srv), owned by the dev uid
     for c in ${CACHES:-}; do yexec install -d -o "$DEV_UID" -g "$DEV_UID" "$c"; done
 
+    # secret-bearing env: stage as a dev-owned 0600 file inside the yard (not -e)
+    if [ "$have_secrets" = 1 ]; then
+      yexec install -d -m 0700 -o "$DEV_UID" -g "$DEV_UID" "$(dirname "$ysecret")"
+      incus file push "$sf" "$INSTANCE_NAME$ysecret" "${PROJ[@]}" \
+        --mode 0600 --uid "$DEV_UID" --gid "$DEV_UID" >/dev/null \
+        || die "could not stage $profile.env into the yard"
+    fi
+
     args=(run -d --name "$cname" --hostname "agent-${name}" --restart unless-stopped
           --label subyard.agent=1 --label "subyard.project=$id" --label "subyard.profile=$profile"
           -v "$yardPath:/workspace" -w /workspace)
     for c in ${CACHES:-}; do args+=(-v "$c:$c"); done
-    # Inject every UPPER/lower env the profile declares, minus our control keys.
+    [ "$have_secrets" = 1 ] && args+=(-v "$ysecret:/run/subyard/profile.env:ro")
+    # Inject the profile's non-secret .conf keys as env, minus our control keys.
+    # Secrets are never injected here — they arrive only via the file mount above.
     while IFS= read -r k; do
       case "$k" in PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES) continue ;; esac
       args+=(-e "$k=${!k}")
@@ -148,9 +171,11 @@ MSG
     ydocker inspect "$cname" >/dev/null 2>&1 || die "no agent for '$name'"
     announce "yard agent destroy — $name" \
       "Remove the agent container '$cname' from the yard (force)." \
+      "Drop any staged profile secrets (/srv/agent-secrets/$id); they re-stage on next up." \
       "The project workspace and shared caches in the yard are NOT touched."
     proceed_or_die
     ydocker rm -f "$cname" >/dev/null && ok "agent '$name' destroyed"
+    yexec rm -rf "/srv/agent-secrets/$id" 2>/dev/null || true
     ;;
 
   *)

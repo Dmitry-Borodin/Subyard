@@ -37,7 +37,6 @@ for a in "$@"; do
     *)                 path="$a" ;;
   esac
 done
-[ "$bind" = 1 ] && die "--bind (host disk-mount) not implemented yet — Phase 7b follow-up"
 [ -d "$path" ] || die "not a directory: $path"
 
 # --- resolve identity --------------------------------------------------------
@@ -46,8 +45,19 @@ id="$(project_id "$hostPath")"
 yardPath="$(yard_path_for "$id")"
 name="$(basename -- "$hostPath")"
 
-if [ "$action" = sync ] && ! state_exists "$id"; then
-  die "'$name' is not imported yet — run: ${PROG:-yard} import $path"
+# A project is either sync or bind; the two transports are incompatible. Re-importing
+# with a different mode would silently mix them, so make the operator remove first.
+if state_exists "$id"; then
+  prev="$(state_get "$id" mode)"
+  want=sync; [ "$bind" = 1 ] && want=bind
+  [ -n "$prev" ] && [ "$prev" != "$want" ] \
+    && die "'$name' is already imported as '$prev' — run: ${PROG:-yard} remove $path, then re-import as $want"
+fi
+
+if [ "$action" = sync ]; then
+  state_exists "$id" || die "'$name' is not imported yet — run: ${PROG:-yard} import $path"
+  [ "$(state_get "$id" mode)" = bind ] \
+    && die "'$name' is a bind project — its files live on the host already; 'sync' does not apply"
 fi
 
 # --- preflight: yard must be running -----------------------------------------
@@ -57,7 +67,35 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
   || die "yard is not running — start it first (yard up)"
 
-# --- copy host → yard --------------------------------------------------------
+# --- bind: mount the host folder into the yard via an Incus disk device -------
+# No copy: edits on the host and in the yard are the same files. Isolation is
+# reduced (the agent writes the host folder) — for trusted, hands-on work only.
+# shift=true id-maps the mount so the files show up owned by 'dev', not nobody.
+if [ "$bind" = 1 ]; then
+  dev="$(ws_device_for "$id")"
+  if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$dev"; then
+    state_write "$id" "$name" "$hostPath" "$yardPath" bind "$SSH_HOST"
+    ok "bind already attached: $hostPath → $INSTANCE_NAME:$yardPath"
+    info "id: $id"
+    exit 0
+  fi
+  announce "yard import --bind — $name" \
+    "Host source : $hostPath" \
+    "Yard target : $yardPath (mode bind — host disk-mount, shared files)" \
+    "Attach an Incus disk device (shift=true) so the yard sees this folder owned by 'dev'." \
+    "Isolation is REDUCED: work in the yard writes straight to the host folder." \
+    "Record machine-local state in $(state_file "$id")."
+  proceed_or_die
+  incus config device add "$INSTANCE_NAME" "$dev" disk "${PROJ[@]}" \
+    source="$hostPath" path="$yardPath" shift=true >/dev/null \
+    || die "could not attach bind mount (does the host kernel support idmapped/shifted mounts?)"
+  state_write "$id" "$name" "$hostPath" "$yardPath" bind "$SSH_HOST"
+  ok "bind done: $hostPath ↔ $INSTANCE_NAME:$yardPath"
+  info "id: $id"
+  exit 0
+fi
+
+# --- sync: copy host → yard --------------------------------------------------
 announce "yard $action — $name" \
   "Host source : $hostPath" \
   "Yard target : $yardPath (mode sync)" \

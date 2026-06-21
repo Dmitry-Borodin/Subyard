@@ -36,7 +36,33 @@ state_exists "$id" || die "not imported: $(basename "$(realpath "$path")")"
 name="$(state_get "$id" name)"
 yardPath="$(state_get "$id" yardPath)"
 yardDir="${yardPath%/src}"   # /srv/workspaces/<id>
+mode="$(state_get "$id" mode)"
+running() { [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; }
 
+# --- bind: detach the disk device; NEVER delete (the source is the host folder) ----
+if [ "$mode" = bind ]; then
+  dev="$(ws_device_for "$id")"
+  [ "$purge" = 1 ] && warn "'$name' is a bind project — --purge does NOT delete host files; only detaching the mount"
+  announce "yard remove — $name (bind)" \
+    "Drop machine-local state: $(state_file "$id")." \
+    "Detach the bind mount '$dev' from the yard. The host folder $yardPath is untouched."
+  proceed_or_die
+  if running; then
+    if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$dev"; then
+      incus config device remove "$INSTANCE_NAME" "$dev" "${PROJ[@]}" >/dev/null \
+        && ok "detached bind mount '$dev'"
+    else
+      warn "no bind device '$dev' attached — nothing to detach"
+    fi
+  else
+    warn "yard is down — leaving the device entry; it detaches on next start or re-run when up"
+  fi
+  state_remove "$id"
+  ok "removed '$name' from the yard (bind detached; host files kept)"
+  exit 0
+fi
+
+# --- sync: optionally delete the yard copy -----------------------------------
 if [ "$purge" = 1 ]; then
   announce "yard remove --purge — $name" \
     "Drop machine-local state: $(state_file "$id")." \
@@ -49,7 +75,7 @@ fi
 proceed_or_die
 
 if [ "$purge" = 1 ]; then
-  if [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; then
+  if running; then
     case "$yardDir" in
       /srv/workspaces/?*) incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- rm -rf "$yardDir" \
         && ok "deleted $yardDir" ;;

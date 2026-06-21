@@ -53,7 +53,7 @@ _yard() {
         return 0
       fi
       case "$cur" in
-        -*) [ "$sub" = up ] && COMPREPLY=( $(compgen -W '--profile --yes' -- "$cur") ) ;;
+        -*) [ "$sub" = up ] && COMPREPLY=( $(compgen -W '--profile --rebuild --yes' -- "$cur") ) ;;
         *)  case "$sub" in
               up|info|shell|exec|down|destroy) COMPREPLY=( $(compgen -d -- "$cur") ) ;;
             esac ;;

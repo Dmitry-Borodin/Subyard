@@ -2,7 +2,7 @@
 # agent.sh — agent machines: a profile-configured Docker container INSIDE the yard
 # for an imported project. Docker here is the yard's nested daemon, never the host's.
 # Subcommands:
-#   up      [path] [--profile NAME]   build/start the agent machine (idempotent)
+#   up      [path] [--profile NAME] [--rebuild]   build/start the agent machine (idempotent)
 #   info    [path]                    show what the profile exposes (visibility manifest)
 #   shell   [path]                    interactive shell inside it
 #   exec    [path] -- <cmd...>        run a command inside it
@@ -10,7 +10,9 @@
 #   destroy [path]                    remove it (workspace/caches in the yard stay)
 #   list                              list agent machines in the yard
 # The profile (config/profiles/<NAME>.conf) supplies the base image, shared caches,
-# non-secret env, and devices; toolchain install is a later, profile-specific slice.
+# non-secret env, and devices. If it sets IMAGE_DOCKERFILE (a path inside the workspace),
+# `up` builds that image in the yard's Docker and runs the agent from it (--rebuild forces);
+# the Dockerfile is the project's, not Subyard's. Otherwise it runs BASE_IMAGE directly.
 # An optional sibling <NAME>.env (gitignored, values host-only) carries secrets: it
 # is staged into the yard and bind-mounted as a file at /run/subyard/profile.env
 # (never -e), and never reaches the nested coding-sandbox tier.
@@ -38,23 +40,35 @@ yexec_t() { incus exec "$INSTANCE_NAME" "${PROJ[@]}" -t -- "$@"; }
 ydocker() { yexec docker "$@"; }
 cname_for() { printf 'subyard-agent-%s' "$1"; }
 
+# Profile keys that are control metadata for the consumer, not env to inject into
+# the machine. Keep the -e injection and the manifest's envKeys in agreement.
+is_control_key() {
+  case "$1" in
+    PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES|IMAGE_DOCKERFILE|IMAGE_CONTEXT|IMAGE_TAG)
+      return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Visibility manifest for an agent machine — declares what is available in THIS tier:
-# feature flags, cache paths, exported env-var NAMES, secret slots (name + mount path,
-# never values), devices. World-readable; carries no secret values. Reads up-scope vars
-# ($profile, $pf, $BASE_IMAGE, $have_secrets, $OPTIONAL_FEATURES, $CACHES, $DEVICES).
+# the image it runs, feature flags, cache paths, exported env-var NAMES, secret slots
+# (name + mount path, never values), devices. World-readable; no secret values. Reads
+# up-scope vars ($profile, $pf, $BASE_IMAGE, $run_image, $have_secrets, $OPTIONAL_FEATURES,
+# $CACHES, $DEVICES).
 manifest_json() {
   local feats="" caches="" envkeys="" secs="" devs="" k
   for k in ${OPTIONAL_FEATURES:-}; do feats+="\"$k\","; done
   for k in ${CACHES:-};           do caches+="\"$k\","; done
   for k in ${DEVICES:-};          do devs+="\"$k\","; done
   while IFS= read -r k; do
-    case "$k" in PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES) continue ;; esac
+    is_control_key "$k" && continue
     envkeys+="\"$k\","
   done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$pf" | cut -d= -f1 | sort -u)
   [ "${have_secrets:-0}" = 1 ] && secs="{\"name\":\"profile.env\",\"path\":\"/run/subyard/profile.env\"}"
   cat <<JSON
 {
   "profile": "$profile",
+  "image": "${run_image:-$BASE_IMAGE}",
   "baseImage": "$BASE_IMAGE",
   "features": [${feats%,}],
   "caches": [${caches%,}],
@@ -83,11 +97,12 @@ if [ "$sub" = list ]; then
   exit 0
 fi
 
-# --- parse: [path] [--profile NAME] [-- cmd...] ------------------------------
-path="."; profile=""; cmd=()
+# --- parse: [path] [--profile NAME] [--rebuild] [-- cmd...] ------------------
+path="."; profile=""; rebuild=0; cmd=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile) profile="${2:?--profile needs a name}"; shift ;;
+    --rebuild) rebuild=1 ;;
     --)        shift; cmd=("$@"); break ;;
     -y|--yes)  ;;  # handled by lib.sh
     -*)        die "unknown option '$1'" ;;
@@ -122,24 +137,48 @@ case "$sub" in
     sf="$PROFILES_DIR/$profile.env"; have_secrets=0
     [ -r "$sf" ] && have_secrets=1
 
+    # environment image (Phase 4, variant 1): if the profile points at a Dockerfile
+    # inside the workspace, build it in the yard's Docker and run the agent from it.
+    # Source of truth is the project repo (pinned), not a copy in Subyard. Empty
+    # IMAGE_DOCKERFILE => run BASE_IMAGE directly (previous behaviour).
+    df="${IMAGE_DOCKERFILE:-}"; run_image="$BASE_IMAGE"; ctx=""
+    if [ -n "$df" ]; then
+      ctx="${IMAGE_CONTEXT:-$(dirname "$df")}"
+      run_image="${IMAGE_TAG:-subyard-env-$id}"
+    fi
+
     if ydocker inspect "$cname" >/dev/null 2>&1; then
       ydocker start "$cname" >/dev/null
       ok "agent '$name' already exists — started (profile $profile)"
       exit 0
     fi
 
-    sec_line=()
+    sec_line=(); build_line=()
     [ "$have_secrets" = 1 ] && sec_line=("Stage $profile.env secrets into the yard and mount them as a file at /run/subyard/profile.env (ro), never as -e.")
+    [ -n "$df" ] && build_line=("Build the env image '$run_image' from the workspace's $df (context $ctx) in the yard's Docker.")
     announce "yard agent up — $name (profile $profile)" \
-      "Run a Docker container '$cname' inside the yard from image '$BASE_IMAGE'." \
+      ${build_line[@]+"${build_line[@]}"} \
+      "Run a Docker container '$cname' inside the yard from image '$run_image'." \
       "Mount the project at /workspace, plus shared caches; export the profile's non-secret env${DEVICES:+ and devices ($DEVICES)}." \
       "Stage a visibility manifest (no secret values) at /run/subyard/profile.json (ro)." \
       ${sec_line[@]+"${sec_line[@]}"} \
-      "Pulls the image into the yard's Docker on first run."
+      "Pulls/builds the image into the yard's Docker on first run."
     proceed_or_die
 
     # shared caches (persistent under the yard's /srv), owned by the dev uid
     for c in ${CACHES:-}; do yexec install -d -o "$DEV_UID" -g "$DEV_UID" "$c"; done
+
+    # build the env image from the workspace Dockerfile (idempotent; --rebuild forces)
+    if [ -n "$df" ]; then
+      yexec test -r "$yardPath/$df" \
+        || die "profile wants '$df' in the workspace, but it's missing there — import/sync the project first"
+      if [ "$rebuild" = 1 ] || ! ydocker image inspect "$run_image" >/dev/null 2>&1; then
+        info "building env image '$run_image' from $df (context $ctx) …"
+        ydocker build -t "$run_image" -f "$yardPath/$df" "$yardPath/$ctx" || die "env image build failed"
+      else
+        ok "env image '$run_image' already built (use --rebuild to force)"
+      fi
+    fi
 
     # secret-bearing env: stage as a dev-owned 0600 file inside the yard (not -e)
     if [ "$have_secrets" = 1 ]; then
@@ -168,7 +207,7 @@ case "$sub" in
     # Inject the profile's non-secret .conf keys as env, minus our control keys.
     # Secrets are never injected here — they arrive only via the file mount above.
     while IFS= read -r k; do
-      case "$k" in PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES) continue ;; esac
+      is_control_key "$k" && continue
       args+=(-e "$k=${!k}")
     done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$pf" | cut -d= -f1 | sort -u)
     for d in ${DEVICES:-}; do
@@ -177,11 +216,11 @@ case "$sub" in
         *)   warn "profile device '$d' not understood — skipping" ;;
       esac
     done
-    args+=("$BASE_IMAGE" sleep infinity)
+    args+=("$run_image" sleep infinity)
 
     info "starting agent '$cname' …"
     ydocker "${args[@]}" >/dev/null || die "docker run failed in the yard"
-    ok "agent '$name' up (profile $profile, image $BASE_IMAGE)"
+    ok "agent '$name' up (profile $profile, image $run_image)"
     cat <<MSG
 
 Next:

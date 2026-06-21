@@ -48,7 +48,7 @@ _yard() {
             local -a profs; profs=( ${(f)"$(_yard_profiles)"} )
             _describe -t profiles 'profile' profs
           else
-            _arguments '--profile[agent profile]:profile:->prof' '--yes[skip prompt]' '*:project:_files -/'
+            _arguments '--profile[agent profile]:profile:->prof' '--rebuild[rebuild the env image]' '--yes[skip prompt]' '*:project:_files -/'
           fi
           ;;
         import) _arguments '--bind[mount instead of copy]' '--yes[skip prompt]' '*:project:_files -/' ;;

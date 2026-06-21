@@ -48,10 +48,16 @@ if command -v code >/dev/null 2>&1; then
   # list), proceed rather than false-alarm.
   exts="$(code --list-extensions 2>/dev/null || true)"
   if [ -n "$exts" ] && ! printf '%s\n' "$exts" | grep -qixF ms-vscode-remote.remote-ssh; then
-    warn "VS Code lacks the Remote-SSH extension — it can't open a remote (ssh) window."
-    info "install it, then re-run 'yard code':"
-    printf '    code --install-extension ms-vscode-remote.remote-ssh\n'
-    die "Remote-SSH extension not installed"
+    warn "VS Code lacks the Remote-SSH extension — required to open the yard over SSH."
+    # Installing is a modifying action: ask first (auto-yes under -y/--yes). On 'no',
+    # don't proceed to a doomed `code` launch — say plainly why it can't connect.
+    if confirm "Install it now (code --install-extension ms-vscode-remote.remote-ssh)?"; then
+      code --install-extension ms-vscode-remote.remote-ssh \
+        || die "install failed — run it manually: code --install-extension ms-vscode-remote.remote-ssh"
+      ok "Remote-SSH installed"
+    else
+      die "without Remote-SSH, VS Code can't connect to the yard — install it and re-run 'yard code'."
+    fi
   fi
   info "opening $host:$yardPath in VS Code …"
   exec code --folder-uri "$uri"

@@ -23,6 +23,10 @@ SSH_HOST="${SSH_HOST:-yard}"
 DEV_USER="${DEV_USER:-dev}"
 DEV_UID="${DEV_UID:-1000}"
 DEV_GID="${DEV_GID:-1000}"
+# Coding agents to recommend (П1 step 3) when the workspace opens — space-separated
+# marketplace IDs; override in config/subyard.env. Note: "Codex – OpenAI's coding agent"
+# ships as openai.chatgpt; opencode is sst-dev.opencode; Claude Code is anthropic.claude-code.
+CODE_RECOMMENDED_EXTENSIONS="${CODE_RECOMMENDED_EXTENSIONS:-anthropic.claude-code openai.chatgpt sst-dev.opencode}"
 PROJ=(--project "$INCUS_PROJECT")
 
 path="."
@@ -46,15 +50,20 @@ incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ss
 
 # VS Code labels a window by its leaf folder — for us that's the useless "src". Write a
 # tiny .code-workspace that names the (absolute) src path with the project, so the title
-# and Explorer read e.g. "Subyard". It lives in dev's HOME (always dev-writable — some
-# workspace wrappers are root-owned) and is opened with --file-uri. JSON is single-line
-# and string values are escaped, so a quirky project name can't break it.
+# and Explorer read e.g. "Subyard", and recommends the in-yard coding agents. It lives in
+# dev's HOME (always dev-writable — some workspace wrappers are root-owned) and is opened
+# with --file-uri. JSON is single-line and every string value is escaped, so a quirky
+# project name or extension id can't break it.
 wsfile="/home/$DEV_USER/.subyard/workspaces/${name//[^A-Za-z0-9._-]/_}.code-workspace"
 esc_name="${name//\\/\\\\}";    esc_name="${esc_name//\"/\\\"}"
 esc_path="${yardPath//\\/\\\\}"; esc_path="${esc_path//\"/\\\"}"
+recs=""   # JSON array body: "ext.one","ext.two",… (each id escaped)
+for _ext in $CODE_RECOMMENDED_EXTENSIONS; do
+  _e="${_ext//\\/\\\\}"; _e="${_e//\"/\\\"}"; recs="$recs${recs:+,}\"$_e\""
+done
 incus exec "$INSTANCE_NAME" "${PROJ[@]}" --user "$DEV_UID" --group "$DEV_GID" \
   --env HOME="/home/$DEV_USER" --env WSDIR="${wsfile%/*}" --env WSFILE="$wsfile" \
-  --env WSJSON='{"folders":[{"name":"'"$esc_name"'","path":"'"$esc_path"'"}]}' -- \
+  --env WSJSON='{"folders":[{"name":"'"$esc_name"'","path":"'"$esc_path"'"}],"extensions":{"recommendations":['"$recs"']}}' -- \
   sh -c 'mkdir -p "$WSDIR" && printf "%s\n" "$WSJSON" > "$WSFILE"' \
   || die "could not write the VS Code workspace file in the yard"
 uri="vscode-remote://ssh-remote+$host$wsfile"

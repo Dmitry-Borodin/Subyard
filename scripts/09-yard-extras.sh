@@ -8,7 +8,7 @@
 # (incus-admin); only host-dir creation for YARD_MOUNTS uses sudo. Capabilities that need a
 # restart are SET now; the operator is told to restart via the GUARDED path (yard down/up)
 # so the host's network guard runs — the host itself is never touched. Idempotent.
-# Config: config/incus.project.env + config/subyard.env + config/profiles/*.conf.
+# Config: config/incus.project.env + config/subyard.env + config/profiles/*/profile.conf.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -38,7 +38,7 @@ case "$SHIFT_MODE" in shift) SHIFT_OPT="shift=true" ;; *) SHIFT_OPT="" ;; esac
 u_mounts=(); u_caps=(); u_devs=()
 for id in $(state_ids); do
   prof="$(state_get "$id" profile)"; [ -n "$prof" ] || continue
-  pf="$PROFILES_DIR/$prof.conf"; [ -r "$pf" ] || continue
+  pf="$PROFILES_DIR/$prof/profile.conf"; [ -r "$pf" ] || continue
   while IFS= read -r line; do
     case "$line" in
       MOUNT\ *) u_mounts+=("${line#MOUNT }") ;;

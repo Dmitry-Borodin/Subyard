@@ -45,7 +45,7 @@ any_yard_extras() {
   for f in "$sd"/*.json; do
     [ -e "$f" ] || continue
     prof="$(jq -r '.profile // ""' "$f" 2>/dev/null)"; [ -n "$prof" ] || continue
-    pf="$SCRIPT_DIR/../config/profiles/$prof.conf"; [ -r "$pf" ] || continue
+    pf="$SCRIPT_DIR/../config/profiles/$prof/profile.conf"; [ -r "$pf" ] || continue
     # shellcheck disable=SC1090
     ( . "$pf"; [ -n "${YARD_MOUNTS:-}${YARD_CAPS:-}${YARD_DEVICES:-}" ] ) && return 0
   done

@@ -1,0 +1,63 @@
+{
+  // Subyard default devcontainer for the `openclaw` profile.
+  // Public/committed: generic, no host paths, no secrets. A project may override
+  // any of this with its own .devcontainer/. See ../README.md.
+  "name": "${localWorkspaceFolderBasename}",
+  "build": {
+    "dockerfile": "../docker/dev.Dockerfile",
+    "context": "../docker"
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "remoteUser": "dev",
+  "customizations": {
+    "vscode": {
+      // In-yard coding agents (matches yard code's CODE_RECOMMENDED_EXTENSIONS).
+      "extensions": [
+        "anthropic.claude-code",
+        "openai.chatgpt",
+        "sst-dev.opencode"
+      ]
+    }
+  },
+  // Workspace-local caches keep the container self-contained. The profile's
+  // shared /srv/cache/* caches are for `yard agent` machines, not this VS Code
+  // devcontainer; wire them in per project for cross-container sharing.
+  "containerEnv": {
+    "PIP_CACHE_DIR": "/workspace/.cache/pip",
+    "NPM_CONFIG_CACHE": "/workspace/.cache/npm",
+    "COREPACK_HOME": "/workspace/.cache/node/corepack",
+    "XDG_DATA_HOME": "/workspace/.cache/xdg",
+    "PNPM_HOME": "/workspace/.cache/pnpm/home",
+    "npm_config_fetch_timeout": "900000",
+    "npm_config_fetch_retries": "8",
+    "npm_config_fetch_retry_maxtimeout": "300000",
+    "NO_UPDATE_NOTIFIER": "1"
+  },
+  // Named volumes for the dev user's home and caches (survive rebuilds, scoped
+  // per workspace). Coding-agent state (Claude/Codex credentials + session/usage)
+  // is the yard default: it lives in the yard at /mnt/host/agent (the 'host-agent'
+  // entry in HOST_MOUNTS, config/subyard.env — decision #23) and is bound into the
+  // container here so subscription usage is one shared pool. The source paths are
+  // in the yard (Docker runs in the yard), never on the host. To opt out, remove
+  // the host-agent line from HOST_MOUNTS and drop the two agent binds below.
+  "mounts": [
+    "source=subyard-${localWorkspaceFolderBasename}-home,target=/home/dev,type=volume",
+    "source=subyard-${localWorkspaceFolderBasename}-pip-cache,target=/home/dev/.cache/pip,type=volume",
+    "source=subyard-${localWorkspaceFolderBasename}-npm-cache,target=/home/dev/.npm,type=volume",
+    "source=subyard-${localWorkspaceFolderBasename}-node-cache,target=/home/dev/.cache/node,type=volume",
+    "source=/mnt/host/agent/claude,target=/home/dev/.claude,type=bind",
+    "source=/mnt/host/agent/codex,target=/home/dev/.codex,type=bind"
+    // ssh-agent: forwarded into the yard by default (FORWARD_SSH_AGENT=1). To use
+    // it from this container too, bind the forwarded socket:
+    //   "source=${localEnv:SSH_AUTH_SOCK},target=/ssh-agent,type=bind"  // + containerEnv SSH_AUTH_SOCK=/ssh-agent
+  ],
+  "runArgs": [
+    "--network=bridge",
+    "--pids-limit=512",
+    "--memory=20g",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--label=subyard.devcontainer.local_folder=${localWorkspaceFolder}"
+  ]
+}

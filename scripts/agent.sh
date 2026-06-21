@@ -9,13 +9,13 @@
 #   down    [path]                    stop it (keeps it)
 #   destroy [path]                    remove it (workspace/caches in the yard stay)
 #   list                              list agent machines in the yard
-# The profile (config/profiles/<NAME>.conf) supplies the base image, shared caches,
-# non-secret env, and devices. If it sets IMAGE_DOCKERFILE (a path inside the workspace),
-# `up` builds that image in the yard's Docker and runs the agent from it (--rebuild forces);
-# the Dockerfile is the project's, not Subyard's. Otherwise it runs BASE_IMAGE directly.
-# An optional sibling <NAME>.env (gitignored, values host-only) carries secrets: it
-# is staged into the yard and bind-mounted as a file at /run/subyard/profile.env
-# (never -e), and never reaches the nested coding-sandbox tier.
+# The profile (config/profiles/<NAME>/profile.conf) supplies the base image, shared
+# caches, non-secret env, and devices. If it sets IMAGE_DOCKERFILE (a path inside the
+# workspace), `up` builds that image in the yard's Docker and runs the agent from it
+# (--rebuild forces); the Dockerfile is the project's, not Subyard's. Otherwise it
+# runs BASE_IMAGE directly. An optional sibling profile.env (gitignored, values
+# host-only) carries secrets: it is staged into the yard and bind-mounted as a file
+# at /run/subyard/profile.env (never -e), and never reaches the coding-sandbox tier.
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -125,20 +125,20 @@ preflight
 case "$sub" in
   up)
     [ -n "$profile" ] || profile="$(state_get "$id" profile)"
-    [ -n "$profile" ] || die "no profile — pass --profile <name> (have: $(cd "$PROFILES_DIR" && ls *.conf 2>/dev/null | sed 's/\.conf$//' | tr '\n' ' '))"
-    pf="$PROFILES_DIR/$profile.conf"
+    [ -n "$profile" ] || die "no profile — pass --profile <name> (have: $(for d in "$PROFILES_DIR"/*/; do [ -r "$d/profile.conf" ] && basename "$d"; done | tr '\n' ' '))"
+    pf="$PROFILES_DIR/$profile/profile.conf"
     [ -r "$pf" ] || die "no such profile: '$profile' ($pf)"
     # Persist the chosen profile so later `agent up`/`yard setup` know it without --profile
     # (yard-extras reconcile enumerates projects and unions their profiles' YARD_* needs).
     state_set "$id" profile "$profile" 2>/dev/null || true
-    # The .conf is the non-secret contract — safe to source (its keys are exported
-    # below) and to log. The sibling .env may carry secrets, so it is NEVER sourced
-    # here (that would leak its values into the -e injection); it is staged into the
-    # yard and bind-mounted as a file instead.
+    # profile.conf is the non-secret contract — safe to source (its keys are exported
+    # below) and to log. The sibling profile.env may carry secrets, so it is NEVER
+    # sourced here (that would leak its values into the -e injection); it is staged
+    # into the yard and bind-mounted as a file instead.
     # shellcheck disable=SC1090
     . "$pf"
     : "${BASE_IMAGE:?profile $profile has no BASE_IMAGE}"
-    sf="$PROFILES_DIR/$profile.env"; have_secrets=0
+    sf="$PROFILES_DIR/$profile/profile.env"; have_secrets=0
     [ -r "$sf" ] && have_secrets=1
 
     # environment image (Phase 4, variant 1): if the profile points at a Dockerfile
@@ -158,7 +158,7 @@ case "$sub" in
     fi
 
     sec_line=(); build_line=()
-    [ "$have_secrets" = 1 ] && sec_line=("Stage $profile.env secrets into the yard and mount them as a file at /run/subyard/profile.env (ro), never as -e.")
+    [ "$have_secrets" = 1 ] && sec_line=("Stage $profile/profile.env secrets into the yard and mount them as a file at /run/subyard/profile.env (ro), never as -e.")
     [ -n "$df" ] && build_line=("Build the env image '$run_image' from the workspace's $df (context $ctx) in the yard's Docker.")
     announce "yard agent up — $name (profile $profile)" \
       ${build_line[@]+"${build_line[@]}"} \
@@ -189,7 +189,7 @@ case "$sub" in
       yexec install -d -m 0700 -o "$DEV_UID" -g "$DEV_UID" "$(dirname "$ysecret")"
       incus file push "$sf" "$INSTANCE_NAME$ysecret" "${PROJ[@]}" \
         --mode 0600 --uid "$DEV_UID" --gid "$DEV_UID" >/dev/null \
-        || die "could not stage $profile.env into the yard"
+        || die "could not stage $profile/profile.env into the yard"
     fi
 
     # visibility manifest: stage a world-readable JSON (no secret values) the agent

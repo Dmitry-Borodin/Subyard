@@ -75,6 +75,23 @@ elif [ "$(id -u "$DEV_USER")" != "$DEV_UID" ]; then
 fi
 usermod -aG yard,kvm,docker "$DEV_USER"
 
+# Coding-agent state (yard default via the 'host-agent' HOST_MOUNTS entry): point the
+# dev user's ~/.claude and ~/.codex at the shared host<->yard mount (/mnt/host/agent),
+# so the agent's credentials and session/usage are one pool. Only when the mount is
+# present; idempotent; never clobbers a real directory that already holds data.
+if [ -d /mnt/host/agent ]; then
+  dev_home="$(getent passwd "$DEV_USER" | cut -d: -f6)"
+  for a in claude codex; do
+    runuser -u "$DEV_USER" -- mkdir -p "/mnt/host/agent/$a" 2>/dev/null || true
+    link="$dev_home/.$a"; target="/mnt/host/agent/$a"
+    if [ -L "$link" ] || [ ! -e "$link" ]; then
+      ln -sfn "$target" "$link"; chown -h "$DEV_USER:$DEV_USER" "$link"
+    else
+      echo "WARNING: $link exists and is not a symlink — leaving it (move it aside to share agent state)" >&2
+    fi
+  done
+fi
+
 # /srv skeleton (generic core; profile caches like android-sdk come in Phase 4).
 mkdir -p /srv/cache /srv/workspaces /srv/agents /srv/stacks /srv/images /srv/bin
 chown -R root:yard /srv

@@ -1,2 +1,5 @@
 # Private, non-published content lives in its own separate (private) repository.
 /private/
+
+# Scratch space for local inputs (e.g. third-party devcontainer files); not published.
+/temp/

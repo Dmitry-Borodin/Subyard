@@ -16,10 +16,17 @@ done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 HOST_BASE="${HOST_BASE:-/srv/subyard}"
+INCUS_BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
+STORAGE_POOL="${STORAGE_POOL:-default}"
 PROJ=(--project "$INCUS_PROJECT")
 
 # --- read-only state probes so the plan shows what THIS run will really do ----
 reachable()     { command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; }
+# 01 is "done" only if the daemon is reachable AND its storage pool + bridge exist.
+# 'yard uninstall' removes the pool/bridge but leaves Incus installed/reachable, so a
+# bare reachability test would wrongly skip re-init and 02 would fail (no incusbr0).
+have_init()     { reachable && incus storage show "$STORAGE_POOL" >/dev/null 2>&1 \
+                            && incus network show "$INCUS_BRIDGE" >/dev/null 2>&1; }
 have_project()  { reachable && incus project show "$INCUS_PROJECT" >/dev/null 2>&1; }
 have_instance() { reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; }
 have_network()  { [ -n "$(reachable && incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]; }
@@ -51,7 +58,7 @@ step() {  # <done-test> <label>
 printf '\n%sSubyard setup — full bring-up%s\n%sThis run will (already-done steps are skipped):%s\n' \
   "$C_HEAD" "$C_OFF" "$C_HEAD" "$C_OFF"
 pending=0
-step reachable      "Install Incus + add you to incus-admin + init storage (needs root)"
+step have_init      "Install Incus + add you to incus-admin + init storage (needs root)"
 step have_project   "Create the Incus project '$INCUS_PROJECT'"
 step have_instance  "Create the yard instance (+ /dev/kvm, /srv volume)"
 step have_network   "Open host DHCP/DNS for the yard bridge (ufw; needs root)"
@@ -71,8 +78,8 @@ STORAGE_PATH="${STORAGE_PATH:-$HOME/.subyard}" "$SCRIPT_DIR/00-check-host.sh"
 # Install Incus on first run. Adding you to incus-admin only takes effect in a
 # fresh group session, so if Incus still isn't reachable after install, stop and
 # print the one command to continue.
-if ! reachable; then
-  info "→ install Incus"
+if ! have_init; then
+  info "→ install / init Incus"
   "$SCRIPT_DIR/01-install-incus.sh" --yes
   if ! reachable; then
     echo

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 00-check-host.sh — Phase 0: report whether the host can run a yard (exit 0 = ready).
-# Env: STORAGE_PATH (default /srv), MIN_DISK_GIB (default 50).
+# Env: STORAGE_PATH (default /srv), MIN_DISK_GIB (hard floor, default 20),
+#      REC_DISK_GIB (recommended for the heavy 'android' profile, default 50).
 set -euo pipefail
 
 case "${1:-}" in
@@ -8,7 +9,8 @@ case "${1:-}" in
 esac
 
 STORAGE_PATH="${STORAGE_PATH:-/srv}"
-MIN_DISK_GIB="${MIN_DISK_GIB:-50}"
+MIN_DISK_GIB="${MIN_DISK_GIB:-20}"   # hard floor: a base yard won't fit below this
+REC_DISK_GIB="${REC_DISK_GIB:-50}"   # recommended: the 'android' profile (SDK/AVD) is heavy
 # Nested Docker (agent machines) needs the Incus AppArmor fix for CVE-2025-52881
 # (runc fd-reopen vs the nesting profile); landed in Incus 6.0.6 LTS / 6.19.
 MIN_INCUS_VER="${MIN_INCUS_VER:-6.0.6}"
@@ -77,10 +79,12 @@ if df -BG --output=avail,fstype "$probe" >/dev/null 2>&1; then
 $(df -BG --output=avail,fstype "$probe" | tail -1)
 EOF
   avail_gib=${avail%G}
-  if [ "${avail_gib:-0}" -ge "$MIN_DISK_GIB" ]; then
+  if [ "${avail_gib:-0}" -ge "$REC_DISK_GIB" ]; then
     pass "${avail_gib} GiB free on ${probe} (fs: ${fstype})"
+  elif [ "${avail_gib:-0}" -ge "$MIN_DISK_GIB" ]; then
+    warn "${avail_gib} GiB free on ${probe} — ok for a base yard, but the heavy 'android' profile wants >= ${REC_DISK_GIB} GiB (fs: ${fstype})"
   else
-    fail "only ${avail_gib} GiB free on ${probe}; need >= ${MIN_DISK_GIB} GiB (fs: ${fstype})"
+    fail "only ${avail_gib} GiB free on ${probe}; need >= ${MIN_DISK_GIB} GiB for a base yard (fs: ${fstype})"
   fi
 else
   warn "cannot determine free space for ${probe}"

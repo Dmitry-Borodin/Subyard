@@ -89,9 +89,10 @@ case "$cmd" in
   up | down | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;
   code)      exec "$S/project-code.sh" "$@" ;;
   remove)    exec "$S/project-remove.sh" "$@" ;;
+  export)    exec "$S/project-export.sh" "$@" ;;
   agent)     exec "$S/agent.sh" "$@" ;;
   ssh)       host=yard; [ -r "$REPO/config/subyard.env" ] && host="$( . "$REPO/config/subyard.env" >/dev/null 2>&1; printf '%s' "${SSH_HOST:-yard}")"; exec ssh "$host" "$@" ;;
-  export | clone) soon "$cmd" "a Phase 7b follow-up" ;;
+  clone)     soon "$cmd" "a Phase 7b follow-up" ;;
   help)      usage ;;
   *) printf "%s: unknown command '%s'\nTry '%s --help'.\n" "$PROG" "$cmd" "$PROG" >&2; exit 2 ;;
 esac

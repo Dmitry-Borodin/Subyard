@@ -47,7 +47,7 @@ Project commands (code projects in the yard; default path '.'):
   code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
   ssh    [args]   open a shell in the yard as the dev user (or run a command)
   agent  <sub>    agent machine (Docker container in the yard) for a project:
-                  up [path] --profile N | shell | exec -- cmd | down | destroy | list
+                  up [path] --profile N | info | shell | exec -- cmd | down | destroy | list
   list            list projects currently in the yard
   status          read-only overview (yard + ssh + mounts + services + projects)
   logs            tail the yard's runtime logs (systemd journal + docker)

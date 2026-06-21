@@ -3,6 +3,7 @@
 # for an imported project. Docker here is the yard's nested daemon, never the host's.
 # Subcommands:
 #   up      [path] [--profile NAME]   build/start the agent machine (idempotent)
+#   info    [path]                    show what the profile exposes (visibility manifest)
 #   shell   [path]                    interactive shell inside it
 #   exec    [path] -- <cmd...>        run a command inside it
 #   down    [path]                    stop it (keeps it)
@@ -37,6 +38,33 @@ yexec_t() { incus exec "$INSTANCE_NAME" "${PROJ[@]}" -t -- "$@"; }
 ydocker() { yexec docker "$@"; }
 cname_for() { printf 'subyard-agent-%s' "$1"; }
 
+# Visibility manifest for an agent machine — declares what is available in THIS tier:
+# feature flags, cache paths, exported env-var NAMES, secret slots (name + mount path,
+# never values), devices. World-readable; carries no secret values. Reads up-scope vars
+# ($profile, $pf, $BASE_IMAGE, $have_secrets, $OPTIONAL_FEATURES, $CACHES, $DEVICES).
+manifest_json() {
+  local feats="" caches="" envkeys="" secs="" devs="" k
+  for k in ${OPTIONAL_FEATURES:-}; do feats+="\"$k\","; done
+  for k in ${CACHES:-};           do caches+="\"$k\","; done
+  for k in ${DEVICES:-};          do devs+="\"$k\","; done
+  while IFS= read -r k; do
+    case "$k" in PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES) continue ;; esac
+    envkeys+="\"$k\","
+  done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$pf" | cut -d= -f1 | sort -u)
+  [ "${have_secrets:-0}" = 1 ] && secs="{\"name\":\"profile.env\",\"path\":\"/run/subyard/profile.env\"}"
+  cat <<JSON
+{
+  "profile": "$profile",
+  "baseImage": "$BASE_IMAGE",
+  "features": [${feats%,}],
+  "caches": [${caches%,}],
+  "envKeys": [${envkeys%,}],
+  "secrets": [${secs}],
+  "devices": [${devs%,}]
+}
+JSON
+}
+
 yard_running() { [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; }
 preflight() {
   command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard setup' first"
@@ -44,7 +72,7 @@ preflight() {
 }
 
 sub="${1:-}"; shift || true
-[ -n "$sub" ] || die "need a subcommand: up | shell | exec | down | destroy | list"
+[ -n "$sub" ] || die "need a subcommand: up | info | shell | exec | down | destroy | list"
 
 # --- list: no project needed -------------------------------------------------
 if [ "$sub" = list ]; then
@@ -74,6 +102,8 @@ state_exists "$id" || die "not imported: $(basename "$(realpath "$path")") — r
 name="$(state_get "$id" name)"
 yardPath="$(state_get "$id" yardPath)"
 cname="$(cname_for "$id")"
+ysecret="/srv/agent-secrets/$id/profile.env"   # dev-owned, 0600, inside the yard
+ymeta="/srv/agent-meta/$id/profile.json"       # dev-owned, 0644, no secret values
 preflight
 
 case "$sub" in
@@ -91,7 +121,6 @@ case "$sub" in
     : "${BASE_IMAGE:?profile $profile has no BASE_IMAGE}"
     sf="$PROFILES_DIR/$profile.env"; have_secrets=0
     [ -r "$sf" ] && have_secrets=1
-    ysecret="/srv/agent-secrets/$id/profile.env"   # dev-owned, 0600, inside the yard
 
     if ydocker inspect "$cname" >/dev/null 2>&1; then
       ydocker start "$cname" >/dev/null
@@ -104,6 +133,7 @@ case "$sub" in
     announce "yard agent up — $name (profile $profile)" \
       "Run a Docker container '$cname' inside the yard from image '$BASE_IMAGE'." \
       "Mount the project at /workspace, plus shared caches; export the profile's non-secret env${DEVICES:+ and devices ($DEVICES)}." \
+      "Stage a visibility manifest (no secret values) at /run/subyard/profile.json (ro)." \
       ${sec_line[@]+"${sec_line[@]}"} \
       "Pulls the image into the yard's Docker on first run."
     proceed_or_die
@@ -119,10 +149,21 @@ case "$sub" in
         || die "could not stage $profile.env into the yard"
     fi
 
+    # visibility manifest: stage a world-readable JSON (no secret values) the agent
+    # can read to discover what is available in this tier (yard agent info).
+    mfile="$(mktemp "${TMPDIR:-/tmp}/subyard-manifest.XXXXXX")"
+    manifest_json > "$mfile"
+    yexec install -d -m 0755 -o "$DEV_UID" -g "$DEV_UID" "$(dirname "$ymeta")"
+    incus file push "$mfile" "$INSTANCE_NAME$ymeta" "${PROJ[@]}" \
+      --mode 0644 --uid "$DEV_UID" --gid "$DEV_UID" >/dev/null \
+      || { rm -f "$mfile"; die "could not stage the manifest into the yard"; }
+    rm -f "$mfile"
+
     args=(run -d --name "$cname" --hostname "agent-${name}" --restart unless-stopped
           --label subyard.agent=1 --label "subyard.project=$id" --label "subyard.profile=$profile"
           -v "$yardPath:/workspace" -w /workspace)
     for c in ${CACHES:-}; do args+=(-v "$c:$c"); done
+    args+=(-v "$ymeta:/run/subyard/profile.json:ro")
     [ "$have_secrets" = 1 ] && args+=(-v "$ysecret:/run/subyard/profile.env:ro")
     # Inject the profile's non-secret .conf keys as env, minus our control keys.
     # Secrets are never injected here — they arrive only via the file mount above.
@@ -145,8 +186,15 @@ case "$sub" in
 
 Next:
   ${PROG:-yard} agent shell $path          # shell inside the agent machine
+  ${PROG:-yard} agent info  $path          # what the profile exposes in this machine
   (toolchain install for '$profile' + emulator are the next slice)
 MSG
+    ;;
+
+  info)
+    ydocker inspect "$cname" >/dev/null 2>&1 || die "no agent for '$name' — run: ${PROG:-yard} agent up $path --profile <name>"
+    yexec test -r "$ymeta" || die "no manifest staged for '$name' — re-run: ${PROG:-yard} agent up $path"
+    yexec cat "$ymeta"
     ;;
 
   shell)
@@ -171,14 +219,14 @@ MSG
     ydocker inspect "$cname" >/dev/null 2>&1 || die "no agent for '$name'"
     announce "yard agent destroy — $name" \
       "Remove the agent container '$cname' from the yard (force)." \
-      "Drop any staged profile secrets (/srv/agent-secrets/$id); they re-stage on next up." \
+      "Drop staged profile secrets + manifest (/srv/agent-secrets/$id, /srv/agent-meta/$id); they re-stage on next up." \
       "The project workspace and shared caches in the yard are NOT touched."
     proceed_or_die
     ydocker rm -f "$cname" >/dev/null && ok "agent '$name' destroyed"
-    yexec rm -rf "/srv/agent-secrets/$id" 2>/dev/null || true
+    yexec rm -rf "$(dirname "$ysecret")" "$(dirname "$ymeta")" 2>/dev/null || true
     ;;
 
   *)
-    die "unknown subcommand '$sub' (expected: up | shell | exec | down | destroy | list)"
+    die "unknown subcommand '$sub' (expected: up | info | shell | exec | down | destroy | list)"
     ;;
 esac

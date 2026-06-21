@@ -45,7 +45,7 @@ _yard() {
       # agent <sub> [path] [--profile N]
       local sub="${COMP_WORDS[2]:-}"
       if [ "$cword" -eq 2 ]; then
-        COMPREPLY=( $(compgen -W 'up shell exec down destroy list' -- "$cur") )
+        COMPREPLY=( $(compgen -W 'up info shell exec down destroy list' -- "$cur") )
         return 0
       fi
       if [ "$prev" = "--profile" ]; then
@@ -55,7 +55,7 @@ _yard() {
       case "$cur" in
         -*) [ "$sub" = up ] && COMPREPLY=( $(compgen -W '--profile --yes' -- "$cur") ) ;;
         *)  case "$sub" in
-              up|shell|exec|down|destroy) COMPREPLY=( $(compgen -d -- "$cur") ) ;;
+              up|info|shell|exec|down|destroy) COMPREPLY=( $(compgen -d -- "$cur") ) ;;
             esac ;;
       esac
       ;;

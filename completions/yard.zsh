@@ -43,7 +43,7 @@ _yard() {
       case ${words[1]} in
         agent)
           if (( CURRENT == 2 )); then
-            _values 'agent subcommand' up shell exec down destroy list
+            _values 'agent subcommand' up info shell exec down destroy list
           elif [[ ${words[CURRENT-1]} == --profile ]]; then
             local -a profs; profs=( ${(f)"$(_yard_profiles)"} )
             _describe -t profiles 'profile' profs

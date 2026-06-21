@@ -20,6 +20,9 @@ done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 SSH_HOST="${SSH_HOST:-yard}"
+DEV_USER="${DEV_USER:-dev}"
+DEV_UID="${DEV_UID:-1000}"
+DEV_GID="${DEV_GID:-1000}"
 PROJ=(--project "$INCUS_PROJECT")
 
 path="."
@@ -32,6 +35,7 @@ id="$(project_id "$path")"
 state_exists "$id" || die "'$(basename "$(realpath "$path")")' is not imported — run: ${PROG:-yard} import $path"
 yardPath="$(state_get "$id" yardPath)"
 host="$(state_get "$id" sshHost)"; host="${host:-$SSH_HOST}"
+name="$(state_get "$id" name)"; name="${name:-$(basename "$(realpath "$path")")}"
 
 # Yard must be up, and SSH access must be set up (Remote-SSH needs the proxy + key).
 incus_preflight code
@@ -40,7 +44,20 @@ incus_preflight code
 incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh \
   || die "SSH access not set up — run 'yard setup' (or scripts/07-ssh-access.sh)"
 
-uri="vscode-remote://ssh-remote+$host$yardPath"
+# VS Code labels a window by its leaf folder — for us that's the useless "src". Write a
+# tiny .code-workspace that names the (absolute) src path with the project, so the title
+# and Explorer read e.g. "Subyard". It lives in dev's HOME (always dev-writable — some
+# workspace wrappers are root-owned) and is opened with --file-uri. JSON is single-line
+# and string values are escaped, so a quirky project name can't break it.
+wsfile="/home/$DEV_USER/.subyard/workspaces/${name//[^A-Za-z0-9._-]/_}.code-workspace"
+esc_name="${name//\\/\\\\}";    esc_name="${esc_name//\"/\\\"}"
+esc_path="${yardPath//\\/\\\\}"; esc_path="${esc_path//\"/\\\"}"
+incus exec "$INSTANCE_NAME" "${PROJ[@]}" --user "$DEV_UID" --group "$DEV_GID" \
+  --env HOME="/home/$DEV_USER" --env WSDIR="${wsfile%/*}" --env WSFILE="$wsfile" \
+  --env WSJSON='{"folders":[{"name":"'"$esc_name"'","path":"'"$esc_path"'"}]}' -- \
+  sh -c 'mkdir -p "$WSDIR" && printf "%s\n" "$WSJSON" > "$WSFILE"' \
+  || die "could not write the VS Code workspace file in the yard"
+uri="vscode-remote://ssh-remote+$host$wsfile"
 if command -v code >/dev/null 2>&1; then
   # Remote-SSH must be installed, or `code` gets an ssh-remote:// URI it can't handle and
   # silently no-ops (no SSH connection reaches the yard, no server installs). Block early
@@ -59,10 +76,10 @@ if command -v code >/dev/null 2>&1; then
       die "without Remote-SSH, VS Code can't connect to the yard — install it and re-run 'yard code'."
     fi
   fi
-  info "opening $host:$yardPath in VS Code …"
-  exec code --folder-uri "$uri"
+  info "opening '$name' ($host:$yardPath) in VS Code …"
+  exec code --file-uri "$uri"
 else
   warn "the 'code' CLI is not on PATH — open it manually:"
-  printf '  code --folder-uri "%s"\n' "$uri"
-  printf '  (or VS Code → Remote-SSH: Connect to Host → %s, then open %s)\n' "$host" "$yardPath"
+  printf '  code --file-uri "%s"\n' "$uri"
+  printf '  (or VS Code → Remote-SSH: Connect to Host → %s, then open the %s workspace)\n' "$host" "$name"
 fi

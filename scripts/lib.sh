@@ -86,3 +86,48 @@ announce_confirm() {
   announce "$@"
   proceed_or_die
 }
+
+# nm_unmanaged_guard <bridge> — stop NetworkManager from managing Incus's bridge and
+# ANY container/VM veth/tap device. Otherwise NM runs a DHCP client on a yard veth,
+# takes a lease from the yard's dnsmasq, and installs a rogue low-metric default route
+# that HIJACKS the host's internet. Root; idempotent; no-op when NM is absent/inactive.
+nm_unmanaged_guard() {
+  # Filename must sort AFTER distro drop-ins: Ubuntu's ubuntu-system-adjustments.conf
+  # sets `unmanaged-devices=none` and, read last, would override ours. 'zz-' wins.
+  # Belt-and-suspenders: independent [device] match (managed=0) + no-auto-default.
+  local bridge="${1:-incusbr0}" conf=/etc/NetworkManager/conf.d/zz-subyard-unmanaged.conf want
+  if ! command -v nmcli >/dev/null 2>&1 || ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    ok "NetworkManager not active — no route-hijack guard needed"; return 0
+  fi
+  rm -f /etc/NetworkManager/conf.d/99-subyard-unmanaged.conf 2>/dev/null  # remove the old, overridden name
+  # Match by type/driver AND name: an orphaned veth (e.g. left by a crashed instance)
+  # can lose its 'veth*' name but is still type veth. Also cover docker/libvirt bridges
+  # (Docker's own docs ask NM to ignore them). ';' list for keyfile, ',' for match-device.
+  local spec="type:veth;driver:veth;interface-name:veth*;interface-name:$bridge;interface-name:docker*;interface-name:br-*;interface-name:virbr*;interface-name:vnet*;interface-name:tap*;interface-name:macvtap*"
+  local mspec="type:veth,driver:veth,interface-name:veth*,interface-name:$bridge,interface-name:docker*,interface-name:br-*,interface-name:virbr*,interface-name:vnet*,interface-name:tap*,interface-name:macvtap*"
+  want="[main]
+no-auto-default=$spec
+
+[keyfile]
+unmanaged-devices=$spec
+
+[device-subyard]
+match-device=$mspec
+managed=0"
+  if [ ! -f "$conf" ] || ! printf '%s\n' "$want" | cmp -s - "$conf"; then
+    printf '%s\n' "$want" > "$conf"
+    systemctl reload NetworkManager 2>/dev/null || nmcli general reload 2>/dev/null || true
+    ok "NetworkManager set to ignore $bridge + veth/tap/docker/virbr ($conf)"
+  else
+    ok "NetworkManager already ignoring $bridge + veth/tap/docker/virbr"
+  fi
+  # Verify the EFFECTIVE merged config — a later drop-in overriding ours is exactly the
+  # bug that bit us once (silent). Turn that failure mode into a visible warning.
+  if command -v NetworkManager >/dev/null 2>&1; then
+    if NetworkManager --print-config 2>/dev/null | grep -E '^[[:space:]]*unmanaged-devices' | grep -q 'veth'; then
+      ok "verified: NM effective config marks veth unmanaged"
+    else
+      warn "NM effective config does NOT mark veth unmanaged — another drop-in may override $conf (check: sudo NetworkManager --print-config)"
+    fi
+  fi
+}

@@ -101,6 +101,11 @@ EOF
   ok "Incus initialized"
 fi
 
+# --- 5. keep NetworkManager off Incus bridge/veths (host-internet guard) ------
+# Set up BEFORE any instance/veth exists, so NM never grabs a yard veth.
+echo "Host networking (NetworkManager guard):"
+nm_unmanaged_guard "$INCUS_BRIDGE"
+
 # --- summary -----------------------------------------------------------------
 echo
 ok "Phase 1 done."

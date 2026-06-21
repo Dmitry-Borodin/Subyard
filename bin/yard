@@ -10,7 +10,7 @@ YARD_VERSION="0.1.0-dev"
 PROG="${0##*/}"
 
 # Command names, in order, for --help and --list.
-COMMANDS=(setup check import sync export remove clone code ssh list status logs up down)
+COMMANDS=(setup check import sync export remove clone code ssh agent list status logs up down)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -45,6 +45,8 @@ Project commands (code projects in the yard; default path '.'):
   clone  <url>    clone a repo straight into the yard
   code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
   ssh    [args]   open a shell in the yard as the dev user (or run a command)
+  agent  <sub>    agent machine (Docker container in the yard) for a project:
+                  up [path] --profile N | shell | exec -- cmd | down | destroy | list
   list            list projects currently in the yard
   status          read-only overview (yard + ssh + mounts + services + projects)
   logs            tail the yard's runtime logs (systemd journal + docker)
@@ -85,6 +87,7 @@ case "$cmd" in
   up | down | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;
   code)      exec "$S/project-code.sh" "$@" ;;
   remove)    exec "$S/project-remove.sh" "$@" ;;
+  agent)     exec "$S/agent.sh" "$@" ;;
   ssh)       host=yard; [ -r "$REPO/config/subyard.env" ] && host="$( . "$REPO/config/subyard.env" >/dev/null 2>&1; printf '%s' "${SSH_HOST:-yard}")"; exec ssh "$host" "$@" ;;
   export | clone) soon "$cmd" "a Phase 7b follow-up" ;;
   help)      usage ;;

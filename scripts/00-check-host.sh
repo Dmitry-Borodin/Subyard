@@ -9,6 +9,9 @@ esac
 
 STORAGE_PATH="${STORAGE_PATH:-/srv}"
 MIN_DISK_GIB="${MIN_DISK_GIB:-50}"
+# Nested Docker (agent machines) needs the Incus AppArmor fix for CVE-2025-52881
+# (runc fd-reopen vs the nesting profile); landed in Incus 6.0.6 LTS / 6.19.
+MIN_INCUS_VER="${MIN_INCUS_VER:-6.0.6}"
 
 # --- output helpers ----------------------------------------------------------
 if [ -t 1 ]; then
@@ -85,7 +88,14 @@ fi
 
 echo "Existing tools:"
 if command -v incus >/dev/null 2>&1; then
-  pass "incus present ($(incus --version 2>/dev/null || echo '?'))"
+  iver="$(incus --version 2>/dev/null || echo '?')"
+  pass "incus present ($iver)"
+  # Warn if older than the nested-Docker fix (agent machines won't run otherwise).
+  if [ "$iver" != '?' ] && command -v dpkg >/dev/null 2>&1 \
+     && ! dpkg --compare-versions "$iver" ge "$MIN_INCUS_VER"; then
+    warn "incus $iver < $MIN_INCUS_VER — nested Docker (yard agent) fails until you upgrade"
+    warn "  (Ubuntu ships only 6.0.0; use the Zabbly LTS-6.0 repo for >= $MIN_INCUS_VER)"
+  fi
 else
   warn "incus not installed — install in Phase 1 (01-install-incus.sh)"
 fi

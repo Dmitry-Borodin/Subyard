@@ -56,6 +56,11 @@ state_write() {
 state_exists() { [ -f "$(state_file "$1")" ]; }
 state_remove() { rm -f "$(state_file "$1")"; }
 state_get()    { jq -r --arg k "$2" '.[$k] // ""' "$(state_file "$1")"; }
+# state_set <id> <key> <value> — merge one string field into an existing record.
+state_set() {
+  local f; f="$(state_file "$1")"; [ -f "$f" ] || return 1
+  jq --arg k "$2" --arg v "$3" '.[$k]=$v' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"
+}
 # List ids of all known projects (empty output if none).
 state_ids() {
   [ -d "$STATE_DIR" ] || return 0

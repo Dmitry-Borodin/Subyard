@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# 05-mount-host-paths.sh — Phase 2: create $HOST_BASE (/srv/subyard) and mount its
-# subdirs into the yard as /mnt/host/* (secrets/devcontainers RO, shift). Root; idempotent.
-# Host exposes ONLY $HOST_BASE. SHIFT_MODE=shift|acl.
+# 05-mount-host-paths.sh — Phase 2: create $HOST_BASE (/srv/subyard) and reconcile the
+# yard's host mounts to the declarative HOST_MOUNTS list (config/subyard.env): attach
+# missing, re-attach drifted, detach de-listed host-* mounts. Root; idempotent; a
+# re-run applies config changes. Host exposes ONLY $HOST_BASE. SHIFT_MODE=shift|acl.
 # Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,14 +23,31 @@ HOST_BASE="${HOST_BASE:-/srv/subyard}"
 SHIFT_MODE="${SHIFT_MODE:-shift}"
 DEV_USER="${DEV_USER:-dev}"
 DEV_UID="${DEV_UID:-1000}"
+# Declarative host mounts (see config/subyard.env). Default keeps old behaviour if
+# the config predates HOST_MOUNTS. Lines: "<name>:<yard-path>:<ro|rw>:<dir-mode>".
+HOST_MOUNTS="${HOST_MOUNTS:-
+host-secrets:/mnt/host/secrets:ro:0700
+host-memory:/mnt/host/memory:rw:0770
+host-devcontainers:/mnt/host/devcontainers:ro:0755
+}"
 
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
+dev_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2>/dev/null || true; }
+
+# Parse HOST_MOUNTS once into parallel arrays; build the announce summary too.
+m_name=(); m_path=(); m_ro=(); m_mode=(); mount_summary=()
+while IFS=: read -r _n _p _ro _mode; do
+  [ -n "$_n" ] || continue
+  m_name+=("$_n"); m_path+=("$_p"); m_ro+=("$_ro"); m_mode+=("${_mode:-0755}")
+  mount_summary+=("$_p (${_ro:-rw}) ← $HOST_BASE/$_n")
+done < <(printf '%s\n' "$HOST_MOUNTS" | sed 's/[[:space:]]//g')
 
 # --- announce → confirm → sudo → checks → work -------------------------------
 announce "Subyard Phase 2 — host mounts ($INSTANCE_NAME)" \
-  "Create the narrow host area: $HOST_BASE/{host-secrets,host-memory,host-devcontainers,backups}." \
-  "Mount it into the yard: /mnt/host/secrets (RO), /mnt/host/memory (RW), /mnt/host/devcontainers (RO)." \
+  "Create the narrow host area under $HOST_BASE (+ a host-side backups dir)." \
+  "Reconcile host mounts → yard to HOST_MOUNTS: ${mount_summary[*]}." \
+  "Detach any host-* mount no longer listed (the yard is rebuildable; the host is untouched)." \
   "Own shared dirs by uid $DEV_UID and mount with '$SHIFT_MODE' so they map 1:1 to '$DEV_USER' in the yard." \
   "The host exposes ONLY $HOST_BASE — no \$HOME/.ssh/etc."
 proceed_or_die
@@ -52,40 +70,51 @@ fi
 
 # --- 1. create the narrow host area ------------------------------------------
 echo "Host directories:"
-declare -A DIR_MODE=(
-  [host-secrets]=700
-  [host-memory]=770
-  [host-devcontainers]=755
-  [backups]=755
-)
 # Shared dirs are owned by DEV_UID so the idmapped ('shift') mount maps them to the
 # yard's 'dev' (host uid == container uid under shift). install -d also fixes an
 # existing dir's owner/mode, so this self-heals dirs left root-owned by an older run.
-for d in host-secrets host-memory host-devcontainers; do
-  install -d -m "${DIR_MODE[$d]}" -o "$DEV_UID" -g "$DEV_UID" "$HOST_BASE/$d"
-  ok "$HOST_BASE/$d (${DIR_MODE[$d]}, owner $DEV_UID)"
+for i in "${!m_name[@]}"; do
+  install -d -m "${m_mode[$i]}" -o "$DEV_UID" -g "$DEV_UID" "$HOST_BASE/${m_name[$i]}"
+  ok "$HOST_BASE/${m_name[$i]} (${m_mode[$i]}, owner $DEV_UID)"
 done
 # 'backups' is a host-side backup target, never mounted into the yard — keep it root.
-install -d -m "${DIR_MODE[backups]}" "$HOST_BASE/backups"
-ok "$HOST_BASE/backups (${DIR_MODE[backups]}, root)"
+install -d -m 0755 "$HOST_BASE/backups"
+ok "$HOST_BASE/backups (0755, root)"
 
-# --- 2. attach host-mount devices (idempotent) -------------------------------
+# --- 2. reconcile host-mount devices to HOST_MOUNTS --------------------------
 echo "Host mounts → yard:"
-add_mount() {
-  local name="$1" sub="$2" path="$3" ro="$4"
+# Add a missing mount, or re-attach one whose source/path/readonly drifted from config.
+reconcile_mount() {
+  local name="$1" path="$2" ro="$3" src="$HOST_BASE/$name"
+  local want_ro=0; [ "$ro" = ro ] && want_ro=1
   if device_exists "$name"; then
-    ok "$name already attached"
-    return
+    local cur_ro=0; [ "$(dev_get "$name" readonly)" = true ] && cur_ro=1
+    if [ "$(dev_get "$name" source)" = "$src" ] && [ "$(dev_get "$name" path)" = "$path" ] \
+       && [ "$cur_ro" = "$want_ro" ]; then
+      ok "$name → $path (${ro:-rw}) unchanged"; return
+    fi
+    warn "$name drifted from config — re-attaching"
+    incus config device remove "$INSTANCE_NAME" "$name" "${PROJ[@]}" >/dev/null
   fi
-  local opts=(source="$HOST_BASE/$sub" path="$path")
-  [ "$ro" = ro ] && opts+=(readonly=true)
+  local opts=(source="$src" path="$path")
+  [ "$want_ro" = 1 ] && opts+=(readonly=true)
   [ -n "$SHIFT_OPT" ] && opts+=("$SHIFT_OPT")
   incus config device add "$INSTANCE_NAME" "$name" disk "${PROJ[@]}" "${opts[@]}" >/dev/null
-  ok "$name → $path${ro:+ ($ro)}"
+  ok "$name → $path (${ro:-rw})"
 }
-add_mount host-secrets       host-secrets       /mnt/host/secrets       ro
-add_mount host-memory        host-memory        /mnt/host/memory        rw
-add_mount host-devcontainers host-devcontainers /mnt/host/devcontainers ro
+for i in "${!m_name[@]}"; do
+  reconcile_mount "${m_name[$i]}" "${m_path[$i]}" "${m_ro[$i]}"
+done
+# Detach host-* mounts that are no longer in HOST_MOUNTS (yard is rebuildable; the
+# host is never touched). Scoped to the 'host-*' naming so project workspace devices
+# are never affected.
+wanted=" ${m_name[*]} "
+while IFS= read -r dev; do
+  case "$dev" in host-*) ;; *) continue ;; esac
+  case "$wanted" in *" $dev "*) continue ;; esac
+  warn "detaching '$dev' — no longer in HOST_MOUNTS (source $(dev_get "$dev" source))"
+  incus config device remove "$INSTANCE_NAME" "$dev" "${PROJ[@]}" >/dev/null
+done < <(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null)
 # 'backups' stays host-side only (backup target) — not mounted into the yard.
 
 # --- summary -----------------------------------------------------------------

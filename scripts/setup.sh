@@ -35,6 +35,23 @@ have_provision(){ reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c
 have_ssh()      { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
 have_gitid()    { reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }
 in_admin_db()   { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
+# Some imported project's profile requests yard-level extras (YARD_*)? jq-guarded so a
+# fresh host (no jq, no projects yet) simply reports none. 09-yard-extras is idempotent,
+# so "pending" here just means "reconcile the union" — re-applying is harmless.
+any_yard_extras() {
+  command -v jq >/dev/null 2>&1 || return 1
+  local sd="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}/projects" f prof pf
+  [ -d "$sd" ] || return 1
+  for f in "$sd"/*.json; do
+    [ -e "$f" ] || continue
+    prof="$(jq -r '.profile // ""' "$f" 2>/dev/null)"; [ -n "$prof" ] || continue
+    pf="$SCRIPT_DIR/../config/profiles/$prof.conf"; [ -r "$pf" ] || continue
+    # shellcheck disable=SC1090
+    ( . "$pf"; [ -n "${YARD_MOUNTS:-}${YARD_CAPS:-}${YARD_DEVICES:-}" ] ) && return 0
+  done
+  return 1
+}
+no_yard_extras() { ! any_yard_extras; }
 
 # Incus installed + daemon unreachable + you ARE in incus-admin (per the group db)
 # = this shell session just predates the group. Don't show a blind all-[do] plan;
@@ -67,6 +84,7 @@ step have_mounts    "Create host dirs under $HOST_BASE and mount them (needs roo
 step have_provision "Provision the yard (packages, Docker, user, services)"
 step have_ssh       "Set up SSH access into the yard (proxy + your key)"
 step have_gitid     "Give the in-yard 'dev' user a git identity (from host/config)"
+step no_yard_extras "Apply yard extras requested by projects (mounts/caps/devices)"
 printf '\n'
 
 if [ "$pending" = 0 ]; then
@@ -103,6 +121,7 @@ info "→ host mounts";   "$SCRIPT_DIR/05-mount-host-paths.sh" --yes
 info "→ provision";     "$SCRIPT_DIR/04-provision-subyard.sh" --yes
 info "→ ssh access";    "$SCRIPT_DIR/07-ssh-access.sh" --yes
 info "→ git identity";  "$SCRIPT_DIR/08-git-identity.sh" --yes
+if any_yard_extras; then info "→ yard extras"; "$SCRIPT_DIR/09-yard-extras.sh" --yes; fi
 
 echo
 ok "Subyard is up."

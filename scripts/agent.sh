@@ -44,7 +44,8 @@ cname_for() { printf 'subyard-agent-%s' "$1"; }
 # the machine. Keep the -e injection and the manifest's envKeys in agreement.
 is_control_key() {
   case "$1" in
-    PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES|IMAGE_DOCKERFILE|IMAGE_CONTEXT|IMAGE_TAG)
+    PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES|IMAGE_DOCKERFILE|IMAGE_CONTEXT|IMAGE_TAG|\
+    AGENT_MOUNTS|YARD_MOUNTS|YARD_CAPS|YARD_DEVICES)
       return 0 ;;
     *) return 1 ;;
   esac
@@ -127,6 +128,9 @@ case "$sub" in
     [ -n "$profile" ] || die "no profile — pass --profile <name> (have: $(cd "$PROFILES_DIR" && ls *.conf 2>/dev/null | sed 's/\.conf$//' | tr '\n' ' '))"
     pf="$PROFILES_DIR/$profile.conf"
     [ -r "$pf" ] || die "no such profile: '$profile' ($pf)"
+    # Persist the chosen profile so later `agent up`/`yard setup` know it without --profile
+    # (yard-extras reconcile enumerates projects and unions their profiles' YARD_* needs).
+    state_set "$id" profile "$profile" 2>/dev/null || true
     # The .conf is the non-secret contract — safe to source (its keys are exported
     # below) and to log. The sibling .env may carry secrets, so it is NEVER sourced
     # here (that would leak its values into the -e injection); it is staged into the
@@ -202,6 +206,9 @@ case "$sub" in
           --label subyard.agent=1 --label "subyard.project=$id" --label "subyard.profile=$profile"
           -v "$yardPath:/workspace" -w /workspace)
     for c in ${CACHES:-}; do args+=(-v "$c:$c"); done
+    # AGENT_MOUNTS (Phase 4, layer C): extra binds ONLY in this project's machine,
+    # not on the yard. Each entry is docker -v syntax: "<yard-src>:<ctr-dst>[:ro]".
+    for m in ${AGENT_MOUNTS:-}; do args+=(-v "$m"); done
     args+=(-v "$ymeta:/run/subyard/profile.json:ro")
     [ "$have_secrets" = 1 ] && args+=(-v "$ysecret:/run/subyard/profile.env:ro")
     # Inject the profile's non-secret .conf keys as env, minus our control keys.
@@ -221,6 +228,11 @@ case "$sub" in
     info "starting agent '$cname' …"
     ydocker "${args[@]}" >/dev/null || die "docker run failed in the yard"
     ok "agent '$name' up (profile $profile, image $run_image)"
+    # Level-1 requests (mounts/caps/devices the profile wants ON the yard) are applied
+    # by the root-capable reconcile, not here (agent.sh stays no-root).
+    if [ -n "${YARD_MOUNTS:-}${YARD_CAPS:-}${YARD_DEVICES:-}" ]; then
+      warn "profile '$profile' requests yard-level extras (YARD_*). Apply with: ${PROG:-yard} setup"
+    fi
     cat <<MSG
 
 Next:

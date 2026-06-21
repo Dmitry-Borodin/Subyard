@@ -45,7 +45,8 @@ The core is switchable without a rewrite.
 ```
 bin/                Host CLI: yard (alias sy) — a dispatcher over scripts/
 scripts/            Host + yard lifecycle scripts (00-check-host.sh, …)
-scripts/install-cli.sh  Put yard/sy on your PATH (~/.local/bin)
+scripts/install-cli.sh  Put yard/sy on your PATH (~/.local/bin) + tab-completion
+completions/        Shell tab-completion for yard/sy (bash, zsh)
 config/             Environment + port configuration
 config/profiles/    Dependency profiles (android.env is the example)
 yard/compose/       Docker Compose for gateway / app / agents

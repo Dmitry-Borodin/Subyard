@@ -16,15 +16,17 @@ for cfg in incus.project.env subyard.env; do
 done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
+DEV_USER="${DEV_USER:-dev}"
 SSH_HOST="${SSH_HOST:-yard}"
 SSH_PORT="${SSH_PORT:-2222}"
+FORWARD_SSH_AGENT="${FORWARD_SSH_AGENT:-0}"
 SUBYARD_CONFIG_HOME="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}"
 PROJ=(--project "$INCUS_PROJECT")
 
 action="${1:-status}"; shift || true
 for a in "$@"; do case "$a" in -y|--yes) ;; *) ;; esac; done  # tolerate --yes
 
-command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard setup' first"
+incus_preflight "$action"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run 'yard setup' first"
 
@@ -73,6 +75,17 @@ case "$action" in
     if [ "$s" = RUNNING ]; then
       svc="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- systemctl is-active ssh docker 2>/dev/null | tr '\n' '/' )"
       printf '  services ssh/docker = %s\n' "${svc%/}"
+      # VS Code Remote-SSH access readiness (one glance before `yard code`):
+      # key authorized for dev, VS Code server present (installs on first connect),
+      # git identity set. agent-forward is a host-side ssh-config option.
+      vc="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DU="$DEV_USER" -- sh -c '
+        d="/home/$DU"
+        printf "key=%s server=%s git-id=%s" \
+          "$([ -s "$d/.ssh/authorized_keys" ] && echo yes || echo no)" \
+          "$([ -d "$d/.vscode-server" ] && echo yes || echo not-yet)" \
+          "$([ -s "$d/.gitconfig" ] && echo yes || echo no)"' 2>/dev/null)"
+      fwd=off; [ "$FORWARD_SSH_AGENT" = 1 ] && fwd=on
+      printf '  vscode   %s agent-fwd=%s  (yard code <project>)\n' "${vc:-?}" "$fwd"
     fi
     # project count (machine-local state; no jq dependency here)
     n=0

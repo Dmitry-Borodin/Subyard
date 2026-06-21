@@ -34,7 +34,7 @@ yardPath="$(state_get "$id" yardPath)"
 host="$(state_get "$id" sshHost)"; host="${host:-$SSH_HOST}"
 
 # Yard must be up, and SSH access must be set up (Remote-SSH needs the proxy + key).
-command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard setup' first"
+incus_preflight code
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
   || die "yard is not running — start it: yard up"
 incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh \

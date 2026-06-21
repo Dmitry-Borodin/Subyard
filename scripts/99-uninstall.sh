@@ -62,6 +62,9 @@ require_root "removing the NetworkManager guard, ufw rules, and the Incus storag
 have_incus=0
 if command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; then have_incus=1; fi
 PROJ=(--project "$INCUS_PROJECT")
+# Gate guard/data removal on the bridge/pool actually being gone (avoid orphan + hijack).
+bridge_gone=0; pool_gone=0
+[ "$have_incus" = 1 ] || { bridge_gone=1; pool_gone=1; }
 
 # --- 1. instance(s) in the subyard project (removes their veths cleanly) -----
 echo "Instance:"
@@ -79,12 +82,29 @@ if [ "$KEEP_DATA" = 0 ]; then
   # --- 2. custom volume + project ------------------------------------------
   echo "Project + volume:"
   if [ "$have_incus" = 1 ] && incus project show "$INCUS_PROJECT" >/dev/null 2>&1; then
+    # A project must be EMPTY to delete: drop its volume, cached images, extra
+    # profiles, and the devices on its own default profile.
     if incus storage volume show "$SRV_POOL" "$SRV_VOLUME" "${PROJ[@]}" >/dev/null 2>&1; then
-      if incus storage volume delete "$SRV_POOL" "$SRV_VOLUME" "${PROJ[@]}"; then ok "deleted volume '$SRV_VOLUME'"; else warn "could not delete volume '$SRV_VOLUME'"; fi
+      incus storage volume delete "$SRV_POOL" "$SRV_VOLUME" "${PROJ[@]}" >/dev/null 2>&1 \
+        && ok "deleted volume '$SRV_VOLUME'" || warn "could not delete volume '$SRV_VOLUME'"
     else
       ok "volume '$SRV_VOLUME' absent"
     fi
-    if incus project delete "$INCUS_PROJECT"; then ok "deleted project '$INCUS_PROJECT'"; else warn "could not delete project '$INCUS_PROJECT' (still has objects?)"; fi
+    while IFS= read -r fp; do
+      [ -n "$fp" ] || continue
+      incus image delete "$fp" "${PROJ[@]}" >/dev/null 2>&1 && ok "deleted cached image ${fp:0:12}" || true
+    done < <(incus image list "${PROJ[@]}" -f csv -c f 2>/dev/null)
+    while IFS= read -r prof; do
+      [ -n "$prof" ] && [ "$prof" != default ] || continue
+      incus profile delete "$prof" "${PROJ[@]}" >/dev/null 2>&1 && ok "deleted profile '$prof'" || true
+    done < <(incus profile list "${PROJ[@]}" -f csv -c n 2>/dev/null)
+    incus profile device remove default eth0 "${PROJ[@]}" >/dev/null 2>&1 || true
+    incus profile device remove default root "${PROJ[@]}" >/dev/null 2>&1 || true
+    if incus project delete "$INCUS_PROJECT" >/dev/null 2>&1; then
+      ok "deleted project '$INCUS_PROJECT'"
+    else
+      warn "could not delete project '$INCUS_PROJECT' (inspect: sudo incus project show $INCUS_PROJECT)"
+    fi
   else
     ok "project '$INCUS_PROJECT' absent"
   fi
@@ -100,8 +120,20 @@ if [ "$KEEP_DATA" = 0 ]; then
       # Clear the admin-init 'default' profile so the network/pool are unreferenced.
       incus profile device remove default eth0 >/dev/null 2>&1 || true
       incus profile device remove default root >/dev/null 2>&1 || true
-      if incus network delete "$BRIDGE" >/dev/null 2>&1; then ok "deleted bridge '$BRIDGE'"; else warn "bridge '$BRIDGE' not deleted (absent or in use)"; fi
-      if incus storage delete "$STORAGE_POOL" >/dev/null 2>&1; then ok "deleted storage pool '$STORAGE_POOL'"; else warn "pool '$STORAGE_POOL' not deleted (absent or in use) — its data dir is removed below regardless"; fi
+      if ! incus network show "$BRIDGE" >/dev/null 2>&1; then
+        bridge_gone=1; ok "bridge '$BRIDGE' absent"
+      elif incus network delete "$BRIDGE" >/dev/null 2>&1; then
+        bridge_gone=1; ok "deleted bridge '$BRIDGE'"
+      else
+        warn "bridge '$BRIDGE' not deleted (still in use) — keeping the NetworkManager guard"
+      fi
+      if ! incus storage show "$STORAGE_POOL" >/dev/null 2>&1; then
+        pool_gone=1; ok "storage pool '$STORAGE_POOL' absent"
+      elif incus storage delete "$STORAGE_POOL" >/dev/null 2>&1; then
+        pool_gone=1; ok "deleted storage pool '$STORAGE_POOL'"
+      else
+        warn "pool '$STORAGE_POOL' not deleted (still in use) — keeping its data dir to avoid an orphan"
+      fi
     fi
   fi
 fi
@@ -128,12 +160,17 @@ fi
 rm -rf "$SUBYARD_CONFIG_HOME" && ok "removed $SUBYARD_CONFIG_HOME"
 if [ "$KEEP_DATA" = 1 ]; then
   ok "kept data: $STORAGE_PATH (and $SUBYARD_HOME)"
-else
+elif [ "$pool_gone" = 1 ]; then
   rm -rf "$SUBYARD_HOME" && ok "removed $SUBYARD_HOME (storage data, ssh keys, logs)"
+else
+  rm -rf "$SUBYARD_HOME/ssh" "$SUBYARD_HOME/logs" 2>/dev/null || true
+  warn "kept $STORAGE_PATH — pool '$STORAGE_POOL' still references it; delete the pool, then: sudo rm -rf $SUBYARD_HOME"
 fi
 
 # --- 5. NetworkManager guard — LAST (bridge + veths are gone by now) ----------
-if [ "$KEEP_DATA" = 0 ]; then
+# Remove the NM guard ONLY once the bridge is gone — otherwise NM could start managing a
+# still-present incusbr0 and re-introduce a rogue route. Keep it while the bridge remains.
+if [ "$KEEP_DATA" = 0 ] && [ "$bridge_gone" = 1 ]; then
   echo "NetworkManager guard:"
   rm -f /etc/NetworkManager/conf.d/zz-subyard-unmanaged.conf 2>/dev/null || true
   rm -f /etc/NetworkManager/conf.d/99-subyard-unmanaged.conf 2>/dev/null || true
@@ -143,6 +180,9 @@ if [ "$KEEP_DATA" = 0 ]; then
   else
     ok "removed NetworkManager guard file (NM not active)"
   fi
+elif [ "$KEEP_DATA" = 0 ]; then
+  echo "NetworkManager guard:"
+  warn "kept the NetworkManager guard — bridge '$BRIDGE' still present (removing it now could let NM hijack the route)"
 fi
 
 echo

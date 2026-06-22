@@ -2,14 +2,12 @@
 # project-sync.sh — bring a project into the yard, in one of two transports:
 #   sync [path]  copy host project → /srv/workspaces/<id>/src (create-or-update).
 #                First run registers state and copies; re-run re-copies (host → yard).
-#                A copy, so the agent never writes the host folder back (isolation kept);
-#                pull changes out with `yard export`.
-#   bind [path]  mount the host folder into the yard via an Incus disk device — no copy,
-#                edits on the host and in the yard are the same files (isolation reduced).
-# One project is either sync or bind; the transports are incompatible. Switching modes
-# needs `yard remove` first. Sync transport is a tar stream over `incus exec` (no
-# ssh-proxy needed yet); a later pass can switch to rsync for incremental/delete-aware.
-# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
+#                The host copy stays isolated; pull yard changes out with `yard export`.
+#   bind [path]  mount the host folder into the yard via an Incus disk device — host
+#                and yard share the same files (isolation reduced).
+# A project is either sync or bind; switch modes with `yard remove` + re-add. Sync
+# transport is a tar stream over `incus exec`. Operator-owned; no root.
+# Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -47,8 +45,7 @@ id="$(project_id "$hostPath")"
 yardPath="$(yard_path_for "$id")"
 name="$(basename -- "$hostPath")"
 
-# A project is either sync or bind; the two transports are incompatible. Re-adding it
-# in the other mode would silently mix them, so make the operator remove it first.
+# A project is either sync or bind. Switching modes requires `yard remove` first.
 if state_exists "$id"; then
   prev="$(state_get "$id" mode)"
   [ -n "$prev" ] && [ "$prev" != "$mode" ] \
@@ -63,9 +60,8 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "yard is not running — start it first (yard up)"
 
 # --- bind: mount the host folder into the yard via an Incus disk device -------
-# No copy: edits on the host and in the yard are the same files. Isolation is
-# reduced (the agent writes the host folder) — for trusted, hands-on work only.
-# shift=true id-maps the mount so the files show up owned by 'dev', not nobody.
+# Host and yard share the same files (isolation reduced) — for trusted, hands-on
+# work only. shift=true id-maps the mount so files show up owned by 'dev'.
 if [ "$mode" = bind ]; then
   dev="$(ws_device_for "$id")"
   if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$dev"; then

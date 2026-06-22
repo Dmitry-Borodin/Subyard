@@ -12,10 +12,10 @@
 # The profile (config/profiles/<NAME>/profile.conf) supplies the base image, shared
 # caches, non-secret env, and devices. If it sets IMAGE_DOCKERFILE (a path inside the
 # workspace), `up` builds that image in the yard's Docker and runs the agent from it
-# (--rebuild forces); the Dockerfile is the project's, not Subyard's. Otherwise it
-# runs BASE_IMAGE directly. An optional sibling profile.env (gitignored, values
-# host-only) carries secrets: it is staged into the yard and bind-mounted as a file
-# at /run/subyard/profile.env (never -e), and never reaches the coding-sandbox tier.
+# (--rebuild forces); the Dockerfile is the project's own. Otherwise it runs
+# BASE_IMAGE directly. An optional sibling profile.env (gitignored, host-only)
+# carries secrets: it is staged into the yard and bind-mounted as a file at
+# /run/subyard/profile.env (via the file mount, not -e).
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -132,9 +132,8 @@ case "$sub" in
     # (yard-extras reconcile enumerates projects and unions their profiles' YARD_* needs).
     state_set "$id" profile "$profile" 2>/dev/null || true
     # profile.conf is the non-secret contract — safe to source (its keys are exported
-    # below) and to log. The sibling profile.env may carry secrets, so it is NEVER
-    # sourced here (that would leak its values into the -e injection); it is staged
-    # into the yard and bind-mounted as a file instead.
+    # below) and logged. The sibling profile.env may carry secrets: it is staged
+    # into the yard and bind-mounted as a file (never sourced into -e).
     # shellcheck disable=SC1090
     . "$pf"
     : "${BASE_IMAGE:?profile $profile has no BASE_IMAGE}"
@@ -212,7 +211,7 @@ case "$sub" in
     args+=(-v "$ymeta:/run/subyard/profile.json:ro")
     [ "$have_secrets" = 1 ] && args+=(-v "$ysecret:/run/subyard/profile.env:ro")
     # Inject the profile's non-secret .conf keys as env, minus our control keys.
-    # Secrets are never injected here — they arrive only via the file mount above.
+    # Secrets arrive via the file mount above (not -e).
     while IFS= read -r k; do
       is_control_key "$k" && continue
       args+=(-e "$k=${!k}")

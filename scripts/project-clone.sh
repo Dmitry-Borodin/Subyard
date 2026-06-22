@@ -4,9 +4,8 @@
 #   Clones <git-url> into /srv/workspaces/<id>/src in the yard, as the 'dev' user.
 #   The clone runs inside the yard, so the YARD's network + credentials do it: a PUBLIC
 #   url clones anonymously; a PRIVATE repo needs ssh-agent forwarding (FORWARD_SSH_AGENT=1
-#   at setup) or a token in the https url. No host copy — this is mode 'git' (unlike
-#   'sync'/'bind', which copy or mount a host folder); addressed by id/name, not a path.
-#   id = <repo>-<sha256(url)[:8]>; machine-local state recorded like sync/bind.
+#   at setup) or a token in the https url. Mode 'git': the repo lives only in the yard,
+#   addressed by id/name. id = <repo>-<sha256(url)[:8]>; state recorded like sync/bind.
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -2,10 +2,9 @@
 # project-export.sh — Phase 7b (slice): pull the agent's work in the yard back to the
 # host as a reviewable patch. The counterpart to `sync` for sync-mode projects.
 # Usage: project-export.sh [path]   (default '.')
-# sync is a copy, so the yard never writes the host folder directly (isolation kept).
-# export closes the loop WITHOUT breaking that: it diffs the yard copy against the host
-# copy and writes a unified patch you review and apply yourself (git apply -p1 / patch -p1).
-# Transport mirrors sync: a tar stream over `incus exec` (no ssh-proxy needed yet).
+# Diffs the yard copy against the host copy and writes a unified patch you review and
+# apply yourself (git apply -p1 / patch -p1), keeping the host copy isolated.
+# Transport mirrors sync: a tar stream over `incus exec`.
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

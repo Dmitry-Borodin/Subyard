@@ -44,7 +44,7 @@ echo "Instance:"
 LAUNCH_FLAGS=()
 if [ "$INSTANCE_TYPE" = vm ]; then
   LAUNCH_FLAGS+=(--vm)
-  # qemu-system is needed only for vm mode — install lazily, never "just in case".
+  # qemu-system only for vm mode — installed lazily.
   if ! dpkg -s qemu-system-x86 >/dev/null 2>&1 && ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
     die "vm mode needs qemu — install it and re-run: sudo apt-get install qemu-system-x86"
   fi

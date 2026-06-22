@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# project-import.sh — Phase 7b (slice): bring a project into the yard, sync mode.
-# Usage: project-import.sh <import|sync> [path] [--bind]
-#   import [path]  copy host project → /srv/workspaces/<id>/src (default path '.')
-#   sync   [path]  re-copy an already-imported project (host → yard)
-# Sync = copy, so the agent never writes back to the host folder (isolation kept).
-# Transport is a tar stream over `incus exec` (no ssh-proxy needed yet); a later
-# pass can switch to rsync for incremental/delete-aware sync. Operator-owned; no root.
-# Config: config/incus.project.env + config/subyard.env.
+# project-sync.sh — bring a project into the yard, in one of two transports:
+#   sync [path]  copy host project → /srv/workspaces/<id>/src (create-or-update).
+#                First run registers state and copies; re-run re-copies (host → yard).
+#                A copy, so the agent never writes the host folder back (isolation kept);
+#                pull changes out with `yard export`.
+#   bind [path]  mount the host folder into the yard via an Incus disk device — no copy,
+#                edits on the host and in the yard are the same files (isolation reduced).
+# One project is either sync or bind; the transports are incompatible. Switching modes
+# needs `yard remove` first. Sync transport is a tar stream over `incus exec` (no
+# ssh-proxy needed yet); a later pass can switch to rsync for incremental/delete-aware.
+# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -26,15 +29,14 @@ SSH_HOST="${SSH_HOST:-yard}"
 PROJ=(--project "$INCUS_PROJECT")
 
 # --- parse args --------------------------------------------------------------
-action="${1:-}"; shift || true
-case "$action" in import | sync) ;; *) die "internal: action must be import|sync (got '$action')" ;; esac
-path="."; bind=0
+mode="${1:-}"; shift || true
+case "$mode" in sync | bind) ;; *) die "internal: mode must be sync|bind (got '$mode')" ;; esac
+path="."
 for a in "$@"; do
   case "$a" in
-    --bind)            bind=1 ;;
-    -y | --yes)        ;;  # handled by lib.sh (ASSUME_YES); ignore here
-    -*)                die "unknown option '$a'" ;;
-    *)                 path="$a" ;;
+    -y | --yes) ;;  # handled by lib.sh (ASSUME_YES); ignore here
+    -*)         die "unknown option '$a'" ;;
+    *)          path="$a" ;;
   esac
 done
 [ -d "$path" ] || die "not a directory: $path"
@@ -45,19 +47,12 @@ id="$(project_id "$hostPath")"
 yardPath="$(yard_path_for "$id")"
 name="$(basename -- "$hostPath")"
 
-# A project is either sync or bind; the two transports are incompatible. Re-importing
-# with a different mode would silently mix them, so make the operator remove first.
+# A project is either sync or bind; the two transports are incompatible. Re-adding it
+# in the other mode would silently mix them, so make the operator remove it first.
 if state_exists "$id"; then
   prev="$(state_get "$id" mode)"
-  want=sync; [ "$bind" = 1 ] && want=bind
-  [ -n "$prev" ] && [ "$prev" != "$want" ] \
-    && die "'$name' is already imported as '$prev' — run: ${PROG:-yard} remove $path, then re-import as $want"
-fi
-
-if [ "$action" = sync ]; then
-  state_exists "$id" || die "'$name' is not imported yet — run: ${PROG:-yard} import $path"
-  [ "$(state_get "$id" mode)" = bind ] \
-    && die "'$name' is a bind project — its files live on the host already; 'sync' does not apply"
+  [ -n "$prev" ] && [ "$prev" != "$mode" ] \
+    && die "'$name' is already in the yard as '$prev' — run: ${PROG:-yard} remove $path, then re-add as $mode"
 fi
 
 # --- preflight: yard must be running -----------------------------------------
@@ -71,7 +66,7 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
 # No copy: edits on the host and in the yard are the same files. Isolation is
 # reduced (the agent writes the host folder) — for trusted, hands-on work only.
 # shift=true id-maps the mount so the files show up owned by 'dev', not nobody.
-if [ "$bind" = 1 ]; then
+if [ "$mode" = bind ]; then
   dev="$(ws_device_for "$id")"
   if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$dev"; then
     state_write "$id" "$name" "$hostPath" "$yardPath" bind "$SSH_HOST"
@@ -79,7 +74,7 @@ if [ "$bind" = 1 ]; then
     info "id: $id"
     exit 0
   fi
-  announce "yard import --bind — $name" \
+  announce "yard bind — $name" \
     "Host source : $hostPath" \
     "Yard target : $yardPath (mode bind — host disk-mount, shared files)" \
     "Attach an Incus disk device (shift=true) so the yard sees this folder owned by 'dev'." \
@@ -95,10 +90,12 @@ if [ "$bind" = 1 ]; then
   exit 0
 fi
 
-# --- sync: copy host → yard --------------------------------------------------
-announce "yard $action — $name" \
+# --- sync: copy host → yard (create-or-update) -------------------------------
+# First run registers state and copies; a re-run just re-copies (overwrites the yard copy).
+state_exists "$id" && note="refresh the yard copy" || note="first copy into the yard"
+announce "yard sync — $name" \
   "Host source : $hostPath" \
-  "Yard target : $yardPath (mode sync)" \
+  "Yard target : $yardPath (mode sync — $note)" \
   "Copy the project into the yard via a tar stream (overwrites the yard copy)." \
   "Record machine-local state in $(state_file "$id")."
 proceed_or_die
@@ -113,5 +110,5 @@ tar -C "$hostPath" -cf - . \
   || die "copy failed"
 
 state_write "$id" "$name" "$hostPath" "$yardPath" sync "$SSH_HOST"
-ok "$action done: $name → $yardPath"
+ok "sync done: $name → $yardPath"
 info "id: $id"

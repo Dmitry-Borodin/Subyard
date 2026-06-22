@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agent.sh — agent machines: a profile-configured Docker container INSIDE the yard
-# for an imported project. Docker here is the yard's nested daemon, never the host's.
+# for a project in the yard. Docker here is the yard's nested daemon, never the host's.
 # Subcommands:
 #   up      [path] [--profile NAME] [--rebuild]   build/start the agent machine (idempotent)
 #   info    [path]                    show what the profile exposes (visibility manifest)
@@ -114,7 +114,7 @@ done
 [ -e "$path" ] || die "no such path: $path"
 
 id="$(project_id "$path")"
-state_exists "$id" || die "not imported: $(basename "$(realpath "$path")") — run: ${PROG:-yard} import $path"
+state_exists "$id" || die "not in the yard: $(basename "$(realpath "$path")") — run: ${PROG:-yard} sync $path (or: bind $path)"
 name="$(state_get "$id" name)"
 yardPath="$(state_get "$id" yardPath)"
 cname="$(cname_for "$id")"
@@ -175,7 +175,7 @@ case "$sub" in
     # build the env image from the workspace Dockerfile (idempotent; --rebuild forces)
     if [ -n "$df" ]; then
       yexec test -r "$yardPath/$df" \
-        || die "profile wants '$df' in the workspace, but it's missing there — import/sync the project first"
+        || die "profile wants '$df' in the workspace, but it's missing there — sync (or bind) the project first"
       if [ "$rebuild" = 1 ] || ! ydocker image inspect "$run_image" >/dev/null 2>&1; then
         info "building env image '$run_image' from $df (context $ctx) …"
         ydocker build -t "$run_image" -f "$yardPath/$df" "$yardPath/$ctx" || die "env image build failed"

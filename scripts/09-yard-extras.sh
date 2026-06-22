@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # 09-yard-extras.sh — Phase 2b: reconcile yard-level extras REQUESTED BY PROJECTS.
-# Each imported project's profile may declare what it wants ON the yard (level 1):
+# Each in-yard project's profile may declare what it wants ON the yard (level 1):
 #   YARD_MOUNTS   "<name>:<yard-path>:<ro|rw>:<mode>"   extra host mounts (under HOST_BASE)
 #   YARD_CAPS     nesting rootless-docker fuse ...       instance capabilities
 #   YARD_DEVICES  kvm fuse ...                           instance devices (/dev passthrough)
-# The yard gets the UNION across all imported projects (machine-local state). Operator-run
+# The yard gets the UNION across all in-yard projects (machine-local state). Operator-run
 # (incus-admin); only host-dir creation for YARD_MOUNTS uses sudo. Capabilities that need a
 # restart are SET now; the operator is told to restart via the GUARDED path (yard down/up)
 # so the host's network guard runs — the host itself is never touched. Idempotent.
@@ -34,7 +34,7 @@ dev_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2>/d
 cfg_get() { incus config get "$INSTANCE_NAME" "$1" "${PROJ[@]}" 2>/dev/null || true; }
 case "$SHIFT_MODE" in shift) SHIFT_OPT="shift=true" ;; *) SHIFT_OPT="" ;; esac
 
-# --- collect the UNION of YARD_* across all imported projects ----------------
+# --- collect the UNION of YARD_* across all in-yard projects -----------------
 u_mounts=(); u_caps=(); u_devs=()
 for id in $(state_ids); do
   prof="$(state_get "$id" profile)"; [ -n "$prof" ] || continue
@@ -68,7 +68,7 @@ summary=()
 [ "${#u_caps[@]}"   -gt 0 ] && summary+=("Capabilities: ${u_caps[*]} (may need a yard restart)")
 [ "${#u_devs[@]}"   -gt 0 ] && summary+=("Devices: ${u_devs[*]}")
 announce "Subyard Phase 2b — yard extras requested by projects ($INSTANCE_NAME)" \
-  "Apply the UNION of YARD_* across imported projects to the shared yard." \
+  "Apply the UNION of YARD_* across in-yard projects to the shared yard." \
   "${summary[@]}" \
   "Detach yx-* mounts no longer requested. The yard is shared and rebuildable; the host is untouched."
 proceed_or_die

@@ -22,7 +22,7 @@ PROJ=(--project "$INCUS_PROJECT")
 
 mapfile -t ids < <(state_ids)
 if [ "${#ids[@]}" -eq 0 ]; then
-  echo "No projects in the yard yet — import one with: ${PROG:-yard} import <path>"
+  echo "No projects in the yard yet — add one with: ${PROG:-yard} sync <path> (or: bind <path>)"
   exit 0
 fi
 

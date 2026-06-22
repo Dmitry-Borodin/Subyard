@@ -35,7 +35,7 @@ have_provision(){ reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c
 have_ssh()      { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
 have_gitid()    { reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }
 in_admin_db()   { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
-# Some imported project's profile requests yard-level extras (YARD_*)? jq-guarded so a
+# Some in-yard project's profile requests yard-level extras (YARD_*)? jq-guarded so a
 # fresh host (no jq, no projects yet) simply reports none. 09-yard-extras is idempotent,
 # so "pending" here just means "reconcile the union" — re-applying is harmless.
 any_yard_extras() {
@@ -129,6 +129,6 @@ cat <<'MSG'
 
 Next:
   yard status
-  yard import .     # bring a code project into the yard
+  yard sync .       # copy a code project into the yard (or: bind . to mount it)
   yard code .       # open it in VS Code (Remote-SSH into the yard)
 MSG

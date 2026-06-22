@@ -34,7 +34,7 @@ project_id() {
 yard_path_for()  { printf '/srv/workspaces/%s/src\n' "${1:?need id}"; }
 state_file()     { printf '%s/%s.json\n' "$STATE_DIR" "${1:?need id}"; }
 # Deterministic Incus disk-device name for a bind project (valid device chars only).
-# Same id → same name, so import attaches and remove detaches the same device.
+# Same id → same name, so bind attaches and remove detaches the same device.
 ws_device_for()  { printf 'ws-%s\n' "$(printf '%s' "${1:?need id}" | tr -c 'A-Za-z0-9' '-')"; }
 
 # state_write <id> <name> <hostPath> <yardPath> <mode> <sshHost>

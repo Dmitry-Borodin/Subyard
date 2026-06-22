@@ -10,7 +10,7 @@ YARD_VERSION="0.1.0-dev"
 PROG="${0##*/}"
 
 # Command names, in order, for --help and --list.
-COMMANDS=(setup uninstall check import sync export remove clone code ssh agent list status logs up down)
+COMMANDS=(setup uninstall check sync bind export remove clone code ssh agent list status logs up down)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -39,9 +39,9 @@ Bring-up (says what it will do and asks first; root steps self-elevate):
   (setup runs the phases in scripts/00-05; run those directly only for debugging.)
 
 Project commands (code projects in the yard; default path '.'):
-  import [path]   bring a project into the yard (sync default; --bind opt-in)
-  sync   [path]   resync a sync-project (host → yard)
-  export [path]   pull a diff/patch from the yard back to the host
+  sync   [path]   copy a project into the yard (host → yard; re-run to refresh)
+  bind   [path]   mount a project from the host into the yard (shared files)
+  export [path]   pull a diff/patch from the yard back to the host (sync projects)
   remove [path]   take a project out of the yard (--purge also deletes the copy)
   clone  <url>    clone a repo straight into the yard
   code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
@@ -82,8 +82,8 @@ case "$cmd" in
   setup | init) exec "$S/setup.sh" "$@" ;;
   uninstall) exec "$S/99-uninstall.sh" "$@" ;;
   check)     exec "$S/00-check-host.sh" "$@" ;;
-  import)    exec "$S/project-import.sh" import "$@" ;;
-  sync)      exec "$S/project-import.sh" sync "$@" ;;
+  sync)      exec "$S/project-sync.sh" sync "$@" ;;
+  bind)      exec "$S/project-sync.sh" bind "$@" ;;
   list)      exec "$S/project-list.sh" "$@" ;;
   logs)      exec "$S/yard-logs.sh" "$@" ;;
   up | down | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;

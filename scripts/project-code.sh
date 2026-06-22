@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# project-code.sh — open an imported project in VS Code via Remote-SSH into the yard.
+# project-code.sh — open an in-yard project in VS Code via Remote-SSH into the yard.
 # Usage: project-code.sh [path]   (default '.')
 # Resolves the project's machine-local state (yardPath + sshHost) and launches
 # `code` against vscode-remote://ssh-remote+<host><yardPath>. From there: VS Code
@@ -36,7 +36,7 @@ done
 [ -e "$path" ] || die "no such path: $path"
 
 id="$(project_id "$path")"
-state_exists "$id" || die "'$(basename "$(realpath "$path")")' is not imported — run: ${PROG:-yard} import $path"
+state_exists "$id" || die "'$(basename "$(realpath "$path")")' is not in the yard — run: ${PROG:-yard} sync $path (or: bind $path)"
 yardPath="$(state_get "$id" yardPath)"
 host="$(state_get "$id" sshHost)"; host="${host:-$SSH_HOST}"
 name="$(state_get "$id" name)"; name="${name:-$(basename "$(realpath "$path")")}"

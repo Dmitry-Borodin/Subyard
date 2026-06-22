@@ -43,7 +43,7 @@ else
   done < <(state_ids)
   [ -n "$id" ] || die "no such path, project id, or name: $path"
 fi
-state_exists "$id" || die "not imported: $path"
+state_exists "$id" || die "not in the yard: $path"
 name="$(state_get "$id" name)"
 yardPath="$(state_get "$id" yardPath)"
 yardDir="${yardPath%/src}"   # /srv/workspaces/<id>

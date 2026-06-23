@@ -25,6 +25,7 @@ announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
   "Inside the yard: install Docker Engine + Compose via the get.docker.com script (downloads & runs it)." \
   "Inside the yard: create user '$DEV_USER' + groups (yard/kvm/docker), lay out /srv, enable ssh & docker." \
   "On the host: set the /dev/kvm device GID to the in-yard 'kvm' group." \
+  "On the host: copy your CLAUDE.md into the yard (config HOST_CLAUDE_MD), if present." \
   "This pulls packages from the network and changes the yard's userspace (not the host system)."
 
 # --- 1. provision inside the yard --------------------------------------------
@@ -68,22 +69,37 @@ elif [ "$(id -u "$DEV_USER")" != "$DEV_UID" ]; then
 fi
 usermod -aG yard,kvm,docker "$DEV_USER"
 
-# Host-backed symlinks in dev's $HOME (declared by HOST_LINKS in config/host.env):
-# point e.g. ~/.claude and ~/.codex at a shared host<->yard mount so coding agents find
-# their credentials + session/usage where they expect it (one pool, not split). Each
-# entry is "<name under $HOME>:<target in yard>". Idempotent; skips an entry whose mount
-# isn't attached; never clobbers a real directory that already holds data.
+# Coding-agent state. Credentials live per-yard in rootfs (~/.claude, ~/.codex) and are
+# never shared with the host; only sessions are shared via HOST_LINKS (below), pointing
+# ~/.claude/projects and ~/.codex/sessions at the host-agent-sessions mount. CLAUDE.md is
+# copied in host-side (section 3), not symlinked.
+dev_home="$(getent passwd "$DEV_USER" | cut -d: -f6)"
+
+# Agent homes are real rootfs dirs (creds land here). Drop any stale symlink so
+# re-provisioning a previously-shared yard is clean.
+for d in .claude .codex; do
+  p="$dev_home/$d"
+  [ -L "$p" ] && rm -f "$p"
+  runuser -u "$DEV_USER" -- mkdir -p "$p"
+done
+
+# Host-backed symlinks in dev's $HOME (declared by HOST_LINKS in config/host.env): each
+# entry "<name under $HOME>:<target in yard>" points a path at a host<->yard mount — used
+# for SESSIONS only now (e.g. .claude/projects -> the host-agent-sessions mount).
+# Idempotent; ensures the link's parent exists; skips an entry whose mount (by convention
+# /mnt/host/<name>) isn't attached; never clobbers a real directory that already holds data.
 if [ -n "${HOST_LINKS:-}" ]; then
-  dev_home="$(getent passwd "$DEV_USER" | cut -d: -f6)"
   printf '%s\n' "$HOST_LINKS" | sed 's/[[:space:]]//g' | while IFS=: read -r name target; do
     [ -n "$name" ] && [ -n "$target" ] || continue
-    [ -d "$(dirname "$target")" ] || { echo "skip $name -> $target (host mount not attached)" >&2; continue; }
+    mroot="/$(printf '%s' "$target" | cut -d/ -f2-4)"
+    [ -d "$mroot" ] || { echo "skip $name -> $target (host mount $mroot not attached)" >&2; continue; }
     runuser -u "$DEV_USER" -- mkdir -p "$target" 2>/dev/null || true
     link="$dev_home/$name"
+    runuser -u "$DEV_USER" -- mkdir -p "$(dirname "$link")" 2>/dev/null || true
     if [ -L "$link" ] || [ ! -e "$link" ]; then
       ln -sfn "$target" "$link"; chown -h "$DEV_USER:$DEV_USER" "$link"
     else
-      echo "WARNING: $link exists and is not a symlink — leaving it (move it aside to share agent state)" >&2
+      echo "WARNING: $link exists and is not a symlink — leaving it (move it aside to share)" >&2
     fi
   done
 fi
@@ -111,6 +127,20 @@ if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx
   fi
 else
   ok "no kvm device attached (vm mode or /dev/kvm absent) — nothing to fix"
+fi
+
+# --- 3. copy the global CLAUDE.md into the yard ------------------------------
+# The operator's global agent instructions, copied in once (not a mount, not symlinked) so
+# the in-yard agent uses them without rewriting. Host path: HOST_CLAUDE_MD (config/host.env,
+# no host-path literal here). Refreshed on each re-provision.
+echo "CLAUDE.md:"
+if [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ]; then
+  incus file push "$HOST_CLAUDE_MD" \
+    "$INSTANCE_NAME/home/$DEV_USER/.claude/CLAUDE.md" "${PROJ[@]}" \
+    --create-dirs --uid "$DEV_UID" --gid "$DEV_UID" --mode 0644
+  ok "copied $HOST_CLAUDE_MD -> ~$DEV_USER/.claude/CLAUDE.md"
+else
+  ok "no HOST_CLAUDE_MD file to copy — skipping (operator can add one and re-run)"
 fi
 
 # --- summary -----------------------------------------------------------------

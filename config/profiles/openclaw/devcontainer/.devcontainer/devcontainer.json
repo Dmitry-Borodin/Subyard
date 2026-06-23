@@ -34,20 +34,12 @@
     "npm_config_fetch_retry_maxtimeout": "300000",
     "NO_UPDATE_NOTIFIER": "1"
   },
-  // Named volumes for the dev user's home and caches (survive rebuilds, scoped
-  // per workspace). Coding-agent state (Claude/Codex credentials + session/usage)
-  // is the yard default: it lives in the yard at /mnt/host/agent (the 'host-agent'
-  // entry in HOST_MOUNTS, config/subyard.env — decision #23) and is bound into the
-  // container here so subscription usage is one shared pool. The source paths are
-  // in the yard (Docker runs in the yard), never on the host. To opt out, remove
-  // the host-agent line from HOST_MOUNTS and drop the two agent binds below.
+  // Named volume for the dev user's home (survives rebuilds, scoped per workspace).
+  // Caches are workspace-local via containerEnv (/workspace/.cache/*). Coding-agent
+  // credentials/sessions are NOT mounted here — the coding agent runs in the yard
+  // (VS Code Remote-SSH), not in this container.
   "mounts": [
-    "source=subyard-${localWorkspaceFolderBasename}-home,target=/home/dev,type=volume",
-    "source=subyard-${localWorkspaceFolderBasename}-pip-cache,target=/home/dev/.cache/pip,type=volume",
-    "source=subyard-${localWorkspaceFolderBasename}-npm-cache,target=/home/dev/.npm,type=volume",
-    "source=subyard-${localWorkspaceFolderBasename}-node-cache,target=/home/dev/.cache/node,type=volume",
-    "source=/mnt/host/agent/claude,target=/home/dev/.claude,type=bind",
-    "source=/mnt/host/agent/codex,target=/home/dev/.codex,type=bind"
+    "source=subyard-${localWorkspaceFolderBasename}-home,target=/home/dev,type=volume"
     // ssh-agent: forwarded into the yard by default (FORWARD_SSH_AGENT=1). To use
     // it from this container too, bind the forwarded socket:
     //   "source=${localEnv:SSH_AUTH_SOCK},target=/ssh-agent,type=bind"  // + containerEnv SSH_AUTH_SOCK=/ssh-agent

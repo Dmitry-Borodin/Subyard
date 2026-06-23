@@ -9,8 +9,7 @@ Container).
 A profile uses the devcontainer in its own folder if present; otherwise it falls
 back to `config/profiles/default/devcontainer/`. A project may also ship its own
 `.devcontainer/`, which overrides both. This is the committed source for the
-template the spec stages at `/srv/stacks/devcontainers/templates/openclaw-default/`
-(tz §16).
+devcontainer template staged at `/srv/stacks/devcontainers/templates/openclaw-default/`.
 
 ## Public-repo rules applied here
 This file lives in the **public** repo, so it is generic and English, with **no
@@ -30,15 +29,13 @@ OpenClaw devcontainer and cleaned to those rules.
   `typescript`/`@types/node` and the Python tools come from the project's
   vendored deps (`pnpm --frozen-lockfile`, `pyproject`), so a bump has a single
   source of truth in the project repo. The image carries only the OS toolchain.
-- **Agent state is the yard default, sourced from the yard — not the host.**
-  Claude/Codex credentials + session/usage are staged on the host under
-  `$HOST_BASE/host-agent/{claude,codex}`, mounted rw into the yard at
-  `/mnt/host/agent` (the `host-agent` entry in `HOST_MOUNTS`, `config/host.env`
-  — decision #23), and bound into this container from that yard path so
-  subscription usage is one shared pool. No host paths are hardcoded here. The
-  ssh-agent socket is forwarded into the yard by default (`FORWARD_SSH_AGENT=1`);
-  see the commented line in `mounts` to use it from the container too. To opt out,
-  remove the `host-agent` line from `HOST_MOUNTS` (and drop the two agent binds).
+- **Coding-agent state is NOT in this container.** The coding agent runs in the
+  yard (VS Code Remote-SSH), not in this test container, so no Claude/Codex
+  credentials are mounted here. Credentials live per-yard in the yard rootfs; only
+  session transcripts are shared host<->yard (the `host-agent-sessions` entry in
+  `HOST_MOUNTS`, `config/host.env`) so host-side token stats see the yard's usage.
+  The ssh-agent socket is forwarded into the yard by default (`FORWARD_SSH_AGENT=1`);
+  see the commented line in `mounts` to use it from the container too.
 - **No project lifecycle hooks.** `initializeCommand`/`postCreateCommand` that
   reference a project's own scripts belong in that project's `.devcontainer/`,
   not in this default.

@@ -4,7 +4,7 @@
 #   1. an Incus proxy device  host 127.0.0.1:$SSH_PORT -> yard:22  (loopback only),
 #   2. the operator's public key in the yard user's authorized_keys,
 #   3. a 'Host $SSH_HOST' entry in ~/.ssh (via an Include — your config is not clobbered).
-# Key source (decision #23): $SUBYARD_SSH_PUBKEY, else ~/.ssh/id_*.pub, else a dedicated
+# Key source: $SUBYARD_SSH_PUBKEY, else ~/.ssh/id_*.pub, else a dedicated
 # key is generated under ~/.subyard/ssh. Config: config/incus.project.env + subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,7 +17,7 @@ DEV_USER="${DEV_USER:-dev}"
 SSH_HOST="${SSH_HOST:-yard}"
 SSH_PORT="${SSH_PORT:-2222}"
 # Opt-in (default off): forward the host ssh-agent so in-yard git over SSH uses your
-# host keys without copying any private key into the yard (decision #23).
+# host keys without copying any private key into the yard.
 FORWARD_SSH_AGENT="${FORWARD_SSH_AGENT:-0}"
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }

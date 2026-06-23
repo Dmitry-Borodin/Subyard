@@ -23,11 +23,11 @@ PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
 
 # --- preconditions -----------------------------------------------------------
-command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard setup' first"
+command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard setup' first"
+  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: yard up"
+  || die "yard is not running — start it: yard start"
 
 fwd_note=()
 [ "$FORWARD_SSH_AGENT" = 1 ] && fwd_note=("Enable ssh-agent forwarding for '$SSH_HOST' (no private key enters the yard).")

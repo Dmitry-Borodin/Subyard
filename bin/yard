@@ -15,7 +15,7 @@ PROG="${0##*/}"
 [ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
 
 # Command names, in order, for --help and --list.
-COMMANDS=(setup uninstall check sync bind export remove clone code ssh agent list status logs up down)
+COMMANDS=(init teardown check sync bind export remove clone code ssh agent list status logs start stop)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -37,11 +37,11 @@ $PROG $YARD_VERSION — a local yard for isolated agent containers.
 Usage: $PROG [option] <command> [args]
 
 Bring-up (says what it will do and asks first; root steps self-elevate):
-  setup        install everything: Incus → project → yard → mounts → provision  [alias: init]
-  uninstall    tear down the yard + free disk (--keep-data preserves /srv); keeps Incus
+  init         install everything: Incus → project → yard → mounts → provision
+  teardown     tear down the yard + free disk (--keep-data preserves /srv); keeps Incus
   check        verify the host can run a yard (read-only preflight)
 
-  (setup runs the phases in scripts/00-05; run those directly only for debugging.)
+  (init runs the phases in scripts/00-05; run those directly only for debugging.)
 
 Project commands (code projects in the yard; default path '.'):
   sync   [path]   copy a project into the yard (host → yard; re-run to refresh)
@@ -56,7 +56,7 @@ Project commands (code projects in the yard; default path '.'):
   list            list projects currently in the yard
   status          read-only overview (yard + ssh + mounts + services + projects)
   logs            tail the yard's runtime logs (systemd journal + docker)
-  up | down       start / stop the yard
+  start | stop    start / stop the yard
 
 Options:
   -h, --help      show this help and exit
@@ -84,14 +84,14 @@ audit "$cmd" "$@"
 soon() { printf "%s: '%s' is planned for %s — not implemented yet.\n" "$PROG" "$1" "$2" >&2; exit 2; }
 
 case "$cmd" in
-  setup | init) exec "$S/setup.sh" "$@" ;;
-  uninstall) exec "$S/99-uninstall.sh" "$@" ;;
+  init | setup) exec "$S/init.sh" "$@" ;;            # setup: back-compat alias
+  teardown | uninstall) exec "$S/99-teardown.sh" "$@" ;;  # uninstall: back-compat alias
   check)     exec "$S/00-check-host.sh" "$@" ;;
   sync)      exec "$S/project-sync.sh" sync "$@" ;;
   bind)      exec "$S/project-sync.sh" bind "$@" ;;
   list)      exec "$S/project-list.sh" "$@" ;;
   logs)      exec "$S/yard-logs.sh" "$@" ;;
-  up | down | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;
+  start | stop | status | up | down) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;  # up/down: back-compat aliases
   code)      exec "$S/project-code.sh" "$@" ;;
   remove)    exec "$S/project-remove.sh" "$@" ;;
   export)    exec "$S/project-export.sh" "$@" ;;

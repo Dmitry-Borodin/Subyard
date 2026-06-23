@@ -125,14 +125,14 @@ announce_confirm() {
 # `incus …` blind: when the daemon is merely unreachable (usual cause: this shell
 # predates the incus-admin group granted at setup) they misreported a healthy yard as
 # missing and sent the operator to re-run setup. Distinguish the three real states:
-#   incus absent              → run 'yard setup'
+#   incus absent              → run 'yard init'
 #   unreachable, in group db  → stale group session; use a fresh one (nothing is broken)
-#   unreachable, not in group → setup unfinished / group not granted → run 'yard setup'
+#   unreachable, not in group → setup unfinished / group not granted → run 'yard init'
 # Returns 0 once incusd answers; callers then probe the instance/state themselves, so a
 # genuine "missing"/"not running" only surfaces when the daemon is actually reachable.
 incus_preflight() {
   local cmd="${1:-<command>}"
-  command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard setup' first"
+  command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
   incus info >/dev/null 2>&1 && return 0
   if id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; then
     warn "can't reach incusd — this shell predates the 'incus-admin' group (the yard is fine)."
@@ -140,7 +140,7 @@ incus_preflight() {
     printf '  (or: newgrp incus-admin, then re-run — log out/in to make it permanent)\n' >&2
     exit 1
   fi
-  die "can't reach incusd — Incus isn't installed/running, or you're not in 'incus-admin'. Run 'yard setup' first."
+  die "can't reach incusd — Incus isn't installed/running, or you're not in 'incus-admin'. Run 'yard init' first."
 }
 
 # nm_unmanaged_guard <bridge> — stop NetworkManager from managing Incus's bridge and

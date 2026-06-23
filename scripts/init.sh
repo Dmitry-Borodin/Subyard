@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup.sh — one-shot yard bring-up (yard setup / yard init): check → install →
+# init.sh — one-shot yard bring-up (yard init): check → install →
 # project → create → mounts → provision. Idempotent and resumable.
 # One upfront confirm; steps that need root self-elevate via sudo. Flag -y.
 set -euo pipefail
@@ -17,7 +17,7 @@ PROJ=(--project "$INCUS_PROJECT")
 # --- read-only state probes so the plan shows what THIS run will really do ----
 reachable()     { command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; }
 # 01 is "done" only if the daemon is reachable AND its storage pool + bridge exist.
-# 'yard uninstall' removes the pool/bridge but leaves Incus installed/reachable, so a
+# 'yard teardown' removes the pool/bridge but leaves Incus installed/reachable, so a
 # bare reachability test would wrongly skip re-init and 02 would fail (no incusbr0).
 have_init()     { reachable && incus storage show "$STORAGE_POOL" >/dev/null 2>&1 \
                             && incus network show "$INCUS_BRIDGE" >/dev/null 2>&1; }
@@ -55,8 +55,8 @@ if command -v incus >/dev/null 2>&1 && ! incus info >/dev/null 2>&1 && in_admin_
   cat <<'MSG'
 
 Nothing to reinstall — continue in a fresh group session:
-    sg incus-admin -c 'yard setup'
-  (or re-login / run 'newgrp incus-admin', then: yard setup)
+    sg incus-admin -c 'yard init'
+  (or re-login / run 'newgrp incus-admin', then: yard init)
 MSG
   exit 0
 fi
@@ -67,7 +67,7 @@ step() {  # <done-test> <label>
   else          printf '  %s[do]%s   %s\n' "$C_OK"   "$C_OFF" "$2"; pending=1; fi
 }
 
-printf '\n%sSubyard setup — full bring-up%s\n%sThis run will (already-done steps are skipped):%s\n' \
+printf '\n%sSubyard init — full bring-up%s\n%sThis run will (already-done steps are skipped):%s\n' \
   "$C_HEAD" "$C_OFF" "$C_HEAD" "$C_OFF"
 pending=0
 step have_init      "Install Incus + add you to incus-admin + init storage (needs root)"
@@ -101,8 +101,8 @@ if ! have_init; then
     cat <<'MSG'
 
 One step needs a fresh group session. Continue with:
-    sg incus-admin -c 'yard setup'
-  (or re-login / run 'newgrp incus-admin', then: yard setup)
+    sg incus-admin -c 'yard init'
+  (or re-login / run 'newgrp incus-admin', then: yard init)
 MSG
     exit 0
   fi

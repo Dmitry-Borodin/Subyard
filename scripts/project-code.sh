@@ -39,9 +39,9 @@ name="$(state_get "$id" name)"; name="${name:-$(basename "$(realpath "$path")")}
 # Yard must be up, and SSH access must be set up (Remote-SSH needs the proxy + key).
 incus_preflight code
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: yard up"
+  || die "yard is not running — start it: yard start"
 incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh \
-  || die "SSH access not set up — run 'yard setup' (or scripts/07-ssh-access.sh)"
+  || die "SSH access not set up — run 'yard init' (or scripts/07-ssh-access.sh)"
 
 # VS Code labels a window by its leaf folder — for us that's the useless "src". Write a
 # tiny .code-workspace that names the (absolute) src path with the project, so the title

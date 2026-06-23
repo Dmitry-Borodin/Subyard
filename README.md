@@ -44,7 +44,7 @@ The core is switchable without a rewrite.
 
 ```
 bin/                Host CLI: yard (alias sy) — a dispatcher over scripts/
-scripts/            Host + yard lifecycle scripts (00-check-host.sh … 09-yard-extras.sh, setup.sh)
+scripts/            Host + yard lifecycle scripts (00-check-host.sh … 09-yard-extras.sh, init.sh, 99-teardown.sh)
 scripts/install-cli.sh  Put yard/sy on your PATH (~/.local/bin) + tab-completion
 completions/        Shell tab-completion for yard/sy (bash, zsh)
 config/             Settings: subyard.env (instance), incus.project.env (project),

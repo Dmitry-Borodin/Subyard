@@ -21,7 +21,7 @@ _yard_profiles() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( setup uninstall check import sync export remove clone code ssh agent list status logs up down )
+  [[ -n $cmds ]] || cmds=( init teardown check import sync export remove clone code ssh agent list status logs start stop )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args
@@ -54,7 +54,7 @@ _yard() {
         import) _arguments '--bind[mount instead of copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
         remove) _arguments '--purge[also delete yard copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
         sync|export|code) _arguments '--yes[skip prompt]' '*:project:_files -/' ;;
-        uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;
+        teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;
         clone) _message 'repository URL' ;;
         *) _arguments '--yes[skip prompt]' '--help[show help]' ;;
       esac

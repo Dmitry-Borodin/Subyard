@@ -50,9 +50,9 @@ fi
 # --- preflight: yard must be running -----------------------------------------
 command -v incus >/dev/null 2>&1 || die "incus not found — run setup first"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard setup' first"
+  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it first (yard up)"
+  || die "yard is not running — start it first (yard start)"
 
 # --- bind: mount the host folder into the yard via an Incus disk device -------
 # Host and yard share the same files (isolation reduced) — for trusted, hands-on

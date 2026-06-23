@@ -30,7 +30,7 @@ done
 
 command -v incus >/dev/null 2>&1 || die "incus not found — run setup first"
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it first (yard up)"
+  || die "yard is not running — start it first (yard start)"
 
 jargs=(journalctl -n "$lines")
 [ -n "$unit" ] && jargs+=(-u "$unit")

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# 99-uninstall.sh — tear down the Subyard deployment: the yard instance, the 'subyard'
+# 99-teardown.sh — tear down the Subyard deployment: the yard instance, the 'subyard'
 # project + its /srv volume, the Incus bridge, the storage pool + ITS DATA, and the host
-# config that setup added (NetworkManager guard, ufw rules, ssh client config, machine
+# config that init added (NetworkManager guard, ufw rules, ssh client config, machine
 # state). Leaves the 'incus' package, the 'incus-admin' group, and the yard CLI in place
-# (those are tools, not deployment) — so 'yard setup' can rebuild from scratch.
+# (those are tools, not deployment) — so 'yard init' can rebuild from scratch.
 #
-#   yard uninstall              full teardown INCLUDING all /srv data (frees disk)
-#   yard uninstall --keep-data  keep the pool + /srv volume + bridge; remove only the
-#                               instance + client config (fast rebuild, data preserved)
+#   yard teardown              full teardown INCLUDING all /srv data (frees disk)
+#   yard teardown --keep-data  keep the pool + /srv volume + bridge; remove only the
+#                              instance + client config (fast rebuild, data preserved)
 #
 # Idempotent; safe to re-run. Self-elevates (root needed for NM/ufw/storage data).
 # ORDER MATTERS: the instance (and its veth) goes BEFORE the bridge, and the NM guard is
@@ -37,18 +37,18 @@ for a in "$@"; do case "$a" in --keep-data) KEEP_DATA=1 ;; esac; done
 
 # --- announce ----------------------------------------------------------------
 if [ "$KEEP_DATA" = 1 ]; then
-  announce "Subyard uninstall — KEEP DATA ($INSTANCE_NAME)" \
+  announce "Subyard teardown — KEEP DATA ($INSTANCE_NAME)" \
     "Delete the '$INSTANCE_NAME' instance (project '$INCUS_PROJECT')." \
     "KEEP the storage pool, the '$SRV_VOLUME' volume and all /srv data, the project, and the '$BRIDGE' bridge." \
     "Remove client config: ufw rules, ssh client config (~/.ssh/subyard.config), machine state (~/.config/subyard)." \
     "Keep the NetworkManager guard (the bridge stays), the 'incus' package, and the yard CLI."
 else
-  announce "Subyard uninstall — FULL (frees disk)" \
+  announce "Subyard teardown — FULL (frees disk)" \
     "Delete the '$INSTANCE_NAME' instance and the '$INCUS_PROJECT' project (with its '$SRV_VOLUME' volume)." \
     "Delete the '$BRIDGE' bridge and the '$STORAGE_POOL' storage pool (only if no other Incus instances use them)." \
     "DELETE ALL DATA under $STORAGE_PATH (the yard rootfs + /srv) — frees the disk, IRREVERSIBLE." \
     "Remove host config: NetworkManager guard, ufw rules, ssh client config, machine state (~/.subyard, ~/.config/subyard)." \
-    "Keep the 'incus' package, the 'incus-admin' group, and the yard CLI (so 'yard setup' can rebuild)."
+    "Keep the 'incus' package, the 'incus-admin' group, and the yard CLI (so 'yard init' can rebuild)."
 fi
 proceed_or_die
 require_root "removing the NetworkManager guard, ufw rules, and the Incus storage data needs root"
@@ -180,7 +180,7 @@ elif [ "$KEEP_DATA" = 0 ]; then
 fi
 
 echo
-if [ "$KEEP_DATA" = 1 ]; then ok "Subyard uninstall done (data kept)."; else ok "Subyard uninstall done."; fi
+if [ "$KEEP_DATA" = 1 ]; then ok "Subyard teardown done (data kept)."; else ok "Subyard teardown done."; fi
 cat <<MSG
 
 Verify the host is clean (use sudo — plain 'incus' fails without the incus-admin group):
@@ -189,7 +189,7 @@ Verify the host is clean (use sudo — plain 'incus' fails without the incus-adm
   ip route show default               # only your real gateway — no veth/$BRIDGE default
   ip -br link show | grep -iE 'veth|$BRIDGE' || echo 'no incus interfaces (good)'
 
-Rebuild any time:   yard setup
+Rebuild any time:   yard init
 To ALSO remove Incus itself (DANGEROUS — only if nothing else on this host uses it):
   sudo apt-get remove --purge incus incus-client     # all instances must be gone first
 MSG

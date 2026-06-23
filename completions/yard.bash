@@ -30,7 +30,7 @@ _yard() {
   if [ "$cword" -eq 1 ]; then
     local cmds
     cmds="$("${COMP_WORDS[0]}" --list 2>/dev/null)"
-    [ -n "$cmds" ] || cmds='setup uninstall check import sync export remove clone code ssh agent list status logs up down'
+    [ -n "$cmds" ] || cmds='init teardown check import sync export remove clone code ssh agent list status logs start stop'
     case "$cur" in
       -*) COMPREPLY=( $(compgen -W "$globals" -- "$cur") ) ;;
       *)  COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ) ;;
@@ -62,8 +62,8 @@ _yard() {
     import) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--bind --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
     remove) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--purge --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
     sync|export|code) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
-    uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
-    setup|init|check|list|status|logs|up|down) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
+    teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
+    init|setup|check|list|status|logs|start|stop|up|down) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
     *) ;;  # clone (url), ssh (pass-through): leave to default
   esac
   return 0

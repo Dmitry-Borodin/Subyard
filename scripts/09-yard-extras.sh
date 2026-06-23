@@ -6,7 +6,7 @@
 #   YARD_DEVICES  kvm fuse ...                           instance devices (/dev passthrough)
 # The yard gets the UNION across all in-yard projects (machine-local state). Operator-run
 # (incus-admin); only host-dir creation for YARD_MOUNTS uses sudo. Capabilities that need a
-# restart are SET now; the operator is told to restart via the GUARDED path (yard down/up)
+# restart are SET now; the operator is told to restart via the GUARDED path (yard stop/start)
 # so the host's network guard runs — the host itself is never touched. Idempotent.
 # Config: config/incus.project.env + config/subyard.env + config/profiles/*/profile.conf.
 set -euo pipefail
@@ -68,7 +68,7 @@ announce "Subyard Phase 2b — yard extras requested by projects ($INSTANCE_NAME
 proceed_or_die
 
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard setup' first"
+  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
 
 # --- 1. mounts (yx-* devices, host dirs under HOST_BASE) ---------------------
 want_mounts=""

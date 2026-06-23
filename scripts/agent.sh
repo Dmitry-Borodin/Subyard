@@ -77,8 +77,8 @@ JSON
 
 yard_running() { [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; }
 preflight() {
-  command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard setup' first"
-  yard_running || die "yard is not running — start it: yard up"
+  command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
+  yard_running || die "yard is not running — start it: yard start"
 }
 
 sub="${1:-}"; shift || true
@@ -123,7 +123,7 @@ case "$sub" in
     [ -n "$profile" ] || die "no profile — pass --profile <name> (have: $(for d in "$PROFILES_DIR"/*/; do [ -r "$d/profile.conf" ] && basename "$d"; done | tr '\n' ' '))"
     pf="$PROFILES_DIR/$profile/profile.conf"
     [ -r "$pf" ] || die "no such profile: '$profile' ($pf)"
-    # Persist the chosen profile so later `agent up`/`yard setup` know it without --profile
+    # Persist the chosen profile so later `agent up`/`yard init` know it without --profile
     # (yard-extras reconcile enumerates projects and unions their profiles' YARD_* needs).
     state_set "$id" profile "$profile" 2>/dev/null || true
     # profile.conf is the non-secret contract — safe to source (its keys are exported

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# yard-ctl.sh — yard lifecycle: up | down | status.
-#   up      start the yard instance (idempotent)
-#   down    stop the yard instance (idempotent)
+# yard-ctl.sh — yard lifecycle: start | stop | status.
+#   start   start the yard instance (idempotent)
+#   stop    stop the yard instance (idempotent)
 #   status  read-only overview: state, IP, ssh endpoint, mounts, services, projects
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
@@ -22,26 +22,26 @@ for a in "$@"; do case "$a" in -y|--yes) ;; *) ;; esac; done  # tolerate --yes
 
 incus_preflight "$action"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard setup' first"
+  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
 
 state() { incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null; }
 
 case "$action" in
-  up)
+  start | up)  # up: back-compat alias
     if [ "$(state)" = RUNNING ]; then
       ok "$INSTANCE_NAME already running"
     else
       info "starting $INSTANCE_NAME"
       incus start "$INSTANCE_NAME" "${PROJ[@]}"
-      ok "$INSTANCE_NAME up"
+      ok "$INSTANCE_NAME started"
     fi
     ;;
-  down)
+  stop | down)  # down: back-compat alias
     cur="$(state)"
     if [ "$cur" = RUNNING ]; then
       info "stopping $INSTANCE_NAME"
       incus stop "$INSTANCE_NAME" "${PROJ[@]}"
-      ok "$INSTANCE_NAME down"
+      ok "$INSTANCE_NAME stopped"
     else
       ok "$INSTANCE_NAME already stopped (${cur:-unknown})"
     fi
@@ -59,7 +59,7 @@ case "$action" in
     if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; then
       printf '  ssh      127.0.0.1:%s  (ssh %s)\n' "$SSH_PORT" "$SSH_HOST"
     else
-      printf '  ssh      not set up  (run: yard setup, or scripts/07-ssh-access.sh)\n'
+      printf '  ssh      not set up  (run: yard init, or scripts/07-ssh-access.sh)\n'
     fi
     # host mounts attached to the instance
     mounts="$(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null \
@@ -89,6 +89,6 @@ case "$action" in
     printf '  projects %s  (yard list)\n' "$n"
     ;;
   *)
-    die "unknown action '$action' (expected: up | down | status)"
+    die "unknown action '$action' (expected: start | stop | status)"
     ;;
 esac

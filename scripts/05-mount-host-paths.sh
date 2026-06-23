@@ -72,7 +72,8 @@ ok "$HOST_BASE/backups (0755, root)"
 echo "Host mounts → yard:"
 # Add a missing mount, or re-attach one whose source/path/readonly drifted from config.
 reconcile_mount() {
-  local name="$1" path="$2" ro="$3" src="$HOST_BASE/$name"
+  local name="$1" path="$2" ro="$3"
+  local src="$HOST_BASE/$name"
   local want_ro=0; [ "$ro" = ro ] && want_ro=1
   if device_exists "$name"; then
     local cur_ro=0; [ "$(dev_get "$name" readonly)" = true ] && cur_ro=1

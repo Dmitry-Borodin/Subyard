@@ -16,7 +16,9 @@ DEV_UID="${DEV_UID:-1000}"
 PROJ=(--project "$INCUS_PROJECT")
 
 # --- preconditions -----------------------------------------------------------
-command -v incus >/dev/null 2>&1 || die "incus not found — run scripts/01-install-incus.sh first"
+# incus_preflight distinguishes incus-absent / stale-group-session / unreachable, so a
+# shell that predates the incus-admin group gets the right hint, not a false "missing".
+incus_preflight "init"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run scripts/03-create-subyard.sh first"
 

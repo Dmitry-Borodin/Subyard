@@ -40,8 +40,7 @@ announce "Subyard Phase 2 — host mounts ($INSTANCE_NAME)" \
 proceed_or_die
 require_root "the steps above create directories under /srv and attach host mounts to the yard"
 
-command -v incus >/dev/null 2>&1 || die "incus not found — run scripts/01-install-incus.sh first"
-incus info >/dev/null 2>&1 || die "cannot talk to the Incus daemon (run 01-install-incus.sh, re-login)"
+incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run scripts/03-create-subyard.sh first"
 

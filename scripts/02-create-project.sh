@@ -13,10 +13,7 @@ ROOT_POOL="${ROOT_POOL:-${SRV_POOL:-default}}"
 INCUS_NETWORK="${INCUS_NETWORK:-${INCUS_BRIDGE:-incusbr0}}"
 
 # --- preconditions -----------------------------------------------------------
-command -v incus >/dev/null 2>&1 \
-  || die "incus not found — run scripts/01-install-incus.sh first"
-incus info >/dev/null 2>&1 \
-  || die "cannot talk to the Incus daemon — run 01-install-incus.sh, then re-login (newgrp incus-admin)"
+incus_preflight
 
 announce_confirm "Subyard Phase 1 — create restricted Incus project" \
   "Create Incus project '$INCUS_PROJECT' (if absent)." \

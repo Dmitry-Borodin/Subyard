@@ -48,7 +48,7 @@ if state_exists "$id"; then
 fi
 
 # --- preflight: yard must be running -----------------------------------------
-command -v incus >/dev/null 2>&1 || die "incus not found — run setup first"
+incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \

@@ -120,29 +120,21 @@ announce_confirm() {
   proceed_or_die
 }
 
-# incus_preflight [cmd] — die early with an ACCURATE message when the Incus CLI can't
-# be used. The old per-script "instance missing / not running — run setup" checks ran
-# `incus …` blind: when the daemon is merely unreachable (usual cause: this shell
-# predates the incus-admin group granted at setup) they misreported a healthy yard as
-# missing and sent the operator to re-run setup. Distinguish the three real states:
-#   incus absent              → run 'yard init'
-#   unreachable, in group db  → stale group session; use a fresh one (nothing is broken)
-#   unreachable, not in group → setup unfinished / group not granted → run 'yard init'
-# Returns 0 once incusd answers; callers then probe the instance/state themselves, so a
-# genuine "missing"/"not running" only surfaces when the daemon is actually reachable.
+# incus_preflight — the single gate every incus-using script calls before talking to the
+# daemon. Returns 0 once incusd answers (callers then probe the instance themselves); else
+# dies with the accurate cause:
+#   incus absent                  → run 'yard init'
+#   unreachable, in incus-admin   → this session predates the group → log back in
+#   unreachable, not in group     → group not granted / daemon down → run 'yard init'
 incus_preflight() {
-  local cmd="${1:-<command>}"
   command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
   incus info >/dev/null 2>&1 && return 0
-  # In group but unreachable, and bin/yard's auto re-exec under `sg` has NOT already run
-  # (or it ran and didn't help): only advise the manual sg path when we haven't tried it.
-  if [ -z "${SUBYARD_GROUP_REEXEC:-}" ] && id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; then
-    warn "can't reach incusd — this shell predates the 'incus-admin' group (the yard is fine)."
-    printf '  Run it in a fresh group session:  %ssg incus-admin -c '\''yard %s'\''%s\n' "$C_HEAD" "$cmd" "$C_OFF" >&2
-    printf '  (or: newgrp incus-admin, then re-run — log out/in to make it permanent)\n' >&2
+  if id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; then
+    warn "can't reach the Incus daemon: this session predates your 'incus-admin' group (the yard is fine)."
+    printf "  Log out and back in once to fix it everywhere, or run %snewgrp incus-admin%s for this shell.\n" "$C_HEAD" "$C_OFF" >&2
     exit 1
   fi
-  die "can't reach incusd — Incus isn't installed/running, or you're not in 'incus-admin'. Run 'yard init' first."
+  die "can't reach Incus — you're not in the 'incus-admin' group, or the daemon isn't running. Run 'yard init' first."
 }
 
 # nm_unmanaged_guard <bridge> — stop NetworkManager from managing Incus's bridge and

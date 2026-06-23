@@ -18,7 +18,7 @@ DEV_USER="${DEV_USER:-dev}"
 PROJ=(--project "$INCUS_PROJECT")
 
 # --- preconditions -----------------------------------------------------------
-command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
+incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
   || die "yard is not running — start it: yard start"
 

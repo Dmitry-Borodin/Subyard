@@ -67,6 +67,7 @@ announce "Subyard Phase 2b — yard extras requested by projects ($INSTANCE_NAME
   "Detach yx-* mounts no longer requested. The yard is shared and rebuildable; the host is untouched."
 proceed_or_die
 
+incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
 

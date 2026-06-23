@@ -44,7 +44,7 @@ state_exists "$id" \
   && die "'$name' is already in the yard (id $id) — remove it first: ${PROG:-yard} remove $name"
 
 # --- preflight: yard must be running -----------------------------------------
-command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
+incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
   || die "yard is not running — start it: ${PROG:-yard} up"
 

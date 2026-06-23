@@ -41,7 +41,7 @@ if [ "$mode" = bind ]; then
 fi
 
 # --- preflight: yard must be running -----------------------------------------
-command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
+incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
   || die "yard is not running — start it: ${PROG:-yard} up"
 incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -d "$yardPath" \

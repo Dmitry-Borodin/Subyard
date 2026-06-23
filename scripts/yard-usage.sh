@@ -13,9 +13,7 @@ INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
 PROJ=(--project "$INCUS_PROJECT")
 
-command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
-incus info >/dev/null 2>&1 \
-  || die "can't reach the Incus daemon — run 'yard init', or retry in a fresh 'incus-admin' session"
+incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
   || die "yard is not running — start it: ${PROG:-yard} start"
 

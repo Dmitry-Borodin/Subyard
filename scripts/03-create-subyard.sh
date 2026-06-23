@@ -20,9 +20,7 @@ PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
 
 # --- preconditions -----------------------------------------------------------
-command -v incus >/dev/null 2>&1 || die "incus not found — run scripts/01-install-incus.sh first"
-incus info >/dev/null 2>&1 \
-  || die "cannot talk to the Incus daemon — run 01-install-incus.sh, then re-login (newgrp incus-admin)"
+incus_preflight
 incus project show "$INCUS_PROJECT" >/dev/null 2>&1 \
   || die "project '$INCUS_PROJECT' missing — run scripts/02-create-project.sh first"
 

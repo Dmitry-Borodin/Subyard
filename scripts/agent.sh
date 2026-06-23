@@ -104,7 +104,7 @@ JSON
 
 yard_running() { [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; }
 preflight() {
-  command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
+  incus_preflight
   yard_running || die "yard is not running — start it: yard start"
 }
 

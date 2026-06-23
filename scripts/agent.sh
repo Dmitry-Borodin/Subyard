@@ -35,6 +35,38 @@ yexec_t() { incus exec "$INSTANCE_NAME" "${PROJ[@]}" -t -- "$@"; }
 ydocker() { yexec docker "$@"; }
 cname_for() { printf 'subyard-agent-%s' "$1"; }
 
+# Yard path of the host<->yard coding-agent session store (host-agent-sessions mount,
+# config/host.env). The same store is bound into L3 agent containers so their sessions
+# flow L3 -> yard -> host; credentials are never shared (kept local per env).
+SESSIONS_ROOT="/mnt/host/agent-sessions"
+
+# Mirror the yard<->host session split into an L3 agent container: symlink the dev
+# user's session subdirs (HOST_LINKS, e.g. ~/.claude/projects, ~/.codex/sessions) at
+# the shared store mounted in the container, so the agent's transcripts/usage land in
+# the same store the host reads (ccusage, /cost). Credentials stay in the container's
+# own home (per-env). Idempotent; mirrors scripts/04 — creates the link's parent and
+# target, skips if the store isn't mounted, never clobbers a real dir holding data.
+link_agent_sessions() {
+  local cname="$1" name target
+  [ -n "${HOST_LINKS:-}" ] || return 0
+  printf '%s\n' "$HOST_LINKS" | sed 's/[[:space:]]//g' | while IFS=: read -r name target; do
+    [ -n "$name" ] && [ -n "$target" ] || continue
+    ydocker exec -u 0 "$cname" sh -c '
+      name="$1"; target="$2"; uid="$3"
+      home="$(getent passwd "$uid" | cut -d: -f6)"; home="${home:-/home/dev}"
+      link="$home/$name"
+      [ -d "$(dirname "$target")" ] || { echo "skip $name -> $target (session store not mounted)" >&2; exit 0; }
+      install -d -o "$uid" -g "$uid" "$target" 2>/dev/null || true
+      install -d -o "$uid" -g "$uid" "$(dirname "$link")" 2>/dev/null || true
+      if [ -L "$link" ] || [ ! -e "$link" ]; then
+        ln -sfn "$target" "$link"; chown -h "$uid:$uid" "$link"
+      else
+        echo "WARNING: $link exists and is not a symlink in the agent — leaving it" >&2
+      fi
+    ' _ "$name" "$target" "$DEV_UID" || true
+  done
+}
+
 # Profile keys that are control metadata for the consumer, not env to inject into
 # the machine. Keep the -e injection and the manifest's envKeys in agreement.
 is_control_key() {
@@ -145,20 +177,42 @@ case "$sub" in
       run_image="${IMAGE_TAG:-subyard-env-$id}"
     fi
 
+    # Per-env coding-agent CREDENTIALS: each L3 agent container keeps its OWN
+    # credential store — we never bind the yard's (or host's) Claude/Codex creds
+    # into it. Same single-writer / refresh-rotation argument as the yard<->host
+    # split: a shared writable cred store races and a rotated refresh token
+    # invalidates the others. A profile that tries to share them via AGENT_MOUNTS
+    # is rejected here so a misconfig can't leak creds across tiers. Sessions
+    # (host-agent-sessions / projects / sessions) are NOT blocked: they are the
+    # share-able B-sessions class (append-mostly usage logs), not credentials.
+    for m in ${AGENT_MOUNTS:-}; do
+      case "${m,,}" in
+        *.claude/*|*.claude:*|*.codex/*|*.codex:*|*credentials*|*auth.json*)
+          die "AGENT_MOUNTS '$m' would share coding-agent credentials into the L3 container; each agent environment keeps its own credential store (sessions may be shared, creds never)" ;;
+      esac
+    done
+
+    # Sessions share L3 -> yard (-> host): bind the yard's session store in if attached.
+    share_sessions=0
+    yexec test -d "$SESSIONS_ROOT" 2>/dev/null && share_sessions=1 || true
+
     if ydocker inspect "$cname" >/dev/null 2>&1; then
       ydocker start "$cname" >/dev/null
+      [ "$share_sessions" = 1 ] && link_agent_sessions "$cname"
       ok "agent '$name' already exists — started (profile $profile)"
       exit 0
     fi
 
-    sec_line=(); build_line=()
+    sec_line=(); build_line=(); ses_line=()
     [ "$have_secrets" = 1 ] && sec_line=("Stage $profile/profile.env secrets into the yard and mount them as a file at /run/subyard/profile.env (ro), never as -e.")
     [ -n "$df" ] && build_line=("Build the env image '$run_image' from the workspace's $df (context $ctx) in the yard's Docker.")
+    [ "$share_sessions" = 1 ] && ses_line=("Link the agent's Claude/Codex session dirs at the yard's shared session store so usage flows L3 -> yard -> host; credentials stay local to this container.")
     announce "yard agent up — $name (profile $profile)" \
       ${build_line[@]+"${build_line[@]}"} \
       "Run a Docker container '$cname' inside the yard from image '$run_image'." \
       "Mount the project at /workspace, plus shared caches; export the profile's non-secret env${DEVICES:+ and devices ($DEVICES)}." \
       "Stage a visibility manifest (no secret values) at /run/subyard/profile.json (ro)." \
+      ${ses_line[@]+"${ses_line[@]}"} \
       ${sec_line[@]+"${sec_line[@]}"} \
       "Pulls/builds the image into the yard's Docker on first run."
     proceed_or_die
@@ -203,6 +257,9 @@ case "$sub" in
     # AGENT_MOUNTS (Phase 4, layer C): extra binds ONLY in this project's machine,
     # not on the yard. Each entry is docker -v syntax: "<yard-src>:<ctr-dst>[:ro]".
     for m in ${AGENT_MOUNTS:-}; do args+=(-v "$m"); done
+    # Sessions only (B-sessions): the shared store is rw so the agent appends transcripts;
+    # creds are NOT here (they stay in the container home, per-env). Linked post-start.
+    [ "$share_sessions" = 1 ] && args+=(-v "$SESSIONS_ROOT:$SESSIONS_ROOT:rw")
     args+=(-v "$ymeta:/run/subyard/profile.json:ro")
     [ "$have_secrets" = 1 ] && args+=(-v "$ysecret:/run/subyard/profile.env:ro")
     # Inject the profile's non-secret .conf keys as env, minus our control keys.
@@ -221,6 +278,7 @@ case "$sub" in
 
     info "starting agent '$cname' …"
     ydocker "${args[@]}" >/dev/null || die "docker run failed in the yard"
+    [ "$share_sessions" = 1 ] && link_agent_sessions "$cname"
     ok "agent '$name' up (profile $profile, image $run_image)"
     # Level-1 requests (mounts/caps/devices the profile wants ON the yard) are applied
     # by the root-capable reconcile, not here (agent.sh stays no-root).

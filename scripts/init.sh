@@ -2,10 +2,28 @@
 # init.sh — one-shot yard bring-up (yard init): check → install →
 # project → create → mounts → provision. Idempotent and resumable.
 # One upfront confirm; steps that need root self-elevate via sudo. Flag -y.
+# After installing Incus it re-execs itself under a fresh 'incus-admin' group
+# session (sg) so a single 'yard init' runs end-to-end with no manual re-run.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORIG_ARGS=("$@")   # preserved so we can re-exec ourselves under a fresh group session
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
+
+# Installing Incus adds the operator to 'incus-admin', but that group only takes effect in
+# a fresh session, so the daemon stays unreachable in THIS shell. Instead of stopping and
+# making the operator re-run, re-exec the whole init under a fresh group session ('sg') so
+# one 'yard init' runs end-to-end. Guarded against looping (SUBYARD_SG_REEXEC); returns
+# non-zero so callers fall back to the manual hint if 'sg' is missing or the retry still
+# can't connect. $1=1 => assume-yes in the child (the top plan was already confirmed).
+reexec_under_group() {
+  [ "${SUBYARD_SG_REEXEC:-0}" = 1 ] && return 1
+  command -v sg >/dev/null 2>&1 || return 1
+  local q; printf -v q '%q ' "$SCRIPT_DIR/init.sh" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+  local pre="SUBYARD_SG_REEXEC=1"; [ "${1:-0}" = 1 ] && pre+=" ASSUME_YES=1"
+  info "continuing under a fresh 'incus-admin' group session (no manual re-run needed)…"
+  exec sg incus-admin -c "$pre exec $q"
+}
 
 # --- config (names the state probes below need) ------------------------------
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
@@ -52,6 +70,7 @@ no_yard_extras() { ! any_yard_extras; }
 # route to a fresh group session (no reinstall — everything is already there).
 if command -v incus >/dev/null 2>&1 && ! incus info >/dev/null 2>&1 && in_admin_db; then
   warn "Incus is installed and you're in 'incus-admin', but this shell session predates that group."
+  reexec_under_group 0 || true
   cat <<'MSG'
 
 Nothing to reinstall — continue in a fresh group session:
@@ -81,6 +100,15 @@ step have_gitid     "Give the in-yard 'dev' user a git identity (from host/confi
 step no_yard_extras "Apply yard extras requested by projects (mounts/caps/devices)"
 printf '\n'
 
+# If Incus isn't set up yet, installing it switches your group, after which init
+# continues UNATTENDED in a fresh session. Say so here so this one confirmation is
+# informed consent for the steps above that will run after that switch.
+if ! have_init; then
+  printf '%sNote:%s installing Incus adds you to '\''incus-admin'\''; init then continues\n' "$C_HEAD" "$C_OFF"
+  printf '      automatically in a fresh group session and runs the remaining steps\n'
+  printf '      above without asking again — this single confirmation covers them all.\n\n'
+fi
+
 if [ "$pending" = 0 ]; then
   ok "Everything is already set up — nothing to do."
   exit 0
@@ -90,14 +118,15 @@ proceed_or_die
 STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME}" "$SCRIPT_DIR/00-check-host.sh"
 
 # Install Incus on first run. Adding you to incus-admin only takes effect in a
-# fresh group session, so if Incus still isn't reachable after install, stop and
-# print the one command to continue.
+# fresh group session, so if Incus still isn't reachable after install, re-exec
+# under one (sg) to carry through; the manual hint below is the fallback.
 if ! have_init; then
   info "→ install / init Incus"
   "$SCRIPT_DIR/01-install-incus.sh" --yes
   if ! reachable; then
     echo
     ok "Incus installed and you're added to 'incus-admin'."
+    reexec_under_group 1 || true
     cat <<'MSG'
 
 One step needs a fresh group session. Continue with:

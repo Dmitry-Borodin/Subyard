@@ -68,6 +68,28 @@ state_ids() {
   for f in "$STATE_DIR"/*.json; do [ -e "$f" ] && basename "$f" .json; done
 }
 
+# resolve_project_id <arg> — map a CLI argument to a known project id, so commands
+# can take a project by NAME from `yard list` (no need to be in its folder). Accepts:
+# a registered path (incl. the default '.'), an exact id, or a project name
+# (case-insensitive, must be unique). Prints the id; dies with a helpful message.
+resolve_project_id() {
+  local arg="${1:-.}" id nm; local -a matches=()
+  if [ -e "$arg" ]; then
+    id="$(project_id "$arg")"
+    state_exists "$id" && { printf '%s\n' "$id"; return 0; }
+  fi
+  state_exists "$arg" && { printf '%s\n' "$arg"; return 0; }
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    nm="$(state_get "$id" name)"
+    [ "${nm,,}" = "${arg,,}" ] && matches+=("$id")
+  done < <(state_ids)
+  [ "${#matches[@]}" -eq 1 ] && { printf '%s\n' "${matches[0]}"; return 0; }
+  [ "${#matches[@]}" -gt 1 ] && die "'$arg' matches multiple projects — use a path or the exact id (see: ${PROG:-yard} list)"
+  [ -e "$arg" ] && die "'$(basename "$(realpath "$arg")")' is not in the yard — run: ${PROG:-yard} sync $arg (or: bind $arg)"
+  die "no project '$arg' in the yard — see: ${PROG:-yard} list"
+}
+
 # audit <command> [args...] — append one host-side invocation record. Best-effort:
 # never fails the caller (logging must not break the CLI).
 audit() {

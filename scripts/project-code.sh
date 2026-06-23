@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # project-code.sh — open an in-yard project in VS Code via Remote-SSH into the yard.
-# Usage: project-code.sh [path]   (default '.')
+# Usage: project-code.sh [path|name|id]   (default '.'; name/id from `yard list`)
 # Resolves the project's machine-local state (yardPath + sshHost) and launches
 # `code` against vscode-remote://ssh-remote+<host><yardPath>. From there: VS Code
 # "Dev Containers: Reopen in Container" builds the agent container. Operator; no root.
@@ -24,17 +24,16 @@ DEV_GID="${DEV_GID:-1000}"
 CODE_RECOMMENDED_EXTENSIONS="${CODE_RECOMMENDED_EXTENSIONS:-anthropic.claude-code openai.chatgpt sst-dev.opencode}"
 PROJ=(--project "$INCUS_PROJECT")
 
-path="."
+arg="."
 for a in "$@"; do
-  case "$a" in -y|--yes) ;; -*) die "unknown option '$a'" ;; *) path="$a" ;; esac
+  case "$a" in -y|--yes) ;; -*) die "unknown option '$a'" ;; *) arg="$a" ;; esac
 done
-[ -e "$path" ] || die "no such path: $path"
 
-id="$(project_id "$path")"
-state_exists "$id" || die "'$(basename "$(realpath "$path")")' is not in the yard — run: ${PROG:-yard} sync $path (or: bind $path)"
+# Accept a path (default '.'), an exact id, or a project NAME from `yard list`.
+id="$(resolve_project_id "$arg")"
 yardPath="$(state_get "$id" yardPath)"
 host="$(state_get "$id" sshHost)"; host="${host:-$SSH_HOST}"
-name="$(state_get "$id" name)"; name="${name:-$(basename "$(realpath "$path")")}"
+name="$(state_get "$id" name)"; name="${name:-$id}"
 
 # Yard must be up, and SSH access must be set up (Remote-SSH needs the proxy + key).
 incus_preflight code

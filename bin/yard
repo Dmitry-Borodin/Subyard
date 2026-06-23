@@ -49,7 +49,7 @@ Project commands (code projects in the yard; default path '.'):
   export [path]   pull a diff/patch from the yard back to the host (sync projects)
   remove [path]   take a project out of the yard (--purge also deletes the copy)
   clone  <url>    clone a repo straight into the yard
-  code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
+  code   [path|name] open a project in VS Code by path or `yard list` name (Remote-SSH)
   ssh    [args]   open a shell in the yard as the dev user (or run a command)
   agent  <sub>    agent container (Docker container in the yard) for a project:
                   up [path] --profile N [--rebuild] | info | shell | exec -- cmd | down | destroy | list

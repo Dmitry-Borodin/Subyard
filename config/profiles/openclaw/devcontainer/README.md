@@ -2,7 +2,7 @@
 
 The `openclaw` profile's devcontainer, alongside its contract in
 [`profile.conf`](../profile.conf): `profile.conf` says *what toolchain* an agent
-machine needs; this is the ready-to-use `.devcontainer/` that delivers it for the
+container needs; this is the ready-to-use `.devcontainer/` that delivers it for the
 "Reopen in Container" flow (`yard code .` → Remote-SSH into the yard → Reopen in
 Container).
 
@@ -43,7 +43,7 @@ OpenClaw devcontainer and cleaned to those rules.
   reference a project's own scripts belong in that project's `.devcontainer/`,
   not in this default.
 - **Caches are workspace-local.** The profile's shared `/srv/cache/*` caches are
-  for `yard agent` machines; wire them in per project if you want cross-container
+  for `yard agent` containers; wire them in per project if you want cross-container
   sharing here.
 
 ## Optional heavy features

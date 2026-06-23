@@ -3,7 +3,7 @@
 # Usage: project-code.sh [path]   (default '.')
 # Resolves the project's machine-local state (yardPath + sshHost) and launches
 # `code` against vscode-remote://ssh-remote+<host><yardPath>. From there: VS Code
-# "Dev Containers: Reopen in Container" builds the agent machine. Operator; no root.
+# "Dev Containers: Reopen in Container" builds the agent container. Operator; no root.
 # Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

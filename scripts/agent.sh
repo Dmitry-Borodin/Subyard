@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# agent.sh — agent machines: a profile-configured Docker container INSIDE the yard
+# agent.sh — agent containers: a profile-configured Docker container INSIDE the yard
 # for a project in the yard. Docker here is the yard's nested daemon, never the host's.
 # Subcommands:
-#   up      [path] [--profile NAME] [--rebuild]   build/start the agent machine (idempotent)
+#   up      [path] [--profile NAME] [--rebuild]   build/start the agent container (idempotent)
 #   info    [path]                    show what the profile exposes (visibility manifest)
 #   shell   [path]                    interactive shell inside it
 #   exec    [path] -- <cmd...>        run a command inside it
 #   down    [path]                    stop it (keeps it)
 #   destroy [path]                    remove it (workspace/caches in the yard stay)
-#   list                              list agent machines in the yard
+#   list                              list agent containers in the yard
 # The profile (config/profiles/<NAME>/profile.conf) supplies the base image, shared
 # caches, non-secret env, and devices. If it sets IMAGE_DOCKERFILE (a path inside the
 # workspace), `up` builds that image in the yard's Docker and runs the agent from it
@@ -46,7 +46,7 @@ is_control_key() {
   esac
 }
 
-# Visibility manifest for an agent machine — declares what is available in THIS tier:
+# Visibility manifest for an agent container — declares what is available in THIS tier:
 # the image it runs, feature flags, cache paths, exported env-var NAMES, secret slots
 # (name + mount path, never values), devices. World-readable; no secret values. Reads
 # up-scope vars ($profile, $pf, $BASE_IMAGE, $run_image, $have_secrets, $OPTIONAL_FEATURES,
@@ -87,7 +87,7 @@ sub="${1:-}"; shift || true
 # --- list: no project needed -------------------------------------------------
 if [ "$sub" = list ]; then
   preflight
-  echo "Agent machines in the yard:"
+  echo "Agent containers in the yard:"
   ydocker ps -a --filter "label=subyard.agent=1" \
     --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null
   exit 0
@@ -230,8 +230,8 @@ case "$sub" in
     cat <<MSG
 
 Next:
-  ${PROG:-yard} agent shell $path          # shell inside the agent machine
-  ${PROG:-yard} agent info  $path          # what the profile exposes in this machine
+  ${PROG:-yard} agent shell $path          # shell inside the agent container
+  ${PROG:-yard} agent info  $path          # what the profile exposes in this container
   (toolchain install for '$profile' + emulator are the next slice)
 MSG
     ;;

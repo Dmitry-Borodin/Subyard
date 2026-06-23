@@ -1,16 +1,16 @@
 # Subyard
 
-> **A local yard for isolated agent machines.**
+> **A local yard for isolated agent containers.**
 
-Subyard is a local "yard" that runs several **isolated agent machines** for
+Subyard is a local "yard" that runs several **isolated agent containers** for
 **development**. One developer runs many coding agents
-(Claude Code, Codex, …) in parallel; each works in its own machine, runs the
+(Claude Code, Codex, …) in parallel; each works in its own container, runs the
 full test suite (emulators, build caches, …), and never touches the host.
 
 ## Model
 
 - **Yard** — an isolation layer (an [Incus](https://linuxcontainers.org/incus/)
-  instance) that keeps the host clean. Inside it live several **agent machines**
+  instance) that keeps the host clean. Inside it live several **agent containers**
   (dev containers), one per agent.
 - **Generic core + swappable profiles.** The reusable core — isolation, a
   persistent `/srv`, narrow host mounts, a secrets/gateway boundary, agent

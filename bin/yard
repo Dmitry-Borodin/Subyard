@@ -32,7 +32,7 @@ list_commands() { printf '%s\n' "${COMMANDS[@]}"; }
 
 usage() {
   cat <<U
-$PROG $YARD_VERSION — a local yard for isolated agent machines.
+$PROG $YARD_VERSION — a local yard for isolated agent containers.
 
 Usage: $PROG [option] <command> [args]
 
@@ -51,7 +51,7 @@ Project commands (code projects in the yard; default path '.'):
   clone  <url>    clone a repo straight into the yard
   code   [path]   open the project in VS Code (Remote-SSH → Reopen in Container)
   ssh    [args]   open a shell in the yard as the dev user (or run a command)
-  agent  <sub>    agent machine (Docker container in the yard) for a project:
+  agent  <sub>    agent container (Docker container in the yard) for a project:
                   up [path] --profile N [--rebuild] | info | shell | exec -- cmd | down | destroy | list
   list            list projects currently in the yard
   status          read-only overview (yard + ssh + mounts + services + projects)

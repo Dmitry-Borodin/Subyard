@@ -80,6 +80,20 @@ esac
 cmd="$1"; shift
 audit "$cmd" "$@"
 
+# Stale group session? `init` grants the incus-admin group, but the shell that ran it
+# can't use the group until a fresh login. So if incusd is unreachable ONLY for that
+# reason, transparently re-run whatever command was asked under a fresh group session —
+# ANY command (status, sync, agent, even init itself), so the user never has to type
+# `sg incus-admin -c …`. Guarded against recursion. No-op when incus is absent or the
+# group was never granted (fresh host); the normal flow then reports the real state.
+if [ -z "${SUBYARD_GROUP_REEXEC:-}" ] \
+   && command -v incus >/dev/null 2>&1 && ! incus info >/dev/null 2>&1 \
+   && id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin \
+   && command -v sg >/dev/null 2>&1; then
+  export SUBYARD_GROUP_REEXEC=1
+  exec sg incus-admin -c "$(printf '%q ' "$SELF" "$cmd" "$@")"
+fi
+
 # Reserved but not wired yet. Friendlier than "unknown command".
 soon() { printf "%s: '%s' is planned for %s — not implemented yet.\n" "$PROG" "$1" "$2" >&2; exit 2; }
 

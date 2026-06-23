@@ -134,7 +134,9 @@ incus_preflight() {
   local cmd="${1:-<command>}"
   command -v incus >/dev/null 2>&1 || die "incus not found — run 'yard init' first"
   incus info >/dev/null 2>&1 && return 0
-  if id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; then
+  # In group but unreachable, and bin/yard's auto re-exec under `sg` has NOT already run
+  # (or it ran and didn't help): only advise the manual sg path when we haven't tried it.
+  if [ -z "${SUBYARD_GROUP_REEXEC:-}" ] && id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; then
     warn "can't reach incusd — this shell predates the 'incus-admin' group (the yard is fine)."
     printf '  Run it in a fresh group session:  %ssg incus-admin -c '\''yard %s'\''%s\n' "$C_HEAD" "$cmd" "$C_OFF" >&2
     printf '  (or: newgrp incus-admin, then re-run — log out/in to make it permanent)\n' >&2

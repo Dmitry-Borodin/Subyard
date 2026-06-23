@@ -83,17 +83,19 @@ for d in .claude .codex; do
   runuser -u "$DEV_USER" -- mkdir -p "$p"
 done
 
-# Host-backed symlinks in dev's $HOME (declared by HOST_LINKS in config/host.env): each
-# entry "<name under $HOME>:<target in yard>" points a path at a host<->yard mount — used
-# for SESSIONS only now (e.g. .claude/projects -> the host-agent-sessions mount).
-# Idempotent; ensures the link's parent exists; skips an entry whose mount (by convention
-# /mnt/host/<name>) isn't attached; never clobbers a real directory that already holds data.
+# Symlink dev's session paths to the host-agent-sessions mount (HOST_LINKS, config/host.env).
+# Entry "<name>:<target>[:file]"; ":file" makes the target's parent, not the path. Idempotent;
+# skips an unattached mount; never clobbers a real directory that already holds data.
 if [ -n "${HOST_LINKS:-}" ]; then
-  printf '%s\n' "$HOST_LINKS" | sed 's/[[:space:]]//g' | while IFS=: read -r name target; do
+  printf '%s\n' "$HOST_LINKS" | sed 's/[[:space:]]//g' | while IFS=: read -r name target kind; do
     [ -n "$name" ] && [ -n "$target" ] || continue
     mroot="/$(printf '%s' "$target" | cut -d/ -f2-4)"
     [ -d "$mroot" ] || { echo "skip $name -> $target (host mount $mroot not attached)" >&2; continue; }
-    runuser -u "$DEV_USER" -- mkdir -p "$target" 2>/dev/null || true
+    if [ "$kind" = file ]; then
+      runuser -u "$DEV_USER" -- mkdir -p "$(dirname "$target")" 2>/dev/null || true
+    else
+      runuser -u "$DEV_USER" -- mkdir -p "$target" 2>/dev/null || true
+    fi
     link="$dev_home/$name"
     runuser -u "$DEV_USER" -- mkdir -p "$(dirname "$link")" 2>/dev/null || true
     if [ -L "$link" ] || [ ! -e "$link" ]; then

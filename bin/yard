@@ -15,7 +15,7 @@ PROG="${0##*/}"
 [ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
 
 # Command names, in order, for --help and --list.
-COMMANDS=(init teardown check sync bind export remove clone code ssh agent list status logs start stop)
+COMMANDS=(init teardown check sync bind export remove clone code ssh agent list status logs usage start stop)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -56,6 +56,7 @@ Project commands (code projects in the yard; default path '.'):
   list            list projects currently in the yard
   status          read-only overview (yard + ssh + mounts + services + projects)
   logs            tail the yard's runtime logs (systemd journal + docker)
+  usage [args]    show the yard's coding-agent token usage (ccusage over the shared store)
   start | stop    start / stop the yard
 
 Options:
@@ -105,6 +106,7 @@ case "$cmd" in
   bind)      exec "$S/project-sync.sh" bind "$@" ;;
   list)      exec "$S/project-list.sh" "$@" ;;
   logs)      exec "$S/yard-logs.sh" "$@" ;;
+  usage)     exec "$S/yard-usage.sh" "$@" ;;
   start | stop | status | up | down) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;  # up/down: back-compat aliases
   code)      exec "$S/project-code.sh" "$@" ;;
   remove)    exec "$S/project-remove.sh" "$@" ;;

@@ -10,12 +10,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-# --- load config -------------------------------------------------------------
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
 
 ufw_active=0

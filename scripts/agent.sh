@@ -16,7 +16,7 @@
 # BASE_IMAGE directly. An optional sibling profile.env (gitignored, host-only)
 # carries secrets: it is staged into the yard and bind-mounted as a file at
 # /run/subyard/profile.env (via the file mount, not -e).
-# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
+# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -24,11 +24,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib-state.sh
 . "$SCRIPT_DIR/lib-state.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_UID="${DEV_UID:-1000}"

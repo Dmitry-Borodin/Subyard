@@ -1,35 +1,22 @@
 #!/usr/bin/env bash
 # 05-mount-host-paths.sh — Phase 2: create $HOST_BASE (/srv/subyard) and reconcile the
-# yard's host mounts to the declarative HOST_MOUNTS list (config/subyard.env): attach
+# yard's host mounts to the declarative HOST_MOUNTS list (config/host.env): attach
 # missing, re-attach drifted, detach de-listed host-* mounts. Root; idempotent; a
 # re-run applies config changes. Host exposes ONLY $HOST_BASE. SHIFT_MODE=shift|acl.
-# Config: config/incus.project.env + config/subyard.env.
+# Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-# --- load config -------------------------------------------------------------
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
-
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-container}"
-HOST_BASE="${HOST_BASE:-/srv/subyard}"
 SHIFT_MODE="${SHIFT_MODE:-shift}"
 DEV_USER="${DEV_USER:-dev}"
 DEV_UID="${DEV_UID:-1000}"
-# Declarative host mounts (see config/subyard.env). Default keeps old behaviour if
-# the config predates HOST_MOUNTS. Lines: "<name>:<yard-path>:<ro|rw>:<dir-mode>".
-HOST_MOUNTS="${HOST_MOUNTS:-
-host-secrets:/mnt/host/secrets:ro:0700
-host-memory:/mnt/host/memory:rw:0770
-host-devcontainers:/mnt/host/devcontainers:ro:0755
-}"
+# HOST_BASE and the declarative HOST_MOUNTS list come from config/host.env (loaded
+# above). Lines: "<name>:<yard-path>:<ro|rw>:<dir-mode>".
 
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }

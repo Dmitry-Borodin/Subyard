@@ -17,7 +17,8 @@ OPERATOR_HOME="$(getent passwd "$OPERATOR_USER" | cut -d: -f6)"
 [ -n "$OPERATOR_HOME" ] || die "cannot resolve home dir for user '$OPERATOR_USER'"
 OPERATOR_GROUP="$(id -gn "$OPERATOR_USER")"
 
-SUBYARD_HOME="${SUBYARD_HOME:-$OPERATOR_HOME/.subyard}"
+# $SUBYARD_HOME is already resolved under the real operator by lib.sh's auto-load (it reads
+# the same SUDO_USER), so it points at the operator's home even though this script self-elevates.
 STORAGE_POOL="${STORAGE_POOL:-default}"
 STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/storage}"
 INCUS_BRIDGE="${INCUS_BRIDGE:-incusbr0}"

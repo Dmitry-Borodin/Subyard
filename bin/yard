@@ -9,6 +9,11 @@ S="$REPO/scripts"
 YARD_VERSION="0.1.0-dev"
 PROG="${0##*/}"
 
+# Host paths live in config/host.env (the single source). Source it best-effort — it is
+# plain assignments with no deps, so `yard --help`/`--list` still work if it is missing.
+# shellcheck disable=SC1091
+[ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
+
 # Command names, in order, for --help and --list.
 COMMANDS=(setup uninstall check sync bind export remove clone code ssh agent list status logs up down)
 

@@ -5,7 +5,7 @@
 # Diffs the yard copy against the host copy and writes a unified patch you review and
 # apply yourself (git apply -p1 / patch -p1), keeping the host copy isolated.
 # Transport mirrors sync: a tar stream over `incus exec`.
-# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
+# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -13,15 +13,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib-state.sh
 . "$SCRIPT_DIR/lib-state.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_UID="${DEV_UID:-1000}"
-SUBYARD_HOME="${SUBYARD_HOME:-$HOME/.subyard}"
 PROJ=(--project "$INCUS_PROJECT")
 
 # --- parse args --------------------------------------------------------------

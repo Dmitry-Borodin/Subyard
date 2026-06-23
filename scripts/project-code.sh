@@ -4,7 +4,7 @@
 # Resolves the project's machine-local state (yardPath + sshHost) and launches
 # `code` against vscode-remote://ssh-remote+<host><yardPath>. From there: VS Code
 # "Dev Containers: Reopen in Container" builds the agent machine. Operator; no root.
-# Config: config/incus.project.env + config/subyard.env.
+# Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -12,11 +12,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib-state.sh
 . "$SCRIPT_DIR/lib-state.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 SSH_HOST="${SSH_HOST:-yard}"

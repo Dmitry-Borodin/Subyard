@@ -3,7 +3,7 @@
 # Usage: project-remove.sh [path] [--purge]
 #   (default)  drop the machine-local state; leaves the yard copy in place
 #   --purge    also delete the yard copy at /srv/workspaces/<id>
-# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
+# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -11,11 +11,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib-state.sh
 . "$SCRIPT_DIR/lib-state.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 PROJ=(--project "$INCUS_PROJECT")

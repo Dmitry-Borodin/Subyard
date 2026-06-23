@@ -17,29 +17,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
+# The operator (not root) owns ~/.ssh, ~/.subyard, ~/.config/subyard. Resolve the real
+# operator user for the cleanup below (chown/removal); $SUBYARD_HOME / $SUBYARD_CONFIG_HOME
+# are already under that operator via lib.sh's auto-load, even after the sudo re-exec.
+OPERATOR_USER="${SUBYARD_USER:-${SUDO_USER:-${USER:-root}}}"
+OPERATOR_HOME="$(getent passwd "$OPERATOR_USER" | cut -d: -f6)"
+[ -n "$OPERATOR_HOME" ] || OPERATOR_HOME="$HOME"
+
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 SRV_POOL="${SRV_POOL:-default}"
 SRV_VOLUME="${SRV_VOLUME:-yard-srv}"
 STORAGE_POOL="${STORAGE_POOL:-default}"
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
+STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/storage}"
 
 KEEP_DATA=0
 for a in "$@"; do case "$a" in --keep-data) KEEP_DATA=1 ;; esac; done
-
-# The operator (not root) owns ~/.ssh, ~/.subyard, ~/.config/subyard. Resolve them even
-# after the sudo re-exec (when $HOME would otherwise be root's).
-OPERATOR_USER="${SUBYARD_USER:-${SUDO_USER:-${USER:-root}}}"
-OPERATOR_HOME="$(getent passwd "$OPERATOR_USER" | cut -d: -f6)"
-[ -n "$OPERATOR_HOME" ] || OPERATOR_HOME="$HOME"
-SUBYARD_HOME="${SUBYARD_HOME:-$OPERATOR_HOME/.subyard}"
-SUBYARD_CONFIG_HOME="${SUBYARD_CONFIG_HOME:-$OPERATOR_HOME/.config/subyard}"
-STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/storage}"
 
 # --- announce ----------------------------------------------------------------
 if [ "$KEEP_DATA" = 1 ]; then

@@ -9,6 +9,35 @@ SUBYARD_LIB_SOURCED=1
 SUBYARD_SCRIPT_PATH="$0"
 SUBYARD_SCRIPT_ARGV=("$@")
 
+# Config dir (scripts/../config), resolved from lib.sh's own location so it is correct
+# regardless of the caller's CWD.
+SUBYARD_CONFIG_DIR="${SUBYARD_CONFIG_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../config" 2>/dev/null && pwd)}"
+
+# The real operator's home (not root's) even under a sudo re-exec — so config/host.env
+# names $SUBYARD_HOME/$SUBYARD_CONFIG_HOME under the operator. Same resolution the root
+# scripts use for OPERATOR_USER. Safe under set -e (getent failure → $HOME).
+_subyard_operator_home() {
+  local u="${SUBYARD_USER:-${SUDO_USER:-${USER:-}}}" h=
+  if [ -n "$u" ]; then h="$(getent passwd "$u" 2>/dev/null | cut -d: -f6 || true)"; fi
+  printf '%s\n' "${h:-$HOME}"
+}
+
+# load_config — source the layered config files in order, once per process. Each file
+# owns distinct keys and uses ${VAR:-…}/:= so an env override always wins. host.env names
+# every real host path (see config/host.env); incus.project.env is sourced first so
+# host.env can follow project values (e.g. HOST_BASE ← RESTRICTED_DISK_PATHS). Called
+# automatically when lib.sh is sourced — scripts never invoke it themselves.
+load_config() {
+  [ -n "${SUBYARD_CONFIG_LOADED:-}" ] && return 0
+  SUBYARD_CONFIG_LOADED=1
+  : "${SUBYARD_OPERATOR_HOME:=$(_subyard_operator_home)}"
+  local f
+  for f in incus.project.env subyard.env host.env; do
+    # shellcheck disable=SC1090
+    [ -r "$SUBYARD_CONFIG_DIR/$f" ] && . "$SUBYARD_CONFIG_DIR/$f"
+  done
+}
+
 # -h/--help on any script prints its header comment block and exits.
 _yard_help_and_exit() {
   awk 'NR==1{next} /^#/{sub(/^#[ ]?/,""); print; next} {exit}' "$SUBYARD_SCRIPT_PATH"
@@ -22,6 +51,10 @@ for _arg in "$@"; do
   esac
 done
 unset _arg
+
+# Load layered config now, so every script that sources lib.sh has config (and host paths)
+# available with no boilerplate. -h already exited above (help needs no config).
+load_config
 
 if [ -t 1 ]; then
   C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_BAD=$'\033[31m'

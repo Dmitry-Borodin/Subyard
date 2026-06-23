@@ -6,17 +6,12 @@
 #   unit     limit to one systemd unit (e.g. ssh, docker); default = whole journal
 # This is the in-yard runtime log; the host-side audit log of `yard` invocations
 # lives at $SUBYARD_HOME/logs/yard.log. Read-only; operator-owned; no root.
-# Config: config/incus.project.env + config/subyard.env.
+# Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 PROJ=(--project "$INCUS_PROJECT")

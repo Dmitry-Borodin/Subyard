@@ -13,8 +13,8 @@ SUBYARD_LIBSTATE_SOURCED=1
 
 command -v jq >/dev/null 2>&1 || die "jq not found on host (needed for project state) — apt-get install jq"
 
-SUBYARD_CONFIG_HOME="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}"
-SUBYARD_HOME="${SUBYARD_HOME:-$HOME/.subyard}"
+# SUBYARD_CONFIG_HOME / SUBYARD_HOME come from config/host.env, already loaded by lib.sh
+# (sourced before this file) — the single place host paths are named.
 STATE_DIR="$SUBYARD_CONFIG_HOME/projects"
 LOG_DIR="$SUBYARD_HOME/logs"
 STATE_SCHEMA=1

@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
 # 03-create-subyard.sh — Phase 2: launch the yard instance, pass /dev/kvm, attach /srv volume.
 # Operator (incus-admin, no sudo). Idempotent.
-# Config: config/incus.project.env + config/subyard.env.
+# Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
-
-# --- load config -------------------------------------------------------------
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -21,7 +14,6 @@ BASE_IMAGE="${BASE_IMAGE:-images:debian/13}"
 BASE_IMAGE_FALLBACK="${BASE_IMAGE_FALLBACK:-images:ubuntu/24.04}"
 SRV_POOL="${SRV_POOL:-default}"
 SRV_VOLUME="${SRV_VOLUME:-yard-srv}"
-HOST_BASE="${HOST_BASE:-/srv/subyard}"
 DEV_USER="${DEV_USER:-dev}"
 
 PROJ=(--project "$INCUS_PROJECT")

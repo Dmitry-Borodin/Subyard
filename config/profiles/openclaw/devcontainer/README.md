@@ -33,7 +33,7 @@ OpenClaw devcontainer and cleaned to those rules.
 - **Agent state is the yard default, sourced from the yard — not the host.**
   Claude/Codex credentials + session/usage are staged on the host under
   `$HOST_BASE/host-agent/{claude,codex}`, mounted rw into the yard at
-  `/mnt/host/agent` (the `host-agent` entry in `HOST_MOUNTS`, `config/subyard.env`
+  `/mnt/host/agent` (the `host-agent` entry in `HOST_MOUNTS`, `config/host.env`
   — decision #23), and bound into this container from that yard path so
   subscription usage is one shared pool. No host paths are hardcoded here. The
   ssh-agent socket is forwarded into the yard by default (`FORWARD_SSH_AGENT=1`);

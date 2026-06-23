@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
 # 02-create-project.sh — Phase 1: create the restricted Incus project.
 # Operator (incus-admin, no sudo). Idempotent.
-# Config: config/incus.project.env — INCUS_PROJECT (subyard), RESTRICTED_DISK_PATHS (/srv/subyard).
+# Config: config/incus.project.env — INCUS_PROJECT, RESTRICTED_DISK_PATHS (see config/host.env).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-# --- load config -------------------------------------------------------------
-CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config/incus.project.env}"
-# shellcheck disable=SC1090
-[ -r "$CONFIG_FILE" ] && . "$CONFIG_FILE"
-
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
-RESTRICTED_DISK_PATHS="${RESTRICTED_DISK_PATHS:-/srv/subyard}"
+RESTRICTED_DISK_PATHS="${RESTRICTED_DISK_PATHS:-}"
 ROOT_POOL="${ROOT_POOL:-${SRV_POOL:-default}}"
 INCUS_NETWORK="${INCUS_NETWORK:-${INCUS_BRIDGE:-incusbr0}}"
 

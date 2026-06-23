@@ -16,14 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib-state.sh
 . "$SCRIPT_DIR/lib-state.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
-HOST_BASE="${HOST_BASE:-/srv/subyard}"
 SHIFT_MODE="${SHIFT_MODE:-shift}"
 DEV_UID="${DEV_UID:-1000}"
 PROFILES_DIR="$SCRIPT_DIR/../config/profiles"

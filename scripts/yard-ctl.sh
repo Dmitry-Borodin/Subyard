@@ -3,24 +3,18 @@
 #   up      start the yard instance (idempotent)
 #   down    stop the yard instance (idempotent)
 #   status  read-only overview: state, IP, ssh endpoint, mounts, services, projects
-# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env.
+# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
 SSH_HOST="${SSH_HOST:-yard}"
 SSH_PORT="${SSH_PORT:-2222}"
 FORWARD_SSH_AGENT="${FORWARD_SSH_AGENT:-0}"
-SUBYARD_CONFIG_HOME="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}"
 PROJ=(--project "$INCUS_PROJECT")
 
 action="${1:-status}"; shift || true

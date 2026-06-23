@@ -8,14 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"
 
 # --- config (names the state probes below need) ------------------------------
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
-HOST_BASE="${HOST_BASE:-/srv/subyard}"
 INCUS_BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
 STORAGE_POOL="${STORAGE_POOL:-default}"
 PROJ=(--project "$INCUS_PROJECT")
@@ -40,7 +34,7 @@ in_admin_db()   { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-
 # so "pending" here just means "reconcile the union" — re-applying is harmless.
 any_yard_extras() {
   command -v jq >/dev/null 2>&1 || return 1
-  local sd="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}/projects" f prof pf
+  local sd="$SUBYARD_CONFIG_HOME/projects" f prof pf
   [ -d "$sd" ] || return 1
   for f in "$sd"/*.json; do
     [ -e "$f" ] || continue
@@ -93,7 +87,7 @@ if [ "$pending" = 0 ]; then
 fi
 proceed_or_die
 
-STORAGE_PATH="${STORAGE_PATH:-$HOME/.subyard}" "$SCRIPT_DIR/00-check-host.sh"
+STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME}" "$SCRIPT_DIR/00-check-host.sh"
 
 # Install Incus on first run. Adding you to incus-admin only takes effect in a
 # fresh group session, so if Incus still isn't reachable after install, stop and

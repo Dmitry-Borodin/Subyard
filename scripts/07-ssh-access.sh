@@ -11,11 +11,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
@@ -24,7 +19,6 @@ SSH_PORT="${SSH_PORT:-2222}"
 # Opt-in (default off): forward the host ssh-agent so in-yard git over SSH uses your
 # host keys without copying any private key into the yard (decision #23).
 FORWARD_SSH_AGENT="${FORWARD_SSH_AGENT:-0}"
-SUBYARD_HOME="${SUBYARD_HOME:-$HOME/.subyard}"
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
 

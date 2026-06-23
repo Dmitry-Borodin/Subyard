@@ -2,18 +2,11 @@
 # 04-provision-subyard.sh — Phase 3: provision the yard via `incus exec` (core pkgs,
 # Docker Stage 1, user 'dev', /srv layout, ssh/docker) + host-side kvm-gid fix. Idempotent.
 # Core only — toolchain is per-profile (Phase 4). Agents never get the Docker socket.
-# Config: config/incus.project.env + config/subyard.env.
+# Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
-
-# --- load config -------------------------------------------------------------
-for cfg in incus.project.env subyard.env; do
-  f="$SCRIPT_DIR/../config/$cfg"
-  # shellcheck disable=SC1090
-  [ -r "$f" ] && . "$f"
-done
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -37,7 +30,7 @@ announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
 # --- 1. provision inside the yard --------------------------------------------
 # Quoted heredoc: nothing expands on the host; vars arrive via --env.
 info "provisioning inside $INSTANCE_NAME (packages, Docker, user, /srv, services)"
-incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" --env DEV_UID="$DEV_UID" -- bash -euo pipefail -s <<'EOS'
+incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" --env DEV_UID="$DEV_UID" --env HOST_LINKS="${HOST_LINKS:-}" -- bash -euo pipefail -s <<'EOS'
 export DEBIAN_FRONTEND=noninteractive
 # The yard bridge is IPv4-only (ipv6.address=none), so steer apt to IPv4 — mirrors that
 # resolve to AAAA records would otherwise be tried over an unreachable IPv6 path first.
@@ -75,15 +68,18 @@ elif [ "$(id -u "$DEV_USER")" != "$DEV_UID" ]; then
 fi
 usermod -aG yard,kvm,docker "$DEV_USER"
 
-# Coding-agent state (yard default via the 'host-agent' HOST_MOUNTS entry): point the
-# dev user's ~/.claude and ~/.codex at the shared host<->yard mount (/mnt/host/agent),
-# so the agent's credentials and session/usage are one pool. Only when the mount is
-# present; idempotent; never clobbers a real directory that already holds data.
-if [ -d /mnt/host/agent ]; then
+# Host-backed symlinks in dev's $HOME (declared by HOST_LINKS in config/host.env):
+# point e.g. ~/.claude and ~/.codex at a shared host<->yard mount so coding agents find
+# their credentials + session/usage where they expect it (one pool, not split). Each
+# entry is "<name under $HOME>:<target in yard>". Idempotent; skips an entry whose mount
+# isn't attached; never clobbers a real directory that already holds data.
+if [ -n "${HOST_LINKS:-}" ]; then
   dev_home="$(getent passwd "$DEV_USER" | cut -d: -f6)"
-  for a in claude codex; do
-    runuser -u "$DEV_USER" -- mkdir -p "/mnt/host/agent/$a" 2>/dev/null || true
-    link="$dev_home/.$a"; target="/mnt/host/agent/$a"
+  printf '%s\n' "$HOST_LINKS" | sed 's/[[:space:]]//g' | while IFS=: read -r name target; do
+    [ -n "$name" ] && [ -n "$target" ] || continue
+    [ -d "$(dirname "$target")" ] || { echo "skip $name -> $target (host mount not attached)" >&2; continue; }
+    runuser -u "$DEV_USER" -- mkdir -p "$target" 2>/dev/null || true
+    link="$dev_home/$name"
     if [ -L "$link" ] || [ ! -e "$link" ]; then
       ln -sfn "$target" "$link"; chown -h "$DEV_USER:$DEV_USER" "$link"
     else

@@ -25,8 +25,10 @@ _subyard_operator_home() {
 # load_config — source the layered config files in order, once per process. Each file
 # owns distinct keys and uses ${VAR:-…}/:= so an env override always wins. host.env names
 # every real host path (see config/host.env); incus.project.env is sourced first so
-# host.env can follow project values (e.g. HOST_BASE ← RESTRICTED_DISK_PATHS). Called
-# automatically when lib.sh is sourced — scripts never invoke it themselves.
+# host.env can follow project values (e.g. HOST_BASE ← RESTRICTED_DISK_PATHS). Last comes
+# the private overlay (../private/config.env, gitignored separate repo) — operator-specific
+# overrides like DEV_SUDO=1 that must not ship in the public defaults. Called automatically
+# when lib.sh is sourced — scripts never invoke it themselves.
 load_config() {
   [ -n "${SUBYARD_CONFIG_LOADED:-}" ] && return 0
   SUBYARD_CONFIG_LOADED=1
@@ -36,6 +38,8 @@ load_config() {
     # shellcheck disable=SC1090
     [ -r "$SUBYARD_CONFIG_DIR/$f" ] && . "$SUBYARD_CONFIG_DIR/$f"
   done
+  # shellcheck disable=SC1091
+  [ -r "$SUBYARD_CONFIG_DIR/../private/config.env" ] && . "$SUBYARD_CONFIG_DIR/../private/config.env"
 }
 
 # -h/--help on any script prints its header comment block and exits.

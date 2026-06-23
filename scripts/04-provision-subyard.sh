@@ -33,7 +33,7 @@ announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
 # --- 1. provision inside the yard --------------------------------------------
 # Quoted heredoc: nothing expands on the host; vars arrive via --env.
 info "provisioning inside $INSTANCE_NAME (packages, Docker, user, /srv, services)"
-incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" --env DEV_UID="$DEV_UID" --env HOST_LINKS="${HOST_LINKS:-}" -- bash -euo pipefail -s <<'EOS'
+incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" --env DEV_UID="$DEV_UID" --env DEV_SUDO="${DEV_SUDO:-0}" --env HOST_LINKS="${HOST_LINKS:-}" -- bash -euo pipefail -s <<'EOS'
 export DEBIAN_FRONTEND=noninteractive
 # The yard bridge is IPv4-only (ipv6.address=none), so steer apt to IPv4 — mirrors that
 # resolve to AAAA records would otherwise be tried over an unreachable IPv6 path first.
@@ -42,7 +42,7 @@ apt-get update -qq
 
 # Core packages only (toolchain specifics belong to the profile, not core).
 apt-get install -y -qq \
-  ca-certificates curl gnupg lsb-release \
+  ca-certificates curl gnupg lsb-release sudo \
   openssh-server git git-lfs jq rsync make build-essential zip unzip uidmap \
   python3 python3-venv pipx nodejs npm
 git lfs install --system >/dev/null 2>&1 || true
@@ -70,6 +70,19 @@ elif [ "$(id -u "$DEV_USER")" != "$DEV_UID" ]; then
   echo "WARNING: $DEV_USER uid $(id -u "$DEV_USER") != DEV_UID $DEV_UID — host mounts won't map to $DEV_USER" >&2
 fi
 usermod -aG yard,kvm,docker "$DEV_USER"
+
+# dev sudo (DEV_SUDO; public default 0, enable in private/config.env): passwordless sudo so
+# the agent — and you, via `yard shell` — can make root changes in the yard. dev is already
+# ~root-in-yard via the docker group and the yard is unprivileged, so this doesn't widen the
+# real boundary. Reconciled: DEV_SUDO=0 removes the grant on the next provision.
+sudoers="/etc/sudoers.d/90-subyard-$DEV_USER"
+if [ "${DEV_SUDO:-0}" = 1 ]; then
+  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$DEV_USER" > "$sudoers.tmp"
+  chmod 0440 "$sudoers.tmp"
+  visudo -cf "$sudoers.tmp" >/dev/null && mv -f "$sudoers.tmp" "$sudoers" || { rm -f "$sudoers.tmp"; echo "sudoers validation failed — left dev without sudo" >&2; }
+else
+  rm -f "$sudoers"
+fi
 
 # Coding-agent state. Credentials live per-yard in rootfs (~/.claude, ~/.codex) and are
 # never shared with the host; only sessions are shared via HOST_LINKS (below), pointing

@@ -18,6 +18,29 @@ _yard_profiles() {
   ( cd "$d" && ls -1 ./*.conf 2>/dev/null | sed 's,^\./,,;s,\.conf$,,' )
 }
 
+# Host-side state home: honor an explicit override, else derive the same default as
+# config/host.env (so completion and the CLI can never disagree on where state lives).
+_yard_config_home() {
+  if [ -n "${SUBYARD_CONFIG_HOME:-}" ]; then printf '%s\n' "$SUBYARD_CONFIG_HOME"; return 0; fi
+  local repo; repo="$(_yard_repo "$1")" || return 1
+  [ -r "$repo/config/host.env" ] || return 1
+  ( . "$repo/config/host.env" >/dev/null 2>&1; printf '%s\n' "${SUBYARD_CONFIG_HOME:-}" )
+}
+
+# Project names from machine-local state ($SUBYARD_CONFIG_HOME/projects/*.json) — the
+# same names `yard list` shows and `yard code <name>` resolves. No jq: pull the "name"
+# field with sed so completion stays dependency-free.
+_yard_projects() {
+  local home; home="$(_yard_config_home "$1")" || return 0
+  local d="$home/projects" f name
+  [ -n "$home" ] && [ -d "$d" ] || return 0
+  for f in "$d"/*.json; do
+    [ -e "$f" ] || continue
+    name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$f" | head -n1)"
+    [ -n "$name" ] && printf '%s\n' "$name"
+  done
+}
+
 _yard() {
   local cur prev words cword cmd
   cur="${COMP_WORDS[COMP_CWORD]}"
@@ -61,7 +84,17 @@ _yard() {
       ;;
     import) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--bind --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
     remove) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--purge --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
-    sync|export|code) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
+    sync|export) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
+    code)
+      # `yard code` takes a project NAME (from `yard list`) or a directory path.
+      if [[ "$cur" == -* ]]; then
+        COMPREPLY=( $(compgen -W '--yes' -- "$cur") )
+      else
+        local IFS=$'\n'  # keep project names with spaces intact
+        COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") )
+        COMPREPLY+=( $(compgen -d -- "$cur") )
+      fi
+      ;;
     teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
     init|setup|check|list|status|logs|start|stop|up|down) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
     *) ;;  # clone (url), ssh (pass-through): leave to default

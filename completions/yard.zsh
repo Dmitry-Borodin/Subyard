@@ -18,6 +18,36 @@ _yard_profiles() {
   print -r -- ${(@)$(cd "$d" && print -r -- *.conf(N:r))}
 }
 
+# Host-side state home: honor an explicit override, else derive the same default as
+# config/host.env (so completion and the CLI agree on where state lives).
+_yard_config_home() {
+  if [[ -n ${SUBYARD_CONFIG_HOME:-} ]]; then print -r -- "$SUBYARD_CONFIG_HOME"; return 0; fi
+  local repo; repo="$(_yard_repo)" || return 1
+  [[ -r $repo/config/host.env ]] || return 1
+  ( source "$repo/config/host.env" >/dev/null 2>&1; print -r -- "${SUBYARD_CONFIG_HOME:-}" )
+}
+
+# Project names from machine-local state ($SUBYARD_CONFIG_HOME/projects/*.json) — the
+# same names `yard list` shows and `yard code <name>` resolves. No jq: pull "name" via sed.
+_yard_projects() {
+  local home d f name
+  home="$(_yard_config_home)" || return 0
+  d="$home/projects"
+  [[ -n $home && -d $d ]] || return 0
+  for f in $d/*.json(N); do
+    name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$f" | head -n1)"
+    [[ -n $name ]] && print -r -- "$name"
+  done
+}
+
+# `yard code` target: a known project name or a directory path.
+_yard_code_target() {
+  local -a projs; projs=( ${(f)"$(_yard_projects)"} )
+  _alternative \
+    'projects:project:compadd -a projs' \
+    'directories:directory:_files -/'
+}
+
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
@@ -53,7 +83,8 @@ _yard() {
           ;;
         import) _arguments '--bind[mount instead of copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
         remove) _arguments '--purge[also delete yard copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
-        sync|export|code) _arguments '--yes[skip prompt]' '*:project:_files -/' ;;
+        sync|export) _arguments '--yes[skip prompt]' '*:project:_files -/' ;;
+        code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
         teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;
         clone) _message 'repository URL' ;;
         *) _arguments '--yes[skip prompt]' '--help[show help]' ;;

@@ -96,7 +96,8 @@ _yard() {
       fi
       ;;
     teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
-    init|setup|check|list|status|logs|start|stop|up|down) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
+    status) COMPREPLY=( $(compgen -W '--space --yes --help' -- "$cur") ) ;;
+    init|setup|check|list|logs|start|stop|up|down) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
     *) ;;  # clone (url), ssh (pass-through): leave to default
   esac
   return 0

@@ -85,6 +85,7 @@ _yard() {
         remove) _arguments '--purge[also delete yard copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
         sync|export) _arguments '--yes[skip prompt]' '*:project:_files -/' ;;
         code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
+        status) _arguments '--space[also print on-host size of ~/.subyard]' '--yes[skip prompt]' '--help[show help]' ;;
         teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;
         clone) _message 'repository URL' ;;
         *) _arguments '--yes[skip prompt]' '--help[show help]' ;;

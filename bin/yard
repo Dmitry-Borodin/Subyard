@@ -56,7 +56,8 @@ Project commands (code projects in the yard; default path '.'):
   agent  <sub>    agent container (Docker container in the yard) for a project:
                   up [path] --profile N [--rebuild] | info | shell | exec -- cmd | down | destroy | list
   list            list projects currently in the yard
-  status          read-only overview (yard + ssh + mounts + services + projects)
+  status [--space] read-only overview (yard + ssh + mounts + services + projects;
+                  --space also prints the on-host size of ~/.subyard)
   logs            tail the yard's runtime logs (systemd journal + docker)
   usage [args]    show the yard's coding-agent token usage (ccusage over the shared store)
   start | stop    start / stop the yard

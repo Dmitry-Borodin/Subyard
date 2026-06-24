@@ -18,13 +18,36 @@ FORWARD_SSH_AGENT="${FORWARD_SSH_AGENT:-0}"
 PROJ=(--project "$INCUS_PROJECT")
 
 action="${1:-status}"; shift || true
-for a in "$@"; do case "$a" in -y|--yes) ;; *) ;; esac; done  # tolerate --yes
+SHOW_SPACE=0
+for a in "$@"; do case "$a" in --space) SHOW_SPACE=1 ;; -y|--yes) ;; *) ;; esac; done  # tolerate --yes
 
 incus_preflight "$action"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
 
 state() { incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null; }
+
+# Total on-host disk footprint of ~/.subyard (Incus pool + logs/exports/ssh). The pool
+# under incus/storage is root-owned (idmapped shift maps it to nobody:nogroup), so a plain
+# operator 'du' can't read into it — fall back to sudo for an accurate total when any
+# subtree is unreadable, and label a sudo-less figure as partial.
+print_space() {
+  local base="$SUBYARD_HOME" total note=''
+  if [ ! -d "$base" ]; then printf '  space    — (%s absent)\n' "$base"; return; fi
+  if find "$base" -mindepth 1 ! -readable -print -quit 2>/dev/null | grep -q .; then
+    if command -v sudo >/dev/null 2>&1; then
+      total="$(sudo du -sh "$base" 2>/dev/null | awk 'NR==1{print $1}')"
+      note=' (root-read)'
+    fi
+    if [ -z "${total:-}" ]; then
+      total="$(du -sh "$base" 2>/dev/null | awk 'NR==1{print $1}')"
+      note=' (partial — re-run with sudo for the Incus pool)'
+    fi
+  else
+    total="$(du -sh "$base" 2>/dev/null | awk 'NR==1{print $1}')"
+  fi
+  printf '  space    %s%s  (%s)\n' "${total:-?}" "$note" "$base"
+}
 
 case "$action" in
   start | up)  # up: back-compat alias
@@ -87,6 +110,8 @@ case "$action" in
       for f in "$SUBYARD_CONFIG_HOME/projects"/*.json; do [ -e "$f" ] && n=$((n+1)); done
     fi
     printf '  projects %s  (yard list)\n' "$n"
+    # On-demand disk footprint (du can be slow on a big pool, so opt-in via --space).
+    [ "$SHOW_SPACE" = 1 ] && print_space
     ;;
   *)
     die "unknown action '$action' (expected: start | stop | status)"

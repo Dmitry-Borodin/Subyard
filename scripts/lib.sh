@@ -25,7 +25,9 @@ _subyard_operator_home() {
 # load_config — source the layered config files in order, once per process. Each file
 # owns distinct keys and uses ${VAR:-…}/:= so an env override always wins. host.env names
 # every real host path (see config/host.env); incus.project.env is sourced first so
-# host.env can follow project values (e.g. HOST_BASE ← RESTRICTED_DISK_PATHS). Last comes
+# host.env can follow project values (e.g. HOST_BASE ← RESTRICTED_DISK_PATHS). agents.env is
+# the per-coding-agent layer (default configs + per-agent persist; composes HOST_LINKS) and
+# comes after host.env so it can use the mount paths. Last comes
 # the private overlay (../private/config.env, gitignored separate repo) — operator-specific
 # overrides like DEV_SUDO=1 that must not ship in the public defaults. Called automatically
 # when lib.sh is sourced — scripts never invoke it themselves.
@@ -34,7 +36,7 @@ load_config() {
   SUBYARD_CONFIG_LOADED=1
   : "${SUBYARD_OPERATOR_HOME:=$(_subyard_operator_home)}"
   local f
-  for f in incus.project.env subyard.env host.env; do
+  for f in incus.project.env subyard.env host.env agents.env; do
     # shellcheck disable=SC1090
     [ -r "$SUBYARD_CONFIG_DIR/$f" ] && . "$SUBYARD_CONFIG_DIR/$f"
   done

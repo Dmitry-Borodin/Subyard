@@ -1,0 +1,15 @@
+# Codex command rules for the yard (laid down at ~/.codex/rules/repo.rules).
+# Gate publishing git history at the Codex level — every push prompts the operator —
+# rather than a yard-wide git shim. Routine local work (edits, builds, tests, git reset)
+# stays free per П1; only push is gated here. Mirrors the operator's dotfiles convention.
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "Pushing to a remote must be explicitly approved by the operator.",
+    match = [
+        "git push",
+        "git push origin main",
+        "git push --force-with-lease",
+    ],
+)

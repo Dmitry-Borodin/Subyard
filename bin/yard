@@ -38,6 +38,7 @@ Usage: $PROG [option] <command> [args]
 
 Bring-up (says what it will do and asks first; root steps self-elevate):
   init         install everything: Incus → project → yard → mounts → provision
+               (--reset: teardown + fresh init — force-apply config the reconcile missed)
   teardown     tear down the yard + free disk (--keep-data preserves /srv); keeps Incus
   check        verify the host can run a yard (read-only preflight)
 

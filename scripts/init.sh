@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# init.sh — one-shot yard bring-up (yard init): check → install →
-# project → create → mounts → provision. Idempotent and resumable.
-# One upfront confirm; steps that need root self-elevate via sudo. Flag -y.
-# After installing Incus it re-execs itself under a fresh 'incus-admin' group
-# session (sg) so a single 'yard init' runs end-to-end with no manual re-run.
+# init.sh — one-shot yard bring-up (yard init): check → install → project → create →
+# mounts → provision. Idempotent and resumable; one upfront confirm; root steps self-elevate
+# via sudo. After installing Incus it re-execs under a fresh 'incus-admin' group session so a
+# single run completes end-to-end. A re-run reconciles config drift (mounts, provision
+# artifacts), but conservatively — it may miss a content/dotfiles change.
+#
+# Usage: yard init [--reset] [-y]
+#
+# Options:
+#   --reset      Teardown the yard, then a fresh init — force-apply a config change the
+#                conservative reconcile didn't pick up. Asks before doing anything.
+#   -y, --yes    Skip the confirmation prompt (for automation/CI).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_ARGS=("$@")   # preserved so we can re-exec ourselves under a fresh group session
@@ -42,8 +49,47 @@ have_init()     { reachable && incus storage show "$STORAGE_POOL" >/dev/null 2>&
 have_project()  { reachable && incus project show "$INCUS_PROJECT" >/dev/null 2>&1; }
 have_instance() { reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; }
 have_network()  { [ -n "$(reachable && incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]; }
-have_mounts()   { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx host-secrets; }
-have_provision(){ reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c 'command -v docker >/dev/null && id dev >/dev/null' >/dev/null 2>&1; }
+# Every device named in HOST_MOUNTS is attached → adding/removing a mount in config re-runs 05.
+have_mounts() {
+  reachable || return 1
+  local attached name
+  attached=" $(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | tr '\n' ' ') "
+  while IFS=: read -r name _; do
+    [ -n "$name" ] || continue
+    case "$attached" in *" $name "*) ;; *) return 1 ;; esac
+  done < <(printf '%s\n' "${HOST_MOUNTS:-}" | sed 's/[[:space:]]//g')
+  return 0
+}
+# docker + dev, plus the config-driven artifacts 04 applies (CLAUDE.md copied, HOST_LINKS
+# symlinks present, dev sudoers matching DEV_SUDO) — so a config change re-runs provision.
+# PRESENCE checks only (no content compare), so it never flip-flops; content/dotfiles refresh
+# is deliberately NOT caught here — use 'yard init --reset' (or a direct provision) for that.
+have_provision() {
+  reachable || return 1
+  local claude_req=0
+  [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ] && claude_req=1
+  incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
+    --env DEV_USER="${DEV_USER:-dev}" --env DEV_SUDO="${DEV_SUDO:-0}" \
+    --env CLAUDE_REQ="$claude_req" --env HOST_LINKS="${HOST_LINKS:-}" \
+    -- sh -s >/dev/null 2>&1 <<'CHK'
+set -eu
+command -v docker >/dev/null
+id "$DEV_USER" >/dev/null
+home="$(getent passwd "$DEV_USER" | cut -d: -f6)"; home="${home:-/home/$DEV_USER}"
+if [ "${CLAUDE_REQ:-0}" = 1 ]; then [ -f "$home/.claude/CLAUDE.md" ]; fi
+s="/etc/sudoers.d/90-subyard-$DEV_USER"
+if [ "${DEV_SUDO:-0}" = 1 ]; then [ -f "$s" ]; else [ ! -f "$s" ]; fi
+drift=0
+for e in $(printf '%s\n' "${HOST_LINKS:-}" | sed 's/[[:space:]]//g'); do
+  name="${e%%:*}"; rest="${e#*:}"; target="${rest%%:*}"
+  { [ -n "$name" ] && [ -n "$target" ]; } || continue
+  mroot="/$(printf '%s' "$target" | cut -d/ -f2-4)"
+  [ -d "$mroot" ] || continue
+  { [ -e "$home/$name" ] || [ -L "$home/$name" ]; } || drift=1
+done
+[ "$drift" = 0 ]
+CHK
+}
 have_ssh()      { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
 have_gitid()    { reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }
 in_admin_db()   { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
@@ -64,6 +110,19 @@ any_yard_extras() {
   return 1
 }
 no_yard_extras() { ! any_yard_extras; }
+
+# --reset: teardown then a fresh init — the guaranteed full re-apply for a config change the
+# (deliberately safe, may-miss) reconcile doesn't catch. Asks once, then rebuilds with -y.
+RESET=0; for _a in "$@"; do [ "$_a" = --reset ] && RESET=1; done; unset _a
+if [ "$RESET" = 1 ]; then
+  announce "yard init --reset — full rebuild" \
+    "Tear down the yard: DELETE the instance and its disk data (rootfs + /srv), then re-init from current config." \
+    "Host-side sessions under \$HOST_BASE/host-agent-sessions persist; per-yard agent creds are lost (you re-login)." \
+    "Use this when a normal 'yard init' didn't pick up a config change."
+  proceed_or_die
+  info "→ teardown"; "$SCRIPT_DIR/99-teardown.sh" --yes || die "teardown failed"
+  info "→ rebuild (fresh init)"; exec env ASSUME_YES=1 "$SCRIPT_DIR/init.sh"
+fi
 
 # Incus installed + daemon unreachable + you ARE in incus-admin (per the group db)
 # = this shell session just predates the group. Don't show a blind all-[do] plan;

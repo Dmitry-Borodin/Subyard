@@ -30,7 +30,7 @@ SRV_POOL="${SRV_POOL:-default}"
 SRV_VOLUME="${SRV_VOLUME:-yard-srv}"
 STORAGE_POOL="${STORAGE_POOL:-default}"
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
-STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/storage}"
+STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/incus/storage}"
 
 KEEP_DATA=0
 for a in "$@"; do case "$a" in --keep-data) KEEP_DATA=1 ;; esac; done

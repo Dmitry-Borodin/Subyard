@@ -20,7 +20,7 @@ OPERATOR_GROUP="$(id -gn "$OPERATOR_USER")"
 # $SUBYARD_HOME is already resolved under the real operator by lib.sh's auto-load (it reads
 # the same SUDO_USER), so it points at the operator's home even though this script self-elevates.
 STORAGE_POOL="${STORAGE_POOL:-default}"
-STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/storage}"
+STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/incus/storage}"
 INCUS_BRIDGE="${INCUS_BRIDGE:-incusbr0}"
 
 announce "Subyard Phase 1 — install & initialize Incus" \
@@ -61,7 +61,11 @@ else
 fi
 
 # --- 3. storage dir ----------------------------------------------------------
+# Keep $SUBYARD_HOME operator-owned (chown even if it pre-exists — Incus may have shifted
+# it to nobody:nogroup in a prior run, which locks operator steps out of their own state).
 echo "Storage:"
+install -d "$SUBYARD_HOME"
+chown "$OPERATOR_USER:$OPERATOR_GROUP" "$SUBYARD_HOME"
 if [ ! -d "$STORAGE_PATH" ]; then
   install -d -o "$OPERATOR_USER" -g "$OPERATOR_GROUP" "$STORAGE_PATH"
   ok "created $STORAGE_PATH"

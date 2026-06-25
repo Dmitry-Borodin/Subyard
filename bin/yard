@@ -15,7 +15,7 @@ PROG="${0##*/}"
 [ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
 
 # Command names, in order, for --help and --list.
-COMMANDS=(init teardown check sync bind export remove clone code ssh shell agent list status logs usage start stop)
+COMMANDS=(init teardown check sync bind export remove clone code ssh shell agent provision list status logs usage start stop)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -55,6 +55,8 @@ Project commands (code projects in the yard; default path '.'):
   shell  [-- cmd] open a ROOT shell in the yard (or run a root command) via incus exec
   agent  <sub>    agent container (Docker container in the yard) for a project:
                   up [path] --profile N [--rebuild] | info | shell | exec -- cmd | down | destroy | list
+  provision [prof] install a profile's toolchain INTO the yard (L1) so agents work
+                  directly in the yard (P1 baseline); no arg = all in-yard profiles. Heavy/explicit.
   list            list projects currently in the yard
   status [--space] read-only overview (yard + ssh + mounts + services + projects;
                   --space also prints the on-host size of ~/.subyard)
@@ -106,6 +108,7 @@ case "$cmd" in
   remove)    exec "$S/project-remove.sh" "$@" ;;
   export)    exec "$S/project-export.sh" "$@" ;;
   agent)     exec "$S/agent.sh" "$@" ;;
+  provision) exec "$S/10-provision-profile.sh" "$@" ;;
   ssh)       host=yard; [ -r "$REPO/config/subyard.env" ] && host="$( . "$REPO/config/subyard.env" >/dev/null 2>&1; printf '%s' "${SSH_HOST:-yard}")"; exec ssh "$host" "$@" ;;
   shell)     exec "$S/yard-shell.sh" "$@" ;;
   clone)     exec "$S/project-clone.sh" "$@" ;;

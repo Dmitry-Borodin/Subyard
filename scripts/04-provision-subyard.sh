@@ -40,10 +40,8 @@ export DEBIAN_FRONTEND=noninteractive
 printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99force-ipv4
 apt-get update -qq
 
-# Core packages only (toolchain specifics belong to the profile, not core). Node is deliberately
-# NOT here: it belongs to a profile (e.g. openclaw installs a pinned Node 22 into /usr/local), so the
-# core can't pin a drifting distro Node. NB: `yard usage` (ccusage) then needs node from a provisioned
-# profile or a standalone ccusage — it falls back to bunx/npx and prints a clear hint if absent.
+# Core packages only (toolchain belongs to the profile, not core). Node is per-profile (openclaw pins
+# it in /usr/local) — so `yard usage`/ccusage then needs node from a profile (it falls back to bunx/npx).
 apt-get install -y -qq \
   ca-certificates curl gnupg lsb-release sudo \
   openssh-server git git-lfs jq rsync make build-essential zip unzip uidmap \

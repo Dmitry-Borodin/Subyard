@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# 10-provision-profile.sh — Phase 4: install a project profile's TOOLCHAIN INTO THE YARD (L1), so an
-# agent working directly in the yard (P1 baseline — no per-agent container) can build and run tests.
-# For each profile it sources config/profiles/<name>/profile.conf (the non-secret contract) and runs
-# that profile's config/profiles/<name>/provision.sh INSIDE the yard via `incus exec -- bash -s`,
-# forwarding the contract vars as --env. Idempotent (each provision.sh self-guards). HEAVY (downloads
-# toolchains) and explicit — never auto-run by a plain `yard agent up`.
+# 10-provision-profile.sh — Phase 4: install a profile's toolchain into the yard (L1) by running its
+# config/profiles/<name>/provision.sh inside the yard (incus exec), forwarding profile.conf vars as
+# --env. Idempotent; HEAVY and explicit (never auto-run by `yard agent up`). Operator-run (incus-admin).
 #
-# Usage: yard provision [<profile>]   — no arg: the UNION of profiles across in-yard projects (state).
-# Operator-run (incus-admin); the in-yard work runs as root inside the yard. The host is untouched.
+# Usage: yard provision [<profile>]   (no arg → all provisionable profiles; -l lists them)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -27,8 +23,7 @@ disk_profiles() {
   for d in "$PROFILES_DIR"/*/; do [ -r "${d}provision.sh" ] && basename "$d"; done
 }
 
-# -l/--list: just show the provisionable profiles and exit (no prompt, no changes).
-# (lib.sh already consumed -y/-h; an explicit profile name is the first non-option arg.)
+# -l/--list: print provisionable profiles and exit. (lib.sh consumed -y/-h; first non-flag arg = profile.)
 want=""
 for a in "$@"; do
   case "$a" in
@@ -43,11 +38,7 @@ for a in "$@"; do
   esac
 done
 
-# Which profiles to provision:
-#   • an explicit arg                  → just that one;
-#   • else the set registered by in-yard projects (state);
-#   • else (no project registers one)  → ALL provisionable profiles on disk, so a bare
-#     `yard provision` still has something to OFFER — listed + confirmed below, never silent.
+# Which to provision: explicit arg → that one; else state-registered profiles; else all on disk.
 if [ -n "$want" ]; then
   profiles=("$want"); src="requested"
 else
@@ -69,7 +60,7 @@ announce "Subyard Phase 4 — provision profile toolchain into the yard ($INSTAN
   "Provision ALL of these profiles ($src): ${todo[*]} — into the yard (L1), not a per-agent container." \
   "Each profile runs its provision.sh inside the yard (downloads Node/JDK/SDK/etc.); idempotent." \
   "HEAVY (network + disk). The yard is shared and rebuildable; the host is untouched."
-proceed_or_die   # lists the profiles above, then asks "Proceed? [y/N]" (default N) before any change
+proceed_or_die
 
 incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
@@ -80,9 +71,7 @@ for prof in "${todo[@]}"; do
   prov="$PROFILES_DIR/$prof/provision.sh"
   info "provisioning '$prof' toolchain into $INSTANCE_NAME …"
   (
-    # Forward the profile's non-secret contract vars (KEY=… lines) as --env; provision.sh reads
-    # what it needs. profile.conf is non-secret by taxonomy, so --env is fine; secrets live in
-    # profile.env and are never sourced here.
+    # Forward profile.conf's (non-secret) KEY= vars as --env; secrets live in profile.env, never here.
     env_args=(--env DEV_USER="$DEV_USER")
     if [ -r "$pf" ]; then
       # shellcheck disable=SC1090

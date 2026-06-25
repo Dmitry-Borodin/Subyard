@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 09-yard-extras.sh — Phase 2b: reconcile yard-level extras REQUESTED BY PROJECTS.
-# Each in-yard project's profile may declare what it wants ON the yard (level 1):
+# 09-yard-extras.sh — Phase 2b: reconcile yard-level extras DECLARED BY PROFILES.
+# Each profile may declare what it wants ON the yard (level 1):
 #   YARD_MOUNTS   "<name>:<yard-path>:<ro|rw>:<mode>"   extra host mounts (under HOST_BASE)
 #   YARD_CAPS     nesting rootless-docker fuse ...       instance capabilities
-#   YARD_DEVICES  kvm fuse ...                           instance devices (/dev passthrough)
-# The yard gets the UNION across all in-yard projects (machine-local state). Operator-run
+#   YARD_DEVICES  kvm fuse gpu ...                       instance devices (/dev passthrough; gpu=host GPU)
+# P1: the yard gets the UNION across ALL on-disk profiles in config/profiles/ (P2 makes this configurable). Operator-run
 # (incus-admin); only host-dir creation for YARD_MOUNTS uses sudo. Capabilities that need a
 # restart are SET now; the operator is told to restart via the GUARDED path (yard stop/start)
 # so the host's network guard runs — the host itself is never touched. Idempotent.
@@ -28,11 +28,11 @@ dev_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2>/d
 cfg_get() { incus config get "$INSTANCE_NAME" "$1" "${PROJ[@]}" 2>/dev/null || true; }
 case "$SHIFT_MODE" in shift) SHIFT_OPT="shift=true" ;; *) SHIFT_OPT="" ;; esac
 
-# --- collect the UNION of YARD_* across all in-yard projects -----------------
+# --- collect the UNION of YARD_* across profiles -----------------------------
+# P1: enable ALL on-disk profiles (union their YARD_*); P2 makes the active set configurable.
 u_mounts=(); u_caps=(); u_devs=()
-for id in $(state_ids); do
-  prof="$(state_get "$id" profile)"; [ -n "$prof" ] || continue
-  pf="$PROFILES_DIR/$prof/profile.conf"; [ -r "$pf" ] || continue
+for pf in "$PROFILES_DIR"/*/profile.conf; do
+  [ -r "$pf" ] || continue
   while IFS= read -r line; do
     case "$line" in
       MOUNT\ *) u_mounts+=("${line#MOUNT }") ;;
@@ -135,11 +135,20 @@ ensure_unix_char() {  # <device-name> <host-source>
     source="$source" path="$source" mode=0666 >/dev/null
   ok "$name → $source"
 }
+# 'gpu' → pass the host GPU (Incus gpu device → /dev/dri, incl. render node for headless GLES).
+ensure_gpu() {  # <device-name>
+  local name="$1"
+  device_exists "$name" && { ok "$name present"; return; }
+  [ -e /dev/dri ] || { warn "/dev/dri absent on host — no GPU to pass (profile requires one); skipping $name"; return; }
+  incus config device add "$INSTANCE_NAME" "$name" gpu "${PROJ[@]}" >/dev/null \
+    && ok "$name → host GPU (/dev/dri)" || warn "could not add gpu device '$name' (check host GPU + incus)"
+}
 [ "$need_fuse" = 1 ] && ensure_unix_char yx-dev-fuse /dev/fuse
 for d in ${u_devs[@]+"${u_devs[@]}"}; do
   case "$d" in
     kvm)  ensure_unix_char yx-dev-kvm  /dev/kvm ;;
     fuse) ensure_unix_char yx-dev-fuse /dev/fuse ;;
+    gpu)  ensure_gpu       yx-gpu ;;
     *)    warn "unknown YARD_DEVICE '$d' — skipping" ;;
   esac
 done

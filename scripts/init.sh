@@ -93,17 +93,11 @@ CHK
 have_ssh()      { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
 have_gitid()    { reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }
 in_admin_db()   { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
-# Some in-yard project's profile requests yard-level extras (YARD_*)? jq-guarded so a
-# fresh host (no jq, no projects yet) simply reports none. 09-yard-extras is idempotent,
-# so "pending" here just means "reconcile the union" — re-applying is harmless.
+# Any on-disk profile declares yard-level extras (YARD_*)? P1 enables ALL profiles; 09 unions them.
 any_yard_extras() {
-  command -v jq >/dev/null 2>&1 || return 1
-  local sd="$SUBYARD_CONFIG_HOME/projects" f prof pf
-  [ -d "$sd" ] || return 1
-  for f in "$sd"/*.json; do
-    [ -e "$f" ] || continue
-    prof="$(jq -r '.profile // ""' "$f" 2>/dev/null)"; [ -n "$prof" ] || continue
-    pf="$SCRIPT_DIR/../config/profiles/$prof/profile.conf"; [ -r "$pf" ] || continue
+  local pf
+  for pf in "$SCRIPT_DIR/../config/profiles"/*/profile.conf; do
+    [ -r "$pf" ] || continue
     # shellcheck disable=SC1090
     ( . "$pf"; [ -n "${YARD_MOUNTS:-}${YARD_CAPS:-}${YARD_DEVICES:-}" ] ) && return 0
   done
@@ -111,9 +105,7 @@ any_yard_extras() {
 }
 no_yard_extras() { ! any_yard_extras; }
 
-# In-yard projects' declared profiles that ship a provision.sh — i.e. a toolchain you can install
-# into the yard with `yard provision`. Drives the opt-in provision offer below. One profile per line;
-# jq-guarded so a fresh host with no projects simply prints nothing.
+# In-yard projects' profiles that ship a provision.sh — drives the opt-in offer below (one per line).
 provisionable_profiles() {
   command -v jq >/dev/null 2>&1 || return 0
   local sd="$SUBYARD_CONFIG_HOME/projects" f prof
@@ -125,11 +117,7 @@ provisionable_profiles() {
   done | sort -u
 }
 
-# Opt-in provision offer at the end of init — default N, and NEVER under -y/automation (provisioning
-# is HEAVY: it downloads Node/JDK/SDK). Prompts only on an interactive TTY when an in-yard project
-# actually declares a provisionable profile; a fresh yard with no such project just gets a one-line
-# discovery hint. A 'yes' runs the provision driver (which announces, then installs because --yes
-# skips its own gate — init already asked).
+# Opt-in provision offer at end of init — default N, never under -y/non-TTY (provisioning is heavy).
 offer_provision() {
   local profs; profs="$(provisionable_profiles | paste -sd' ' -)"
   if [ -n "$profs" ] && [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
@@ -250,5 +238,4 @@ Next:
   yard sync .       # copy a code project into the yard (or: bind . to mount it)
   yard code .       # open it in VS Code (Remote-SSH into the yard)
 MSG
-# Offer to install project toolchains now — opt-in (default N), never auto-runs under -y/automation.
 offer_provision

@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# config/profiles/openclaw/provision.sh — install the OpenClaw toolchain INTO THE YARD (L1) so an
-# agent working directly in the yard can build the codebase and run e2e. P1 baseline (no per-agent
-# container). Runs INSIDE the yard as root, piped by scripts/10-provision-profile.sh
-# (`incus exec … -- bash -s`). Idempotent. Mirrors the project devcontainer (vasily-dev.Dockerfile);
-# the project's Dockerfile stays the source of truth — versions arrive via --env from profile.conf.
-#
-# Validated live in the yard 2026-06-25 (Debian 13). Vars (with defaults): NODE_VERSION,
-# COREPACK_VERSION, PNPM_VERSION, DEV_USER, OPTIONAL_FEATURES.
+# config/profiles/openclaw/provision.sh — install the OpenClaw toolchain into the yard (run as root
+# inside the yard by 10-provision-profile.sh; idempotent). Vars: NODE_VERSION, COREPACK_VERSION,
+# PNPM_VERSION, DEV_USER, OPTIONAL_FEATURES.
 set -euo pipefail
 
 NODE_VERSION="${NODE_VERSION:-22.22.2}"
@@ -17,7 +12,7 @@ OPTIONAL_FEATURES="${OPTIONAL_FEATURES:-}"
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Node — pinned, from nodejs.org into /usr/local (shadows the distro node on PATH; distro stays).
+# 1. Node — pinned, from nodejs.org into /usr/local (shadows the distro node).
 if [ "$(/usr/local/bin/node --version 2>/dev/null)" != "v${NODE_VERSION}" ]; then
   case "$(dpkg --print-architecture)" in
     amd64) na=x64 ;; arm64) na=arm64 ;; *) echo "unsupported arch" >&2; exit 1 ;;
@@ -30,8 +25,7 @@ if [ "$(/usr/local/bin/node --version 2>/dev/null)" != "v${NODE_VERSION}" ]; the
   rm -rf "$tmp"
 fi
 
-# 2. corepack + pnpm, with an arch-scoped pnpm shim so ad-hoc installs don't pull win/mac/musl
-#    variants of OpenClaw's optional native deps.
+# 2. corepack + pnpm; arch-scoped shim so ad-hoc installs don't pull win/mac/musl native variants.
 /usr/local/bin/npm install -g "corepack@${COREPACK_VERSION}" >/dev/null
 /usr/local/bin/corepack enable >/dev/null
 /usr/local/bin/corepack prepare "pnpm@${PNPM_VERSION}" --activate >/dev/null
@@ -44,18 +38,17 @@ exec corepack pnpm \
 SH
 chmod +x /usr/local/bin/pnpm
 
-# 3. Python dev venv at /opt/venv (harness tools install here; package itself comes from src/).
+# 3. Python dev venv.
 [ -x /opt/venv/bin/python ] || python3 -m venv /opt/venv
 /opt/venv/bin/pip install -q --upgrade pip setuptools wheel
 
-# 4. Shared writable caches (agents fill them; no seeder). Point package managers here via env contract.
+# 4. Shared caches (agents fill them; package managers point here via profile.conf).
 install -d -o "$DEV_USER" -g "$DEV_USER" /srv/cache/pnpm /srv/cache/pip /srv/cache/npm
 
-# 5. OPTIONAL_FEATURES (off by default) — heavy capability for the full e2e matrix.
+# 5. OPTIONAL_FEATURES (off by default) — the heavy e2e capability.
 for feat in $OPTIONAL_FEATURES; do
   case "$feat" in
     browser_tests)
-      # System chromium + libs baked once (binaries cache in /srv/cache/playwright at first run).
       apt-get update -qq
       apt-get install -y -qq chromium fonts-liberation fonts-noto-color-emoji \
         libnss3 libgbm1 libxss1 libasound2t64 2>/dev/null \
@@ -63,9 +56,7 @@ for feat in $OPTIONAL_FEATURES; do
       install -d -o "$DEV_USER" -g "$DEV_USER" /srv/cache/playwright
       ;;
     sandbox_tests)
-      # Rootless Docker for the coding-sandbox (validated: --force needed since rootful coexists;
-      # storage-driver overlayfs is native, fuse-overlayfs is fallback). DOCKER_HOST is NOT exported
-      # globally — OpenClaw scopes it to the coding-sandbox build step.
+      # rootless docker — --force needed (rootful coexists); overlayfs is the native storage driver.
       apt-get update -qq
       apt-get install -y -qq docker-ce-rootless-extras fuse-overlayfs slirp4netns \
         bubblewrap dbus-user-session uidmap
@@ -73,7 +64,8 @@ for feat in $OPTIONAL_FEATURES; do
       uid="$(id -u "$DEV_USER")"
       runuser -u "$DEV_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
         dockerd-rootless-setuptool.sh install --force >/dev/null 2>&1 || true
-        runuser -u "$DEV_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+      # setup flips dev's default context to rootless — restore default so shared rootful agent.sh works.
+      runuser -u "$DEV_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
         docker context use default >/dev/null 2>&1 || true
       ;;
     *) echo "openclaw provision: unknown OPTIONAL_FEATURE '$feat' — skipping" >&2 ;;

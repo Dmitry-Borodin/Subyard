@@ -112,9 +112,8 @@ any_yard_extras() {
 no_yard_extras() { ! any_yard_extras; }
 
 # In-yard projects' declared profiles that ship a provision.sh — i.e. a toolchain you can install
-# into the yard with `yard provision`. Printed only as a closing suggestion: provisioning is HEAVY
-# and EXPLICIT, so init never runs it (a first bring-up must not silently pull Node/JDK/SDK). One
-# profile per line; jq-guarded so a fresh host with no projects simply prints nothing.
+# into the yard with `yard provision`. Drives the opt-in provision offer below. One profile per line;
+# jq-guarded so a fresh host with no projects simply prints nothing.
 provisionable_profiles() {
   command -v jq >/dev/null 2>&1 || return 0
   local sd="$SUBYARD_CONFIG_HOME/projects" f prof
@@ -124,6 +123,27 @@ provisionable_profiles() {
     prof="$(jq -r '.profile // ""' "$f" 2>/dev/null)"; [ -n "$prof" ] || continue
     [ -r "$SCRIPT_DIR/../config/profiles/$prof/provision.sh" ] && printf '%s\n' "$prof"
   done | sort -u
+}
+
+# Opt-in provision offer at the end of init — default N, and NEVER under -y/automation (provisioning
+# is HEAVY: it downloads Node/JDK/SDK). Prompts only on an interactive TTY when an in-yard project
+# actually declares a provisionable profile; a fresh yard with no such project just gets a one-line
+# discovery hint. A 'yes' runs the provision driver (which announces, then installs because --yes
+# skips its own gate — init already asked).
+offer_provision() {
+  local profs; profs="$(provisionable_profiles | paste -sd' ' -)"
+  if [ -n "$profs" ] && [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
+    local ans
+    read -r -p "  Provision toolchains for [$profs] into the yard now? (heavy) [y/N] " ans
+    case "$ans" in
+      [yY] | [yY][eE][sS]) "$SCRIPT_DIR/10-provision-profile.sh" --yes ;;
+      *) info "skipped — run later:  yard provision" ;;
+    esac
+  elif [ -n "$profs" ]; then
+    printf '  yard provision    # install the in-yard toolchain for: %s (heavy, explicit)\n' "$profs"
+  else
+    printf '  yard provision -l # list profiles whose toolchain you can install into the yard\n'
+  fi
 }
 
 # --reset: teardown then a fresh init — the guaranteed full re-apply for a config change the
@@ -185,6 +205,7 @@ fi
 
 if [ "$pending" = 0 ]; then
   ok "Everything is already set up — nothing to do."
+  offer_provision   # a ready yard may still have an un-provisioned profile — offer it (opt-in)
   exit 0
 fi
 proceed_or_die
@@ -229,11 +250,5 @@ Next:
   yard sync .       # copy a code project into the yard (or: bind . to mount it)
   yard code .       # open it in VS Code (Remote-SSH into the yard)
 MSG
-# Profile toolchains install into the yard separately — heavy and explicit, so init never runs it
-# (a first bring-up must not silently download Node/JDK/SDK). Surface it as the next step.
-_profs="$(provisionable_profiles | paste -sd' ' -)"
-if [ -n "$_profs" ]; then
-  printf '  yard provision    # install the in-yard toolchain for: %s (heavy, explicit)\n' "$_profs"
-else
-  printf "  yard provision -l # list profiles whose toolchain you can install into the yard\n"
-fi
+# Offer to install project toolchains now — opt-in (default N), never auto-runs under -y/automation.
+offer_provision

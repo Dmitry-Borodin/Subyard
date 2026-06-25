@@ -23,7 +23,7 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run scripts/03-create-subyard.sh first"
 
 announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
-  "Inside the yard: apt-get install core packages (ssh, git, build tools, python, node…)." \
+  "Inside the yard: apt-get install core packages (ssh, git, build tools, python…; Node is per-profile)." \
   "Inside the yard: install Docker Engine + Compose via the get.docker.com script (downloads & runs it)." \
   "Inside the yard: create user '$DEV_USER' + groups (yard/kvm/docker), lay out /srv, enable ssh & docker." \
   "On the host: set the /dev/kvm device GID to the in-yard 'kvm' group." \
@@ -40,11 +40,14 @@ export DEBIAN_FRONTEND=noninteractive
 printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99force-ipv4
 apt-get update -qq
 
-# Core packages only (toolchain specifics belong to the profile, not core).
+# Core packages only (toolchain specifics belong to the profile, not core). Node is deliberately
+# NOT here: it belongs to a profile (e.g. openclaw installs a pinned Node 22 into /usr/local), so the
+# core can't pin a drifting distro Node. NB: `yard usage` (ccusage) then needs node from a provisioned
+# profile or a standalone ccusage — it falls back to bunx/npx and prints a clear hint if absent.
 apt-get install -y -qq \
   ca-certificates curl gnupg lsb-release sudo \
   openssh-server git git-lfs jq rsync make build-essential zip unzip uidmap \
-  python3 python3-venv pipx nodejs npm
+  python3 python3-venv pipx
 git lfs install --system >/dev/null 2>&1 || true
 
 # yq (mikefarah single binary; not reliably packaged).

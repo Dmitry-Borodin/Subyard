@@ -16,8 +16,11 @@ JDK_HOME="/opt/jdk-${JDK_VERSION}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq curl unzip
-# Mesa userspace for hardware GLES (-gpu host) on the passed-through GPU.
-apt-get install -y -qq libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 2>/dev/null || true
+# Headless HW GLES for -gpu host: Mesa + a tiny wlroots compositor (cage) + Xwayland. The emulator's
+# GLES uses GLX (needs an X display); the passed-through render node only does HW GL via EGL → the
+# launcher bridges with a headless wlroots compositor on the render node → Xwayland → HW GLX.
+apt-get install -y -qq \
+  libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 cage xwayland 2>/dev/null || true
 
 # 1. JDK — Debian 13 has no openjdk-17; Temurin from Adoptium (redirects to the current GA).
 if [ ! -x "$JDK_HOME/bin/java" ]; then

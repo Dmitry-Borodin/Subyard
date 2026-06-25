@@ -9,7 +9,7 @@
 FROM ubuntu:24.04
 
 # OS toolchain pins — keep in sync with config/profiles/openclaw/profile.conf.
-ARG NODE_VERSION=22.22.2
+ARG NODE_VERSION=24.15.0
 ARG COREPACK_VERSION=0.31.0
 ARG PNPM_VERSION=11.2.2
 
@@ -52,7 +52,7 @@ RUN set -eux; \
   grep "  ${node_dist}.tar.xz$" SHASUMS256.txt | sha256sum -c -; \
   tar -xJf "${node_dist}.tar.xz" -C /usr/local --strip-components=1 --no-same-owner; \
   rm "${node_dist}.tar.xz" SHASUMS256.txt; \
-  node -e "const major = process.versions.node.split('.')[0]; if (major !== '22') { throw new Error('expected Node.js major 22, got ' + process.versions.node); }"; \
+  node -e "const major = process.versions.node.split('.')[0]; if (major !== '24') { throw new Error('expected Node.js major 24, got ' + process.versions.node); }"; \
   node --version; \
   npm --version
 

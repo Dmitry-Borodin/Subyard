@@ -4,7 +4,7 @@
 # PNPM_VERSION, DEV_USER, OPTIONAL_FEATURES.
 set -euo pipefail
 
-NODE_VERSION="${NODE_VERSION:-22.22.2}"
+NODE_VERSION="${NODE_VERSION:-24.15.0}"
 COREPACK_VERSION="${COREPACK_VERSION:-0.31.0}"
 PNPM_VERSION="${PNPM_VERSION:-11.2.2}"
 DEV_USER="${DEV_USER:-dev}"
@@ -21,6 +21,9 @@ if [ "$(/usr/local/bin/node --version 2>/dev/null)" != "v${NODE_VERSION}" ]; the
   curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${base}.tar.xz" -o "$tmp/${base}.tar.xz"
   curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" -o "$tmp/sha.txt"
   ( cd "$tmp" && grep " ${base}.tar.xz\$" sha.txt | sha256sum -c - )
+  # tar won't prune files a new release dropped, so an in-place major upgrade would merge the old
+  # npm/corepack into the new one (broken deps, e.g. minipass mismatch). Replace them cleanly.
+  rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack
   tar -xJf "$tmp/${base}.tar.xz" -C /usr/local --strip-components=1
   rm -rf "$tmp"
 fi
@@ -31,10 +34,14 @@ fi
 /usr/local/bin/corepack prepare "pnpm@${PNPM_VERSION}" --activate >/dev/null
 cat > /usr/local/bin/pnpm <<'SH'
 #!/usr/bin/env bash
+# arch-scoped so ad-hoc installs don't pull win/mac/musl native variants. pnpm honors fetch-timeout
+# only as a CLI flag (not .npmrc / npm_config_* env), and the yard's egress is slow on OpenClaw's huge
+# native/ML tarballs → inject a generous one for install-type commands.
+ft=; case "${1:-}" in install|add|update|up|i|fetch) ft="--fetch-timeout=1800000" ;; esac
 exec corepack pnpm \
   --config.supportedArchitectures.os=linux \
   --config.supportedArchitectures.cpu=current \
-  --config.supportedArchitectures.libc=glibc "$@"
+  --config.supportedArchitectures.libc=glibc "$@" $ft
 SH
 chmod +x /usr/local/bin/pnpm
 

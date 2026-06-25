@@ -63,6 +63,13 @@ else
   ok "set $DEV_USER git identity${name:+: $name}${email:+ <$email>}"
 fi
 
+# Trust bind-mounted repos: idmapped host binds present a mismatched owner uid in the yard, so git
+# refuses with "dubious ownership". (After the identity write so a drop-in can't drop it.) Idempotent.
+incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- \
+  su -s /bin/sh "$DEV_USER" -c "git config --global --replace-all safe.directory '*'" 2>/dev/null \
+  && ok "git: trust bind-mounted repos (safe.directory='*') for $DEV_USER" \
+  || warn "could not set git safe.directory for $DEV_USER"
+
 echo
 ok "git identity ready."
 cat <<MSG

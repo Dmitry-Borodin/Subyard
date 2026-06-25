@@ -135,20 +135,24 @@ ensure_unix_char() {  # <device-name> <host-source>
     source="$source" path="$source" mode=0666 >/dev/null
   ok "$name → $source"
 }
-# 'gpu' → pass the host GPU (Incus gpu device → /dev/dri, incl. render node for headless GLES).
-ensure_gpu() {  # <device-name>
-  local name="$1"
-  device_exists "$name" && { ok "$name present"; return; }
-  [ -e /dev/dri ] || { warn "/dev/dri absent on host — no GPU to pass (profile requires one); skipping $name"; return; }
-  incus config device add "$INSTANCE_NAME" "$name" gpu "${PROJ[@]}" >/dev/null \
-    && ok "$name → host GPU (/dev/dri)" || warn "could not add gpu device '$name' (check host GPU + incus)"
+# 'gpu' → pass the host GPU RENDER NODE(s) as unix-char (Mesa headless GLES for -gpu host). The incus
+# 'gpu' device type is forbidden by the restricted project; unix-char is allowed, and a render node is
+# all a headless renderer needs. renderD* numbering isn't fixed (renderD128 = first; more per extra GPU),
+# so pass every render node the host has.
+ensure_gpu() {
+  local node found=0
+  for node in /dev/dri/renderD*; do
+    [ -e "$node" ] || continue
+    found=1; ensure_unix_char "yx-dev-dri-${node##*/}" "$node"
+  done
+  [ "$found" = 1 ] || warn "no /dev/dri/renderD* on host — GPU profile requirement unmet (skipping)"
 }
 [ "$need_fuse" = 1 ] && ensure_unix_char yx-dev-fuse /dev/fuse
 for d in ${u_devs[@]+"${u_devs[@]}"}; do
   case "$d" in
     kvm)  ensure_unix_char yx-dev-kvm  /dev/kvm ;;
     fuse) ensure_unix_char yx-dev-fuse /dev/fuse ;;
-    gpu)  ensure_gpu       yx-gpu ;;
+    gpu)  ensure_gpu ;;
     *)    warn "unknown YARD_DEVICE '$d' — skipping" ;;
   esac
 done

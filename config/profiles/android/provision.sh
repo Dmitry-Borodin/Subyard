@@ -15,6 +15,7 @@ JDK_VERSION="${JDK_VERSION:-17}"
 BUILD_TOOLS_VERSION="${BUILD_TOOLS_VERSION:-36.0.0}"
 SYSTEM_IMAGE="${SYSTEM_IMAGE:-system-images;android-${ANDROID_API};google_apis;x86_64}"
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/srv/cache/android-sdk}"
+GRADLE_USER_HOME="${GRADLE_USER_HOME:-/srv/cache/gradle}"
 DEV_USER="${DEV_USER:-dev}"
 JDK_HOME="/opt/jdk-${JDK_VERSION}"
 
@@ -33,7 +34,7 @@ fi
 export JAVA_HOME="$JDK_HOME" PATH="$JDK_HOME/bin:$PATH"
 
 # 2. Shared writable SDK + gradle caches (owner dev).
-install -d -o "$DEV_USER" -g "$DEV_USER" "$ANDROID_SDK_ROOT" /srv/cache/gradle
+install -d -o "$DEV_USER" -g "$DEV_USER" "$ANDROID_SDK_ROOT" "$GRADLE_USER_HOME"
 export ANDROID_HOME="$ANDROID_SDK_ROOT" ANDROID_SDK_ROOT
 
 # 3. cmdline-tools (sdkmanager bootstrap). URL: pinned via CMDLINE_TOOLS_URL, else current from Google's
@@ -58,6 +59,43 @@ yes 2>/dev/null | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
   "build-tools;${BUILD_TOOLS_VERSION}" "emulator" "$SYSTEM_IMAGE" >/dev/null
 
 # 5. Ownership (sdkmanager may write as root) so dev can use the shared SDK.
-chown -R "$DEV_USER:$DEV_USER" "$ANDROID_SDK_ROOT" /srv/cache/gradle "$JDK_HOME" 2>/dev/null || true
+chown -R "$DEV_USER:$DEV_USER" "$ANDROID_SDK_ROOT" "$GRADLE_USER_HOME" "$JDK_HOME" 2>/dev/null || true
+
+# 6. System-wide env so any login shell / Gradle in the yard finds the in-yard toolchain (JAVA_HOME for
+#    Gradle; ANDROID_HOME is AGP's SDK source when a project does NOT pin sdk.dir in local.properties).
+cat > /etc/profile.d/subyard-android.sh <<EOF
+# Subyard P1 — in-yard Android toolchain (written by config/profiles/android/provision.sh).
+export JAVA_HOME="$JDK_HOME"
+export ANDROID_HOME="$ANDROID_SDK_ROOT"
+export ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT"
+export GRADLE_USER_HOME="$GRADLE_USER_HOME"
+case ":\$PATH:" in
+  *":\$JAVA_HOME/bin:"*) ;;
+  *) PATH="\$JAVA_HOME/bin:\$ANDROID_HOME/platform-tools:\$ANDROID_HOME/cmdline-tools/latest/bin:\$PATH" ;;
+esac
+export PATH
+EOF
+chmod 0644 /etc/profile.d/subyard-android.sh
+
+# 7. sdk.dir reconciliation for BIND-MOUNTED projects. AGP resolves the SDK as local.properties
+#    `sdk.dir` > $ANDROID_HOME > $ANDROID_SDK_ROOT, and a sdk.dir that points at a MISSING directory is
+#    a hard error (no fallback to ANDROID_HOME). A project bound from the host shares its
+#    local.properties (gitignored, host-only), which pins sdk.dir to a HOST path absent in the yard. We
+#    must not edit that shared file — instead make each such host path RESOLVE inside the yard by
+#    symlinking it to the in-yard SDK. Path is DISCOVERED per project, never hardcoded; idempotent; a
+#    real directory already at that path is left untouched.
+shopt -s nullglob
+for lp in /srv/workspaces/*/src/local.properties; do
+  d="$(sed -n 's/^[[:space:]]*sdk\.dir[[:space:]]*=[[:space:]]*//p' "$lp" | tail -n1)"; d="${d%$'\r'}"
+  case "$d" in ""|"$ANDROID_SDK_ROOT") continue ;; esac
+  if [ -L "$d" ]; then
+    [ "$(readlink -f "$d" 2>/dev/null)" = "$(readlink -f "$ANDROID_SDK_ROOT")" ] && continue
+  elif [ -e "$d" ]; then
+    echo "android provision: '$d' exists and is not our symlink — leaving as-is" >&2; continue
+  fi
+  install -d "$(dirname "$d")"; ln -sfn "$ANDROID_SDK_ROOT" "$d"
+  echo "android provision: sdk.dir reconciled  $d -> $ANDROID_SDK_ROOT  ($lp)"
+done
+shopt -u nullglob
 
 echo "android provision OK: jdk=$("$JDK_HOME/bin/java" -version 2>&1 | head -1) sdk=$ANDROID_SDK_ROOT api=$ANDROID_API"

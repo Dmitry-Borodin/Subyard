@@ -21,17 +21,41 @@ DEV_USER="${DEV_USER:-dev}"
 PROFILES_DIR="$SCRIPT_DIR/../config/profiles"
 PROJ=(--project "$INCUS_PROJECT")
 
-# First non-option arg is an explicit profile name (lib.sh already consumed -y/-h).
-want=""
-for a in "$@"; do case "$a" in -*) ;; *) want="$a"; break ;; esac; done
+# Profiles that ship a provision.sh — the provisionable universe (needs no incus/state).
+disk_profiles() {
+  local d
+  for d in "$PROFILES_DIR"/*/; do [ -r "${d}provision.sh" ] && basename "$d"; done
+}
 
-# Which profiles to provision: an explicit arg, else the unique set across in-yard projects.
+# -l/--list: just show the provisionable profiles and exit (no prompt, no changes).
+# (lib.sh already consumed -y/-h; an explicit profile name is the first non-option arg.)
+want=""
+for a in "$@"; do
+  case "$a" in
+    -l | --list)
+      mapfile -t _all < <(disk_profiles)
+      if [ "${#_all[@]}" -gt 0 ]; then
+        printf 'Provisionable profiles (ship a provision.sh):\n'; printf '  • %s\n' "${_all[@]}"
+      else printf 'No provisionable profile under %s\n' "$PROFILES_DIR"; fi
+      exit 0 ;;
+    -*) ;;
+    *)  want="$a"; break ;;
+  esac
+done
+
+# Which profiles to provision:
+#   • an explicit arg                  → just that one;
+#   • else the set registered by in-yard projects (state);
+#   • else (no project registers one)  → ALL provisionable profiles on disk, so a bare
+#     `yard provision` still has something to OFFER — listed + confirmed below, never silent.
 if [ -n "$want" ]; then
-  profiles=("$want")
+  profiles=("$want"); src="requested"
 else
   mapfile -t profiles < <(for id in $(state_ids); do state_get "$id" profile; done | sed '/^$/d' | sort -u)
+  if [ "${#profiles[@]}" -gt 0 ]; then src="in-yard projects"
+  else mapfile -t profiles < <(disk_profiles); src="available on disk — no in-yard project registers a profile"; fi
 fi
-[ "${#profiles[@]}" -gt 0 ] || { ok "No profile to provision (no in-yard project carries one). Nothing to do."; exit 0; }
+[ "${#profiles[@]}" -gt 0 ] || { ok "No provisionable profile found. Nothing to do."; exit 0; }
 
 # Keep only profiles that actually ship a provision.sh.
 todo=()
@@ -42,10 +66,10 @@ done
 [ "${#todo[@]}" -gt 0 ] || { ok "No profile with a provision.sh — nothing to do."; exit 0; }
 
 announce "Subyard Phase 4 — provision profile toolchain into the yard ($INSTANCE_NAME)" \
-  "Install the toolchain for: ${todo[*]} — directly into the yard (L1), not a per-agent container." \
+  "Provision ALL of these profiles ($src): ${todo[*]} — into the yard (L1), not a per-agent container." \
   "Each profile runs its provision.sh inside the yard (downloads Node/JDK/SDK/etc.); idempotent." \
   "HEAVY (network + disk). The yard is shared and rebuildable; the host is untouched."
-proceed_or_die
+proceed_or_die   # lists the profiles above, then asks "Proceed? [y/N]" (default N) before any change
 
 incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \

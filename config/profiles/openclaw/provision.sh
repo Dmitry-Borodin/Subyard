@@ -70,8 +70,11 @@ for feat in $OPTIONAL_FEATURES; do
       apt-get install -y -qq docker-ce-rootless-extras fuse-overlayfs slirp4netns \
         bubblewrap dbus-user-session uidmap
       loginctl enable-linger "$DEV_USER" >/dev/null 2>&1 || true
-      runuser -u "$DEV_USER" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$DEV_USER")" \
+      uid="$(id -u "$DEV_USER")"
+      runuser -u "$DEV_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
         dockerd-rootless-setuptool.sh install --force >/dev/null 2>&1 || true
+        runuser -u "$DEV_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+        docker context use default >/dev/null 2>&1 || true
       ;;
     *) echo "openclaw provision: unknown OPTIONAL_FEATURE '$feat' — skipping" >&2 ;;
   esac

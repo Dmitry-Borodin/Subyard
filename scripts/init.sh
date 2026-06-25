@@ -111,6 +111,21 @@ any_yard_extras() {
 }
 no_yard_extras() { ! any_yard_extras; }
 
+# In-yard projects' declared profiles that ship a provision.sh — i.e. a toolchain you can install
+# into the yard with `yard provision`. Printed only as a closing suggestion: provisioning is HEAVY
+# and EXPLICIT, so init never runs it (a first bring-up must not silently pull Node/JDK/SDK). One
+# profile per line; jq-guarded so a fresh host with no projects simply prints nothing.
+provisionable_profiles() {
+  command -v jq >/dev/null 2>&1 || return 0
+  local sd="$SUBYARD_CONFIG_HOME/projects" f prof
+  [ -d "$sd" ] || return 0
+  for f in "$sd"/*.json; do
+    [ -e "$f" ] || continue
+    prof="$(jq -r '.profile // ""' "$f" 2>/dev/null)"; [ -n "$prof" ] || continue
+    [ -r "$SCRIPT_DIR/../config/profiles/$prof/provision.sh" ] && printf '%s\n' "$prof"
+  done | sort -u
+}
+
 # --reset: teardown then a fresh init — the guaranteed full re-apply for a config change the
 # (deliberately safe, may-miss) reconcile doesn't catch. Asks once, then rebuilds with -y.
 RESET=0; for _a in "$@"; do [ "$_a" = --reset ] && RESET=1; done; unset _a
@@ -214,3 +229,11 @@ Next:
   yard sync .       # copy a code project into the yard (or: bind . to mount it)
   yard code .       # open it in VS Code (Remote-SSH into the yard)
 MSG
+# Profile toolchains install into the yard separately — heavy and explicit, so init never runs it
+# (a first bring-up must not silently download Node/JDK/SDK). Surface it as the next step.
+_profs="$(provisionable_profiles | paste -sd' ' -)"
+if [ -n "$_profs" ]; then
+  printf '  yard provision    # install the in-yard toolchain for: %s (heavy, explicit)\n' "$_profs"
+else
+  printf "  yard provision -l # list profiles whose toolchain you can install into the yard\n"
+fi

@@ -27,20 +27,31 @@ if command -v incus >/dev/null 2>&1 \
    && [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; then
   yard_up=1
 fi
-in_yard() { # <yardPath> → present|missing|?
-  [ "$yard_up" = 1 ] || { printf '?'; return; }
-  if incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -d "$1" 2>/dev/null; then
-    printf 'present'
-  else
-    printf 'missing'
-  fi
-}
+# Read all fields up front: one jq per project (not one per field) — @tsv keeps
+# the four values on a single line. Project records have no tabs in these fields.
+names=() modes=() hostPaths=() yardPaths=()
+for id in "${ids[@]}"; do
+  IFS=$'\t' read -r name mode hostPath yardPath \
+    < <(jq -r '[.name,.mode,.hostPath,.yardPath]|@tsv' "$(state_file "$id")")
+  names+=("$name"); modes+=("$mode"); hostPaths+=("$hostPath"); yardPaths+=("$yardPath")
+done
+
+# Presence in the yard: one `incus exec` for the whole list (not one per project) —
+# feed the yard paths on stdin and get present/missing back, in order. The per-project
+# round-trip was the bottleneck for `yard list`. Unknown ('?') when the yard is down.
+present=()
+if [ "$yard_up" = 1 ]; then
+  mapfile -t present < <(
+    printf '%s\n' "${yardPaths[@]}" \
+      | incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c '
+          while IFS= read -r p; do
+            { [ -n "$p" ] && [ -d "$p" ]; } && echo present || echo missing
+          done' 2>/dev/null
+  )
+fi
 
 printf '%-22s %-6s %-8s %s\n' NAME MODE YARD "HOST PATH"
-for id in "${ids[@]}"; do
-  name="$(state_get "$id" name)"
-  mode="$(state_get "$id" mode)"
-  hostPath="$(state_get "$id" hostPath)"
-  yardPath="$(state_get "$id" yardPath)"
-  printf '%-22s %-6s %-8s %s\n' "$name" "$mode" "$(in_yard "$yardPath")" "$hostPath"
+for i in "${!ids[@]}"; do
+  if [ "$yard_up" = 1 ]; then yard="${present[$i]:-?}"; else yard='?'; fi
+  printf '%-22s %-6s %-8s %s\n' "${names[$i]}" "${modes[$i]}" "$yard" "${hostPaths[$i]}"
 done

@@ -44,7 +44,7 @@ apt-get update -qq
 # it in /usr/local) — so `yard usage`/ccusage then needs node from a profile (it falls back to bunx/npx).
 apt-get install -y -qq \
   ca-certificates curl gnupg lsb-release sudo \
-  openssh-server git git-lfs jq rsync make build-essential zip unzip uidmap \
+  openssh-server git git-lfs jq ripgrep rsync make build-essential zip unzip uidmap \
   python3 python3-venv pipx
 git lfs install --system >/dev/null 2>&1 || true
 

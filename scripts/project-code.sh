@@ -2,8 +2,9 @@
 # project-code.sh — open an in-yard project in VS Code via Remote-SSH into the yard.
 # Usage: project-code.sh [path|name|id]   (default '.'; name/id from `yard list`)
 # Resolves the project's machine-local state (yardPath + sshHost) and launches
-# `code` against vscode-remote://ssh-remote+<host><yardPath>. From there: VS Code
-# "Dev Containers: Reopen in Container" builds the agent container. Operator; no root.
+# `code` against vscode-remote://ssh-remote+<host><yardPath>. target=yard => edit in L1;
+# target=<profile> => the project runs in an L2 project-env box (Attach in Container,
+# brought up with `yard up`). Operator; no root.
 # Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +35,23 @@ id="$(resolve_project_id "$arg")"
 yardPath="$(state_get "$id" yardPath)"
 host="$(state_get "$id" sshHost)"; host="${host:-$SSH_HOST}"
 name="$(state_get "$id" name)"; name="${name:-$id}"
+target="$(state_get "$id" target)"
+
+# target=<profile> => the project runs in an L2 box. VS Code reaches a container inside the
+# yard by first connecting to the yard over Remote-SSH and then attaching to the container
+# there (this also composes with a future remote yard). We open the Remote-SSH entry to the
+# yard below and print the Attach step; the box itself is brought up with `yard up`.
+if [ -n "$target" ] && [ "$target" != yard ]; then
+  box_cname="subyard-box-$id"
+  info "'$name' runs in an L2 project-env box (target=$target)."
+  cat <<MSG
+To edit inside the box (Dev Containers "Attach to Running Container"):
+  1) ${PROG:-yard} up $arg                  # ensure the box is running
+  2) in the VS Code window that opens (connected to the yard over Remote-SSH),
+     run "Dev Containers: Attach to Running Container" -> $box_cname  (folder /workspace)
+Opening the Remote-SSH entry to the yard now ...
+MSG
+fi
 
 # Yard must be up, and SSH access must be set up (Remote-SSH needs the proxy + key).
 incus_preflight code

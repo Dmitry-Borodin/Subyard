@@ -19,18 +19,26 @@ INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
 DEV_UID="${DEV_UID:-1000}"
 SSH_HOST="${SSH_HOST:-yard}"
+PROFILES_DIR="$SCRIPT_DIR/../config/profiles"
 PROJ=(--project "$INCUS_PROJECT")
 
 # --- parse args --------------------------------------------------------------
-url=""; name=""
-for a in "$@"; do
-  case "$a" in
+# --target yard|<profile>: where the project runs (L1 yard vs L2 profile box). Default yard.
+url=""; name=""; target="yard"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --target)   target="${2:?--target needs yard|<profile>}"; shift ;;
+    --target=*) target="${1#*=}" ;;
     -y | --yes) ;;  # handled by lib.sh (ASSUME_YES)
-    -*)         die "unknown option '$a'" ;;
-    *)          if [ -z "$url" ]; then url="$a"; elif [ -z "$name" ]; then name="$a"; else die "too many arguments"; fi ;;
+    -*)         die "unknown option '$1'" ;;
+    *)          if [ -z "$url" ]; then url="$1"; elif [ -z "$name" ]; then name="$1"; else die "too many arguments"; fi ;;
   esac
+  shift
 done
-[ -n "$url" ] || die "usage: ${PROG:-yard} clone <git-url> [name]"
+[ -n "$url" ] || die "usage: ${PROG:-yard} clone <git-url> [name] [--target yard|<profile>]"
+if [ "$target" != yard ]; then
+  [ -r "$PROFILES_DIR/$target/profile.conf" ] || die "unknown --target '$target' — use 'yard' (L1) or a profile (L2): $(for d in "$PROFILES_DIR"/*/; do [ -r "$d/profile.conf" ] && basename "$d"; done | tr '\n' ' ')"
+fi
 
 # --- derive name + id (from the url; no host path for a clone) ----------------
 [ -n "$name" ] || { name="$(basename -- "$url")"; name="${name%.git}"; }
@@ -46,11 +54,12 @@ state_exists "$id" \
 # --- preflight: yard must be running -----------------------------------------
 incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: ${PROG:-yard} up"
+  || die "yard is not running — start it: ${PROG:-yard} start"
 
 announce "yard clone — $name (mode git)" \
   "Clone : $url" \
   "Into  : $INSTANCE_NAME:$yardPath" \
+  "Run target : $([ "$target" = yard ] && echo 'L1 — runs in the yard' || echo "L2 — box from profile '$target'")" \
   "Runs 'git clone' INSIDE the yard as '$DEV_USER' (yard's network + creds; no host copy)." \
   "Record machine-local state in $(state_file "$id")."
 proceed_or_die
@@ -65,7 +74,8 @@ incus exec "$INSTANCE_NAME" "${PROJ[@]}" --user "$DEV_UID" --group "$DEV_UID" --
   || die "git clone failed (private repo? enable ssh-agent forwarding at setup, or use an https token url)"
 
 state_write "$id" "$name" "$url" "$yardPath" git "$SSH_HOST"
-ok "cloned $name → $yardPath"
+state_set "$id" target "$target"
+ok "cloned $name → $yardPath (target $target)"
 info "id: $id"
 cat <<MSG
 

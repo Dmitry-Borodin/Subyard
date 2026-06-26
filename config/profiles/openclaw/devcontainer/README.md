@@ -40,7 +40,7 @@ OpenClaw devcontainer and cleaned to those rules.
   reference a project's own scripts belong in that project's `.devcontainer/`,
   not in this default.
 - **Caches are workspace-local.** The profile's shared `/srv/cache/*` caches are
-  for `yard agent` containers; wire them in per project if you want cross-container
+  for project-env boxes (`yard up`); wire them in per project if you want cross-container
   sharing here.
 
 ## Optional heavy features

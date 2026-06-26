@@ -51,7 +51,7 @@ _yard_code_target() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( init teardown check import sync export remove clone code ssh agent list status logs start stop )
+  [[ -n $cmds ]] || cmds=( check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args
@@ -71,23 +71,29 @@ _yard() {
       ;;
     args)
       case ${words[1]} in
-        agent)
-          if (( CURRENT == 2 )); then
-            _values 'agent subcommand' up info shell exec down destroy list
-          elif [[ ${words[CURRENT-1]} == --profile ]]; then
-            local -a profs; profs=( ${(f)"$(_yard_profiles)"} )
-            _describe -t profiles 'profile' profs
+        up) _arguments '--rebuild[rebuild the env image]' '--yes[skip prompt]' '*:project:_yard_code_target' ;;
+        down|info) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
+        remove) _arguments '--purge[also delete yard copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
+        sync|bind)
+          if [[ ${words[CURRENT-1]} == --target ]]; then
+            local -a tg; tg=( yard ${(f)"$(_yard_profiles)"} )
+            _describe -t targets 'target' tg
           else
-            _arguments '--profile[agent profile]:profile:->prof' '--rebuild[rebuild the env image]' '--yes[skip prompt]' '*:project:_files -/'
+            _arguments '--target[where it runs: yard or a profile]:target:->tgt' '--yes[skip prompt]' '*:project:_files -/'
           fi
           ;;
-        import) _arguments '--bind[mount instead of copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
-        remove) _arguments '--purge[also delete yard copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
-        sync|export) _arguments '--yes[skip prompt]' '*:project:_files -/' ;;
+        export) _arguments '--yes[skip prompt]' '*:project:_files -/' ;;
         code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
         status) _arguments '--space[also print on-host size of ~/.subyard]' '--yes[skip prompt]' '--help[show help]' ;;
         teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;
-        clone) _message 'repository URL' ;;
+        clone)
+          if [[ ${words[CURRENT-1]} == --target ]]; then
+            local -a tg; tg=( yard ${(f)"$(_yard_profiles)"} )
+            _describe -t targets 'target' tg
+          else
+            _arguments '--target[where it runs: yard or a profile]:target:->tgt' '--yes[skip prompt]' '*: :_message "repository URL"'
+          fi
+          ;;
         *) _arguments '--yes[skip prompt]' '--help[show help]' ;;
       esac
       ;;

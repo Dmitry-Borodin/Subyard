@@ -14,8 +14,8 @@ PROG="${0##*/}"
 # shellcheck disable=SC1091
 [ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
 
-# Command names, in order, for --help and --list.
-COMMANDS=(init teardown check sync bind export remove clone code ssh shell agent provision list status logs usage start stop)
+# Command names, grouped by how the operator scans the help.
+COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -32,37 +32,42 @@ list_commands() { printf '%s\n' "${COMMANDS[@]}"; }
 
 usage() {
   cat <<U
-$PROG $YARD_VERSION — a local yard for isolated agent containers.
+$PROG $YARD_VERSION — a local yard for isolated project environments.
 
 Usage: $PROG [option] <command> [args]
 
-Bring-up (says what it will do and asks first; root steps self-elevate):
-  init         install everything: Incus → project → yard → mounts → provision
-               (--reset: teardown + fresh init — force-apply config the reconcile missed)
-  teardown     tear down the yard + free disk (--keep-data preserves /srv); keeps Incus
-  check        verify the host can run a yard (read-only preflight)
-
-  (init runs the phases in scripts/00-05; run those directly only for debugging.)
-
-Project commands (code projects in the yard; default path '.'):
-  sync   [path]   copy a project into the yard (host → yard; re-run to refresh)
-  bind   [path]   mount a project from the host into the yard (shared files)
-  export [path]   pull a diff/patch from the yard back to the host (sync projects)
-  remove [path]   take a project out of the yard (--purge also deletes the copy)
-  clone  <url>    clone a repo straight into the yard
-  code   [path|name] open a project in VS Code by path or `yard list` name (Remote-SSH)
-  ssh    [args]   open a shell in the yard as the dev user (or run a command)
-  shell  [-- cmd] open a ROOT shell in the yard (or run a root command) via incus exec
-  agent  <sub>    agent container (Docker container in the yard) for a project:
-                  up [path] --profile N [--rebuild] | info | shell | exec -- cmd | down | destroy | list
-  provision [prof] install a profile's toolchain INTO the yard (L1) so agents work
-                  directly in the yard (P1 baseline); no arg = all in-yard profiles. Heavy/explicit.
-  list            list projects currently in the yard
+Yard lifecycle:
+  check           verify the host can run a yard (read-only preflight)
+  init            install everything: Incus -> project -> yard -> mounts -> provision
+                  (--reset: teardown + fresh init; force-apply config the reconcile missed)
+  start           start the yard
   status [--space] read-only overview (yard + ssh + mounts + services + projects;
                   --space also prints the on-host size of ~/.subyard)
   logs            tail the yard's runtime logs (systemd journal + docker)
   usage [args]    show the yard's coding-agent token usage (ccusage over the shared store)
-  start | stop    start / stop the yard
+  ssh    [proj]   shell in the yard as dev (or, for a --target <profile> project, in its box)
+  shell  [-- cmd] open a ROOT shell in the yard (or run a root command) via incus exec
+  provision [prof] install a profile's toolchain INTO the yard (L1) so agents work
+                  directly in the yard (P1 baseline); no arg = all in-yard profiles. Heavy/explicit.
+  stop            stop the yard
+  teardown        tear down the yard + free disk (--keep-data preserves /srv); keeps Incus
+
+Project workflow (default path '.'):
+  sync   [path]   copy a project into the yard (host -> yard; --target yard|<profile>)
+  bind   [path]   mount a project from the host into the yard (shared files)
+  clone  <url>    clone a repo straight into the yard
+  list            list projects currently in the yard
+  code   [path|name] open a project in VS Code by path or \`yard list\` name (Remote-SSH)
+  export [path]   pull a diff/patch from the yard back to the host (sync projects)
+  remove [path]   take a project out of the yard (--purge also deletes the copy)
+
+Project-env (L2 box; for a project added with --target <profile>):
+  up     [path]   build/start the project's box (--rebuild to rebuild the image)
+  down   [path]   stop the box (keeps it)
+  info   [path]   show what the profile exposes inside the box (visibility manifest)
+                  (a box shell is \`yard ssh <project>\`; open it in VS Code with \`yard code\`)
+
+  (init runs the phases in scripts/00-05; run those directly only for debugging.)
 
 Options:
   -h, --help      show this help and exit
@@ -103,13 +108,13 @@ case "$cmd" in
   list)      exec "$S/project-list.sh" "$@" ;;
   logs)      exec "$S/yard-logs.sh" "$@" ;;
   usage)     exec "$S/yard-usage.sh" "$@" ;;
-  start | stop | status | up | down) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;  # up/down: back-compat aliases
+  start | stop | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;
   code)      exec "$S/project-code.sh" "$@" ;;
   remove)    exec "$S/project-remove.sh" "$@" ;;
   export)    exec "$S/project-export.sh" "$@" ;;
-  agent)     exec "$S/agent.sh" "$@" ;;
+  up | down | info) exec "$S/project-env.sh" "$cmd" "$@" ;;   # L2 project-env box lifecycle
   provision) exec "$S/10-provision-profile.sh" "$@" ;;
-  ssh)       host=yard; [ -r "$REPO/config/subyard.env" ] && host="$( . "$REPO/config/subyard.env" >/dev/null 2>&1; printf '%s' "${SSH_HOST:-yard}")"; exec ssh "$host" "$@" ;;
+  ssh)       exec "$S/yard-ssh.sh" "$@" ;;                    # target-aware: L1 yard shell / L2 box
   shell)     exec "$S/yard-shell.sh" "$@" ;;
   clone)     exec "$S/project-clone.sh" "$@" ;;
   help)      usage ;;

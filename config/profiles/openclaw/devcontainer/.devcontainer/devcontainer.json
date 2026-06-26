@@ -21,7 +21,7 @@
     }
   },
   // Workspace-local caches keep the container self-contained. The profile's
-  // shared /srv/cache/* caches are for `yard agent` containers, not this VS Code
+  // shared /srv/cache/* caches are for project-env boxes (`yard up`), not this VS Code
   // devcontainer; wire them in per project for cross-container sharing.
   "containerEnv": {
     "PIP_CACHE_DIR": "/workspace/.cache/pip",

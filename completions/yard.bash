@@ -53,7 +53,7 @@ _yard() {
   if [ "$cword" -eq 1 ]; then
     local cmds
     cmds="$("${COMP_WORDS[0]}" --list 2>/dev/null)"
-    [ -n "$cmds" ] || cmds='init teardown check import sync export remove clone code ssh agent list status logs start stop'
+    [ -n "$cmds" ] || cmds='check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove'
     case "$cur" in
       -*) COMPREPLY=( $(compgen -W "$globals" -- "$cur") ) ;;
       *)  COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ) ;;
@@ -64,27 +64,21 @@ _yard() {
   cmd="${COMP_WORDS[1]}"
 
   case "$cmd" in
-    agent)
-      # agent <sub> [path] [--profile N]
-      local sub="${COMP_WORDS[2]:-}"
-      if [ "$cword" -eq 2 ]; then
-        COMPREPLY=( $(compgen -W 'up info shell exec down destroy list' -- "$cur") )
-        return 0
-      fi
-      if [ "$prev" = "--profile" ]; then
-        COMPREPLY=( $(compgen -W "$(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") )
-        return 0
-      fi
-      case "$cur" in
-        -*) [ "$sub" = up ] && COMPREPLY=( $(compgen -W '--profile --rebuild --yes' -- "$cur") ) ;;
-        *)  case "$sub" in
-              up|info|shell|exec|down|destroy) COMPREPLY=( $(compgen -d -- "$cur") ) ;;
-            esac ;;
-      esac
+    up)
+      # up [path|name] [--rebuild]
+      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--rebuild --yes' -- "$cur") ) \
+        || { local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") ); COMPREPLY+=( $(compgen -d -- "$cur") ); }
       ;;
-    import) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--bind --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
+    down|info)
+      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) \
+        || { local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") ); COMPREPLY+=( $(compgen -d -- "$cur") ); }
+      ;;
     remove) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--purge --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
-    sync|export) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
+    sync|bind)
+      if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
+      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--target --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") )
+      ;;
+    export) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
     code)
       # `yard code` takes a project NAME (from `yard list`) or a directory path.
       if [[ "$cur" == -* ]]; then
@@ -97,8 +91,11 @@ _yard() {
       ;;
     teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
     status) COMPREPLY=( $(compgen -W '--space --yes --help' -- "$cur") ) ;;
-    init|setup|check|list|logs|start|stop|up|down) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
-    *) ;;  # clone (url), ssh (pass-through): leave to default
+    init|setup|check|list|logs|usage|start|stop) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
+    clone)
+      if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
+      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--target --yes' -- "$cur") ) ;;
+    *) ;;  # ssh (pass-through): leave to default
   esac
   return 0
 }

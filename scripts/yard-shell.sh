@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # yard-shell.sh — open a ROOT shell in the yard (or run a root command) via incus exec.
-# For an unprivileged 'dev' shell over SSH use `yard ssh`; for an L3 agent container use
-# `yard agent shell`. Usage: yard shell [-- cmd...]   (no cmd → interactive root bash)
+# For an unprivileged 'dev' shell over SSH use `yard ssh`; for an L2 project-env box use
+# `yard ssh <project>`. Usage: yard shell [-- cmd...]   (no cmd → interactive root bash)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh

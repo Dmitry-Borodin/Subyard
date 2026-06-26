@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 10-provision-profile.sh — Phase 4: install a profile's toolchain into the yard (L1) by running its
 # config/profiles/<name>/provision.sh inside the yard (incus exec), forwarding profile.conf vars as
-# --env. Idempotent; HEAVY and explicit (never auto-run by `yard agent up`). Operator-run (incus-admin).
+# --env. Idempotent; HEAVY and explicit (never auto-run by `yard up`). Operator-run (incus-admin).
 #
 # Usage: yard provision [<profile>]   (no arg → all provisionable profiles; -l lists them)
 set -euo pipefail
@@ -57,7 +57,7 @@ done
 [ "${#todo[@]}" -gt 0 ] || { ok "No profile with a provision.sh — nothing to do."; exit 0; }
 
 announce "Subyard Phase 4 — provision profile toolchain into the yard ($INSTANCE_NAME)" \
-  "Provision ALL of these profiles ($src): ${todo[*]} — into the yard (L1), not a per-agent container." \
+  "Provision ALL of these profiles ($src): ${todo[*]} — into the yard (L1), not a per-project-env box." \
   "Each profile runs its provision.sh inside the yard (downloads Node/JDK/SDK/etc.); idempotent." \
   "HEAVY (network + disk). The yard is shared and rebuildable; the host is untouched."
 proceed_or_die

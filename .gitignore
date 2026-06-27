@@ -5,5 +5,16 @@
 /temp/
 
 # Profile secrets: the .conf contract is committed; a sibling .env may carry keys,
-# so its values stay host-only and never land in git.
+# so its values stay host-only and never land in git. The .example template IS committed.
 /config/profiles/*.env
+/config/profiles/*/profile.env
+
+# Staging zones: per-zone config + secret contract may name host paths / mark a real bot,
+# so the live files stay host-only. The .example templates ARE committed.
+/config/staging/*.conf
+/config/staging/*.env
+!/config/staging/*.example
+
+# Production credential fingerprints (sha256 hashes only, no secret values) the staging
+# prod-guard refuses against — operator-specific, host-only.
+/config/prod-fingerprints

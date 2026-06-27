@@ -1,0 +1,27 @@
+# config/staging/<zone>.conf — non-secret knobs for a shared staging zone (`yard staging`).
+#
+# Copy to `canonical.conf` (gitignored: it may name host paths) to override the defaults below.
+# A zone is a SHARED live-gateway environment, identified by its name — not by a dev project.
+# `canonical` is the persistent baseline zone built from `main`. Secrets never go here; the
+# zone's credential VALUES live inside the runner (see <zone>.env and `yard staging shell`).
+
+# Which dependency profile supplies the toolchain image (config/profiles/<PROFILE>/).
+PROFILE=openclaw
+
+# Where the gateway's source tree comes from. Two ways:
+#   * SOURCE_BIND set  -> bind that yard path read/write as /workspace (e.g. a dedicated staging
+#                         workspace kept at `main`, or a clone you manage). Decoupled from any
+#                         dev agent's box.
+#   * SOURCE_BIND empty -> the zone's own /srv/staging/<zone>/src, which you populate from `main`
+#                         (clone the project into it once; update with git fetch/checkout).
+# SOURCE_BIND=""
+
+# Command the runner launches as the gateway (cwd = /workspace). Default below.
+# GATEWAY_CMD="scripts/vasily gateway run"
+
+# Bot-identity lease key (the scarce resource). Zones sharing one test bot MUST share this key
+# so only one polls at a time. Default `bot` = the single shared test bot.
+# BOT_LEASE_KEY=bot
+
+# Lease TTL in seconds (heartbeat renews at TTL/3). Keep > the gateway's long-poll timeout.
+# LEASE_TTL=45

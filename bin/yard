@@ -15,7 +15,7 @@ PROG="${0##*/}"
 [ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
 
 # Command names, grouped by how the operator scans the help.
-COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove emu)
+COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove emu staging)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -73,6 +73,15 @@ Android emulator (in the yard + host-facing bridge, through the yard — never o
                   (Incus proxy) and emu view opens scrcpy (interactive; --no-control = view-only).
                   Sub: up [avd] | stop | status | adb | view [--no-control] | tunnel | down.
 
+Staging (shared live-gateway zone, isolated from prod; zone defaults to 'canonical'):
+  staging up      [zone]   build/start the zone's runner box (gateway stays down)
+  staging start   [zone]   prod-guard + bot-lease, then launch the live gateway
+  staging stop    [zone]   stop the gateway + release the lease (keeps the box)
+  staging status  [zone]   box + gateway + lease + staging-fingerprint overview
+  staging logs    [zone] [-f]  tail the gateway log
+  staging destroy [zone] [--purge]  remove the box (--purge wipes its staging data root)
+  staging e2e     [path]   (Slice 2) ephemeral run of a dev box's uncommitted tree
+
   (init runs the phases in scripts/00-05; run those directly only for debugging.)
 
 Options:
@@ -120,6 +129,7 @@ case "$cmd" in
   export)    exec "$S/project-export.sh" "$@" ;;
   up | down | info) exec "$S/project-env.sh" "$cmd" "$@" ;;   # L2 project-env box lifecycle
   emu)       exec "$S/yard-emu.sh" "$@" ;;                    # host-facing Android emulator bridge
+  staging)   exec "$S/project-staging.sh" "$@" ;;             # L2 canonical staging-runner (live gateway)
   provision) exec "$S/10-provision-profile.sh" "$@" ;;
   ssh)       exec "$S/yard-ssh.sh" "$@" ;;                    # target-aware: L1 yard shell / L2 box
   shell)     exec "$S/yard-shell.sh" "$@" ;;

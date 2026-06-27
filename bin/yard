@@ -15,7 +15,7 @@ PROG="${0##*/}"
 [ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
 
 # Command names, grouped by how the operator scans the help.
-COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove)
+COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove emu)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -67,6 +67,12 @@ Project-env (L2 box; for a project added with --target <profile>):
   info   [path]   show what the profile exposes inside the box (visibility manifest)
                   (a box shell is \`yard ssh <project>\`; open it in VS Code with \`yard code\`)
 
+Android emulator (in the yard + host-facing bridge, through the yard — never on the LAN):
+  emu up          boot the emulator headless in the yard (HW-GPU, detached); emu status
+                  shows boot state; emu stop stops it. emu adb bridges it to host 127.0.0.1
+                  (Incus proxy) and emu view opens scrcpy (interactive; --no-control = view-only).
+                  Sub: up [avd] | stop | status | adb | view [--no-control] | tunnel | down.
+
   (init runs the phases in scripts/00-05; run those directly only for debugging.)
 
 Options:
@@ -113,6 +119,7 @@ case "$cmd" in
   remove)    exec "$S/project-remove.sh" "$@" ;;
   export)    exec "$S/project-export.sh" "$@" ;;
   up | down | info) exec "$S/project-env.sh" "$cmd" "$@" ;;   # L2 project-env box lifecycle
+  emu)       exec "$S/yard-emu.sh" "$@" ;;                    # host-facing Android emulator bridge
   provision) exec "$S/10-provision-profile.sh" "$@" ;;
   ssh)       exec "$S/yard-ssh.sh" "$@" ;;                    # target-aware: L1 yard shell / L2 box
   shell)     exec "$S/yard-shell.sh" "$@" ;;

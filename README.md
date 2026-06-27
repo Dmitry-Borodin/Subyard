@@ -48,7 +48,8 @@ scripts/            Host + yard lifecycle scripts (00-check-host.sh … 09-yard-
 scripts/install-cli.sh  Put yard/sy on your PATH (~/.local/bin) + tab-completion
 completions/        Shell tab-completion for yard/sy (bash, zsh)
 config/             Settings: subyard.env (instance), incus.project.env (project),
-                    host.env (all host paths + host→yard mounts/symlinks)
+                    host.env (all host paths + host→yard mounts/symlinks),
+                    ports.env (host loopback ports for proxy devices, e.g. emulator adb)
 config/profiles/    Dependency profiles (android.conf, openclaw.conf; the .conf is the
                     non-secret contract, an optional gitignored sibling .env carries secrets)
 ```

@@ -83,6 +83,16 @@ _yard() {
           fi
           ;;
         export) _arguments '--yes[skip prompt]' '*:project:_files -/' ;;
+        emu)
+          if (( CURRENT == 2 )); then
+            local -a sub; sub=( 'up:boot the emulator in the yard' 'stop:stop the in-yard emulator' 'status:emulator + bridge state' 'adb:bridge emulator adb to host loopback' 'view:scrcpy the emulator screen' 'tunnel:ssh -L fallback bridge' 'down:remove the proxy device' )
+            _describe -t subcommands 'emu subcommand' sub
+          elif [[ ${words[2]} == view ]]; then
+            _arguments '--no-control[view-only (look but do not touch)]' '--view-only[alias of --no-control]' '--control[interactive (default)]' '--yes[skip prompt]'
+          else
+            _arguments '--yes[skip prompt]'
+          fi
+          ;;
         code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
         status) _arguments '--space[also print on-host size of ~/.subyard]' '--yes[skip prompt]' '--help[show help]' ;;
         teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;

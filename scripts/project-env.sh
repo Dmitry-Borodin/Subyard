@@ -178,7 +178,7 @@ case "$sub" in
     # keeps its own creds). Sessions are allowed — only creds are blocked.
     for m in ${ENV_MOUNTS:-}; do
       case "${m,,}" in
-        *.claude/*|*.claude:*|*.codex/*|*.codex:*|*credentials*|*auth.json*)
+        *.claude/*|*.claude:*|*.codex/*|*.codex:*|*.pi/agent/*|*.pi/agent:*|*credentials*|*auth.json*)
           die "ENV_MOUNTS '$m' would share coding-agent credentials into the box; each project-env keeps its own credential store (sessions may be shared, creds never)" ;;
       esac
     done

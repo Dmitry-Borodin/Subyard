@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # yard-usage.sh — run ccusage inside the yard (as 'dev') to report coding-agent token usage.
-# ccusage reads each agent's native data there (~/.claude, ~/.codex, ~/.local/share/opencode),
-# so all agents are covered with no per-agent wiring. Read-only; args pass through to ccusage
-# (e.g. 'yard usage', 'yard usage daily', 'yard usage --json').
+# ccusage reads each agent's native data there (~/.claude, ~/.codex, ~/.local/share/opencode), so the
+# agents it understands are covered with no per-agent wiring. pi stores its own JSONL under
+# ~/.pi/agent/sessions (persisted to the host store; ccusage may not parse it — see pi's /session).
+# Read-only; args pass through to ccusage (e.g. 'yard usage', 'yard usage daily', 'yard usage --json').
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh

@@ -33,6 +33,11 @@ PROFILE=openclaw
 # Command the runner launches as the gateway (cwd = /workspace). Default below.
 # GATEWAY_CMD="scripts/vasily gateway run"
 
+# Rebuild command run in the runner (cwd /workspace) BEFORE the gateway launches, so `restart`
+# (and in-yard `sy-stage restart`) picks up the agent's live edits. Empty => no rebuild.
+#   BUILD_CMD="VASILY_OPENCLAW_ALLOW_LIVE_BUILD=1 scripts/vasily openclaw-source build"
+# BUILD_CMD=""
+
 # Bot-identity lease key (the scarce resource). Zones sharing one test bot MUST share this key
 # so only one polls at a time. Default `bot` = the single shared test bot.
 # BOT_LEASE_KEY=bot

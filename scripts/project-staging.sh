@@ -99,6 +99,8 @@ svc_require_yard_running
 PROFILE=openclaw
 SOURCE_BIND=""                              # optional: a yard path to bind as the source tree
 GATEWAY_CMD="scripts/vasily gateway run"
+BUILD_CMD=""                                # optional: rebuild cmd run in the runner (cwd /workspace)
+                                            #   before the gateway launches, so 'restart' picks up live edits
 BOT_LEASE_KEY=bot                           # lease key = bot identity (shared across zones)
 LEASE_TTL=45
 CREDS_DEST=""                               # optional: path INSIDE the runner for a persistent creds store
@@ -186,7 +188,9 @@ case "$sub" in
 
     if box_exists; then
       ydocker start "$cname" >/dev/null
-      ok "staging-runner zone '$zone' already exists — started (gateway down; '${PROG:-yard} staging start $zone')"
+      # keep the in-yard CLI fresh (zone.env/run-args were written on first up)
+      incus file push "$SCRIPT_DIR/sy-stage.sh" "$INSTANCE_NAME/usr/local/bin/sy-stage" "${PROJ[@]}" --mode 0755 --uid 0 --gid 0 >/dev/null 2>&1 || true
+      ok "staging-runner zone '$zone' already exists — started (gateway down; '${PROG:-yard} staging start $zone' or in-yard 'sy-stage restart $zone')"
       exit 0
     fi
 
@@ -229,30 +233,60 @@ case "$sub" in
     fi
 
     src_mount="${SOURCE_BIND:-$srcDir}"
-    args=(run -d --name "$cname" --hostname "staging-${zone}" --restart unless-stopped
-          --label subyard.staging=1 --label "subyard.zone=$zone" --label "subyard.profile=$profile"
-          -v "$src_mount:/workspace" -w /workspace
-          -v "$dataRoot:$dataRoot"
-          -v "$LEASE_DIR:$LEASE_DIR"
-          -e "VASILY_HOME=$vasilyHome"
-          -e "SUBYARD_STAGING_ZONE=$zone"
-          -e "SUBYARD_STAGING_DATA_ROOT=$dataRoot")
-    for c in ${CACHES:-}; do yexec install -d -o "$DEV_UID" -g "$DEV_UID" "$c"; args+=(-v "$c:$c"); done
-    [ "$have_secrets" = 1 ] && args+=(-v "$ysecret:$BOX_SECRET:ro")
+    # mid = the STABLE run spec (everything bar the swappable source bind, the name/hostname and
+    # the image/cmd). Reused verbatim by the in-yard 'sy-stage rebind' (written to run-args below).
+    mid=(--restart unless-stopped
+         --label subyard.staging=1 --label "subyard.zone=$zone" --label "subyard.profile=$profile"
+         -v "$dataRoot:$dataRoot"
+         -v "$LEASE_DIR:$LEASE_DIR"
+         -e "VASILY_HOME=$vasilyHome"
+         -e "SUBYARD_STAGING_ZONE=$zone"
+         -e "SUBYARD_STAGING_DATA_ROOT=$dataRoot")
+    for c in ${CACHES:-}; do yexec install -d -o "$DEV_UID" -g "$DEV_UID" "$c"; mid+=(-v "$c:$c"); done
+    [ "$have_secrets" = 1 ] && mid+=(-v "$ysecret:$BOX_SECRET:ro")
     # persistent creds store (a one-time manual provider login survives box recreate); backed by $dataRoot/creds
-    [ -n "$CREDS_DEST" ] && args+=(-v "$dataRoot/creds:$CREDS_DEST")
+    [ -n "$CREDS_DEST" ] && mid+=(-v "$dataRoot/creds:$CREDS_DEST")
     while IFS= read -r k; do
       case "$k" in
         PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES|IMAGE_DOCKERFILE|IMAGE_CONTEXT|IMAGE_TAG|\
         ENV_MOUNTS|YARD_MOUNTS|YARD_CAPS|YARD_DEVICES) continue ;;
       esac
-      args+=(-e "$k=${!k}")
+      mid+=(-e "$k=${!k}")
     done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$pf" | cut -d= -f1 | sort -u)
-    args+=("$run_image" sleep infinity)
 
     info "starting staging-runner zone '$zone' …"
-    ydocker "${args[@]}" >/dev/null || die "docker run failed in the yard"
+    ydocker run -d --name "$cname" --hostname "staging-${zone}" \
+      -v "$src_mount:/workspace" -w /workspace \
+      "${mid[@]}" "$run_image" sleep infinity >/dev/null || die "docker run failed in the yard"
     ok "staging-runner zone '$zone' up (profile $profile, image $run_image)"
+
+    # --- in-yard self-serve control plane (sy-stage): let the agent reserve+run from the yard ----
+    gw_cmd_eff="${STAGING_GATEWAY_CMD:-$GATEWAY_CMD}"
+    # zone.env — the self-contained spec the in-yard 'sy-stage' consumes (no host config in the yard).
+    yexec sh -c 'cat > "$1"' _ "$dataRoot/zone.env" <<ZENV
+CNAME='$cname'
+DATA_ROOT='$dataRoot'
+RUN_IMAGE='$run_image'
+GATEWAY_CMD='$gw_cmd_eff'
+BUILD_CMD='$BUILD_CMD'
+BOT_LEASE_KEY='$BOT_LEASE_KEY'
+LEASE_TTL='$LEASE_TTL'
+CREDS_DEST='$CREDS_DEST'
+SOURCE_BIND='$src_mount'
+GW_PID='$GW_PID'
+HB_PID='$HB_PID'
+YLOG='$ylog'
+ZENV
+    # run-args — the reusable mid spec for 'sy-stage rebind' (one arg per line, preserves spaces).
+    printf '%s\n' "${mid[@]}" | yexec sh -c 'cat > "$1"' _ "$dataRoot/run-args"
+    # prod-fingerprints — the in-yard prod-guard reads this (deny-by-default stays effective).
+    [ -r "$PROD_FP_FILE" ] && incus file push "$PROD_FP_FILE" "$INSTANCE_NAME$dataRoot/prod-fingerprints" "${PROJ[@]}" --mode 0644 >/dev/null 2>&1 || true
+    # install the in-yard CLI on the agent's PATH.
+    if incus file push "$SCRIPT_DIR/sy-stage.sh" "$INSTANCE_NAME/usr/local/bin/sy-stage" "${PROJ[@]}" --mode 0755 --uid 0 --gid 0 >/dev/null 2>&1; then
+      ok "in-yard self-serve ready: in the yard the agent runs 'sy-stage restart $zone' (reserve/restart/rebind/stop/status/logs)"
+    else
+      warn "could not install sy-stage into the yard — in-yard self-serve unavailable (operator-only via 'yard staging')"
+    fi
     cat <<MSG
 
 Next:

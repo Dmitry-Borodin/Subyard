@@ -82,6 +82,8 @@ Staging (shared live-gateway zone, isolated from prod; zone defaults to 'canonic
   staging logs    [zone] [-f]  tail the gateway log
   staging destroy [zone] [--purge]  remove the box (--purge wipes its staging data root)
   staging e2e     [path]   (P4) reflink-isolated run — deferred; use 'staging up <zone> --source'
+  In-yard self-serve (after 'staging up'): the agent runs 'sy-stage ...' INSIDE the yard, no host/path:
+    sy-stage reserve|restart|rebind|stop|release|status|logs [--zone Z] — reserve the bot + run its live tree
 
   (init runs the phases in scripts/00-05; run those directly only for debugging.)
 

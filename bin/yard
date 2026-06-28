@@ -75,13 +75,13 @@ Android emulator (in the yard + host-facing bridge, through the yard — never o
                   Sub: up [avd] | stop | status | adb | view [--no-control] | tunnel | down.
 
 Staging (shared live-gateway zone, isolated from prod; zone defaults to 'canonical'):
-  staging up      [zone]   build/start the zone's runner box (gateway stays down)
+  staging up      [zone] [--source PATH]  build/start the runner (--source live-binds a worktree)
   staging start   [zone]   prod-guard + bot-lease, then launch the live gateway
   staging stop    [zone]   stop the gateway + release the lease (keeps the box)
   staging status  [zone]   box + gateway + lease + staging-fingerprint overview
   staging logs    [zone] [-f]  tail the gateway log
   staging destroy [zone] [--purge]  remove the box (--purge wipes its staging data root)
-  staging e2e     [path]   (Slice 2) ephemeral run of a dev box's uncommitted tree
+  staging e2e     [path]   (P4) reflink-isolated run — deferred; use 'staging up <zone> --source'
 
   (init runs the phases in scripts/00-05; run those directly only for debugging.)
 

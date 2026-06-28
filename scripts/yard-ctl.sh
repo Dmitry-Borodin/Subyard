@@ -52,22 +52,34 @@ print_space() {
   printf '  space    %s%s  (%s)\n' "${total:-?}" "$note" "$base"
 }
 
-# Shared resources profiles declare (SHARED_RESOURCES in each profile.conf) and whether each is
-# up. Always lists what is declared (so the operator sees what *could* run); the live up/down
-# probe needs the yard, so pass running=1 to probe, else every entry shows '?'. One line:
-#   shared   android:emulator=down openclaw:staging-gateway=up
+# Shared resources profiles declare (SHARED_RESOURCES in each profile.conf), one row per
+# resource under a `shared:` heading. Always lists what is declared (so the operator sees what
+# *could* run); the live up/down probe needs the yard, so pass running=1 to probe, else every
+# row shows '?'. A down resource gets a bring-up hint. Nothing declared => one `shared   none`.
+#   shared:
+#     android   emulator         up
+#     openclaw  staging-gateway  down   (yard staging start)
 print_shared() {
-  local running="$1" out='' name res st
+  local running="$1" name res st hint any=0
   for d in "$PROFILES_DIR"/*/; do
     [ -r "$d/profile.conf" ] || continue
     name="$(basename "$d")"
     for res in $(svc_resources_for "$name"); do
-      if [ "$running" = 1 ]; then svc_resource_up "$res" && st=up || st=down; else st='?'; fi
-      out+=" $name:$res=$st"
+      [ "$any" = 1 ] || { printf '  shared:\n'; any=1; }
+      hint=''
+      if [ "$running" = 1 ]; then
+        if svc_resource_up "$res"; then st=up; else st=down; hint="$(svc_resource_hint "$res")"; fi
+      else
+        st='?'
+      fi
+      if [ -n "$hint" ]; then
+        printf '    %-9s %-16s %-5s (%s)\n' "$name" "$res" "$st" "$hint"
+      else
+        printf '    %-9s %-16s %s\n' "$name" "$res" "$st"
+      fi
     done
   done
-  out="${out# }"                       # strip the leading space we accumulated
-  printf '  shared   %s\n' "${out:-none}"
+  [ "$any" = 1 ] || printf '  shared   none\n'
 }
 
 case "$action" in

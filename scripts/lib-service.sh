@@ -72,3 +72,13 @@ svc_resource_up() {
     *) return 1 ;;  # unknown resource kind => report not-up rather than erroring
   esac
 }
+
+# svc_resource_hint <resource-name> — the operator command that brings this resource up, for a
+# status hint next to a down resource. Empty for unknown kinds. Pairs with svc_resource_up.
+svc_resource_hint() {
+  case "$1" in
+    emulator)        printf '%s' "${PROG:-yard} emu up" ;;
+    staging-gateway) printf '%s' "${PROG:-yard} staging start" ;;
+    *) : ;;
+  esac
+}

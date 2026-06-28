@@ -37,32 +37,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
+# shellcheck source=scripts/lib-service.sh
+. "$SCRIPT_DIR/lib-service.sh"   # profile shared-resource helpers: yexec, svc_require_yard_running
 
-INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
-INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_UID="${DEV_UID:-1000}"
 PROFILES_DIR="$SCRIPT_DIR/../config/profiles"
 ZONES_DIR="$SCRIPT_DIR/../config/staging"
 PROD_FP_FILE="$SCRIPT_DIR/../config/prod-fingerprints"   # host-only sha256 denylist (no secrets)
 LEASE_DIR="/srv/staging/_lease"                          # in the yard; one lease per bot identity
-PROJ=(--project "$INCUS_PROJECT")
 
-yexec()   { incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- "$@"; }
 ydocker() { yexec docker "$@"; }
 cname_for() { printf 'subyard-staging-%s' "$1"; }
-
-yard_running() { [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; }
-preflight() {
-  incus_preflight
-  yard_running || die "yard is not running — start it: ${PROG:-yard} start"
-}
 
 sub="${1:-}"; shift || true
 [ -n "$sub" ] || die "need a subcommand: up | start | stop | status | logs | shell | down | destroy | list | e2e"
 
 # --- list / e2e: handled before zone resolution ------------------------------
 if [ "$sub" = list ]; then
-  preflight
+  svc_require_yard_running
   echo "Staging-runner zones in the yard:"
   ydocker ps -a --filter "label=subyard.staging=1" \
     --format 'table {{.Label "subyard.zone"}}\t{{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null
@@ -100,7 +92,7 @@ while [ $# -gt 0 ]; do
 done
 case "$zone" in *[!a-zA-Z0-9_-]*) die "zone name '$zone' must be [a-zA-Z0-9_-]" ;; esac
 
-preflight
+svc_require_yard_running
 
 # zone config (non-secret knobs) + defaults
 PROFILE=openclaw

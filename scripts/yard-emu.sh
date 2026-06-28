@@ -33,16 +33,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
+# shellcheck source=scripts/lib-service.sh
+. "$SCRIPT_DIR/lib-service.sh"   # profile shared-resource helpers: yexec, svc_require_yard_running
 
-INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
-INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
 SSH_HOST="${SSH_HOST:-yard}"
 ADB_EMULATOR_PORT="${ADB_EMULATOR_PORT:-5555}"
 ADB_PROXY_PORT="${ADB_PROXY_PORT:-15555}"
 ADB_CONSOLE_EMULATOR_PORT="${ADB_CONSOLE_EMULATOR_PORT:-5554}"
 ADB_CONSOLE_PROXY_PORT="${ADB_CONSOLE_PROXY_PORT:-}"
-PROJ=(--project "$INCUS_PROJECT")
 
 ADB_DEVICE=adb-emu              # Incus proxy device names (yard config)
 ADB_CONSOLE_DEVICE=adb-emu-console
@@ -54,7 +53,6 @@ EMU_LOG=/tmp/subyard-android-emu.log
 PROFILE_SRC="$SCRIPT_DIR/../config/profiles/android"
 
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
-yexec() { incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- "$@"; }
 
 # Is something listening on the in-yard adb port? (emulator fully up). Best-effort; needs ss.
 emulator_listening() {
@@ -68,13 +66,8 @@ EMU_PGREP='emulator-run.sh|cage --|/emulator/emulator|qemu-system'
 emulator_proc() { yexec pgrep -f "$EMU_PGREP" >/dev/null 2>&1; }
 
 # Yard must be reachable and running before we can touch its devices or reach the emulator.
-require_yard_running() {
-  incus_preflight
-  incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-    || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
-  [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-    || die "yard is not running — start it: yard start"
-}
+# Shared across profile resources (lib-service.sh): incus reachable + instance RUNNING.
+require_yard_running() { svc_require_yard_running; }
 
 # Best-effort: warn (do not fail) when nothing is listening on the in-yard adb port — the
 # proxy is still valid, but `adb connect` will hang until the emulator finishes booting.

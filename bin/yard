@@ -14,8 +14,9 @@ PROG="${0##*/}"
 # shellcheck disable=SC1091
 [ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
 
-# Command names, grouped by how the operator scans the help.
-COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove emu staging)
+# Command names, in the same journey order as usage()'s sections (drives `yard --list`
+# and both completions): yard lifecycle / project workflow / project-env L2 / emu / staging.
+COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info emu staging)
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).

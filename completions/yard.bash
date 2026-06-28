@@ -53,7 +53,7 @@ _yard() {
   if [ "$cword" -eq 1 ]; then
     local cmds
     cmds="$("${COMP_WORDS[0]}" --list 2>/dev/null)"
-    [ -n "$cmds" ] || cmds='check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove'
+    [ -n "$cmds" ] || cmds='check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info emu staging'
     case "$cur" in
       -*) COMPREPLY=( $(compgen -W "$globals" -- "$cur") ) ;;
       *)  COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ) ;;

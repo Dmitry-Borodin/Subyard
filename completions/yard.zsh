@@ -51,7 +51,7 @@ _yard_code_target() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( check init start status logs usage ssh shell provision stop teardown sync bind clone list code up down info export remove )
+  [[ -n $cmds ]] || cmds=( check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info emu staging )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args

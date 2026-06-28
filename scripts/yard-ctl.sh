@@ -8,7 +8,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
+# shellcheck source=scripts/lib-service.sh
+. "$SCRIPT_DIR/lib-service.sh"   # profile shared-resource helpers: svc_resources_for / svc_resource_up
 
+PROFILES_DIR="$SCRIPT_DIR/../config/profiles"
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
@@ -47,6 +50,24 @@ print_space() {
     total="$(du -sh "$base" 2>/dev/null | awk 'NR==1{print $1}')"
   fi
   printf '  space    %s%s  (%s)\n' "${total:-?}" "$note" "$base"
+}
+
+# Shared resources profiles declare (SHARED_RESOURCES in each profile.conf) and whether each is
+# up. Always lists what is declared (so the operator sees what *could* run); the live up/down
+# probe needs the yard, so pass running=1 to probe, else every entry shows '?'. One line:
+#   shared   android:emulator=down openclaw:staging-gateway=up
+print_shared() {
+  local running="$1" out='' name res st
+  for d in "$PROFILES_DIR"/*/; do
+    [ -r "$d/profile.conf" ] || continue
+    name="$(basename "$d")"
+    for res in $(svc_resources_for "$name"); do
+      if [ "$running" = 1 ]; then svc_resource_up "$res" && st=up || st=down; else st='?'; fi
+      out+=" $name:$res=$st"
+    done
+  done
+  out="${out# }"                       # strip the leading space we accumulated
+  printf '  shared   %s\n' "${out:-none}"
 }
 
 case "$action" in
@@ -110,6 +131,9 @@ case "$action" in
       for f in "$SUBYARD_CONFIG_HOME/projects"/*.json; do [ -e "$f" ] && n=$((n+1)); done
     fi
     printf '  projects %s  (yard list)\n' "$n"
+    # Shared resources profiles expose (emulator / staging gateway). Probe live state only when
+    # the yard is up; otherwise just list what is declared (state '?').
+    if [ "$s" = RUNNING ]; then print_shared 1; else print_shared 0; fi
     # On-demand disk footprint (du can be slow on a big pool, so opt-in via --space).
     [ "$SHOW_SPACE" = 1 ] && print_space
     ;;

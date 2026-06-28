@@ -42,3 +42,33 @@ svc_resources_for() {
   # shellcheck disable=SC1090  # per-profile path is dynamic by design
   ( SHARED_RESOURCES=""; . "$pf" >/dev/null 2>&1; printf '%s\n' "${SHARED_RESOURCES:-}" )
 }
+
+# svc_resource_up <resource-name> — read-only probe: is a shared resource currently up?
+# The status counterpart to svc_resources_for (the declaration). Returns 0 (up) / 1 (down or
+# unknown). Deliberately read-only and minimal — launch/bridge/arbitration stay in the per-kind
+# frontends (yard-emu.sh / project-staging.sh); this lib only learns each kind's "is it live?"
+# signal so `yard status` can summarize without re-implementing or shelling out to those tools.
+# Assumes the yard is RUNNING (caller checks); a down yard makes every probe report not-up.
+svc_resource_up() {
+  case "$1" in
+    emulator)
+      # L1: the emulator runs in the yard; "up" = its adb port is listening there.
+      local port="${ADB_EMULATOR_PORT:-5555}"
+      yexec sh -c "command -v ss >/dev/null 2>&1 && ss -Hltn 'sport = :$port' 2>/dev/null | grep -q ." 2>/dev/null
+      ;;
+    staging-gateway)
+      # L2: "up" = any staging-runner box (any zone) has a live gateway pid. The zone's data
+      # root /srv/staging/<zone> is bind-mounted into its box at the same path, so the pid file
+      # is /srv/staging/<zone>/run/gateway.pid; kill -0 must run in the box's pid namespace.
+      yexec sh -c '
+        for c in $(docker ps -q --filter "label=subyard.staging=1" 2>/dev/null); do
+          z="$(docker inspect -f "{{ index .Config.Labels \"subyard.zone\" }}" "$c" 2>/dev/null)"
+          [ -n "$z" ] || continue
+          p="/srv/staging/$z/run/gateway.pid"
+          docker exec "$c" sh -c "[ -f \"$p\" ] && kill -0 \"\$(cat \"$p\")\" 2>/dev/null" && exit 0
+        done
+        exit 1' 2>/dev/null
+      ;;
+    *) return 1 ;;  # unknown resource kind => report not-up rather than erroring
+  esac
+}

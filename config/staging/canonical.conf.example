@@ -2,19 +2,26 @@
 #
 # Copy to `canonical.conf` (gitignored: it may name host paths) to override the defaults below.
 # A zone is a SHARED live-gateway environment, identified by its name — not by a dev project.
-# `canonical` is the persistent baseline zone built from `main`. Secrets never go here; the
+# `canonical` is the persistent baseline zone built from `master`. Secrets never go here; the
 # zone's credential VALUES live inside the runner (see <zone>.env and `yard staging shell`).
 
 # Which dependency profile supplies the toolchain image (config/profiles/<PROFILE>/).
 PROFILE=openclaw
 
 # Where the gateway's source tree comes from. Two ways:
-#   * SOURCE_BIND set  -> bind that yard path read/write as /workspace (e.g. a dedicated staging
-#                         workspace kept at `main`, or a clone you manage). Decoupled from any
-#                         dev agent's box.
-#   * SOURCE_BIND empty -> the zone's own /srv/staging/<zone>/src, which you populate from `main`
+#   * SOURCE_BIND set  -> bind that yard path read/write as /workspace. MVP live-bind: point it at an
+#                         agent's workspace (e.g. /srv/workspaces/<id>) to run their UNCOMMITTED code
+#                         with no commit (edits propagate into the running stage by design). Or per-run
+#                         via CLI: `yard staging up <zone> --source /srv/workspaces/<id>`.
+#   * SOURCE_BIND empty -> the zone's own /srv/staging/<zone>/src, which you populate from `master`
 #                         (clone the project into it once; update with git fetch/checkout).
 # SOURCE_BIND=""
+
+# Persistent credentials store INSIDE the runner — a one-time manual provider login (Codex) lands
+# here and survives box recreate (backed by /srv/staging/<zone>/creds). Set to the runner's creds
+# dir; if creds already live under VASILY_HOME (persisted), leave empty. Find the path via
+# `yard staging shell <zone>` after the first login.
+# CREDS_DEST=""
 
 # Command the runner launches as the gateway (cwd = /workspace). Default below.
 # GATEWAY_CMD="scripts/vasily gateway run"

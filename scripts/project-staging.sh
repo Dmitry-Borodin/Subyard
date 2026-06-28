@@ -4,9 +4,10 @@
 # NOT by a dev project — it is a shared service: dev-agents work in their own L2 boxes
 # (project-env.sh) and USE the zone; they do not each run their own gateway with the one test
 # bot. This is the O3 two-tier design (decisions-glossary "Staging design v2", 2026-06-27):
-#   * canonical — persistent, built from `main`, baseline/smoke/demo, never accrues dirty state;
-#   * ephemeral — a throwaway run for an agent's UNCOMMITTED diff (test without committing),
-#     serialized behind canonical via a lease on the bot identity. (ephemeral = Slice 2, below.)
+#   * canonical — persistent, built from `master`, baseline/smoke/demo, never accrues dirty state;
+#   * ephemeral — a run of an agent's UNCOMMITTED worktree (test without committing). MVP = a LIVE BIND
+#     of the worktree ('up --source'); reflink-snapshot isolation is deferred (P4). Serialized behind
+#     canonical via a lease on the bot identity.
 #
 # Hard invariant — NOTHING here may touch production:
 #   * a STAGING-only data root /srv/staging/<zone> (its own VASILY_HOME / state), never prod;
@@ -19,7 +20,8 @@
 #     poller at a time; handover is fence-by-lifecycle (stop the prior holder's gateway).
 #
 # Subcommands (a leading [zone] defaults to `canonical`):
-#   up      [zone] [--rebuild]   build/start the zone's runner box (gateway stays down)
+#   up      [zone] [--rebuild] [--source PATH]   build/start the runner box (gateway stays down);
+#                               --source PATH live-binds a worktree as /workspace (run uncommitted, no commit)
 #   start   [zone]               prod-guard + acquire lease, then launch the gateway
 #   stop    [zone]               stop the gateway + release the lease (keeps the box)
 #   status  [zone]               box + gateway + lease + staging-fingerprint overview
@@ -28,7 +30,8 @@
 #   down    [zone]               stop the box (keeps it + its staging data root)
 #   destroy [zone] [--purge]     remove the box (--purge also wipes the staging data root)
 #   list                         list staging-runner boxes in the yard
-#   e2e     [path]               (Slice 2) ephemeral run of a dev box's UNCOMMITTED tree
+#   e2e     [path]               (Slice 2) reflink-isolated ephemeral run — DEFERRED to P4; for now use
+#                               'up <zone> --source <agent-workspace>' for a live-bind run of uncommitted code
 #
 # Per-zone config (optional): config/staging/<zone>.conf — non-secret knobs (PROFILE, SOURCE_BIND,
 # GATEWAY_CMD, BOT_LEASE_KEY, LEASE_TTL). See config/staging/canonical.conf.example.
@@ -63,25 +66,23 @@ fi
 if [ "$sub" = e2e ]; then
   # Slice 2 — ephemeral lane. Implemented next; fail loudly rather than pretend.
   cat >&2 <<'EOF'
-  [fail] `yard staging e2e` (ephemeral lane) is not implemented yet — Slice 2.
-         Planned flow (decisions-glossary "Staging design v2"):
-           1. resolve the dev project box for [path]; snapshot its in-yard workspace
-              read-only via `cp -a --reflink=auto` into /srv/staging/_eph/<runid>/src
-           2. spin a throwaway zone `eph-<runid>` from that snapshot (staging secrets injected
-              at runtime — the agent's tree carries none);
-           3. acquire the bot lease, PREEMPTING canonical (fence-by-lifecycle: stop canonical's
-              gateway first), run the #38 E2E against the real test bot;
-           4. teardown: stop gateway, release lease, destroy box + per-run state.
-         For now use the canonical zone: `yard staging up` / `start` / `status`.
+  [fail] `yard staging e2e` (reflink-isolated ephemeral lane) is DEFERRED to P4 (full isolation).
+         For now run an agent's UNCOMMITTED code via a LIVE BIND (the MVP, no commit needed):
+           yard staging up <zone> --source /srv/workspaces/<agent-id>
+           yard staging start <zone>
+         Live bind = the worktree is shared into the runner as-is; edits propagate into the
+         running stage by design (no snapshot). reflink snapshot / per-run isolation / teardown
+         land in p4-staging-full-isolation.
 EOF
   exit 2
 fi
 
 # --- parse: [zone] [--rebuild|--purge|-f] ------------------------------------
-zone="canonical"; rebuild=0; purge=0; follow=0; zone_set=0
+zone="canonical"; rebuild=0; purge=0; follow=0; zone_set=0; src_override=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --rebuild) rebuild=1 ;;
+    --source)  src_override="${2:-}"; [ -n "$src_override" ] || die "--source needs a yard path"; shift ;;
     --purge)   purge=1 ;;
     -f|--follow) follow=1 ;;
     -y|--yes)  ;;  # handled by lib.sh
@@ -100,9 +101,13 @@ SOURCE_BIND=""                              # optional: a yard path to bind as t
 GATEWAY_CMD="scripts/vasily gateway run"
 BOT_LEASE_KEY=bot                           # lease key = bot identity (shared across zones)
 LEASE_TTL=45
+CREDS_DEST=""                               # optional: path INSIDE the runner for a persistent creds store
+                                            #   (a one-time manual provider login survives box recreate);
+                                            #   backed by $dataRoot/creds. Empty => creds live under VASILY_HOME.
 zconf="$ZONES_DIR/$zone.conf"
 # shellcheck disable=SC1090
 [ -r "$zconf" ] && . "$zconf"
+[ -n "$src_override" ] && SOURCE_BIND="$src_override"   # --source overrides the zone-conf bind (live-bind a worktree)
 
 profile="$PROFILE"
 pf="$PROFILES_DIR/$profile/profile.conf"
@@ -175,6 +180,10 @@ case "$sub" in
     sf="$ZONES_DIR/$zone.env"; have_secrets=0
     [ -r "$sf" ] && have_secrets=1
 
+    # live-bind worktree (if any) must exist in the yard (run an agent's uncommitted code)
+    [ -z "$SOURCE_BIND" ] || yexec test -d "$SOURCE_BIND" \
+      || die "SOURCE_BIND '$SOURCE_BIND' is not a directory in the yard — point it at an agent's workspace (e.g. /srv/workspaces/<id>)"
+
     if box_exists; then
       ydocker start "$cname" >/dev/null
       ok "staging-runner zone '$zone' already exists — started (gateway down; '${PROG:-yard} staging start $zone')"
@@ -230,6 +239,8 @@ case "$sub" in
           -e "SUBYARD_STAGING_DATA_ROOT=$dataRoot")
     for c in ${CACHES:-}; do yexec install -d -o "$DEV_UID" -g "$DEV_UID" "$c"; args+=(-v "$c:$c"); done
     [ "$have_secrets" = 1 ] && args+=(-v "$ysecret:$BOX_SECRET:ro")
+    # persistent creds store (a one-time manual provider login survives box recreate); backed by $dataRoot/creds
+    [ -n "$CREDS_DEST" ] && args+=(-v "$dataRoot/creds:$CREDS_DEST")
     while IFS= read -r k; do
       case "$k" in
         PROFILE_NAME|BASE_IMAGE|CACHES|DEVICES|OPTIONAL_FEATURES|IMAGE_DOCKERFILE|IMAGE_CONTEXT|IMAGE_TAG|\
@@ -245,12 +256,15 @@ case "$sub" in
     cat <<MSG
 
 Next:
-  1. Populate / point the source tree at \`main\` (if not bound): clone the project into $srcDir.
+  1. Source tree at /workspace <- $src_desc.
+       live-bind an agent's uncommitted worktree: ${PROG:-yard} staging up $zone --source /srv/workspaces/<id>
+       (or set SOURCE_BIND in config/staging/$zone.conf); else populate $srcDir from \`master\`.
   2. Paste STAGING creds into the runner (one-time):
        ${PROG:-yard} staging shell $zone
        # set channels.telegram.tokenFile/botToken in \$VASILY_HOME/openclaw/openclaw.json,
-       # mark it staging ("_subyardStaging": true), log in the staging model provider once
-       # (creds persist in $dataRoot/creds).
+       # mark it staging ("_subyardStaging": true), log in the staging model provider (Codex) once.
+       # To survive box recreate, set CREDS_DEST in $zone.conf to the runner's creds dir
+       # (persisted at $dataRoot/creds); else the login lives in the box until 'destroy'.
   3. Record PROD bot fingerprint(s) so the guard refuses them:
        printf '%s' "<PROD_BOT_TOKEN>" | sha256sum   # hash only
        echo "<that-hash>" >> config/prod-fingerprints

@@ -12,6 +12,30 @@ Subyard is the default backyard for AI coding agents: a full-OS, host-like works
 - **Shared resources, self-registering.** A profile can declare resources shared by every agent in the yard instead of each one spinning up its own — an on-demand Android emulator, a live staging gateway, a QA-bot broker. Each is a small descriptor (`resources/*.res`) that the `yard` CLI reads at runtime, so the resource shows up as a first-class command (`yard emu`, `yard staging`, …) **without editing the core**. `yard status` lists them with their state and a bring-up hint.
 - **Cheap to fail.** Everything inside the yard is recreatable, snapshot-able, and destroyable. Tear a machine down and bring it back.
 
+## Getting started
+
+**Windows/MacOS**: tell your agent to add a VM wrapper as your OS doesn't support containers. Then run steps below.
+
+**GNU/Linux**:
+
+Put the CLI on your PATH (adds `yard`/`sy` to `~/.local/bin` plus tab-completion), then preflight the host and stand the yard up:
+
+```sh
+./scripts/install-cli.sh      # yard + sy on PATH, shell completion
+yard check                    # read-only: can this host run a yard?
+yard init                     # Incus → project → yard → mounts → provision
+```
+
+From there, drop a project in and open it:
+
+```sh
+yard sync .                   # copy the current project into the yard
+yard code .                   # open it in VS Code over Remote-SSH
+yard status                   # yard + ssh + mounts + services + projects
+```
+
+Run `yard --help` for the full command set, or `yard <command> -h` for any one command. `yard init --reset` does a clean teardown + fresh init.
+
 ## The `yard` CLI
 
 Everything goes through one host command, `yard` (alias `sy`) — a thin dispatcher over `scripts/`. Run `yard --help` for the full list; the main groups:
@@ -33,7 +57,7 @@ The yard runs as an Incus **system container** by default (shared host kernel, f
 
 ## Local or remote yard
 
-The yard is reached over SSH — VS Code Remote-SSH for L1, plus Dev Containers ("Reopen/Attach in Container") for L2 boxes. Because access is uniform, a **remote** yard on another machine is meant to be used exactly like a local one: point the CLI at a remote SSH target and the workflow is unchanged. This is **not fully implemented yet** — today the yard runs locally, and remote selection (`yard remote …`) is planned.
+The yard is reached over SSH — VS Code Remote-SSH for L1, plus Dev Containers ("Reopen/Attach in Container") for L2 boxes. Because access is uniform, a **remote** yard on another machine is meant to be used exactly like a local one: point the CLI at a remote SSH target and the workflow is unchanged. This is not fully implemented yet — today the yard runs locally, and remote selection (`yard remote …`) is planned.
 
 ## Coding agents
 
@@ -62,27 +86,3 @@ config/staging/     Staging-gateway zone config (canonical.conf + .example templ
 config/qa-pool/     QA-bot broker config (.example templates)
 ```
 
-## Requirements
-
-- A Linux host with hardware virtualization (KVM) for VM mode and the Android emulator.
-- [Incus](https://linuxcontainers.org/incus/) installed and initialized.
-
-## Getting started
-
-Put the CLI on your PATH (adds `yard`/`sy` to `~/.local/bin` plus tab-completion), then preflight the host and stand the yard up:
-
-```sh
-./scripts/install-cli.sh      # yard + sy on PATH, shell completion
-yard check                    # read-only: can this host run a yard?
-yard init                     # Incus → project → yard → mounts → provision
-```
-
-From there, drop a project in and open it:
-
-```sh
-yard sync .                   # copy the current project into the yard
-yard code .                   # open it in VS Code over Remote-SSH
-yard status                   # yard + ssh + mounts + services + projects
-```
-
-Run `yard --help` for the full command set, or `yard <command> -h` for any one command. `yard init --reset` does a clean teardown + fresh init.

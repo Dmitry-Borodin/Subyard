@@ -14,11 +14,9 @@ Subyard is the default backyard for AI coding agents: a full-OS, host-like works
 
 ## Getting started
 
-**Windows/MacOS**: tell your agent to add a VM wrapper as your OS doesn't support containers. Then run steps below.
+You need a **Linux host**; `yard init` installs Incus for you. On Windows/macOS, run the yard inside a Linux VM (WSL2/Colima etc.)— native packaging not yet done, ask your agent to add it.
 
-**GNU/Linux**:
-
-Put the CLI on your PATH (adds `yard`/`sy` to `~/.local/bin` plus tab-completion), then preflight the host and stand the yard up:
+Put the CLI on your PATH, preflight the host, and stand the yard up:
 
 ```sh
 ./scripts/install-cli.sh      # yard + sy on PATH, shell completion
@@ -26,7 +24,7 @@ yard check                    # read-only: can this host run a yard?
 yard init                     # Incus → project → yard → mounts → provision
 ```
 
-From there, drop a project in and open it:
+Then drop a project in and open it:
 
 ```sh
 yard sync .                   # copy the current project into the yard
@@ -34,7 +32,7 @@ yard code .                   # open it in VS Code over Remote-SSH
 yard status                   # yard + ssh + mounts + services + projects
 ```
 
-Run `yard --help` for the full command set, or `yard <command> -h` for any one command. `yard init --reset` does a clean teardown + fresh init.
+Run `yard --help` for the full command set (`yard <command> -h` for one). `yard init --reset` does a clean teardown + fresh init.
 
 ## The `yard` CLI
 
@@ -47,9 +45,9 @@ Everything goes through one host command, `yard` (alias `sy`) — a thin dispatc
 
 ## Threat model
 
-Subyard protects the **host** (its files and system) from the agents running inside the yard. The trust boundary is the host: agents are trusted peers of a single developer, isolated from the machine they run on. Defense-in-depth: an agent's L2 container sits **inside** the yard, so escaping the container is not the same as reaching the host.
+Subyard protects the **host** (its files and system) from the agents running inside the yard. The trust boundary is the host: agents are trusted peers of a single developer, isolated from the machine they run on. Defense-in-depth: an agent's L2 container sits **inside** the yard, so escaping the container is not the same as reaching the host. For a stronger host boundary, run the yard as a VM (see below).
 
-Subyard does **not** try to hide your provider session from the agents — by design you may grant agents access to your own session. If you need a stronger boundary, run the yard as a VM (see below).
+Subyard does **not** hide your provider session from the agents — by design you may grant them access to your own session. That holds in a container or a VM alike; to narrow it, scope what you hand the agent (a separate or limited key, or the secrets/gateway boundary) rather than the isolation layer.
 
 ## Container or VM
 

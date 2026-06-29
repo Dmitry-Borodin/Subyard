@@ -17,6 +17,10 @@
 #   sy-stage release [--zone Z]            release the lease only
 #   sy-stage status  [--zone Z]
 #   sy-stage logs    [--zone Z] [-f]
+#   sy-stage test    [--zone Z] -- CMD...  run CMD in the runner (cwd /workspace) with the host-config
+#                                          staging MODEL key injected for THIS subprocess only — the
+#                                          simple "no broker" live model-move path. SUBYARD_LIVE_MODEL=1
+#                                          when a key is present; unset (so live tests skip) when absent.
 #
 # The bot identity is the scarce resource: one poller at a time via a flock+file lease. An agent
 # run is `ephemeral` and PREEMPTS a `canonical` holder (fence-by-lifecycle: stop it first).
@@ -33,13 +37,14 @@ command -v docker >/dev/null 2>&1 \
   || die "no docker here — sy-stage runs INSIDE the yard, where the agent (dev) is in the docker group"
 
 sub="${1:-}"; shift || true
-[ -n "$sub" ] || die "usage: sy-stage reserve|restart|rebind|stop|release|status|logs [--zone Z] [PATH|-f]"
+[ -n "$sub" ] || die "usage: sy-stage reserve|restart|rebind|stop|release|status|logs|test [--zone Z] [PATH|-f|-- CMD...]"
 
-zone="${SY_STAGE_ZONE:-canonical}"; follow=0; path_arg=""
+zone="${SY_STAGE_ZONE:-canonical}"; follow=0; path_arg=""; cmd_args=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --zone)      zone="${2:?--zone needs a name}"; shift ;;
     -f|--follow) follow=1 ;;
+    --)          shift; cmd_args=("$@"); break ;;
     -*)          die "unknown option '$1'" ;;
     *)           path_arg="$1" ;;
   esac
@@ -206,10 +211,43 @@ stop_gateway() {
   lease_release >/dev/null 2>&1 || true
 }
 
+# Run a one-off test command in the runner with the host-config staging MODEL key injected for
+# THIS subprocess only — never the runner's persistent env, never echoed. The key is resolved
+# INSIDE the runner from the ro-mounted host-config (/run/subyard/staging.env: STAGING_MODEL_KEY,
+# or ANTHROPIC_API_KEY), so it never crosses this CLI's process. Exports SUBYARD_LIVE_MODEL=1 when
+# a key is present (live model moves run) and leaves it unset when absent (live tests skip cleanly).
+# This is the "simple path, no broker" of the live-test lane: a live model turn from host-config.
+run_test() {
+  require_box
+  local cmd=()
+  if [ "${#cmd_args[@]}" -gt 0 ]; then
+    cmd=("${cmd_args[@]}")
+  elif [ -n "${TEST_LIVE_CMD:-}" ]; then
+    cmd=(sh -c "$TEST_LIVE_CMD")
+  else
+    die "usage: sy-stage test [--zone Z] -- <cmd...>  — runs <cmd> in the runner (cwd /workspace) with the host-config staging model key injected for this run only (SUBYARD_LIVE_MODEL=1 when present, unset to skip). Set STAGING_MODEL_KEY in the zone's host-config staging.env."
+  fi
+  info "live-model test in zone '$zone' (model key injected for this subprocess only; cwd /workspace)"
+  docker exec -i -w /workspace "$CNAME" sh -s -- "${cmd[@]}" <<'RUN'
+set -eu
+ef=/run/subyard/staging.env
+key=""
+[ -r "$ef" ] && key="$( . "$ef" 2>/dev/null; printf '%s' "${STAGING_MODEL_KEY:-${ANTHROPIC_API_KEY:-}}" )"
+if [ -n "$key" ]; then
+  export SUBYARD_LIVE_MODEL=1 ANTHROPIC_API_KEY="$key" STAGING_MODEL_KEY="$key"
+  echo "sy-stage: staging model-key present -> SUBYARD_LIVE_MODEL=1 (this run only)" >&2
+else
+  echo "sy-stage: no staging model-key in host-config -> SUBYARD_LIVE_MODEL unset; live model moves should SKIP" >&2
+fi
+exec "$@"
+RUN
+}
+
 case "$sub" in
   reserve) require_box; reserve_lease ;;
   restart) launch_gateway ;;
   stop)    stop_gateway ;;
+  test)    run_test ;;
   release) lease_release && ok "lease released for zone '$zone'" ;;
 
   status)

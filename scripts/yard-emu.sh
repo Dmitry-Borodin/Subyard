@@ -318,6 +318,7 @@ case "$sub" in
   view)   cmd_view "$@" ;;
   tunnel) cmd_tunnel "$@" ;;
   down)   cmd_down "$@" ;;
+  is-up)  emulator_listening && exit 0 || exit 1 ;;  # silent registry probe (yard status)
   ''|-h|--help) _yard_help_and_exit ;;
   *) die "unknown 'yard emu' subcommand: '$sub' (try: up | stop | status | adb | view | tunnel | down)" ;;
 esac

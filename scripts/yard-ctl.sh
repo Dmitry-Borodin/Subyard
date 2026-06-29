@@ -52,10 +52,11 @@ print_space() {
   printf '  space    %s%s  (%s)\n' "${total:-?}" "$note" "$base"
 }
 
-# Shared resources profiles declare (SHARED_RESOURCES in each profile.conf), one row per
-# resource under a `shared:` heading. Always lists what is declared (so the operator sees what
-# *could* run); the live up/down probe needs the yard, so pass running=1 to probe, else every
-# row shows '?'. A down resource gets a bring-up hint. Nothing declared => one `shared   none`.
+# Shared resources profiles declare (descriptors under config/profiles/*/resources/*.res — the
+# registry, via svc_resources_for), one row per resource under a `shared:` heading. Always lists
+# what is declared (so the operator sees what *could* run); the live up/down probe needs the yard,
+# so pass running=1 to probe (it delegates to the resource's own `is-up`), else every row shows
+# '?'. A down resource gets a bring-up hint. Nothing declared => one `shared   none`.
 #   shared:
 #     android   emulator         up
 #     openclaw  staging-gateway  down   (yard staging start)

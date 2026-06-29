@@ -18,3 +18,8 @@
 # Production credential fingerprints (sha256 hashes only, no secret values) the staging
 # prod-guard refuses against — operator-specific, host-only.
 /config/prod-fingerprints
+
+# QA credential broker: the role secrets, the bot-token pool, and the (host-path-naming)
+# broker.conf stay host-only. Only the *.example templates are committed.
+/config/qa-pool/*
+!/config/qa-pool/*.example

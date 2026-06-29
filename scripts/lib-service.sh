@@ -3,11 +3,12 @@
 #
 # A "profile shared resource" is a long-lived service that lives in the yard and is shared by
 # the profile's agents: the android profile provides an *emulator*; the openclaw profile
-# provides a *staging gateway*. Both are the same idea — a resource a profile exposes, that its
-# agents reach — but their mechanics differ (where it runs: L1 vs an L2 box; how agents reach
-# it: an adb port-bridge vs the gateway's own bot channel; arbitration: free-share vs a lease;
-# secrets: none vs staging creds + a prod-guard). So a thin per-kind frontend owns those
-# specifics (scripts/yard-emu.sh, scripts/project-staging.sh).
+# provides a *staging gateway* and a *QA bot-broker* (a leased pool of staging test-bots). They
+# are the same idea — a resource a profile exposes, that its agents reach — but their mechanics
+# differ (where it runs: L1 vs an L2 box; how agents reach it: an adb port-bridge vs the
+# gateway's bot channel vs a loopback HTTP lease; arbitration: free-share vs a lease vs a pool;
+# secrets: none vs staging creds + a prod-guard vs a host-seeded token pool). So a thin per-kind
+# frontend owns those specifics (scripts/yard-emu.sh, project-staging.sh, qa-pool.sh).
 #
 # This lib carries ONLY what is genuinely common across kinds — the yard handle, the in-yard
 # exec wrapper, the running-check, and the profile's resource declaration. It deliberately does
@@ -17,6 +18,13 @@
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 PROJ=(--project "$INCUS_PROJECT")
+_LIBSVC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The profile shared-resource REGISTRY (descriptors under config/profiles/*/resources/*.res):
+# discovery + dispatch + the up-probe delegation are all driven from there, so this lib carries
+# NO per-resource knowledge.
+# shellcheck source=scripts/lib-resources.sh
+. "$_LIBSVC_DIR/lib-resources.sh"
 
 # Run a command in the yard (as the instance's default user). The single in-yard exec wrapper
 # shared by the service frontends; kind-specific interactive (-t) calls stay in each frontend.
@@ -31,54 +39,25 @@ svc_require_yard_running() {
     || die "yard is not running — start it: ${PROG:-yard} start"
 }
 
-# Shared resources a profile declares, via SHARED_RESOURCES in its profile.conf (space-separated
-# names, e.g. "emulator" / "staging-gateway"). Echoes them (one line, may be empty). This is the
-# declarative contract that makes "a profile's shared resources" uniform; a frontend maps a name
-# to its own up/status/stop. Read in a subshell so the profile's other keys don't leak out.
-svc_resources_for() {
-  local profile="$1" pf
-  pf="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/profiles/$profile/profile.conf"
-  [ -r "$pf" ] || return 0
-  # shellcheck disable=SC1090  # per-profile path is dynamic by design
-  ( SHARED_RESOURCES=""; . "$pf" >/dev/null 2>&1; printf '%s\n' "${SHARED_RESOURCES:-}" )
-}
+# Resource NAMES a profile declares — its descriptors under config/profiles/<profile>/resources/.
+# Echoes them one per line (may be empty). The registry (lib-resources.sh) is the single source;
+# a frontend (named by the descriptor's HANDLER) maps each name to its own verbs.
+svc_resources_for() { res_names_for_profile "$1"; }
 
-# svc_resource_up <resource-name> — read-only probe: is a shared resource currently up?
-# The status counterpart to svc_resources_for (the declaration). Returns 0 (up) / 1 (down or
-# unknown). Deliberately read-only and minimal — launch/bridge/arbitration stay in the per-kind
-# frontends (yard-emu.sh / project-staging.sh); this lib only learns each kind's "is it live?"
-# signal so `yard status` can summarize without re-implementing or shelling out to those tools.
-# Assumes the yard is RUNNING (caller checks); a down yard makes every probe report not-up.
+# svc_resource_up <resource-name> — read-only probe: is a shared resource currently up? Delegates
+# to the owning frontend's silent `is-up` verb (the handler knows its own "is it live?" signal —
+# an adb port, a gateway pid, a running container), so this lib carries NO per-resource knowledge.
+# Returns 0 (up) / 1 (down or unknown). Assumes the yard is RUNNING (caller checks); a frontend's
+# is-up returns non-zero when the yard/resource is unreachable.
 svc_resource_up() {
-  case "$1" in
-    emulator)
-      # L1: the emulator runs in the yard; "up" = its adb port is listening there.
-      local port="${ADB_EMULATOR_PORT:-5555}"
-      yexec sh -c "command -v ss >/dev/null 2>&1 && ss -Hltn 'sport = :$port' 2>/dev/null | grep -q ." 2>/dev/null
-      ;;
-    staging-gateway)
-      # L2: "up" = any staging-runner box (any zone) has a live gateway pid. The zone's data
-      # root /srv/staging/<zone> is bind-mounted into its box at the same path, so the pid file
-      # is /srv/staging/<zone>/run/gateway.pid; kill -0 must run in the box's pid namespace.
-      yexec sh -c '
-        for c in $(docker ps -q --filter "label=subyard.staging=1" 2>/dev/null); do
-          z="$(docker inspect -f "{{ index .Config.Labels \"subyard.zone\" }}" "$c" 2>/dev/null)"
-          [ -n "$z" ] || continue
-          p="/srv/staging/$z/run/gateway.pid"
-          docker exec "$c" sh -c "[ -f \"$p\" ] && kill -0 \"\$(cat \"$p\")\" 2>/dev/null" && exit 0
-        done
-        exit 1' 2>/dev/null
-      ;;
-    *) return 1 ;;  # unknown resource kind => report not-up rather than erroring
-  esac
+  local h; h="$(res_handler_for_name "$1" 2>/dev/null || true)"
+  [ -n "$h" ] && [ -x "$_LIBSVC_DIR/$h" ] || return 1
+  "$_LIBSVC_DIR/$h" is-up >/dev/null 2>&1
 }
 
 # svc_resource_hint <resource-name> — the operator command that brings this resource up, for a
-# status hint next to a down resource. Empty for unknown kinds. Pairs with svc_resource_up.
+# status hint next to a down resource (from the descriptor's COMMAND + BRINGUP). Empty if unknown.
 svc_resource_hint() {
-  case "$1" in
-    emulator)        printf '%s' "${PROG:-yard} emu up" ;;
-    staging-gateway) printf '%s' "${PROG:-yard} staging start" ;;
-    *) : ;;
-  esac
+  local hint; hint="$(res_hint_for_name "$1" 2>/dev/null || true)"
+  [ -n "$hint" ] && printf '%s' "${PROG:-yard} $hint"
 }

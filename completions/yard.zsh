@@ -51,7 +51,7 @@ _yard_code_target() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info emu staging )
+  [[ -n $cmds ]] || cmds=( check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info emu staging qa-pool )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args
@@ -104,7 +104,23 @@ _yard() {
             _arguments '--target[where it runs: yard or a profile]:target:->tgt' '--yes[skip prompt]' '*: :_message "repository URL"'
           fi
           ;;
-        *) _arguments '--yes[skip prompt]' '--help[show help]' ;;
+        *)
+          # Profile-resource command (emu handled above)? complete its verbs from the registry
+          # (`yard --resources` => "<command>\t<verbs>"), so new resources need no edit here.
+          local rline rc rv
+          for rline in "${(@f)$(yard --resources 2>/dev/null)}"; do
+            rc=${rline%%$'\t'*}; rv=${rline#*$'\t'}
+            if [[ $rc == ${words[1]} ]]; then
+              if (( CURRENT == 2 )); then
+                local -a vv; vv=( ${=rv} ); _describe -t verbs "${words[1]} verb" vv
+              else
+                _arguments '--yes[skip prompt]'
+              fi
+              return 0
+            fi
+          done
+          _arguments '--yes[skip prompt]' '--help[show help]'
+          ;;
       esac
       ;;
   esac

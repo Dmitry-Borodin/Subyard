@@ -1,0 +1,44 @@
+# config/qa-pool/broker.conf — non-secret knobs for the in-yard QA credential broker.
+#
+# Copy to `broker.conf` in this folder (gitignored: it may name a host/yard path) to override
+# the defaults below. The broker is OpenClaw's `qa/convex-credential-broker` (a self-hosted
+# Convex app) run as ONE long-lived container on the yard's Docker. It hands a leased test-bot
+# (SUT + driver + group) to each `--credential-source convex` worker, so N dev-agents lease
+# DIFFERENT bots with no Telegram 409. Secrets and the bot-token pool never go here — the two
+# broker role secrets live in `secrets.env`, the pool in `pool.jsonl` (both host-only).
+
+# --- backend image (VERSION-SENSITIVE — read this) ---------------------------------
+# The Convex self-hosted backend. ghcr.io publishes git-commit-hash tags + a moving :latest;
+# there is NO semver tag matching the broker's pinned client (convex@1.35.1). The CLI (1.35.1,
+# from the broker's package.json) and the backend must speak a compatible wire protocol, so for
+# a reproducible yard PIN a commit-hash tag published around convex 1.35.1's release rather than
+# relying on :latest. `yard qa-pool up` warns when this is left at :latest.
+#   BACKEND_IMAGE=ghcr.io/get-convex/convex-backend:<commit-hash-tag>
+BACKEND_IMAGE="${BACKEND_IMAGE:-ghcr.io/get-convex/convex-backend:latest}"
+
+# Image used to run `npm install` + `npx convex deploy`/`env set` against the backend (a
+# throwaway helper; runs on the yard's Docker with --network host so it reaches the loopback
+# backend). Any Node 20/22 image works; the broker pins convex@1.35.1 itself.
+DEPLOY_IMAGE="${DEPLOY_IMAGE:-node:22-bookworm-slim}"
+
+# Where the broker project lives IN THE YARD: the `qa/convex-credential-broker` folder (holds
+# convex.json + convex/*.ts). `up` COPIES it to the broker data root and deploys from the copy
+# (so it never mutates an agent's live-bound workspace). Point it at a checkout in the yard,
+# e.g. an agent's workspace: /srv/workspaces/<id>/vendor/openclaw/qa/convex-credential-broker
+# Override per-run with: yard qa-pool up --source <yard-path>
+# BROKER_SRC=""
+
+# Loopback ports the backend publishes on the YARD (127.0.0.1 only — never the LAN).
+#   CLOUD_PORT — Convex API/"cloud" origin; the CLI deploy + `convex env set` target this.
+#   SITE_PORT  — Convex SITE origin; ALL HTTP actions (/qa-credentials/v1/*) are served here.
+#                This is OPENCLAW_QA_CONVEX_SITE_URL for the workers (acquire/heartbeat/release).
+CLOUD_PORT="${CLOUD_PORT:-3210}"
+SITE_PORT="${SITE_PORT:-3211}"
+
+# Default credential `kind` for `seed`/`smoke`/`status` summaries. The telegram bot-driver lane
+# leases `telegram` (payload: groupId + driverToken + sutToken). `telegram-user` (MTProto) is a
+# separate, exclusive kind — seed it explicitly in pool.jsonl if you need it.
+KIND="${KIND:-telegram}"
+
+# Owner-id label the `smoke` self-test leases under (audit trace only).
+OWNER_ID="${OWNER_ID:-yard-qa-pool-smoke}"

@@ -14,9 +14,19 @@ PROG="${0##*/}"
 # shellcheck disable=SC1091
 [ -r "$REPO/config/host.env" ] && . "$REPO/config/host.env" 2>/dev/null || true
 
-# Command names, in the same journey order as usage()'s sections (drives `yard --list`
-# and both completions): yard lifecycle / project workflow / project-env L2 / emu / staging.
-COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info emu staging)
+# The profile shared-resource REGISTRY (pure bash, no deps): lets `yard` discover, dispatch and
+# list profile-provided in-yard services (emu/staging/qa-pool/…) from descriptor files
+# (config/profiles/*/resources/*.res) WITHOUT hardcoding any of them here.
+# shellcheck source=scripts/lib-resources.sh
+[ -r "$S/lib-resources.sh" ] && . "$S/lib-resources.sh" 2>/dev/null || true
+
+# Core command names (yard lifecycle / project workflow / project-env L2). Profile-resource
+# commands are appended from the registry below, so adding a resource needs no edit here. Drives
+# `yard --list` and both completions.
+COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info)
+if command -v res_commands >/dev/null 2>&1; then
+  while IFS= read -r _rc; do [ -n "$_rc" ] && COMMANDS+=("$_rc"); done < <(res_commands 2>/dev/null)
+fi
 
 # Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
 # layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
@@ -67,34 +77,38 @@ Project-env (L2 box; for a project added with --target <profile>):
   down   [path]   stop the box (keeps it)
   info   [path]   show what the profile exposes inside the box (visibility manifest)
                   (a box shell is \`yard ssh <project>\`; open it in VS Code with \`yard code\`)
-
-Android emulator (in the yard + host-facing bridge, through the yard — never on the LAN):
-  emu up          boot the emulator headless in the yard (HW-GPU, detached); emu status
-                  shows boot state; emu stop stops it. emu adb bridges it to host 127.0.0.1
-                  (Incus proxy) and emu view opens scrcpy (interactive; --no-control = view-only).
-                  Sub: up [avd] | stop | status | adb | view [--no-control] | tunnel | down.
-
-Staging (shared live-gateway zone, isolated from prod; zone defaults to 'canonical'):
-  staging up      [zone] [--source PATH]  build/start the runner (--source live-binds a worktree)
-  staging start   [zone]   prod-guard + bot-lease, then launch the live gateway
-  staging stop    [zone]   stop the gateway + release the lease (keeps the box)
-  staging status  [zone]   box + gateway + lease + staging-fingerprint overview
-  staging logs    [zone] [-f]  tail the gateway log
-  staging destroy [zone] [--purge]  remove the box (--purge wipes its staging data root)
-  staging e2e     [path]   (P4) reflink-isolated run — deferred; use 'staging up <zone> --source'
-  In-yard self-serve (after 'staging up'): the agent runs 'sy-stage ...' INSIDE the yard, no host/path:
-    sy-stage reserve|restart|rebind|stop|release|status|logs [--zone Z] — reserve the bot + run its live tree
+U
+  usage_resources
+  cat <<U
 
   (init runs the phases in scripts/00-05; run those directly only for debugging.)
 
 Options:
   -h, --help      show this help and exit
   -l, --list      list command names (one per line) and exit
+      --resources list profile-resource commands + verbs (tab-separated) and exit
   -V, --version   show version and exit
   -y, --yes       skip a command's confirmation prompt (pass-through)
 
-Run '$PROG <command> -h' once subcommand help lands.
+Run '$PROG <command> -h' for a command's own help.
 U
+}
+
+# Generated "Profile resources" section — long-lived in-yard services a profile exposes (emu /
+# staging / qa-pool / …), read from the registry so usage() never enumerates them by hand. Each
+# resource's own \`yard <cmd> -h\` carries its detailed help. No-op if the registry is unavailable.
+usage_resources() {
+  local rows; rows="$(res_rows 2>/dev/null)" || return 0
+  [ -n "$rows" ] || return 0
+  printf '\nProfile resources (long-lived in-yard services; run '\''%s <cmd> -h'\'' for each):\n' "$PROG"
+  local p n c h b v t
+  while IFS=$'\t' read -r p n c h b v t; do
+    [ -n "$c" ] || continue
+    printf '  %-9s %s\n' "$c" "$t"
+    printf '            verbs: %s\n' "$v"
+  done <<EOF
+$rows
+EOF
 }
 
 # --- global options / no command ---------------------------------------------
@@ -102,6 +116,7 @@ case "${1:-}" in
   ''            ) usage; exit 0 ;;
   -h | --help   ) usage; exit 0 ;;
   -l | --list   ) list_commands; exit 0 ;;
+  --resources   ) command -v res_completion_rows >/dev/null 2>&1 && res_completion_rows 2>/dev/null; exit 0 ;;
   -V | --version) version; exit 0 ;;
   -*            ) printf "%s: unknown option '%s'\nTry '%s --help'.\n" "$PROG" "$1" "$PROG" >&2; exit 2 ;;
 esac
@@ -131,12 +146,22 @@ case "$cmd" in
   remove)    exec "$S/project-remove.sh" "$@" ;;
   export)    exec "$S/project-export.sh" "$@" ;;
   up | down | info) exec "$S/project-env.sh" "$cmd" "$@" ;;   # L2 project-env box lifecycle
-  emu)       exec "$S/yard-emu.sh" "$@" ;;                    # host-facing Android emulator bridge
-  staging)   exec "$S/project-staging.sh" "$@" ;;             # L2 canonical staging-runner (live gateway)
   provision) exec "$S/10-provision-profile.sh" "$@" ;;
   ssh)       exec "$S/yard-ssh.sh" "$@" ;;                    # target-aware: L1 yard shell / L2 box
   shell)     exec "$S/yard-shell.sh" "$@" ;;
   clone)     exec "$S/project-clone.sh" "$@" ;;
   help)      usage ;;
-  *) printf "%s: unknown command '%s'\nTry '%s --help'.\n" "$PROG" "$cmd" "$PROG" >&2; exit 2 ;;
+  # Profile-resource dispatch (emu/staging/qa-pool/…): `yard svc <name|cmd> <verb>` is the generic
+  # entry; a bare resource command is also accepted. Both resolve via the registry, so no resource
+  # is named here.
+  svc | resource)
+    rn="${1:-}"; shift || true
+    [ -n "$rn" ] || { printf "%s: 'svc' needs a resource name or command (see '%s --resources')\n" "$PROG" "$PROG" >&2; exit 2; }
+    rh="$(command -v res_handler_for >/dev/null 2>&1 && res_handler_for "$rn" 2>/dev/null || true)"
+    [ -n "$rh" ] && [ -x "$S/$rh" ] || { printf "%s: unknown resource '%s' (see '%s --resources')\n" "$PROG" "$rn" "$PROG" >&2; exit 2; }
+    exec "$S/$rh" "$@" ;;
+  *)
+    rh="$(command -v res_handler_for_command >/dev/null 2>&1 && res_handler_for_command "$cmd" 2>/dev/null || true)"
+    if [ -n "$rh" ] && [ -x "$S/$rh" ]; then exec "$S/$rh" "$@"; fi
+    printf "%s: unknown command '%s'\nTry '%s --help'.\n" "$PROG" "$cmd" "$PROG" >&2; exit 2 ;;
 esac

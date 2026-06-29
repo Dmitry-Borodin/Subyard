@@ -77,6 +77,23 @@ EOF
   exit 2
 fi
 
+# --- is-up: silent registry probe (yard status) — any zone with a live gateway pid? -----------
+# Handled before zone resolution + the loud yard-running check: it must stay quiet and just
+# return 0/1. "up" = any staging-runner box (any zone) has a live gateway pid (the box bind-mounts
+# its data root at the same path, so the pid is /srv/staging/<zone>/run/gateway.pid).
+if [ "$sub" = is-up ]; then
+  incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 || exit 1
+  if yexec sh -c '
+        for c in $(docker ps -q --filter "label=subyard.staging=1" 2>/dev/null); do
+          z="$(docker inspect -f "{{ index .Config.Labels \"subyard.zone\" }}" "$c" 2>/dev/null)"
+          [ -n "$z" ] || continue
+          p="/srv/staging/$z/run/gateway.pid"
+          docker exec "$c" sh -c "[ -f \"$p\" ] && kill -0 \"\$(cat \"$p\")\" 2>/dev/null" && exit 0
+        done
+        exit 1' 2>/dev/null
+  then exit 0; else exit 1; fi
+fi
+
 # --- parse: [zone] [--rebuild|--purge|-f] ------------------------------------
 zone="canonical"; rebuild=0; purge=0; follow=0; zone_set=0; src_override=""
 while [ $# -gt 0 ]; do

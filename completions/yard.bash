@@ -101,7 +101,17 @@ _yard() {
     clone)
       if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
       [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--target --yes' -- "$cur") ) ;;
-    *) ;;  # ssh (pass-through): leave to default
+    *)
+      # Profile-resource command (emu handled above for its bridge flags)? complete its verbs from
+      # the registry (`yard --resources` => "<command>\t<verbs>"), so new resources need no edit here.
+      local _rc _rv _verbs=''
+      while IFS=$'\t' read -r _rc _rv; do [ "$_rc" = "$cmd" ] && { _verbs="$_rv"; break; }; done \
+        < <("${COMP_WORDS[0]}" --resources 2>/dev/null)
+      if [ -n "$_verbs" ]; then
+        if [ "$cword" -eq 2 ]; then COMPREPLY=( $(compgen -W "$_verbs" -- "$cur") )
+        else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
+      fi
+      ;;  # otherwise (ssh, …): leave to default
   esac
   return 0
 }

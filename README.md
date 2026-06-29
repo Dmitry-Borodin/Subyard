@@ -14,7 +14,7 @@ Subyard is the default backyard for AI coding agents: a full-OS, host-like works
 
 ## Getting started
 
-You need a **Linux host**; `yard init` installs Incus for you. On Windows/macOS, run the yard inside a Linux VM (WSL2/Colima etc.)— native packaging not yet done, ask your agent to add it.
+You need a **Linux host**; `yard init` installs Incus for you. Native Windows/macOS support isn't planned — but it's easy to add yourself: Incus runs happily in a Linux VM (WSL2, Colima, or any plain VM), so wrap one around it and the steps below work unchanged.
 
 Put the CLI on your PATH, preflight the host, and stand the yard up:
 
@@ -47,11 +47,13 @@ Everything goes through one host command, `yard` (alias `sy`) — a thin dispatc
 
 Subyard protects the **host** (its files and system) from the agents running inside the yard. The trust boundary is the host: agents are trusted peers of a single developer, isolated from the machine they run on. Defense-in-depth: an agent's L2 container sits **inside** the yard, so escaping the container is not the same as reaching the host. For a stronger host boundary, run the yard as a VM (see below).
 
-Subyard does **not** hide your provider session from the agents — by design you may grant them access to your own session. That holds in a container or a VM alike; to narrow it, scope what you hand the agent (a separate or limited key, or the secrets/gateway boundary) rather than the isolation layer.
+Subyard does not hide your provider session from the agents — by design you may grant them access to your own session. To narrow it, scope what you hand the agent - a separate or limited key, or the secrets/gateway boundary.
 
-## Container or VM
+### Container or VM
 
-The yard runs as an Incus **system container** by default (shared host kernel, fast, practical isolation). Set `INSTANCE_TYPE=vm` to run it as an Incus **VM** instead (separate kernel, stronger boundary, clean nesting for sandbox tests). The core is switchable without a rewrite.
+The yard runs as an Incus system container by default (shared host kernel, fast, practical isolation). Set `INSTANCE_TYPE=vm` to run it as an Incus VM instead (separate kernel, stronger boundary, clean nesting for sandbox tests). The core is switchable without a rewrite.
+
+**This is not plain Docker.** The yard is an *unprivileged* Incus system container with UID/GID idmapping (`security.idmap`): root inside maps to an ordinary, unprivileged host UID. Dockerd runs inside it (`security.nesting`), so even a container escape lands as that unprivileged user on host. A VM adds a separate kernel on top.
 
 ## Local or remote yard
 

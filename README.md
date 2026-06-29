@@ -1,11 +1,13 @@
 # Subyard
 
-> **A local yard for isolated agent containers.**
+> **Give agents a yard, not the house keys.**
 
-Subyard is a local "yard" that runs several **isolated agent containers** for
-**development**. One developer runs many coding agents
-(Claude Code, Codex, …) in parallel; each works in its own workspace, runs the
-full test suite (emulators, build caches, …), and never touches the host.
+Subyard is the default backyard for AI coding agents: a full-OS, host-like
+workspace for any project, where agents can build, test, and propose changes
+with room to run — without roaming through your laptop, secrets, or deploy
+controls. One developer runs many coding agents (Pi, OpenCode, Claude Code, Codex, …) in
+parallel; each works in its own workspace, runs the full test suite (emulators,
+build caches, …), and never touches the host.
 
 ## Model
 

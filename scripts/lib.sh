@@ -188,3 +188,53 @@ managed=0"
     fi
   fi
 }
+
+# zabbly_suite — echo the apt suite (distro codename) for the Zabbly repo, or fail (non-apt /
+# no codename). Ubuntu derivatives (e.g. Linux Mint) MUST use UBUNTU_CODENAME — Zabbly has no
+# Mint suites, only the upstream Ubuntu/Debian ones.
+zabbly_suite() {
+  command -v apt-get >/dev/null 2>&1 || return 1
+  [ -r /etc/os-release ] || return 1
+  local suite
+  suite="$( . /etc/os-release && printf '%s' "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" )"
+  [ -n "$suite" ] || return 1
+  printf '%s\n' "$suite"
+}
+
+# add_zabbly_lts_repo — root, idempotent. Install the Zabbly LTS-6.0 keyring + apt source so
+# 'incus' >= 6.0.6 is installable on Debian/Ubuntu (and derivatives). Returns non-zero (without
+# dying) if the repo can't be set up — no apt, unknown codename, missing curl, or a failed
+# download/update — so callers can fall back to the distro package.
+add_zabbly_lts_repo() {
+  local key=/etc/apt/keyrings/zabbly.asc
+  local src=/etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources
+  local suite arch want
+  suite="$(zabbly_suite)" || { warn "no apt codename in /etc/os-release — can't add the Zabbly repo"; return 1; }
+  command -v curl >/dev/null 2>&1 || { warn "curl not found — can't fetch the Zabbly signing key"; return 1; }
+  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  install -d -m 0755 /etc/apt/keyrings
+  if [ ! -s "$key" ]; then
+    curl -fsSL https://pkgs.zabbly.com/key.asc -o "$key" \
+      || { warn "failed to download the Zabbly signing key"; return 1; }
+    chmod 0644 "$key"
+    ok "installed Zabbly signing key ($key)"
+  else
+    ok "Zabbly signing key already present"
+  fi
+  want="Enabled: yes
+Types: deb
+URIs: https://pkgs.zabbly.com/incus/lts-6.0
+Suites: $suite
+Components: main
+Architectures: $arch
+Signed-By: $key"
+  if [ ! -f "$src" ] || ! printf '%s\n' "$want" | cmp -s - "$src"; then
+    printf '%s\n' "$want" > "$src"
+    ok "added Zabbly LTS-6.0 apt source ($src; suite=$suite)"
+  else
+    ok "Zabbly LTS-6.0 apt source already present (suite=$suite)"
+  fi
+  info "apt-get update (Zabbly)"
+  apt-get update -qq || { warn "apt-get update failed after adding the Zabbly repo"; return 1; }
+  return 0
+}

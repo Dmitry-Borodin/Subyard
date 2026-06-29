@@ -98,7 +98,7 @@ if command -v incus >/dev/null 2>&1; then
   if [ "$iver" != '?' ] && command -v dpkg >/dev/null 2>&1 \
      && ! dpkg --compare-versions "$iver" ge "$MIN_INCUS_VER"; then
     warn "incus $iver < $MIN_INCUS_VER — nested Docker (project-env boxes) fails until you upgrade"
-    warn "  (Ubuntu ships only 6.0.0; use the Zabbly LTS-6.0 repo for >= $MIN_INCUS_VER)"
+    warn "  ${PRETTY_NAME:-your distro} packages incus $iver — 'yard init' offers to add the Zabbly LTS-6.0 repo and upgrade"
   fi
 else
   warn "incus not installed — install in Phase 1 (01-install-incus.sh)"

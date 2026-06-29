@@ -38,9 +38,23 @@ INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 INCUS_BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
 STORAGE_POOL="${STORAGE_POOL:-default}"
 PROJ=(--project "$INCUS_PROJECT")
+MIN_INCUS_VER="${MIN_INCUS_VER:-6.0.6}"   # nested-Docker floor (project-env boxes); see 00-check-host.sh
 
 # --- read-only state probes so the plan shows what THIS run will really do ----
 reachable()     { command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; }
+incus_present() { command -v incus >/dev/null 2>&1; }
+incus_recent()  { local v; v="$(incus --version 2>/dev/null || echo '?')"; \
+                  [ "$v" != '?' ] && command -v dpkg >/dev/null 2>&1 && dpkg --compare-versions "$v" ge "$MIN_INCUS_VER"; }
+incus_too_old() { incus_present && ! incus_recent; }
+# apt's candidate incus is too old (or unknown) → a fresh distro install would miss the floor.
+distro_incus_too_old() {
+  command -v apt-get >/dev/null 2>&1 || return 1   # not apt-based: no Zabbly path to offer
+  command -v apt-cache >/dev/null 2>&1 || return 0 # apt but no cache info: assume too old (offer)
+  local c; c="$(apt-cache policy incus 2>/dev/null | awk '/Candidate:/{print $2; exit}')"
+  { [ -n "$c" ] && [ "$c" != '(none)' ] && command -v dpkg >/dev/null 2>&1 \
+      && dpkg --compare-versions "$c" ge "$MIN_INCUS_VER"; } && return 1
+  return 0
+}
 # 01 is "done" only if the daemon is reachable AND its storage pool + bridge exist.
 # 'yard teardown' removes the pool/bridge but leaves Incus installed/reachable, so a
 # bare reachability test would wrongly skip re-init and 02 would fail (no incusbr0).
@@ -134,6 +148,35 @@ offer_provision() {
   fi
 }
 
+# Ask whether to add the Zabbly LTS-6.0 repo (for incus >= MIN_INCUS_VER). Default N. Under
+# -y / non-TTY we never add a third-party repo silently — the caller falls back to the distro
+# package and prints a manual hint. $1 = install|upgrade (wording only).
+want_zabbly() {
+  command -v apt-get >/dev/null 2>&1 || return 1
+  [ "$ASSUME_YES" = 1 ] && return 1
+  [ -t 0 ] || return 1
+  local ans
+  read -r -p "  Add the Zabbly LTS-6.0 apt repo and ${1:-install} Incus (>= $MIN_INCUS_VER) from there? [y/N] " ans
+  case "$ans" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
+
+# Stop-for-the-warning: when Incus is installed but older than the nested-Docker floor, surface
+# it and offer the Zabbly upgrade. Self-gated (its own y/N) so it's safe to run before the main
+# proceed/early-exit — it can be the only actionable item on an otherwise ready host.
+maybe_upgrade_incus() {
+  incus_too_old || return 0
+  printf '\n%sIncus %s is older than %s%s — nested Docker (project-env boxes) will fail.\n' \
+    "$C_WARN" "$(incus --version 2>/dev/null)" "$MIN_INCUS_VER" "$C_OFF"
+  if want_zabbly upgrade; then
+    info "→ upgrade Incus (Zabbly LTS-6.0)"
+    "$SCRIPT_DIR/01-install-incus.sh" --yes --zabbly --upgrade-only || die "incus upgrade failed"
+  elif [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; then
+    warn "Incus < $MIN_INCUS_VER — run 'yard init' interactively to add Zabbly LTS-6.0 and upgrade"
+  else
+    warn "left Incus as-is — project-env boxes need >= $MIN_INCUS_VER (re-run 'yard init' to upgrade)"
+  fi
+}
+
 # --reset: teardown then a fresh init — the guaranteed full re-apply for a config change the
 # (deliberately safe, may-miss) reconcile doesn't catch. Asks once, then rebuilds with -y.
 RESET=0; for _a in "$@"; do [ "$_a" = --reset ] && RESET=1; done; unset _a
@@ -191,6 +234,11 @@ if ! have_init; then
   printf '      above without asking again — this single confirmation covers them all.\n\n'
 fi
 
+# Nested-Docker floor: if Incus is installed but older than $MIN_INCUS_VER, stop and offer to
+# add the Zabbly LTS-6.0 repo and upgrade (its own y/N). Done before the early-exit so it still
+# fires on an otherwise fully-set-up yard.
+maybe_upgrade_incus
+
 if [ "$pending" = 0 ]; then
   ok "Everything is already set up — nothing to do."
   offer_provision   # a ready yard may still have an un-provisioned profile — offer it (opt-in)
@@ -205,7 +253,11 @@ STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME}" "$SCRIPT_DIR/00-check-host.sh"
 # under one (sg) to carry through; the manual hint below is the fallback.
 if ! have_init; then
   info "→ install / init Incus"
-  "$SCRIPT_DIR/01-install-incus.sh" --yes
+  # Many distros package an Incus below the nested-Docker floor; when the distro candidate is
+  # too old, offer to pull Incus from the Zabbly LTS-6.0 repo instead (y/N).
+  zb=()
+  if ! incus_present && distro_incus_too_old && want_zabbly install; then zb=(--zabbly); fi
+  "$SCRIPT_DIR/01-install-incus.sh" --yes ${zb[@]+"${zb[@]}"}
   if ! reachable; then
     echo
     ok "Incus installed and you're added to 'incus-admin'."

@@ -10,11 +10,16 @@
 # --- backend image (VERSION-SENSITIVE — read this) ---------------------------------
 # The Convex self-hosted backend. ghcr.io publishes git-commit-hash tags + a moving :latest;
 # there is NO semver tag matching the broker's pinned client (convex@1.35.1). The CLI (1.35.1,
-# from the broker's package.json) and the backend must speak a compatible wire protocol, so for
-# a reproducible yard PIN a commit-hash tag published around convex 1.35.1's release rather than
-# relying on :latest. `yard qa-pool up` warns when this is left at :latest.
-#   BACKEND_IMAGE=ghcr.io/get-convex/convex-backend:<commit-hash-tag>
-BACKEND_IMAGE="${BACKEND_IMAGE:-ghcr.io/get-convex/convex-backend:latest}"
+# from the broker's package.json) and the backend must speak a compatible wire protocol, so we PIN
+# the last backend build whose source tree bundles convex 1.35.1 (verified 2026-06-30):
+#   = release precompiled-2026-04-21-7187254; its npm-packages/convex/package.json == 1.35.1
+#     (the monorepo bumped to 1.35.1 on 2026-04-13 and to 1.36.0 on 2026-04-22); multi-arch
+#     linux/amd64+arm64; confirmed pullable (not every release is published to ghcr).
+#   Optional stricter pin by immutable digest:
+#     ghcr.io/get-convex/convex-backend@sha256:454165a02a08746371dede28bf6da78fb0f53078d7d4dcea97fb3e7357304719
+# Re-derive on a client bump: pick the convex-backend release whose npm-packages/convex/package.json
+# equals your client version AND has a pullable ghcr image. `yard qa-pool up` warns if left at :latest.
+BACKEND_IMAGE="${BACKEND_IMAGE:-ghcr.io/get-convex/convex-backend:7187254dac248f4b4909adc782e3308c32b6c004}"
 
 # Image used to run `npm install` + `npx convex deploy`/`env set` against the backend (a
 # throwaway helper; runs on the yard's Docker with --network host so it reaches the loopback

@@ -61,11 +61,30 @@ ft=; case "${1:-}" in install|add|update|up|i|fetch) ft="--fetch-timeout=1800000
 SH
   printf 'sd=%q\n' "$CACHE_PNPM_STORE"
   cat <<'SH'
-exec corepack pnpm \
+LOCK=/srv/cache/.sy-cache.lock
+runpnpm() { exec corepack pnpm \
   --config.supportedArchitectures.os=linux \
   --config.supportedArchitectures.cpu=current \
   --config.supportedArchitectures.libc=glibc \
-  ${sd:+--config.store-dir="$sd"} "$@" $ft
+  ${sd:+--config.store-dir="$sd"} "$@"; }
+# Cache locking, DECOUPLED from the fetch-timeout above:
+#   `store prune|clean` MUTATE the store -> EXCLUSIVE lock; re-exec ourself marked so a raw
+#   `pnpm store prune` self-serializes (no reliance on sy-cache) without duplicating flags.
+#   Store-WRITING verbs -> SHARED lock, BEST-EFFORT (a lock hiccup must NEVER block a build), held on
+#   fd 8 across the exec so it spans the install. `flock -o` (exclusive) keeps the lock fd out of the
+#   child tree; the SY_CACHE_* markers stop nested pnpm/sy-cache from re-locking or self-deadlocking.
+if [ -z "${SY_CACHE_LOCKED:-}" ] && [ -e "$LOCK" ]; then
+  if [ "${1:-}" = store ] && { [ "${2:-}" = prune ] || [ "${2:-}" = clean ]; }; then
+    exec flock -o -w 3600 -x "$LOCK" env SY_CACHE_LOCKED=1 "$0" "$@"
+  fi
+  case "${1:-}" in
+    install|add|update|up|i|fetch|dlx|exec|patch|patch-commit|rebuild|import|deploy)
+      if [ -r "$LOCK" ]; then
+        exec 8<"$LOCK" && flock -s -w 600 8 2>/dev/null && export SY_CACHE_SHARED_HELD=1 || true
+      fi ;;
+  esac
+fi
+runpnpm "$@" $ft
 SH
 } > /usr/local/bin/pnpm
 chmod +x /usr/local/bin/pnpm
@@ -78,6 +97,50 @@ chmod +x /usr/local/bin/pnpm
 #    (before the unset above existed) so dev agents don't hit EACCES (the `yard usage` breakage).
 install -d -o "$DEV_USER" -g "$DEV_USER" /srv/cache/pnpm /srv/cache/pip /srv/cache/npm
 chown -R "$DEV_USER:$DEV_USER" /srv/cache/pnpm /srv/cache/pip /srv/cache/npm
+
+# 4d. Single-writer guard for cache-MUTATING ops. The pnpm store corrupts if a prune/clean runs while
+#     an install writes it. The pnpm shim (step 2) auto-locks `pnpm store prune|clean` EXCLUSIVELY and
+#     holds a SHARED lock during installs/fetches, so a mutation waits for in-flight installs and blocks
+#     new ones. `sy-cache` adds the same exclusive guard for npm/pip and an explicit `all`. dev-owned lock.
+[ -e /srv/cache/.sy-cache.lock ] || : > /srv/cache/.sy-cache.lock
+chown "$DEV_USER:$DEV_USER" /srv/cache/.sy-cache.lock 2>/dev/null || true
+cat > /usr/local/bin/sy-cache <<'SC'
+#!/usr/bin/env bash
+# sy-cache — serialize cache-MUTATING ops on the shared /srv/cache store under an EXCLUSIVE lock.
+# pnpm installs/fetches hold a SHARED lock, so a mutation here waits for in-flight pnpm installs and
+# blocks new ones — never corrupting the pnpm store mid-fetch. (npm/pip installs are NOT shared-locked,
+# so don't run `clean`/`purge` while an npm/pip install is in flight.) A raw `pnpm store prune` is
+# already auto-locked by the pnpm wrapper; this also covers npm/pip and an explicit `all`.
+set -euo pipefail
+LOCK="${SY_CACHE_LOCK:-/srv/cache/.sy-cache.lock}"
+die() { printf 'sy-cache: %s\n' "$*" >&2; exit 1; }
+usage() { cat <<'H'
+sy-cache <prune|clean|purge|all|lock -- CMD...> — single-writer guard for /srv/cache mutations.
+  prune  pnpm store prune     clean  npm cache clean --force     purge  pip cache purge
+  all    all three in order   lock -- CMD...  run CMD under the exclusive lock
+pnpm installs/fetches hold a shared lock, so these wait for in-flight pnpm installs. npm/pip installs
+are NOT shared-locked — don't run clean/purge while an npm/pip install is running.
+H
+}
+run_locked() {
+  [ -n "${SY_CACHE_SHARED_HELD:-}" ] && die "refusing to mutate the cache from inside a build holding the shared lock — run sy-cache outside the build"
+  [ -n "${SY_CACHE_LOCKED:-}" ] && exec "$@"   # already inside an exclusive section — don't re-lock
+  [ -e "$LOCK" ] || die "lock $LOCK missing — run 'yard provision openclaw'"
+  exec flock -o -w 3600 -x "$LOCK" env SY_CACHE_LOCKED=1 "$@"
+}
+sub="${1:-}"; shift || true
+case "$sub" in
+  prune) run_locked pnpm store prune ;;
+  clean) run_locked npm cache clean --force ;;
+  purge) run_locked sh -c 'if command -v pip >/dev/null 2>&1; then exec pip cache purge; else exec /opt/venv/bin/pip cache purge; fi' ;;
+  all)   run_locked sh -c 'set -e; pnpm store prune; npm cache clean --force; if command -v pip >/dev/null 2>&1; then pip cache purge; else /opt/venv/bin/pip cache purge; fi' ;;
+  lock)  [ "${1:-}" = -- ] && shift; [ "$#" -gt 0 ] || die "usage: sy-cache lock -- CMD..."; run_locked "$@" ;;
+  -h|--help|help) usage; exit 0 ;;
+  "")    usage >&2; exit 2 ;;
+  *)     usage >&2; die "unknown subcommand '$sub'" ;;
+esac
+SC
+chmod +x /usr/local/bin/sy-cache
 
 # 4b. Wire the shared cache into the DEV user's own TOOL config — read by the tools regardless of
 #     shell type (login or `yard ssh -- cmd`), so no /etc/profile.d/pam_env plumbing is needed, and
@@ -208,8 +271,11 @@ are preconfigured for you — pnpm's store via the `pnpm` wrapper, npm + pip via
 `~/.config/pip/pip.conf` — so they apply in every shell (login or `yard ssh -- <cmd>`). Do NOT
 override the store/cache dirs per checkout, or you fork the cache and re-download everything.
 
-- Cache-mutating commands (`pnpm store prune`, `npm cache clean`, `pip cache purge`) are
-  single-writer: never run them in parallel with another agent's build.
+- Cache mutations self-serialize: run `sy-cache prune|clean|purge|all` (or even a raw `pnpm store
+  prune` — the pnpm wrapper locks it for you). The pnpm STORE is guarded by an exclusive lock that
+  waits for in-flight `pnpm install`/fetch (which hold a shared lock) and blocks new ones, so a prune
+  never corrupts the store mid-fetch. The npm/pip caches are NOT shared-locked — don't run `sy-cache
+  clean`/`purge` while an `npm install` / `pip install` is in flight.
 - pnpm hardlinks the store into `node_modules` only when `/srv/cache` and your workspace are on the
   same filesystem; otherwise it copies (slower, more disk) but still works. See profile.conf for the
   authoritative sharing rules.

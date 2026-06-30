@@ -28,13 +28,32 @@ if command -v res_commands >/dev/null 2>&1; then
   while IFS= read -r _rc; do [ -n "$_rc" ] && COMMANDS+=("$_rc"); done < <(res_commands 2>/dev/null)
 fi
 
-# Best-effort host-side audit log (one line per invocation). Mirrors lib-state.sh's
-# layout but kept inline so plain `yard --help`/`--list` need no deps (no jq, no lib).
+# where=host|yard for the audit line: explicit SUBYARD_SIDE wins, else detect the yard's container.
+yard_side() {
+  case "${SUBYARD_SIDE:-}" in host | yard) printf '%s' "$SUBYARD_SIDE"; return 0 ;; esac
+  local v=none
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    v="$(systemd-detect-virt -c 2>/dev/null || echo none)"
+  fi
+  if [ -n "$v" ] && [ "$v" != none ]; then printf yard; else printf host; fi
+  return 0
+}
+
+# Best-effort audit log, one line per invocation; the dispatcher is the only writer. Masks URL
+# creds and the payload after a standalone `--`. SUBYARD_NO_AUDIT=1 opts out; SUBYARD_AUDIT_MAX_BYTES
+# (default 1 MiB) caps size, rotating once to yard.log.1.
 audit() {
+  [ -n "${SUBYARD_NO_AUDIT:-}" ] && return 0
   local dir="${SUBYARD_HOME:-$HOME/.subyard}/logs"
   install -d -m 700 "$dir" 2>/dev/null || return 0
-  printf '%s pid=%s cwd=%s -- %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PWD" "$*" >>"$dir/yard.log" 2>/dev/null || true
+  local log="$dir/yard.log" max="${SUBYARD_AUDIT_MAX_BYTES:-1048576}" sz side msg
+  sz="$(stat -c%s "$log" 2>/dev/null || echo 0)"
+  [ "${sz:-0}" -ge "$max" ] 2>/dev/null && mv -f "$log" "$log.1" 2>/dev/null || true
+  side="$(yard_side)" || side=host
+  # mask URL creds (keep user), then drop the payload after a standalone `--`
+  msg="$(printf '%s' "$*" | sed -E 's#(://[^/:@ ]+:)[^/@ ]*@#\1***@#g; s#(://)[^/:@ ]+@#\1***@#g; s/(^| )-- .*/\1-- ***/')" || msg="$*"
+  printf '%s pid=%s cwd=%s where=%s -- %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PWD" "$side" "$msg" >>"$log" 2>/dev/null || true
 }
 
 version() { printf '%s %s\n' "$PROG" "$YARD_VERSION"; }

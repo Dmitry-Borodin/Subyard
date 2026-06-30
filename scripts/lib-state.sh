@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
-# lib-state.sh — machine-local state + audit log for yard project commands.
+# lib-state.sh — machine-local project state for yard project commands.
 # Source it (after lib.sh); do not execute. Pure host-side: no incus, no root.
 #
-# Two host locations (both operator-owned, overridable by env):
+# State location (operator-owned, overridable by env):
 #   - config/state: $SUBYARD_CONFIG_HOME (default ~/.config/subyard)  → projects/<id>.json
-#   - data/logs:    $SUBYARD_HOME         (default ~/.subyard)         → logs/yard.log
-# These match existing code (01-install-incus.sh uses ~/.subyard) and the spec's
-# ~/.config/subyard for portable machine-local state.
+# matching the spec's ~/.config/subyard for portable machine-local state. The audit log
+# ($SUBYARD_HOME/logs/yard.log) is written SOLELY by the dispatcher (bin/yard); this file
+# does not log.
 
 [ -n "${SUBYARD_LIBSTATE_SOURCED:-}" ] && return 0
 SUBYARD_LIBSTATE_SOURCED=1
 
 command -v jq >/dev/null 2>&1 || die "jq not found on host (needed for project state) — apt-get install jq"
 
-# SUBYARD_CONFIG_HOME / SUBYARD_HOME come from config/host.env, already loaded by lib.sh
-# (sourced before this file) — the single place host paths are named.
+# SUBYARD_CONFIG_HOME comes from config/host.env, already loaded by lib.sh (sourced before
+# this file) — the single place host paths are named.
 STATE_DIR="$SUBYARD_CONFIG_HOME/projects"
-LOG_DIR="$SUBYARD_HOME/logs"
 STATE_SCHEMA=1
 
 # Stable, machine-local id: <sanitized-basename>-<sha256(realpath)[:8]>.
@@ -88,13 +87,4 @@ resolve_project_id() {
   [ "${#matches[@]}" -gt 1 ] && die "'$arg' matches multiple projects — use a path or the exact id (see: ${PROG:-yard} list)"
   [ -e "$arg" ] && die "'$(basename "$(realpath "$arg")")' is not in the yard — run: ${PROG:-yard} sync $arg (or: bind $arg)"
   die "no project '$arg' in the yard — see: ${PROG:-yard} list"
-}
-
-# audit <command> [args...] — append one host-side invocation record. Best-effort:
-# never fails the caller (logging must not break the CLI).
-audit() {
-  install -d -m 700 "$LOG_DIR" 2>/dev/null || return 0
-  printf '%s pid=%s cwd=%s -- %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PWD" "$*" \
-    >>"$LOG_DIR/yard.log" 2>/dev/null || true
 }

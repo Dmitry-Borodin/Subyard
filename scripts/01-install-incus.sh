@@ -43,6 +43,10 @@ if [ "$UPGRADE_ONLY" = 1 ]; then
     "Reversible: delete /etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources and downgrade."
   proceed_or_die
   require_root "adding an apt repo and upgrading the incus package needs root"
+  # Guard host networking BEFORE the daemon restart in the upgrade below: restarting
+  # incusd with NetworkManager unguarded is how a veth got hijacked and killed the
+  # host's internet once. The install path runs this guard too (step 5 below).
+  nm_unmanaged_guard "$INCUS_BRIDGE"
 else
   announce "Subyard Phase 1 — install & initialize Incus" \
     "Install the 'incus' package if missing (apt)." \

@@ -1,69 +1,68 @@
 #!/usr/bin/env bash
-# init.sh — one-shot yard bring-up (yard init): check → install → project → create →
-# mounts → provision. Idempotent and resumable; one upfront confirm; root steps self-elevate
-# via sudo. After installing Incus it re-execs under a fresh 'incus-admin' group session so a
-# single run completes end-to-end. A re-run reconciles config drift (mounts, provision
-# artifacts), but conservatively — it may miss a content/dotfiles change.
+# init.sh — one-shot yard bring-up (`yard init`).
+#
+# Runs the whole pipeline end-to-end and idempotently: host preflight → install
+# Incus → project → instance → network → mounts → provision → ssh → git identity
+# → project extras. A re-run reconciles drift and skips finished steps; it is
+# conservative and may miss a content/dotfiles-only change (use --reset for that).
+#
+# Installing Incus moves you into the 'incus-admin' group, which only takes effect
+# in a fresh session. Rather than stop and make you re-run, init re-execs itself
+# under a fresh group session ('sg') so a single 'yard init' completes start to end.
 #
 # Usage: yard init [--reset] [-y]
-#
-# Options:
-#   --reset      Teardown the yard, then a fresh init — force-apply a config change the
-#                conservative reconcile didn't pick up. Asks before doing anything.
-#   -y, --yes    Skip the confirmation prompt (for automation/CI).
+#   --reset     Tear down the yard, then a fresh init — force-apply a config change
+#               the conservative reconcile didn't pick up. Asks before anything.
+#   -y, --yes   Skip the confirmation prompt (automation/CI).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_ARGS=("$@")   # preserved so we can re-exec ourselves under a fresh group session
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-# Installing Incus adds the operator to 'incus-admin', but that group only takes effect in
-# a fresh session, so the daemon stays unreachable in THIS shell. Instead of stopping and
-# making the operator re-run, re-exec the whole init under a fresh group session ('sg') so
-# one 'yard init' runs end-to-end. Guarded against looping (SUBYARD_SG_REEXEC); returns
-# non-zero so callers fall back to the manual hint if 'sg' is missing or the retry still
-# can't connect. $1=1 => assume-yes in the child (the top plan was already confirmed).
-reexec_under_group() {
-  [ "${SUBYARD_SG_REEXEC:-0}" = 1 ] && return 1
-  command -v sg >/dev/null 2>&1 || return 1
-  local q; printf -v q '%q ' "$SCRIPT_DIR/init.sh" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
-  local pre="SUBYARD_SG_REEXEC=1"; [ "${1:-0}" = 1 ] && pre+=" ASSUME_YES=1"
-  info "continuing under a fresh 'incus-admin' group session (no manual re-run needed)…"
-  exec sg incus-admin -c "$pre exec $q"
-}
-
-# --- config (names the state probes below need) ------------------------------
+# ============================================================================
+# Configuration — the names the probes and steps below reference.
+# ============================================================================
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 INCUS_BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
 STORAGE_POOL="${STORAGE_POOL:-default}"
 PROJ=(--project "$INCUS_PROJECT")
-MIN_INCUS_VER="${MIN_INCUS_VER:-6.0.6}"   # nested-Docker floor (project-env boxes); see 00-check-host.sh
+MIN_INCUS_VER="${MIN_INCUS_VER:-6.0.6}"   # nested-Docker floor; see 00-check-host.sh
 
-# --- read-only state probes so the plan shows what THIS run will really do ----
+# ============================================================================
+# Read-only state probes — no side effects; they decide what THIS run will do.
+# ============================================================================
+
+# -- Incus presence & version ------------------------------------------------
 reachable()     { command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; }
 incus_present() { command -v incus >/dev/null 2>&1; }
-incus_recent()  { local v; v="$(incus --version 2>/dev/null || echo '?')"; \
-                  [ "$v" != '?' ] && command -v dpkg >/dev/null 2>&1 && dpkg --compare-versions "$v" ge "$MIN_INCUS_VER"; }
+incus_recent()  { local v; v="$(incus --version 2>/dev/null || echo '?')"
+                  [ "$v" != '?' ] && command -v dpkg >/dev/null 2>&1 \
+                    && dpkg --compare-versions "$v" ge "$MIN_INCUS_VER"; }
 incus_too_old() { incus_present && ! incus_recent; }
-# apt's candidate incus is too old (or unknown) → a fresh distro install would miss the floor.
+
+# apt's candidate Incus is too old (or unknown) → a fresh distro install misses the floor.
 distro_incus_too_old() {
-  command -v apt-get >/dev/null 2>&1 || return 1   # not apt-based: no Zabbly path to offer
-  command -v apt-cache >/dev/null 2>&1 || return 0 # apt but no cache info: assume too old (offer)
+  command -v apt-get   >/dev/null 2>&1 || return 1   # not apt-based: no Zabbly path to offer
+  command -v apt-cache >/dev/null 2>&1 || return 0   # apt but no cache info: assume too old
   local c; c="$(apt-cache policy incus 2>/dev/null | awk '/Candidate:/{print $2; exit}')"
   { [ -n "$c" ] && [ "$c" != '(none)' ] && command -v dpkg >/dev/null 2>&1 \
       && dpkg --compare-versions "$c" ge "$MIN_INCUS_VER"; } && return 1
   return 0
 }
-# 01 is "done" only if the daemon is reachable AND its storage pool + bridge exist.
-# 'yard teardown' removes the pool/bridge but leaves Incus installed/reachable, so a
-# bare reachability test would wrongly skip re-init and 02 would fail (no incusbr0).
+
+# -- Per-step "already done?" tests (drive the plan's [do]/[skip]) ------------
+# 01 counts as done only when the daemon is reachable AND its pool + bridge exist:
+# 'yard teardown' drops the pool/bridge but leaves Incus installed, so a bare
+# reachability test would wrongly skip re-init and 02 would fail (no incusbr0).
 have_init()     { reachable && incus storage show "$STORAGE_POOL" >/dev/null 2>&1 \
                             && incus network show "$INCUS_BRIDGE" >/dev/null 2>&1; }
 have_project()  { reachable && incus project show "$INCUS_PROJECT" >/dev/null 2>&1; }
 have_instance() { reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; }
 have_network()  { [ -n "$(reachable && incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]; }
-# Every device named in HOST_MOUNTS is attached → adding/removing a mount in config re-runs 05.
+
+# Every device named in HOST_MOUNTS is attached → adding/removing a mount re-runs 05.
 have_mounts() {
   reachable || return 1
   local attached name
@@ -74,10 +73,10 @@ have_mounts() {
   done < <(printf '%s\n' "${HOST_MOUNTS:-}" | sed 's/[[:space:]]//g')
   return 0
 }
-# docker + dev, plus the config-driven artifacts 04 applies (CLAUDE.md copied, HOST_LINKS
-# symlinks present, dev sudoers matching DEV_SUDO) — so a config change re-runs provision.
-# PRESENCE checks only (no content compare), so it never flip-flops; content/dotfiles refresh
-# is deliberately NOT caught here — use 'yard init --reset' (or a direct provision) for that.
+
+# Presence-only check of what 04 applies (docker, dev user, CLAUDE.md, HOST_LINKS, and
+# dev sudoers matching DEV_SUDO). PRESENCE only, so it never flip-flops; a content/
+# dotfiles refresh is deliberately NOT caught here — use 'yard init --reset' for that.
 have_provision() {
   reachable || return 1
   local claude_req=0
@@ -104,10 +103,12 @@ done
 [ "$drift" = 0 ]
 CHK
 }
-have_ssh()      { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
-have_gitid()    { reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }
-in_admin_db()   { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
-# Any on-disk profile declares yard-level extras (YARD_*)? P1 enables ALL profiles; 09 unions them.
+
+have_ssh()    { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
+have_gitid()  { reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }
+in_admin_db() { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
+
+# Any on-disk profile declares yard-level extras (YARD_*)? init enables ALL profiles; 09 unions them.
 any_yard_extras() {
   local pf
   for pf in "$SCRIPT_DIR/../config/profiles"/*/profile.conf; do
@@ -119,7 +120,7 @@ any_yard_extras() {
 }
 no_yard_extras() { ! any_yard_extras; }
 
-# In-yard projects' profiles that ship a provision.sh — drives the opt-in offer below (one per line).
+# In-yard projects whose profile ships a provision.sh — drives the opt-in offer below.
 provisionable_profiles() {
   command -v jq >/dev/null 2>&1 || return 0
   local sd="$SUBYARD_CONFIG_HOME/projects" f prof
@@ -131,7 +132,23 @@ provisionable_profiles() {
   done | sort -u
 }
 
-# Opt-in provision offer at end of init — default N, never under -y/non-TTY (provisioning is heavy).
+# ============================================================================
+# Interactive prompts — asked only after the main 'Proceed?' gate.
+# ============================================================================
+
+# want_zabbly <install|upgrade> — pull Incus from the Zabbly LTS-6.0 repo? It is the only
+# source that meets the nested-Docker floor, so the default is YES; -y / a non-TTY take
+# that default automatically. Returns non-zero only on an explicit "no" (or when apt is
+# absent, since Zabbly is apt-only and there is nothing to add).
+want_zabbly() {
+  command -v apt-get >/dev/null 2>&1 || return 1
+  { [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; } && return 0
+  local ans
+  read -r -p "  Add the Zabbly LTS-6.0 apt repo and ${1:-install} Incus (>= $MIN_INCUS_VER) from there? [Y/n] " ans
+  case "$ans" in [nN] | [nN][oO]) return 1 ;; *) return 0 ;; esac
+}
+
+# Opt-in toolchain provisioning at the end of init — default N, never under -y / non-TTY (heavy).
 offer_provision() {
   local profs; profs="$(provisionable_profiles | paste -sd' ' -)"
   if [ -n "$profs" ] && [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
@@ -148,39 +165,112 @@ offer_provision() {
   fi
 }
 
-# Ask whether to add the Zabbly LTS-6.0 repo (for incus >= MIN_INCUS_VER). Default N. Under
-# -y / non-TTY we never add a third-party repo silently — the caller falls back to the distro
-# package and prints a manual hint. $1 = install|upgrade (wording only).
-want_zabbly() {
-  command -v apt-get >/dev/null 2>&1 || return 1
-  [ "$ASSUME_YES" = 1 ] && return 1
-  [ -t 0 ] || return 1
-  local ans
-  read -r -p "  Add the Zabbly LTS-6.0 apt repo and ${1:-install} Incus (>= $MIN_INCUS_VER) from there? [y/N] " ans
-  case "$ans" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+# ============================================================================
+# Group-session re-exec.
+# ============================================================================
+# Installing Incus adds you to 'incus-admin', but the group only applies in a fresh
+# session, so the daemon stays unreachable in THIS shell. Re-exec the whole init under
+# a fresh group session ('sg') so one run completes. Guarded against looping; returns
+# non-zero so callers fall back to the manual hint if 'sg' is missing or still can't
+# connect. $1=1 → assume-yes in the child (the plan was already confirmed up top); the
+# parent's Zabbly answer is carried in SUBYARD_ZABBLY so the unattended child honors an
+# explicit "no" instead of silently re-deciding "yes" under assume-yes.
+reexec_under_group() {
+  [ "${SUBYARD_SG_REEXEC:-0}" = 1 ] && return 1
+  command -v sg >/dev/null 2>&1 || return 1
+  local q; printf -v q '%q ' "$SCRIPT_DIR/init.sh" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+  local pre="SUBYARD_SG_REEXEC=1"
+  if [ "${1:-0}" = 1 ]; then
+    pre+=" ASSUME_YES=1"
+    if [ "${ZB+set}" = set ] && [ "${#ZB[@]}" -gt 0 ]; then pre+=" SUBYARD_ZABBLY=1"; else pre+=" SUBYARD_ZABBLY=0"; fi
+  fi
+  info "continuing under a fresh 'incus-admin' group session (no manual re-run needed)…"
+  exec sg incus-admin -c "$pre exec $q"
 }
 
-# Stop-for-the-warning: when Incus is installed but older than the nested-Docker floor, surface
-# it and offer the Zabbly upgrade. Self-gated (its own y/N) so it's safe to run before the main
-# proceed/early-exit — it can be the only actionable item on an otherwise ready host.
-maybe_upgrade_incus() {
-  incus_too_old || return 0
-  printf '\n%sIncus %s is older than %s%s — nested Docker (project-env boxes) will fail.\n' \
-    "$C_WARN" "$(incus --version 2>/dev/null)" "$MIN_INCUS_VER" "$C_OFF"
-  if want_zabbly upgrade; then
-    info "→ upgrade Incus (Zabbly LTS-6.0)"
-    "$SCRIPT_DIR/01-install-incus.sh" --yes --zabbly --upgrade-only || die "incus upgrade failed"
-  elif [ "$ASSUME_YES" = 1 ] || [ ! -t 0 ]; then
-    warn "Incus < $MIN_INCUS_VER — run 'yard init' interactively to add Zabbly LTS-6.0 and upgrade"
+# ============================================================================
+# Plan — the read-only summary of what this run will do.
+# ============================================================================
+plan_do()   { printf '  %s[do]%s   %s\n' "$C_OK"   "$C_OFF" "$1"; pending=1; }
+plan_skip() { printf '  %s[skip]%s %s\n' "$C_WARN" "$C_OFF" "$1"; }
+step()      { if "$1"; then plan_skip "$2"; else plan_do "$2"; fi; }   # <done-test> <label>
+
+print_plan() {
+  pending=0
+  printf '\n%sSubyard init — full bring-up%s\n%sThis run will (finished steps are skipped):%s\n' \
+    "$C_HEAD" "$C_OFF" "$C_HEAD" "$C_OFF"
+  if ! have_init; then
+    plan_do   "Install Incus, add you to 'incus-admin', init storage (needs root)"
+  elif incus_too_old; then
+    plan_do   "Upgrade Incus to >= $MIN_INCUS_VER for nested Docker (needs root)"
   else
-    warn "left Incus as-is — project-env boxes need >= $MIN_INCUS_VER (re-run 'yard init' to upgrade)"
+    plan_skip "Incus installed, initialized, and >= $MIN_INCUS_VER"
+  fi
+  step have_project   "Create the Incus project '$INCUS_PROJECT'"
+  step have_instance  "Create the yard instance (+ /dev/kvm, /srv volume)"
+  step have_network   "Open host DHCP/DNS for the yard bridge (ufw; needs root)"
+  step have_mounts    "Create host dirs under $HOST_BASE and mount them (needs root)"
+  step have_provision "Provision the yard (packages, Docker, user, services)"
+  step have_ssh       "Set up SSH access into the yard (proxy + your key)"
+  step have_gitid     "Give the in-yard 'dev' user a git identity (from host/config)"
+  step no_yard_extras "Apply yard extras requested by projects (mounts/caps/devices)"
+  printf '\n'
+}
+
+# ============================================================================
+# Steps — the actual bring-up, run only after confirmation.
+# ============================================================================
+
+# Read-only host preflight (00). Hard failures abort before anything mutates.
+host_preflight() {
+  STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME}" "$SCRIPT_DIR/00-check-host.sh" \
+    || die "host preflight failed — fix the items above, then re-run 'yard init'"
+}
+
+# Install Incus on first run (then continue under a fresh group session), or upgrade it
+# in place when it is older than the floor. ZB carries the --zabbly choice from main.
+incus_install_or_upgrade() {
+  if ! have_init; then
+    info "→ install / init Incus"
+    "$SCRIPT_DIR/01-install-incus.sh" --yes ${ZB[@]+"${ZB[@]}"}
+    if ! reachable; then
+      echo
+      ok "Incus installed and you're added to 'incus-admin'."
+      reexec_under_group 1 || true
+      cat <<'MSG'
+
+One step needs a fresh group session. Continue with:
+    sg incus-admin -c 'yard init'
+  (or re-login / run 'newgrp incus-admin', then: yard init)
+MSG
+      exit 0
+    fi
+  elif incus_too_old; then
+    info "→ upgrade Incus (>= $MIN_INCUS_VER)"
+    "$SCRIPT_DIR/01-install-incus.sh" --yes ${ZB[@]+"${ZB[@]}"} --upgrade-only \
+      || die "incus upgrade failed"
   fi
 }
 
-# --reset: teardown then a fresh init — the guaranteed full re-apply for a config change the
-# (deliberately safe, may-miss) reconcile doesn't catch. Asks once, then rebuilds with -y.
-RESET=0; for _a in "$@"; do [ "$_a" = --reset ] && RESET=1; done; unset _a
-if [ "$RESET" = 1 ]; then
+run_steps() {
+  incus_install_or_upgrade
+  info "→ Incus project"; "$SCRIPT_DIR/02-create-project.sh" --yes
+  info "→ yard instance"; "$SCRIPT_DIR/03-create-subyard.sh" --yes
+  info "→ host network";  "$SCRIPT_DIR/06-network.sh" --yes
+  info "→ host mounts";   "$SCRIPT_DIR/05-mount-host-paths.sh" --yes
+  info "→ provision";     "$SCRIPT_DIR/04-provision-subyard.sh" --yes
+  info "→ ssh access";    "$SCRIPT_DIR/07-ssh-access.sh" --yes
+  info "→ git identity";  "$SCRIPT_DIR/08-git-identity.sh" --yes
+  if any_yard_extras; then info "→ yard extras"; "$SCRIPT_DIR/09-yard-extras.sh" --yes; fi
+}
+
+# ============================================================================
+# --reset — teardown then a fresh init (the guaranteed full re-apply).
+# ============================================================================
+maybe_reset() {
+  local a reset=0
+  for a in "$@"; do [ "$a" = --reset ] && reset=1; done
+  [ "$reset" = 1 ] || return 0
   announce "yard init --reset — full rebuild" \
     "Tear down the yard: DELETE the instance and its disk data (rootfs + /srv), then re-init from current config." \
     "Host-side sessions under \$HOST_BASE/host-agent-sessions persist; per-yard agent creds are lost (you re-login)." \
@@ -188,12 +278,17 @@ if [ "$RESET" = 1 ]; then
   proceed_or_die
   info "→ teardown"; "$SCRIPT_DIR/99-teardown.sh" --yes || die "teardown failed"
   info "→ rebuild (fresh init)"; exec env ASSUME_YES=1 "$SCRIPT_DIR/init.sh"
-fi
+}
 
-# Incus installed + daemon unreachable + you ARE in incus-admin (per the group db)
-# = this shell session just predates the group. Don't show a blind all-[do] plan;
-# route to a fresh group session (no reinstall — everything is already there).
-if command -v incus >/dev/null 2>&1 && ! incus info >/dev/null 2>&1 && in_admin_db; then
+# ============================================================================
+# Main.
+# ============================================================================
+maybe_reset "$@"
+
+# Incus installed + daemon unreachable + you're already in 'incus-admin' = this shell
+# predates the group. Don't show a misleading all-[do] plan — continue in a fresh
+# group session (nothing to reinstall; it's all already there).
+if incus_present && ! incus info >/dev/null 2>&1 && in_admin_db; then
   warn "Incus is installed and you're in 'incus-admin', but this shell session predates that group."
   reexec_under_group 0 || true
   cat <<'MSG'
@@ -205,81 +300,41 @@ MSG
   exit 0
 fi
 
-# Print [skip] if the done-test passes, else [do] and mark work pending.
-step() {  # <done-test> <label>
-  if "$1"; then printf '  %s[skip]%s %s\n' "$C_WARN" "$C_OFF" "$2"
-  else          printf '  %s[do]%s   %s\n' "$C_OK"   "$C_OFF" "$2"; pending=1; fi
-}
-
-printf '\n%sSubyard init — full bring-up%s\n%sThis run will (already-done steps are skipped):%s\n' \
-  "$C_HEAD" "$C_OFF" "$C_HEAD" "$C_OFF"
-pending=0
-step have_init      "Install Incus + add you to incus-admin + init storage (needs root)"
-step have_project   "Create the Incus project '$INCUS_PROJECT'"
-step have_instance  "Create the yard instance (+ /dev/kvm, /srv volume)"
-step have_network   "Open host DHCP/DNS for the yard bridge (ufw; needs root)"
-step have_mounts    "Create host dirs under $HOST_BASE and mount them (needs root)"
-step have_provision "Provision the yard (packages, Docker, user, services)"
-step have_ssh       "Set up SSH access into the yard (proxy + your key)"
-step have_gitid     "Give the in-yard 'dev' user a git identity (from host/config)"
-step no_yard_extras "Apply yard extras requested by projects (mounts/caps/devices)"
-printf '\n'
-
-# If Incus isn't set up yet, installing it switches your group, after which init
-# continues UNATTENDED in a fresh session. Say so here so this one confirmation is
-# informed consent for the steps above that will run after that switch.
-if ! have_init; then
-  printf '%sNote:%s installing Incus adds you to '\''incus-admin'\''; init then continues\n' "$C_HEAD" "$C_OFF"
-  printf '      automatically in a fresh group session and runs the remaining steps\n'
-  printf '      above without asking again — this single confirmation covers them all.\n\n'
-fi
-
-# Nested-Docker floor: if Incus is installed but older than $MIN_INCUS_VER, stop and offer to
-# add the Zabbly LTS-6.0 repo and upgrade (its own y/N). Done before the early-exit so it still
-# fires on an otherwise fully-set-up yard.
-maybe_upgrade_incus
-
+# 1. Describe the plan (read-only). Nothing here mutates the host.
+print_plan
 if [ "$pending" = 0 ]; then
   ok "Everything is already set up — nothing to do."
-  offer_provision   # a ready yard may still have an un-provisioned profile — offer it (opt-in)
+  offer_provision   # a ready yard may still have an un-provisioned profile
   exit 0
+fi
+
+# 2. Read-only host preflight, now that we know there is work to do.
+host_preflight
+
+# 3. One confirmation covers the whole run: if Incus isn't set up yet, installing it
+#    switches your group and init then continues UNATTENDED in a fresh session.
+if ! have_init; then
+  printf '%sNote:%s installing Incus adds you to '\''incus-admin'\''; init then continues\n' "$C_HEAD" "$C_OFF"
+  printf '      in a fresh group session and runs the remaining steps without asking\n'
+  printf '      again — this one confirmation covers them all.\n\n'
 fi
 proceed_or_die
 
-STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME}" "$SCRIPT_DIR/00-check-host.sh"
-
-# Install Incus on first run. Adding you to incus-admin only takes effect in a
-# fresh group session, so if Incus still isn't reachable after install, re-exec
-# under one (sg) to carry through; the manual hint below is the fallback.
-if ! have_init; then
-  info "→ install / init Incus"
-  # Many distros package an Incus below the nested-Docker floor; when the distro candidate is
-  # too old, offer to pull Incus from the Zabbly LTS-6.0 repo instead (y/N).
-  zb=()
-  if ! incus_present && distro_incus_too_old && want_zabbly install; then zb=(--zabbly); fi
-  "$SCRIPT_DIR/01-install-incus.sh" --yes ${zb[@]+"${zb[@]}"}
-  if ! reachable; then
-    echo
-    ok "Incus installed and you're added to 'incus-admin'."
-    reexec_under_group 1 || true
-    cat <<'MSG'
-
-One step needs a fresh group session. Continue with:
-    sg incus-admin -c 'yard init'
-  (or re-login / run 'newgrp incus-admin', then: yard init)
-MSG
-    exit 0
-  fi
+# 4. Pick the Incus source — only when the distro package can't meet the floor.
+#    Default YES to Zabbly; asked here, AFTER the main gate, never before it. A
+#    group-session re-exec inherits the answer via SUBYARD_ZABBLY (set/0/1), so the
+#    child never re-asks nor overrides an explicit "no" from the parent run.
+ZB=()
+if [ -n "${SUBYARD_ZABBLY:-}" ]; then
+  [ "$SUBYARD_ZABBLY" = 1 ] && ZB=(--zabbly)
+elif incus_too_old; then
+  want_zabbly upgrade && ZB=(--zabbly)
+elif ! incus_present && distro_incus_too_old; then
+  want_zabbly install && ZB=(--zabbly)
 fi
 
-info "→ Incus project"; "$SCRIPT_DIR/02-create-project.sh" --yes
-info "→ yard instance"; "$SCRIPT_DIR/03-create-subyard.sh" --yes
-info "→ host network";  "$SCRIPT_DIR/06-network.sh" --yes
-info "→ host mounts";   "$SCRIPT_DIR/05-mount-host-paths.sh" --yes
-info "→ provision";     "$SCRIPT_DIR/04-provision-subyard.sh" --yes
-info "→ ssh access";    "$SCRIPT_DIR/07-ssh-access.sh" --yes
-info "→ git identity";  "$SCRIPT_DIR/08-git-identity.sh" --yes
-if any_yard_extras; then info "→ yard extras"; "$SCRIPT_DIR/09-yard-extras.sh" --yes; fi
+# 5. Do it.
+run_steps
 
 echo
 ok "Subyard is up."

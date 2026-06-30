@@ -2,8 +2,10 @@
 # config/profiles/openclaw/provision.sh — install the OpenClaw toolchain into the yard (run as root
 # inside the yard by 10-provision-profile.sh; idempotent). Vars: NODE_VERSION, COREPACK_VERSION,
 # PNPM_VERSION, DEV_USER, OPTIONAL_FEATURES, and the cache contract forwarded from profile.conf
-# (PIP_CACHE_DIR, npm_config_cache, npm_config_store_dir, PLAYWRIGHT_BROWSERS_PATH) — persisted into
-# L1 login shells so parallel agents share ONE store instead of per-user duplicates.
+# (PIP_CACHE_DIR, npm_config_cache, npm_config_store_dir, PLAYWRIGHT_BROWSERS_PATH). The shared
+# /srv/cache is wired into the DEV user's TOOL config (pnpm shim store-dir, ~dev/.npmrc cache,
+# ~dev pip.conf cache-dir) — NOT global env, so unrelated yard tools (e.g. `npx ccusage` behind
+# `yard usage`) aren't forced onto it and never see the (to npm) invalid `store-dir` key.
 set -euo pipefail
 
 NODE_VERSION="${NODE_VERSION:-24.15.0}"
@@ -12,11 +14,11 @@ PNPM_VERSION="${PNPM_VERSION:-11.2.2}"
 DEV_USER="${DEV_USER:-dev}"
 OPTIONAL_FEATURES="${OPTIONAL_FEATURES:-}"
 
-# Cache contract from profile.conf (forwarded as env). Capture it for persisting into dev shells
-# (step 4b), then UNSET it from THIS process: provision runs as ROOT, but /srv/cache is owned by
-# $DEV_USER, so a root npm/pip pointed there warns ("cache disabled", "Unknown env config store-dir")
-# and could drop root-owned files into the shared cache → later EACCES for the dev agents. The shared
-# cache is for AGENTS (dev), filled at agent runtime — not for this root toolchain install.
+# Cache contract from profile.conf (forwarded as env). Capture the paths for the dev TOOL config
+# below, then UNSET them from THIS process: provision runs as ROOT, and a root npm/pip/pnpm pointed
+# at the dev-owned /srv/cache warns and drops ROOT-OWNED files there → later EACCES for dev agents
+# (exactly the `yard usage` breakage). The shared cache is wired per-DEV (tool config), so root never
+# touches it and no global env forces it on other tools.
 CACHE_PIP="${PIP_CACHE_DIR:-}"
 CACHE_NPM="${npm_config_cache:-}"
 CACHE_PNPM_STORE="${npm_config_store_dir:-}"
@@ -24,6 +26,7 @@ CACHE_PLAYWRIGHT="${PLAYWRIGHT_BROWSERS_PATH:-}"
 unset PIP_CACHE_DIR npm_config_cache npm_config_store_dir PLAYWRIGHT_BROWSERS_PATH
 
 export DEBIAN_FRONTEND=noninteractive
+DEV_HOME="$(getent passwd "$DEV_USER" | cut -d: -f6)"; : "${DEV_HOME:=/home/$DEV_USER}"
 
 # 1. Node — pinned, from nodejs.org into /usr/local (shadows the distro node).
 if [ "$(/usr/local/bin/node --version 2>/dev/null)" != "v${NODE_VERSION}" ]; then
@@ -41,64 +44,81 @@ if [ "$(/usr/local/bin/node --version 2>/dev/null)" != "v${NODE_VERSION}" ]; the
   rm -rf "$tmp"
 fi
 
-# 2. corepack + pnpm; arch-scoped shim so ad-hoc installs don't pull win/mac/musl native variants.
+# 2. corepack + pnpm; arch-scoped shim. The shim also pins pnpm's STORE to the shared /srv/cache as a
+#    pnpm-only CLI flag (baked from profile.conf), so `npm`/`npx` never see the (to them invalid)
+#    store-dir key and never warn — and nothing is forced via global env onto unrelated yard tools.
 /usr/local/bin/npm install -g "corepack@${COREPACK_VERSION}" >/dev/null
 /usr/local/bin/corepack enable >/dev/null
 /usr/local/bin/corepack prepare "pnpm@${PNPM_VERSION}" --activate >/dev/null
-cat > /usr/local/bin/pnpm <<'SH'
+{
+  cat <<'SH'
 #!/usr/bin/env bash
 # arch-scoped so ad-hoc installs don't pull win/mac/musl native variants. pnpm honors fetch-timeout
 # only as a CLI flag (not .npmrc / npm_config_* env), and the yard's egress is slow on OpenClaw's huge
-# native/ML tarballs → inject a generous one for install-type commands.
+# native/ML tarballs → inject a generous one for install-type commands. store-dir (baked below) points
+# pnpm at the shared store; it is a pnpm-only flag, so npm/npx never see it (no "Unknown config" warn).
 ft=; case "${1:-}" in install|add|update|up|i|fetch) ft="--fetch-timeout=1800000" ;; esac
+SH
+  printf 'sd=%q\n' "$CACHE_PNPM_STORE"
+  cat <<'SH'
 exec corepack pnpm \
   --config.supportedArchitectures.os=linux \
   --config.supportedArchitectures.cpu=current \
-  --config.supportedArchitectures.libc=glibc "$@" $ft
+  --config.supportedArchitectures.libc=glibc \
+  ${sd:+--config.store-dir="$sd"} "$@" $ft
 SH
+} > /usr/local/bin/pnpm
 chmod +x /usr/local/bin/pnpm
 
 # 3. Python dev venv.
 [ -x /opt/venv/bin/python ] || python3 -m venv /opt/venv
 /opt/venv/bin/pip install -q --upgrade pip setuptools wheel
 
-# 4. Shared caches (agents fill them; package managers point here via profile.conf).
+# 4. Shared caches: dev-owned dirs. chown -R heals any ROOT-OWNED files a past run may have dropped in
+#    (before the unset above existed) so dev agents don't hit EACCES (the `yard usage` breakage).
 install -d -o "$DEV_USER" -g "$DEV_USER" /srv/cache/pnpm /srv/cache/pip /srv/cache/npm
+chown -R "$DEV_USER:$DEV_USER" /srv/cache/pnpm /srv/cache/pip /srv/cache/npm
 
-# 4b. Persist the shared-cache env so EVERY in-yard agent shares ONE /srv/cache store instead of
-#     per-user duplicates (~/.npm, the default pnpm store, ~/.cache/pip → re-downloads, wasted disk).
-#     profile.conf is the single source — values captured above (CACHE_*), re-emitted here, never
-#     re-typed. TWO vehicles, because agents enter L1 two ways and a login-only file misses the common
-#     one:
-#       /etc/profile.d/*.sh  — sourced by LOGIN shells (e.g. `su -`), like the android profile;
-#       /etc/environment     — read by pam_env for ALL PAM sessions, so it ALSO reaches the
-#                              non-login `yard ssh -- <cmd>` path (which sources neither profile.d
-#                              nor ~/.bashrc). Plain KEY=VALUE, no `export`, no shell.
-#     PLAYWRIGHT_* is emitted only when browser_tests is on (its cache dir is created only then).
+# 4b. Wire the shared cache into the DEV user's own TOOL config — read by the tools regardless of
+#     shell type (login or `yard ssh -- cmd`), so no /etc/profile.d/pam_env plumbing is needed, and
+#     NO global env is forced on unrelated yard tools (that broke `yard usage`/npx). Per-dev (not
+#     /etc): root provision reads none of these, so it cannot re-contaminate /srv/cache.
+#       pnpm store → the shim (step 2, pnpm-only flag — no npm warning);
+#       npm cache  → ~dev/.npmrc `cache=` (valid npm key — `store-dir` would warn, so it is NOT here);
+#       pip cache  → ~dev/.config/pip/pip.conf `cache-dir=`.
+if [ -n "$CACHE_NPM" ]; then
+  npmrc="$DEV_HOME/.npmrc"; [ -f "$npmrc" ] || : > "$npmrc"
+  sed -i '/^# >>> subyard-openclaw >>>$/,/^# <<< subyard-openclaw <<<$/d' "$npmrc" 2>/dev/null || true
+  { echo "# >>> subyard-openclaw >>>"; echo "cache=$CACHE_NPM"; echo "# <<< subyard-openclaw <<<"; } >> "$npmrc"
+  chown "$DEV_USER:$DEV_USER" "$npmrc"
+fi
+if [ -n "$CACHE_PIP" ]; then
+  pipdir="$DEV_HOME/.config/pip"; install -d -o "$DEV_USER" -g "$DEV_USER" "$pipdir"
+  printf '# GENERATED by Subyard openclaw provision.sh — shared pip cache.\n[global]\ncache-dir = %s\n' "$CACHE_PIP" > "$pipdir/pip.conf"
+  chown "$DEV_USER:$DEV_USER" "$pipdir/pip.conf"
+fi
+
+# 4c. The few things that genuinely ARE env (no tool-config equivalent): the docs pointer, and the
+#     Playwright browser-cache path when browser_tests is on. Neither affects npm, so neither warns.
+#     Login shells via /etc/profile.d; non-login `yard ssh -- cmd` via /etc/environment (pam_env).
 browser_on=0
 case " ${OPTIONAL_FEATURES:-} " in *" browser_tests "*) browser_on=1 ;; esac
-
 {
-  echo "# Subyard openclaw (L1) — share ONE /srv/cache store across parallel agents. GENERATED by"
-  echo "# provision.sh from config/profiles/openclaw/profile.conf — do not edit; change the profile."
-  [ -n "$CACHE_PIP" ]         && echo "export PIP_CACHE_DIR=\"$CACHE_PIP\""
-  [ -n "$CACHE_NPM" ]         && echo "export npm_config_cache=\"$CACHE_NPM\""
-  [ -n "$CACHE_PNPM_STORE" ]  && echo "export npm_config_store_dir=\"$CACHE_PNPM_STORE\""
+  echo "# Subyard openclaw (L1) — GENERATED by provision.sh; do not edit. Cache wiring lives in the"
+  echo "# dev tool config (pnpm shim / ~/.npmrc / pip.conf), NOT here."
   if [ "$browser_on" = 1 ] && [ -n "$CACHE_PLAYWRIGHT" ]; then
     echo "export PLAYWRIGHT_BROWSERS_PATH=\"$CACHE_PLAYWRIGHT\""
     echo "export PLAYWRIGHT_SKIP_BROWSER_GC=1 # shared cache: never GC another agent's browser"
   fi
   echo "export SUBYARD_OPENCLAW_DOCS=/etc/subyard/openclaw-l1.md"
-} > /etc/profile.d/subyard-openclaw-caches.sh
-chmod 0644 /etc/profile.d/subyard-openclaw-caches.sh
+} > /etc/profile.d/subyard-openclaw.sh
+chmod 0644 /etc/profile.d/subyard-openclaw.sh
+rm -f /etc/profile.d/subyard-openclaw-caches.sh   # stale name from when caches were (wrongly) in env
 
-# Same values for non-login PAM sessions. Idempotent: drop our marker block, never clobber other entries.
+# Same handful for non-login PAM sessions. Idempotent: drop our marker block, keep other entries.
 sed -i '/^# >>> subyard-openclaw >>>$/,/^# <<< subyard-openclaw <<<$/d' /etc/environment 2>/dev/null || true
 {
   echo "# >>> subyard-openclaw >>>"
-  [ -n "$CACHE_PIP" ]        && echo "PIP_CACHE_DIR=$CACHE_PIP"
-  [ -n "$CACHE_NPM" ]        && echo "npm_config_cache=$CACHE_NPM"
-  [ -n "$CACHE_PNPM_STORE" ] && echo "npm_config_store_dir=$CACHE_PNPM_STORE"
   if [ "$browser_on" = 1 ] && [ -n "$CACHE_PLAYWRIGHT" ]; then
     echo "PLAYWRIGHT_BROWSERS_PATH=$CACHE_PLAYWRIGHT"
     echo "PLAYWRIGHT_SKIP_BROWSER_GC=1"
@@ -135,7 +155,7 @@ for feat in $OPTIONAL_FEATURES; do
 done
 
 # 6. Discoverable L1 how-to (self-serve onboarding): one persistent, machine/human-readable doc the
-#    agent can find on its own. Pointer is exported as SUBYARD_OPENCLAW_DOCS (step 4b); the consumer
+#    agent can find on its own. Pointer is exported as SUBYARD_OPENCLAW_DOCS (step 4c); the consumer
 #    repo's AGENTS.md/CLAUDE.md should also point here (operator recommendation, we don't edit it).
 #    Persistent /etc (NOT tmpfs /run/subyard): provision is operator-run once, not re-run on reboot.
 install -d -m 0755 /etc/subyard
@@ -183,10 +203,10 @@ That injected key is what un-skips the project's key-gated live tests; with no k
 
 ## Shared caches (you must understand this)
 
-All agents in this yard share `/srv/cache` (pnpm store, npm, pip[, playwright]). The package-manager
-env is preset for you (`PIP_CACHE_DIR` / `npm_config_cache` / `npm_config_store_dir`) in every shell,
-login or `yard ssh -- <cmd>` — do NOT override the store/cache dirs per checkout, or you fork the
-cache and re-download everything.
+All agents in this yard share `/srv/cache` (pnpm store, npm, pip[, playwright]). The cache locations
+are preconfigured for you — pnpm's store via the `pnpm` wrapper, npm + pip via your `~/.npmrc` and
+`~/.config/pip/pip.conf` — so they apply in every shell (login or `yard ssh -- <cmd>`). Do NOT
+override the store/cache dirs per checkout, or you fork the cache and re-download everything.
 
 - Cache-mutating commands (`pnpm store prune`, `npm cache clean`, `pip cache purge`) are
   single-writer: never run them in parallel with another agent's build.

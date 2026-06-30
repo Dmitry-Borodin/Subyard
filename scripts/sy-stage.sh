@@ -33,11 +33,51 @@ die()  { printf 'sy-stage: %s\n' "$*" >&2; exit 1; }
 ok()   { printf 'sy-stage: %s\n' "$*"; }
 info() { printf 'sy-stage: %s\n' "$*" >&2; }
 
-command -v docker >/dev/null 2>&1 \
-  || die "no docker here — sy-stage runs INSIDE the yard, where the agent (dev) is in the docker group"
+# Self-documenting how-to (Slice 3.3): works without docker or a provisioned zone so an agent given
+# only a prompt can discover the lane. Mirrors /etc/subyard/openclaw-l1.md.
+print_help() {
+  cat <<'H'
+sy-stage — in-yard self-serve staging / live control for a coding agent (runs INSIDE the yard).
+
+Usage: sy-stage <command> [--zone Z] [PATH | -f | -- CMD...]
+
+Commands:
+  reserve            acquire the bot lease (ephemeral; preempts a canonical holder)
+  restart            prod-guard + lease + rebuild from your live tree + (re)launch the gateway
+  rebind [PATH]      recreate the runner bound to PATH (default: current git worktree)
+  stop               stop the gateway + release the lease
+  release            release the lease only
+  status             zone / runner / gateway / lease
+  logs [-f]          tail the gateway log (-f to follow)
+  test -- CMD...     run CMD in the runner (cwd /workspace); injects the host-config staging provider
+                     key as ANTHROPIC_API_KEY for THAT subprocess only (also SUBYARD_LIVE_MODEL=1, a
+                     Subyard convenience flag the project does not read). With no key, key-gated live
+                     tests skip cleanly. The "no gateway / no broker" live path.
+  help               this text
+
+Typical flows:
+  live model, no gateway:   sy-stage test -- <your live-test command>   # e.g. OPENCLAW_LIVE_TEST=1 pnpm test:live
+  full gateway e2e:         sy-stage reserve -> sy-stage restart -> sy-stage logs -f -> sy-stage stop
+
+Constraints you must understand:
+  - The test-bot is SHARED: one poller at a time (lease). An ephemeral run preempts a canonical
+    holder; if another ephemeral run holds it you queue or must stop it.
+  - The tree is LIVE-BOUND: restart/rebuild runs your CURRENT edits and writes into your workspace
+    (NOT a snapshot).
+  - The real test-bot has REAL side effects in the test chat; prod is refused by the prod-guard.
+  - The injected ANTHROPIC_API_KEY un-skips the project's key-gated live tests; its own live suites
+    also need their switch (e.g. OPENCLAW_LIVE_TEST=1). No key => those tests skip cleanly.
+  - Caches are shared (/srv/cache); don't fork them per checkout. See /etc/subyard/openclaw-l1.md.
+
+A zone must be provisioned by the operator first: yard staging up <zone> --source <ws>
+H
+}
 
 sub="${1:-}"; shift || true
-[ -n "$sub" ] || die "usage: sy-stage reserve|restart|rebind|stop|release|status|logs|test [--zone Z] [PATH|-f|-- CMD...]"
+case "$sub" in ""|help|-h|--help) print_help; exit 0 ;; esac
+
+command -v docker >/dev/null 2>&1 \
+  || die "no docker here — sy-stage runs INSIDE the yard, where the agent (dev) is in the docker group"
 
 zone="${SY_STAGE_ZONE:-canonical}"; follow=0; path_arg=""; cmd_args=()
 while [ $# -gt 0 ]; do
@@ -225,19 +265,21 @@ run_test() {
   elif [ -n "${TEST_LIVE_CMD:-}" ]; then
     cmd=(sh -c "$TEST_LIVE_CMD")
   else
-    die "usage: sy-stage test [--zone Z] -- <cmd...>  — runs <cmd> in the runner (cwd /workspace) with the host-config staging model key injected for this run only (SUBYARD_LIVE_MODEL=1 when present, unset to skip). Set STAGING_MODEL_KEY in the zone's host-config staging.env."
+    die "usage: sy-stage test [--zone Z] -- <cmd...>  — runs <cmd> in the runner (cwd /workspace) with the host-config staging provider key injected as ANTHROPIC_API_KEY for THIS run only (also SUBYARD_LIVE_MODEL=1, a Subyard convenience flag the project does not read). With no key, key-gated live tests skip cleanly; the project's own live suites also need their switch, e.g. OPENCLAW_LIVE_TEST=1. Set STAGING_MODEL_KEY in the zone's host-config staging.env."
   fi
-  info "live-model test in zone '$zone' (model key injected for this subprocess only; cwd /workspace)"
+  info "live-model test in zone '$zone' (provider key injected for this subprocess only; cwd /workspace)"
   docker exec -i -w /workspace "$CNAME" sh -s -- "${cmd[@]}" <<'RUN'
 set -eu
 ef=/run/subyard/staging.env
 key=""
 [ -r "$ef" ] && key="$( . "$ef" 2>/dev/null; printf '%s' "${STAGING_MODEL_KEY:-${ANTHROPIC_API_KEY:-}}" )"
 if [ -n "$key" ]; then
+  # ANTHROPIC_API_KEY is the load-bearing inject (un-skips the project's key-gated live tests).
+  # SUBYARD_LIVE_MODEL is a Subyard convenience flag only — the project does not read it.
   export SUBYARD_LIVE_MODEL=1 ANTHROPIC_API_KEY="$key" STAGING_MODEL_KEY="$key"
-  echo "sy-stage: staging model-key present -> SUBYARD_LIVE_MODEL=1 (this run only)" >&2
+  echo "sy-stage: staging provider key injected as ANTHROPIC_API_KEY (this run only); SUBYARD_LIVE_MODEL=1" >&2
 else
-  echo "sy-stage: no staging model-key in host-config -> SUBYARD_LIVE_MODEL unset; live model moves should SKIP" >&2
+  echo "sy-stage: no staging provider key in host-config -> key-gated live tests skip cleanly" >&2
 fi
 exec "$@"
 RUN
@@ -284,5 +326,5 @@ case "$sub" in
     ok "zone '$zone' rebound to $local_newsrc — now: sy-stage restart $zone"
     ;;
 
-  *) die "unknown subcommand '$sub' (reserve|restart|rebind|stop|release|status|logs)" ;;
+  *) die "unknown subcommand '$sub' (reserve|restart|rebind|stop|release|status|logs|test|help)" ;;
 esac

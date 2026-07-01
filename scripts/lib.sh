@@ -43,6 +43,11 @@ load_config() {
   done
   # shellcheck disable=SC1091
   [ -r "$SUBYARD_CONFIG_DIR/../private/config.env" ] && . "$SUBYARD_CONFIG_DIR/../private/config.env"
+  # Explicit success: a trailing `[ -r … ] && .` (here and in the loop above) returns 1 when the
+  # file is absent, and load_config runs while the caller's `set -e` is active — so without this,
+  # a checkout with no gitignored private/config.env makes load_config → 1 and EVERY `yard` command
+  # dies silently at exit 1. Never let this function's status ride on the last file's presence.
+  return 0
 }
 
 # -h/--help on any script prints its header comment block and exits.

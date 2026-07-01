@@ -60,4 +60,7 @@ svc_resource_up() {
 svc_resource_hint() {
   local hint; hint="$(res_hint_for_name "$1" 2>/dev/null || true)"
   [ -n "$hint" ] && printf '%s' "${PROG:-yard} $hint"
+  # Explicit success: the trailing `[ -n … ] &&` above returns 1 for a resource with no hint, and
+  # callers run under `set -e` — without this, an empty hint would abort the caller mid-status.
+  return 0
 }

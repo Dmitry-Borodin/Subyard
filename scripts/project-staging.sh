@@ -482,7 +482,10 @@ GUARD
     lease_release >/dev/null 2>&1 || true
     ydocker rm -f "$cname" >/dev/null && ok "staging-runner zone '$zone' destroyed"
     yexec rm -rf "$(dirname "$ysecret")" 2>/dev/null || true
-    [ "$purge" = 1 ] && yexec rm -rf "$dataRoot" 2>/dev/null && ok "staging data root wiped"
+    # `if`, not `[ … ] && …`: this is the destroy) arm's last command and the case is the script's
+    # final action, so under set -e a false guard (the default, no --purge) would exit 1 despite a
+    # successful destroy. Mirrors the sibling qa-pool.sh cmd_destroy.
+    if [ "$purge" = 1 ]; then yexec rm -rf "$dataRoot" 2>/dev/null && ok "staging data root wiped"; fi
     ;;
 
   *)

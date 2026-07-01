@@ -129,7 +129,11 @@ provisionable_profiles() {
     [ -e "$f" ] || continue
     prof="$(jq -r '.profile // ""' "$f" 2>/dev/null)"; [ -n "$prof" ] || continue
     [ -r "$SCRIPT_DIR/../config/profiles/$prof/provision.sh" ] && printf '%s\n' "$prof"
-  done | sort -u
+  done | sort -u || true
+  # `|| true`: the for-loop's status is its last iteration's `[ -r … ] && printf`, which is 1 when
+  # the last project's profile ships no provision.sh; pipefail would then make this function return
+  # 1 and abort its set -e caller (offer_provision, near init's final exit). The names are already
+  # on stdout; only the status needs neutralising.
 }
 
 # ============================================================================

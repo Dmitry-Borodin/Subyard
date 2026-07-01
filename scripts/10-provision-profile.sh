@@ -33,7 +33,8 @@ for a in "$@"; do
         printf 'Provisionable profiles (ship a provision.sh):\n'; printf '  • %s\n' "${_all[@]}"
       else printf 'No provisionable profile under %s\n' "$PROFILES_DIR"; fi
       exit 0 ;;
-    -*) ;;
+    -y | --yes | -h | --help) ;;   # consumed by lib.sh; tolerate here
+    -*) die "unknown option '$a'" ;;   # a typo'd flag must error, not be silently ignored
     *)  want="$a"; break ;;
   esac
 done

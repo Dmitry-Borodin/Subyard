@@ -22,7 +22,7 @@ PROJ=(--project "$INCUS_PROJECT")
 
 action="${1:-status}"; shift || true
 SHOW_SPACE=0
-for a in "$@"; do case "$a" in --space) SHOW_SPACE=1 ;; -y|--yes) ;; *) ;; esac; done  # tolerate --yes
+for a in "$@"; do case "$a" in --space) SHOW_SPACE=1 ;; -y|--yes) ;; -*) die "unknown option '$a'" ;; *) ;; esac; done  # tolerate --yes; reject unknown flags
 
 incus_preflight "$action"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
@@ -119,8 +119,10 @@ case "$action" in
       printf '  ssh      not set up  (run: yard init, or scripts/07-ssh-access.sh)\n'
     fi
     # host mounts attached to the instance
+    # `|| true`: with no host-* mount, grep exits 1 and pipefail would abort the assignment
+    # (killing `yard status` mid-output). An empty result is the correct "none" case here.
     mounts="$(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null \
-              | grep -E '^host-' | tr '\n' ' ')"
+              | grep -E '^host-' | tr '\n' ' ' || true)"
     printf '  mounts   %s\n' "${mounts:-none}"
     # services, only when the yard is up
     if [ "$s" = RUNNING ]; then
@@ -148,7 +150,9 @@ case "$action" in
     # the yard is up; otherwise just list what is declared (state '?').
     if [ "$s" = RUNNING ]; then print_shared 1; else print_shared 0; fi
     # On-demand disk footprint (du can be slow on a big pool, so opt-in via --space).
-    [ "$SHOW_SPACE" = 1 ] && print_space
+    # Must be `if`, not `[ … ] && …`: as the case branch's last command under `set -e`, a bare
+    # `&&` returns 1 whenever --space is absent, making a plain `yard status` exit 1 every time.
+    if [ "$SHOW_SPACE" = 1 ]; then print_space; fi
     ;;
   *)
     die "unknown action '$action' (expected: start | stop | status)"

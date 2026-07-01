@@ -123,10 +123,16 @@ if [ -n "${HOST_LINKS:-}" ]; then
 fi
 
 # /srv skeleton (generic core; profile caches like android-sdk come in Phase 4).
-mkdir -p /srv/cache /srv/workspaces /srv/agents /srv/stacks /srv/images /srv/bin
-chown -R root:yard /srv
-chmod -R g+rwX /srv
-find /srv -type d -exec chmod g+s {} \;
+# Own + group-share ONLY the skeleton dirs this script creates, NON-recursively. A recursive
+# chown/chmod over /srv is destructive here: /srv/workspaces/<id>/src holds shift-mapped bind
+# projects (real host files — host uid == container uid under shift), and /srv/env-secrets/<id>
+# holds 0600 per-project secrets — a `chown -R root:yard` + `chmod -R g+rwX` would rewrite host
+# file ownership and make those secrets group-readable/writable to the yard group. So touch only
+# the dirs we own and never descend into per-project data (created later by project-* tooling).
+srv_skel=(/srv /srv/cache /srv/workspaces /srv/agents /srv/stacks /srv/images /srv/bin)
+mkdir -p "${srv_skel[@]}"
+chown root:yard "${srv_skel[@]}"
+chmod g+rwXs "${srv_skel[@]}"   # g+rwX + setgid (dirs) so new subdirs inherit the yard group
 
 # Services live in the container's own systemd (does not touch host systemd).
 systemctl enable --now ssh docker

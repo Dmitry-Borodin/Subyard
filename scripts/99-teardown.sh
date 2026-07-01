@@ -33,7 +33,19 @@ BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
 STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/incus/storage}"
 
 KEEP_DATA=0
-for a in "$@"; do case "$a" in --keep-data) KEEP_DATA=1 ;; esac; done
+# Reject unknown flags: a typo like `--keepdata` MUST NOT silently fall through to a FULL,
+# data-destroying teardown. `-y`/`--yes`/`-h`/`--help` are consumed by lib.sh (present in argv
+# here), so tolerate them; anything else that looks like a flag is a fatal error.
+for a in "$@"; do
+  case "$a" in
+    --keep-data) KEEP_DATA=1 ;;
+    -y | --yes | -h | --help) ;;
+    -*) die "unknown option '$a' (did you mean --keep-data?)" ;;
+    # teardown takes NO positional args; a bare word (e.g. `keepdata` without the dashes) must NOT
+    # slip through to a FULL, data-destroying teardown — reject it too, not just dash-flags.
+    *) die "unexpected argument '$a' — teardown takes no positional args (only --keep-data)" ;;
+  esac
+done
 
 # --- announce ----------------------------------------------------------------
 if [ "$KEEP_DATA" = 1 ]; then
@@ -53,10 +65,24 @@ fi
 proceed_or_die
 require_root "removing the NetworkManager guard, ufw rules, and the Incus storage data needs root"
 
+# FULL teardown only: incus INSTALLED but the daemon UNREACHABLE is the incident #33 shape (a
+# failed upgrade leaves incusd down). We must not read "can't reach the daemon" as "nothing
+# exists": that would set bridge_gone/pool_gone below, then `rm -rf $SUBYARD_HOME` would wipe the
+# backing data of a pool still live in Incus's DB and drop the NM guard while the bridge is up.
+# Refuse until the daemon is back — start/repair it, or purge the package if incus is truly gone.
+# Scoped to KEEP_DATA=0: the --keep-data path never wipes data or the guard (both gated on
+# KEEP_DATA=0 below), so a down daemon there is harmless and must not be blocked.
+if [ "$KEEP_DATA" = 0 ] && command -v incus >/dev/null 2>&1 && ! incus info >/dev/null 2>&1; then
+  die "incus is installed but its daemon is unreachable — start or repair incusd before teardown (a down daemon must not be treated as 'nothing to remove'; see incident #33)"
+fi
+
 have_incus=0
 if command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; then have_incus=1; fi
 PROJ=(--project "$INCUS_PROJECT")
-# Gate guard/data removal on the bridge/pool actually being gone (avoid orphan + hijack).
+# Gate guard/data removal on the bridge/pool actually being gone (avoid orphan + hijack). On a FULL
+# teardown the guard above means have_incus=0 here implies incus is genuinely ABSENT; on --keep-data
+# have_incus=0 may mean the daemon is down, but that path wipes neither data nor the guard, so
+# bridge_gone=pool_gone=1 is harmless there.
 bridge_gone=0; pool_gone=0
 [ "$have_incus" = 1 ] || { bridge_gone=1; pool_gone=1; }
 
@@ -164,7 +190,12 @@ fi
 # --- 5. NetworkManager guard — LAST (bridge + veths are gone by now) ----------
 # Remove the NM guard ONLY once the bridge is gone — otherwise NM could start managing a
 # still-present incusbr0 and re-introduce a rogue route. Keep it while the bridge remains.
-if [ "$KEEP_DATA" = 0 ] && [ "$bridge_gone" = 1 ]; then
+# Gate on the ACTUAL kernel link, not just the incus-side flag: if the bridge device is still up
+# for any reason (incus deleted it but the link lingered, or the flag was set optimistically),
+# dropping the guard could let NM hijack the host route (incident #33). `ip` is always present.
+bridge_link_gone=0
+ip link show "$BRIDGE" >/dev/null 2>&1 || bridge_link_gone=1
+if [ "$KEEP_DATA" = 0 ] && [ "$bridge_gone" = 1 ] && [ "$bridge_link_gone" = 1 ]; then
   echo "NetworkManager guard:"
   rm -f /etc/NetworkManager/conf.d/zz-subyard-unmanaged.conf 2>/dev/null || true
   rm -f /etc/NetworkManager/conf.d/99-subyard-unmanaged.conf 2>/dev/null || true

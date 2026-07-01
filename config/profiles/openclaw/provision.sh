@@ -11,6 +11,7 @@ set -euo pipefail
 NODE_VERSION="${NODE_VERSION:-24.15.0}"
 COREPACK_VERSION="${COREPACK_VERSION:-0.31.0}"
 PNPM_VERSION="${PNPM_VERSION:-11.2.2}"
+CCUSAGE_VERSION="${CCUSAGE_VERSION:-latest}"
 DEV_USER="${DEV_USER:-dev}"
 OPTIONAL_FEATURES="${OPTIONAL_FEATURES:-}"
 
@@ -88,6 +89,15 @@ runpnpm "$@" $ft
 SH
 } > /usr/local/bin/pnpm
 chmod +x /usr/local/bin/pnpm
+
+# 2b. ccusage — the coding-agent token-usage reporter behind `yard usage`. Pre-install it globally so
+#     `yard usage` resolves `command -v ccusage` instantly instead of an npx download on every call.
+#     Install-if-missing so a re-provision never re-fetches; an empty CCUSAGE_VERSION skips it (yard
+#     usage then falls back to npx/bunx). Root's default npm cache is used (the shared /srv/cache keys
+#     were unset above), exactly like the corepack install — so /srv/cache is never root-contaminated.
+if [ -n "${CCUSAGE_VERSION:-}" ] && ! command -v ccusage >/dev/null 2>&1; then
+  /usr/local/bin/npm install -g "ccusage@${CCUSAGE_VERSION}" >/dev/null
+fi
 
 # 3. Python dev venv.
 [ -x /opt/venv/bin/python ] || python3 -m venv /opt/venv
@@ -286,7 +296,7 @@ override the store/cache dirs per checkout, or you fork the cache and re-downloa
 DOC
 chmod 0644 /etc/subyard/openclaw-l1.md
 
-echo "openclaw provision OK: node=$(/usr/local/bin/node --version) pnpm=$(/usr/local/bin/pnpm --version 2>/dev/null) venv=$([ -x /opt/venv/bin/python ] && echo yes)"
+echo "openclaw provision OK: node=$(/usr/local/bin/node --version) pnpm=$(/usr/local/bin/pnpm --version 2>/dev/null) venv=$([ -x /opt/venv/bin/python ] && echo yes) ccusage=$(command -v ccusage >/dev/null 2>&1 && echo yes || echo no)"
 # Operator recommendation (Slice 3.2): the self-serve how-to is at /etc/subyard/openclaw-l1.md and is
 # discoverable via $SUBYARD_OPENCLAW_DOCS. We do NOT edit the consumer's repo — hand this to them so an
 # agent given only a prompt finds the lane. Printed here because that is where the operator will see it.

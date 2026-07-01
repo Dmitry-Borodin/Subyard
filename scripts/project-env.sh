@@ -305,7 +305,10 @@ MSG
 
   down)
     ydocker inspect "$cname" >/dev/null 2>&1 || die "no box for '$name'"
-    ydocker stop "$cname" >/dev/null && ok "box '$name' stopped"
+    # `|| die`, not a trailing `&&`: a genuine stop failure must surface (matching this file's
+    # convention), not be swallowed into a silent non-zero exit as the case's last command.
+    ydocker stop "$cname" >/dev/null || die "could not stop box '$name'"
+    ok "box '$name' stopped"
     ;;
 
   destroy)

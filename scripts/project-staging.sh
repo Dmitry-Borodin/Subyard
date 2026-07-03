@@ -224,7 +224,7 @@ case "$sub" in
       "Source tree at /workspace <- $src_desc." \
       ${sec_line[@]+"${sec_line[@]}"} \
       "The gateway is NOT started here — 'yard staging start $zone' runs the prod-guard + lease first."
-    proceed_or_die
+    proceed_or_die y   # transient bring-up (start the shared staging-runner) — default Yes
 
     for d in "$dataRoot" "$dataRoot/logs" "$dataRoot/run" "$dataRoot/creds" "$vasilyHome" "$srcDir" "$LEASE_DIR"; do
       yexec install -d -o "$DEV_UID" -g "$DEV_UID" "$d"
@@ -381,7 +381,7 @@ GUARD
     announce "yard staging start — zone '$zone'" \
       "Prod-guard passed, lease held (epoch $epoch). Launch the gateway: '$gw_cmd' (cwd /workspace)." \
       "Log -> $ylog ; pid -> $GW_PID. A heartbeat renews the lease while it runs."
-    proceed_or_die
+    proceed_or_die y   # transient start (launch the staging gateway) — default Yes
     ydocker exec -d "$cname" sh -c '
       cd /workspace || exit 1
       mkdir -p "$(dirname "$2")"

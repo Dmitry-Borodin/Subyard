@@ -79,12 +79,17 @@ ok()   { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
 warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
 die()  { printf '  %s[fail]%s %s\n' "$C_BAD" "$C_OFF" "$*" >&2; exit 1; }
 
-# Yes under -y/ASSUME_YES; else ask on a TTY; else no.
+# confirm "<question>" [y|n] — ask a yes/no question.
+#   $2 sets which answer a bare Enter takes: "n" (default) shows [y/N]; "y" shows [Y/n].
+# Yes under -y/ASSUME_YES; else ask on a TTY (an empty reply takes the default); else no
+# (a non-interactive run without --yes always refuses, whatever the default).
 confirm() {
   [ "$ASSUME_YES" = 1 ] && return 0
+  local q="$1" def="${2:-n}" ans hint
+  case "$def" in [yY]*) hint='[Y/n]' ;; *) hint='[y/N]' ;; esac
   if [ -t 0 ]; then
-    local ans
-    read -r -p "  $1 [y/N] " ans
+    read -r -p "  $q $hint " ans
+    [ -n "$ans" ] || ans="$def"
     case "$ans" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
   fi
   return 1
@@ -118,11 +123,18 @@ announce() {
   printf '\n'
 }
 
-# y/N gate (default N) — nothing mutating runs before it returns. Skipped on the
-# sudo re-run (already answered before elevation).
+# Proceed gate — nothing mutating runs before it returns. Skipped on the sudo re-run
+# (already answered before elevation). The default answer encodes how reversible the
+# action is:
+#   proceed_or_die       default No  (y/N) — durable/settings changes: install, mount,
+#                                     provision, network, git identity, destroy, remove,
+#                                     teardown. The operator must opt in explicitly.
+#   proceed_or_die y     default Yes (Y/n) — transient, reversible lifecycle actions:
+#                                     bring a shared resource up/down, start/stop a
+#                                     service. A bare Enter proceeds.
 proceed_or_die() {
   [ "${SUBYARD_ELEVATED:-0}" = 1 ] && return 0
-  confirm "Proceed?" || die "aborted by user (pass --yes to skip this prompt)"
+  confirm "Proceed?" "${1:-n}" || die "aborted by user (pass --yes to skip this prompt)"
 }
 
 # Banner + gate for non-root mutating scripts. Root scripts use:

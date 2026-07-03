@@ -87,7 +87,7 @@ ensure_proxy() {
   announce "yard emu: adb bridge" \
     "Add an Incus proxy device '$dev': host 127.0.0.1:$hport -> yard 127.0.0.1:$yport (loopback only)." \
     "The emulator is NOT exposed on the LAN; host traffic reaches it through the yard."
-  proceed_or_die
+  proceed_or_die y   # transient bring-up (bridge the shared emulator) — default Yes
   incus config device add "$INSTANCE_NAME" "$dev" proxy "${PROJ[@]}" \
     listen="tcp:127.0.0.1:$hport" connect="tcp:127.0.0.1:$yport" bind=host >/dev/null
   ok "added proxy 127.0.0.1:$hport -> yard:$yport"
@@ -181,7 +181,7 @@ cmd_tunnel() {
     "Open an SSH local-forward: host 127.0.0.1:$ADB_PROXY_PORT -> yard 127.0.0.1:$ADB_EMULATOR_PORT." \
     "No yard config changes; the tunnel lives only as long as this ssh process." \
     "In another shell: adb connect 127.0.0.1:$ADB_PROXY_PORT"
-  proceed_or_die
+  proceed_or_die y   # transient bring-up (ssh tunnel to the shared emulator) — default Yes
   info "ssh -N -L $ADB_PROXY_PORT:127.0.0.1:$ADB_EMULATOR_PORT $SSH_HOST  (Ctrl-C to close)"
   exec ssh -N -L "$ADB_PROXY_PORT:127.0.0.1:$ADB_EMULATOR_PORT" "$SSH_HOST"
 }
@@ -231,7 +231,7 @@ cmd_up() {
       "Stage the launcher into the yard ($EMU_DIR) and run it as '$DEV_USER', detached." \
       "Headless HW-GPU (cage + Xwayland on the passed-through render node); shared with in-yard agents." \
       "Log: $EMU_LOG (in the yard). Stop it later with: yard emu stop"
-    proceed_or_die
+    proceed_or_die y   # transient start (boot the shared emulator) — default Yes
     stage_launcher
     ok "launcher staged at $EMU_DIR (in the yard)"
     # Detached: setsid + redirect + </dev/null so it outlives this incus exec session. A
@@ -276,7 +276,7 @@ cmd_stop() {
   announce "yard emu: stop the in-yard emulator" \
     "Kill the emulator (and its cage wrapper) in the yard '$INSTANCE_NAME'." \
     "This DISRUPTS any in-yard agent currently using the emulator for tests."
-  proceed_or_die
+  proceed_or_die y   # transient stop (shut the shared emulator down) — default Yes
   # Clean shutdown via the console if reachable, then make sure the processes are gone.
   yexec su - "$DEV_USER" -c 'adb -s emulator-'"$ADB_CONSOLE_EMULATOR_PORT"' emu kill 2>/dev/null; true' >/dev/null 2>&1 || true
   yexec sh -c "pkill -f qemu-system 2>/dev/null; pkill -f emulator-run.sh 2>/dev/null; pkill cage 2>/dev/null; true" >/dev/null 2>&1 || true

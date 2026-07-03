@@ -206,7 +206,7 @@ case "$sub" in
       ${ses_line[@]+"${ses_line[@]}"} \
       ${sec_line[@]+"${sec_line[@]}"} \
       "Pulls/builds the image into the yard's Docker on first run."
-    proceed_or_die
+    proceed_or_die y   # transient start (run the project-env box) — default Yes
 
     # shared caches (persistent under the yard's /srv), owned by the dev uid
     for c in ${CACHES:-}; do yexec install -d -o "$DEV_UID" -g "$DEV_UID" "$c"; done

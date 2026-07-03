@@ -143,7 +143,7 @@ cmd_up() {
     "Persist its DB under $YDATA; generate an admin key; deploy the broker functions from $BROKER_SRC (copied to $YSRC)." \
     "Register the two role secrets (from config/qa-pool/secrets.env) as Convex deployment env." \
     "Then seed the pool from config/qa-pool/pool.jsonl and write the worker env ($YCLIENT)."
-  proceed_or_die
+  proceed_or_die y   # transient bring-up (start the shared QA broker) — default Yes
 
   for d in "$DATA_ROOT" "$YDATA" "$YSRC" "$(dirname "$YSECRETS")"; do
     yexec install -d -o "$DEV_UID" -g "$DEV_UID" "$d"

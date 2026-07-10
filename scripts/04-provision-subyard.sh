@@ -153,51 +153,10 @@ else
   ok "no kvm device attached (vm mode or /dev/kvm absent) — nothing to fix"
 fi
 
-# --- 3. copy global agent instructions into the yard -------------------------
-# Copied (not mounted or symlinked) so in-yard agents use the operator's working agreements
-# without rewriting the host files. Source paths live in config/host.env. Refreshed on each
-# re-provision.
-echo "Agent instructions:"
-if [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ]; then
-  incus file push "$HOST_CLAUDE_MD" \
-    "$INSTANCE_NAME/home/$DEV_USER/.claude/CLAUDE.md" "${PROJ[@]}" \
-    --create-dirs --uid "$DEV_UID" --gid "$DEV_UID" --mode 0644
-  ok "copied $HOST_CLAUDE_MD -> ~$DEV_USER/.claude/CLAUDE.md"
-else
-  ok "no HOST_CLAUDE_MD file to copy — skipping (operator can add one and re-run)"
-fi
-if [ -n "${HOST_CODEX_AGENTS_MD:-}" ] && [ -f "$HOST_CODEX_AGENTS_MD" ]; then
-  incus file push "$HOST_CODEX_AGENTS_MD" \
-    "$INSTANCE_NAME/home/$DEV_USER/.codex/AGENTS.md" "${PROJ[@]}" \
-    --create-dirs --uid "$DEV_UID" --gid "$DEV_UID" --mode 0644
-  ok "copied $HOST_CODEX_AGENTS_MD -> ~$DEV_USER/.codex/AGENTS.md"
-else
-  ok "no HOST_CODEX_AGENTS_MD file to copy — skipping (operator can add one and re-run)"
-fi
-
-# --- 3b. lay down per-agent default configs ----------------------------------
-# Each enabled agent (AGENTS, config/agents.env) gets its config artifacts copied in host-side
-# like CLAUDE.md: AGENT_<name>_CONFIG and the optional AGENT_<name>_RULES -> ~dev/<...>_DEST. Gives
-# the in-yard agent sane perms out of the box (free local work; 
-echo "Agent configs:"
-for _agent in ${AGENTS:-}; do
-  _did=0
-  for _kind in CONFIG RULES; do
-    _src_var="AGENT_${_agent}_${_kind}"; _dst_var="AGENT_${_agent}_${_kind}_DEST"
-    _src="${!_src_var:-}"; _dst="${!_dst_var:-}"
-    [ -n "$_src" ] && [ -n "$_dst" ] || continue
-    if [ -f "$_src" ]; then
-      incus file push "$_src" \
-        "$INSTANCE_NAME/home/$DEV_USER/$_dst" "${PROJ[@]}" \
-        --create-dirs --uid "$DEV_UID" --gid "$DEV_UID" --mode 0644
-      ok "$_agent: copied $(basename "$_src") -> ~$DEV_USER/$_dst"; _did=1
-    else
-      warn "$_agent: $_kind source $_src missing — skipping"
-    fi
-  done
-  [ "$_did" = 0 ] && ok "$_agent: no default config — skipping"
-done
-unset _agent _kind _src_var _dst_var _src _dst _did
+# --- 3. refresh agent instructions and configs ------------------------------
+# Kept in a standalone helper so an existing yard can re-apply these lightweight artifacts via
+# `yard init --configs`, without repeating package installation or rebuilding the instance.
+"$SCRIPT_DIR/agent-configs.sh" --yes
 
 # --- summary -----------------------------------------------------------------
 echo

@@ -69,7 +69,8 @@ Usage: $PROG [option] <command> [args]
 Yard lifecycle:
   check           verify the host can run a yard (read-only preflight)
   init            install everything: Incus -> project -> yard -> mounts -> provision
-                  (--reset: teardown + fresh init; force-apply config the reconcile missed)
+                  (--configs: refresh agent instructions/configs only;
+                   --reset: teardown + fresh init; force-apply other config drift)
   start           start the yard
   status [--space] read-only overview (yard + ssh + mounts + services + projects;
                   --space also prints the on-host size of ~/.subyard)

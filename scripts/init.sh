@@ -4,16 +4,18 @@
 # Runs the whole pipeline end-to-end and idempotently: host preflight → install
 # Incus → project → instance → network → mounts → provision → ssh → git identity
 # → project extras. A re-run reconciles drift and skips finished steps; it is
-# conservative and may miss a content/dotfiles-only change (use --reset for that).
+# conservative and may miss a content-only change (`--configs` refreshes agent dotfiles;
+# `--reset` remains the full destructive re-apply).
 #
 # Installing Incus moves you into the 'incus-admin' group, which only takes effect
 # in a fresh session. Rather than stop and make you re-run, init re-execs itself
 # under a fresh group session ('sg') so a single 'yard init' completes start to end.
 #
-# Usage: yard init [--reset] [-y]
-#   --reset     Tear down the yard, then a fresh init — force-apply a config change
-#               the conservative reconcile didn't pick up. Asks before anything.
-#   -y, --yes   Skip the confirmation prompt (automation/CI).
+# Usage: yard init [--configs | --reset] [-y]
+#   yard init --configs   Refresh global agent instructions and default configs only; no rebuild.
+#   yard init --reset     Tear down the yard, then a fresh init — force-apply a config change
+#                         the conservative reconcile didn't pick up. Asks before anything.
+#   -y, --yes             Skip the confirmation prompt (automation/CI).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_ARGS=("$@")   # preserved so we can re-exec ourselves under a fresh group session
@@ -272,8 +274,19 @@ run_steps() {
 }
 
 # ============================================================================
-# --reset — teardown then a fresh init (the guaranteed full re-apply).
+# --configs / --reset special modes.
 # ============================================================================
+maybe_configs() {
+  local a configs=0 reset=0
+  for a in "$@"; do
+    [ "$a" = --configs ] && configs=1
+    [ "$a" = --reset ] && reset=1
+  done
+  [ "$configs" = 1 ] || return 0
+  [ "$reset" = 0 ] || die "--configs and --reset cannot be used together"
+  exec "$SCRIPT_DIR/agent-configs.sh" "$@"
+}
+
 maybe_reset() {
   local a reset=0
   for a in "$@"; do [ "$a" = --reset ] && reset=1; done
@@ -290,6 +303,7 @@ maybe_reset() {
 # ============================================================================
 # Main.
 # ============================================================================
+maybe_configs "$@"
 maybe_reset "$@"
 
 # Incus installed + daemon unreachable + you're already in 'incus-admin' = this shell

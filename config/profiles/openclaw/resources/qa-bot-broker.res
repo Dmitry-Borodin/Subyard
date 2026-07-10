@@ -6,3 +6,4 @@ HANDLER=qa-pool.sh
 TITLE="QA bot pool (in-yard credential broker)"
 VERBS="up seed expose status logs smoke down destroy"
 BRINGUP=up
+SHUTDOWN=down

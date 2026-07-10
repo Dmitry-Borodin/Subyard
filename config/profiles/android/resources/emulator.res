@@ -7,3 +7,4 @@ HANDLER=yard-emu.sh
 TITLE="Android emulator (in the yard + host-facing adb/scrcpy bridge)"
 VERBS="up stop status adb view tunnel down"
 BRINGUP=up
+SHUTDOWN=stop

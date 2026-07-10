@@ -64,3 +64,10 @@ svc_resource_hint() {
   # callers run under `set -e` — without this, an empty hint would abort the caller mid-status.
   return 0
 }
+
+# svc_resource_stop_hint <resource-name> — the operator command that stops an up resource.
+svc_resource_stop_hint() {
+  local hint; hint="$(res_stop_hint_for_name "$1" 2>/dev/null || true)"
+  [ -n "$hint" ] && printf '%s' "${PROG:-yard} $hint"
+  return 0
+}

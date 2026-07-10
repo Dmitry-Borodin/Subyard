@@ -6,3 +6,4 @@ HANDLER=project-staging.sh
 TITLE="Live staging gateway zone (isolated from prod)"
 VERBS="up start stop status logs shell down destroy list e2e"
 BRINGUP=start
+SHUTDOWN=stop

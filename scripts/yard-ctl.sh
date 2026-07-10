@@ -56,9 +56,10 @@ print_space() {
 # registry, via svc_resources_for), one row per resource under a `shared:` heading. Always lists
 # what is declared (so the operator sees what *could* run); the live up/down probe needs the yard,
 # so pass running=1 to probe (it delegates to the resource's own `is-up`), else every row shows
-# '?'. A down resource gets a bring-up hint. Nothing declared => one `shared   none`.
+# '?'. A down resource gets a bring-up hint; an up resource gets a stop hint. Nothing declared
+# => one `shared   none`.
 #   shared:
-#     android   emulator         up
+#     android   emulator         up     (yard emu stop)
 #     openclaw  staging-gateway  down   (yard staging start)
 print_shared() {
   local running="$1" name res st hint any=0
@@ -69,7 +70,11 @@ print_shared() {
       [ "$any" = 1 ] || { printf '  shared:\n'; any=1; }
       hint=''
       if [ "$running" = 1 ]; then
-        if svc_resource_up "$res"; then st=up; else st=down; hint="$(svc_resource_hint "$res")"; fi
+        if svc_resource_up "$res"; then
+          st=up; hint="$(svc_resource_stop_hint "$res")"
+        else
+          st=down; hint="$(svc_resource_hint "$res")"
+        fi
       else
         st='?'
       fi

@@ -120,8 +120,8 @@ usage_resources() {
   local rows; rows="$(res_rows 2>/dev/null)" || return 0
   [ -n "$rows" ] || return 0
   printf '\nProfile resources (long-lived in-yard services; run '\''%s <cmd> -h'\'' for each):\n' "$PROG"
-  local p n c h b v t
-  while IFS=$'\t' read -r p n c h b v t; do
+  local p n c h b s v t
+  while IFS=$'\t' read -r p n c h b s v t; do
     [ -n "$c" ] || continue
     printf '  %-9s %s\n' "$c" "$t"
     printf '            verbs: %s\n' "$v"

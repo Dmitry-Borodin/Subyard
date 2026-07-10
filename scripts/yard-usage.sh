@@ -22,7 +22,8 @@ incus_preflight
 # (printf '%q' with zero args emits a quoted '' — guard the no-arg case.)
 args_q=""
 [ "$#" -gt 0 ] && args_q="$(printf '%q ' "$@")"
-run="if command -v ccusage >/dev/null 2>&1; then set -- ccusage;
+run="export npm_config_update_notifier=false;
+     if command -v ccusage >/dev/null 2>&1; then set -- ccusage;
      elif command -v bunx >/dev/null 2>&1; then set -- bunx ccusage;
      elif command -v npx >/dev/null 2>&1; then set -- npx -y ccusage@latest;
      else echo 'yard usage: no ccusage/npx/bunx in the yard — provision a profile that installs Node (e.g. yard provision openclaw, which pre-installs ccusage), or install ccusage for the dev user' >&2; exit 127; fi

@@ -73,7 +73,7 @@ _yard() {
       [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) \
         || { local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") ); COMPREPLY+=( $(compgen -d -- "$cur") ); }
       ;;
-    remove) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--purge --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
+    remove) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--soft --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
     emu)
       # emu <up|stop|status|adb|view|tunnel|down>; `view` also takes --control/--no-control.
       if [ "$cword" -eq 2 ]; then COMPREPLY=( $(compgen -W 'up stop status adb view tunnel down' -- "$cur") )

@@ -90,7 +90,7 @@ Project workflow (default path '.'):
   list            list projects currently in the yard
   code   [path|name] open a project in VS Code by path or \`yard list\` name (Remote-SSH)
   export [path]   pull a diff/patch from the yard back to the host (sync projects)
-  remove [path]   take a project out of the yard (--purge also deletes the copy)
+  remove [path]   take a project out of the yard, deleting its copy (--soft keeps it)
 
 Project-env (L2 box; for a project added with --target <profile>):
   up     [path]   build/start the project's box (--rebuild to rebuild the image)

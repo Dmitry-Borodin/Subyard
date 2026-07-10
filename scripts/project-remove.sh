@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # project-remove.sh — take a project out of the yard.
-# Usage: project-remove.sh [path] [--purge]
-#   (default)  drop the machine-local state; leaves the yard copy in place
-#   --purge    also delete the yard copy at /srv/workspaces/<id>
+# Usage: project-remove.sh [path] [--soft]
+#   (default)  full removal: drop the machine-local state AND delete the yard copy
+#              at /srv/workspaces/<id> (bind projects: host files are never touched)
+#   --soft     keep the yard copy; only drop the state and the L2 project-env box
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,10 +16,11 @@ INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 PROJ=(--project "$INCUS_PROJECT")
 
-path="."; purge=0
+path="."; soft=0
 for a in "$@"; do
   case "$a" in
-    --purge)     purge=1 ;;
+    --soft)      soft=1 ;;
+    --purge)     warn "--purge is deprecated: full removal is the default now (--soft keeps the copy)" ;;
     -y|--yes)    ;;  # handled by lib.sh
     -*)          die "unknown option '$a'" ;;
     *)           path="$a" ;;
@@ -61,7 +63,6 @@ remove_box() {
 # --- bind: detach the disk device; NEVER delete (the source is the host folder) ----
 if [ "$mode" = bind ]; then
   dev="$(ws_device_for "$id")"
-  [ "$purge" = 1 ] && warn "'$name' is a bind project — --purge does NOT delete host files; only detaching the mount"
   announce "yard remove — $name (bind)" \
     "Drop machine-local state: $(state_file "$id")." \
     "Remove its L2 project-env box if present (target=${target:-yard}); workspace/caches kept." \
@@ -83,32 +84,31 @@ if [ "$mode" = bind ]; then
   exit 0
 fi
 
-# --- sync: optionally delete the yard copy -----------------------------------
-if [ "$purge" = 1 ]; then
-  announce "yard remove --purge — $name" \
+# --- sync/clone: delete the yard copy unless --soft --------------------------
+if [ "$soft" = 1 ]; then
+  announce "yard remove --soft — $name" \
     "Drop machine-local state: $(state_file "$id")." \
     "Remove its L2 project-env box if present (target=${target:-yard})." \
-    "DELETE the yard copy: $INSTANCE_NAME:$yardDir (irreversible)."
+    "Leave the yard copy at $yardDir in place (re-add it later with 'yard sync'/'yard clone')."
 else
+  # Fail BEFORE dropping state: once the state is gone the copy can no longer be
+  # resolved by name, and it would be orphaned in the yard.
+  running || die "yard is down — start it ('yard start') to delete the yard copy, or re-run with --soft to keep it"
   announce "yard remove — $name" \
     "Drop machine-local state: $(state_file "$id")." \
-    "Remove its L2 project-env box if present (target=${target:-yard}); the yard copy stays." \
-    "Leave the yard copy at $yardDir in place (use --purge to delete it)."
+    "Remove its L2 project-env box if present (target=${target:-yard})." \
+    "DELETE the yard copy: $INSTANCE_NAME:$yardDir (irreversible; use --soft to keep it)."
 fi
 proceed_or_die
 remove_box
 
-if [ "$purge" = 1 ]; then
-  if running; then
-    case "$yardDir" in
-      /srv/workspaces/?*) incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- rm -rf "$yardDir" \
-        && ok "deleted $yardDir" ;;
-      *) die "refusing to delete unexpected path '$yardDir'" ;;
-    esac
-  else
-    warn "yard is down — skipping copy deletion (start it and re-run --purge)"
-  fi
+if [ "$soft" = 0 ]; then
+  case "$yardDir" in
+    /srv/workspaces/?*) incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- rm -rf "$yardDir" \
+      && ok "deleted $yardDir" ;;
+    *) die "refusing to delete unexpected path '$yardDir'" ;;
+  esac
 fi
 
 state_remove "$id"
-[ "$purge" = 1 ] && ok "removed '$name' from the yard (purged)" || ok "removed '$name' from the yard"
+[ "$soft" = 1 ] && ok "removed '$name' from the yard (yard copy kept)" || ok "removed '$name' from the yard (yard copy deleted)"

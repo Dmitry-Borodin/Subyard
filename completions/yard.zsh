@@ -73,7 +73,7 @@ _yard() {
       case ${words[1]} in
         up) _arguments '--rebuild[rebuild the env image]' '--yes[skip prompt]' '*:project:_yard_code_target' ;;
         down|info) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
-        remove) _arguments '--purge[also delete yard copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
+        remove) _arguments '--soft[keep the yard copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
         sync|bind)
           if [[ ${words[CURRENT-1]} == --target ]]; then
             local -a tg; tg=( yard ${(f)"$(_yard_profiles)"} )

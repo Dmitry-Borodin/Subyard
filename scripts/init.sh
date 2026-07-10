@@ -74,22 +74,25 @@ have_mounts() {
   return 0
 }
 
-# Presence-only check of what 04 applies (docker, dev user, CLAUDE.md, HOST_LINKS, and
+# Presence-only check of what 04 applies (docker, dev user, global agent instructions, HOST_LINKS, and
 # dev sudoers matching DEV_SUDO). PRESENCE only, so it never flip-flops; a content/
 # dotfiles refresh is deliberately NOT caught here — use 'yard init --reset' for that.
 have_provision() {
   reachable || return 1
-  local claude_req=0
+  local claude_req=0 codex_agents_req=0
   [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ] && claude_req=1
+  [ -n "${HOST_CODEX_AGENTS_MD:-}" ] && [ -f "$HOST_CODEX_AGENTS_MD" ] && codex_agents_req=1
   incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
     --env DEV_USER="${DEV_USER:-dev}" --env DEV_SUDO="${DEV_SUDO:-0}" \
-    --env CLAUDE_REQ="$claude_req" --env HOST_LINKS="${HOST_LINKS:-}" \
+    --env CLAUDE_REQ="$claude_req" --env CODEX_AGENTS_REQ="$codex_agents_req" \
+    --env HOST_LINKS="${HOST_LINKS:-}" \
     -- sh -s >/dev/null 2>&1 <<'CHK'
 set -eu
 command -v docker >/dev/null
 id "$DEV_USER" >/dev/null
 home="$(getent passwd "$DEV_USER" | cut -d: -f6)"; home="${home:-/home/$DEV_USER}"
 if [ "${CLAUDE_REQ:-0}" = 1 ]; then [ -f "$home/.claude/CLAUDE.md" ]; fi
+if [ "${CODEX_AGENTS_REQ:-0}" = 1 ]; then [ -f "$home/.codex/AGENTS.md" ]; fi
 s="/etc/sudoers.d/90-subyard-$DEV_USER"
 if [ "${DEV_SUDO:-0}" = 1 ]; then [ -f "$s" ]; else [ ! -f "$s" ]; fi
 drift=0

@@ -27,7 +27,7 @@ announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
   "Inside the yard: install Docker Engine + Compose via the get.docker.com script (downloads & runs it)." \
   "Inside the yard: create user '$DEV_USER' + groups (yard/kvm/docker), lay out /srv, enable ssh & docker." \
   "On the host: set the /dev/kvm device GID to the in-yard 'kvm' group." \
-  "On the host: copy your CLAUDE.md into the yard (config HOST_CLAUDE_MD), if present." \
+  "On the host: copy global Claude/Codex instructions into the yard, if present." \
   "This pulls packages from the network and changes the yard's userspace (not the host system)."
 
 # --- 1. provision inside the yard --------------------------------------------
@@ -153,11 +153,11 @@ else
   ok "no kvm device attached (vm mode or /dev/kvm absent) — nothing to fix"
 fi
 
-# --- 3. copy the global CLAUDE.md into the yard ------------------------------
-# The operator's global agent instructions, copied in once (not a mount, not symlinked) so
-# the in-yard agent uses them without rewriting. Host path: HOST_CLAUDE_MD (config/host.env,
-# no host-path literal here). Refreshed on each re-provision.
-echo "CLAUDE.md:"
+# --- 3. copy global agent instructions into the yard -------------------------
+# Copied (not mounted or symlinked) so in-yard agents use the operator's working agreements
+# without rewriting the host files. Source paths live in config/host.env. Refreshed on each
+# re-provision.
+echo "Agent instructions:"
 if [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ]; then
   incus file push "$HOST_CLAUDE_MD" \
     "$INSTANCE_NAME/home/$DEV_USER/.claude/CLAUDE.md" "${PROJ[@]}" \
@@ -165,6 +165,14 @@ if [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ]; then
   ok "copied $HOST_CLAUDE_MD -> ~$DEV_USER/.claude/CLAUDE.md"
 else
   ok "no HOST_CLAUDE_MD file to copy — skipping (operator can add one and re-run)"
+fi
+if [ -n "${HOST_CODEX_AGENTS_MD:-}" ] && [ -f "$HOST_CODEX_AGENTS_MD" ]; then
+  incus file push "$HOST_CODEX_AGENTS_MD" \
+    "$INSTANCE_NAME/home/$DEV_USER/.codex/AGENTS.md" "${PROJ[@]}" \
+    --create-dirs --uid "$DEV_UID" --gid "$DEV_UID" --mode 0644
+  ok "copied $HOST_CODEX_AGENTS_MD -> ~$DEV_USER/.codex/AGENTS.md"
+else
+  ok "no HOST_CODEX_AGENTS_MD file to copy — skipping (operator can add one and re-run)"
 fi
 
 # --- 3b. lay down per-agent default configs ----------------------------------

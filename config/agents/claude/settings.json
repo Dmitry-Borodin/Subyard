@@ -1,4 +1,5 @@
 {
+  "autoMemoryDirectory": "~/.claude-memory",
   "permissions": {
     "defaultMode": "bypassPermissions",
     "allow": [

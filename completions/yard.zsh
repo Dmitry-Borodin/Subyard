@@ -94,7 +94,7 @@ _yard() {
           fi
           ;;
         code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
-        status) _arguments '--space[also print on-host size of ~/.subyard]' '--yes[skip prompt]' '--help[show help]' ;;
+        status) _arguments '--yes[skip prompt]' '--help[show help]' ;;
         teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;
         clone)
           if [[ ${words[CURRENT-1]} == --target ]]; then

@@ -72,8 +72,8 @@ Yard lifecycle:
                   (--configs: refresh agent instructions/configs only;
                    --reset: teardown + fresh init; force-apply other config drift)
   start           start the yard
-  status [--space] read-only overview (yard + ssh + mounts + services + projects;
-                  --space also prints the on-host size of ~/.subyard)
+  status          read-only overview (yard + ssh + mounts + services + projects) and the
+                  yard's size (cached, refreshed in the background when >10 min old)
   logs            tail the yard's runtime logs (systemd journal + docker)
   usage [args]    show the yard's coding-agent token usage (ccusage over the shared store)
   ssh    [proj]   shell in the yard as dev (or, for a --target <profile> project, in its box)

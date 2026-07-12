@@ -96,8 +96,7 @@ _yard() {
       fi
       ;;
     teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
-    status) COMPREPLY=( $(compgen -W '--space --yes --help' -- "$cur") ) ;;
-    init|setup|check|list|logs|usage|start|stop) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
+    init|setup|check|list|logs|usage|start|stop|status) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
     clone)
       if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
       [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--target --yes' -- "$cur") ) ;;

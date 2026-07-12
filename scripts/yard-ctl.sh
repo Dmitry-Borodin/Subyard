@@ -21,8 +21,7 @@ FORWARD_SSH_AGENT="${FORWARD_SSH_AGENT:-0}"
 PROJ=(--project "$INCUS_PROJECT")
 
 action="${1:-status}"; shift || true
-SHOW_SPACE=0
-for a in "$@"; do case "$a" in --space) SHOW_SPACE=1 ;; -y|--yes) ;; -*) die "unknown option '$a'" ;; *) ;; esac; done  # tolerate --yes; reject unknown flags
+for a in "$@"; do case "$a" in -y|--yes) ;; -*) die "unknown option '$a'" ;; *) ;; esac; done  # tolerate --yes; reject unknown flags
 
 incus_preflight "$action"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
@@ -30,27 +29,61 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
 
 state() { incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null; }
 
-# Total on-host disk footprint of ~/.subyard (Incus pool + logs/exports/ssh). The pool
-# under incus/storage is root-owned (idmapped shift maps it to nobody:nogroup), so a plain
-# operator 'du' can't read into it — fall back to sudo for an accurate total when any
-# subtree is unreadable, and label a sudo-less figure as partial.
-print_space() {
-  local base="$SUBYARD_HOME" total note=''
-  if [ ! -d "$base" ]; then printf '  space    — (%s absent)\n' "$base"; return; fi
-  if find "$base" -mindepth 1 ! -readable -print -quit 2>/dev/null | grep -q .; then
-    if command -v sudo >/dev/null 2>&1; then
-      total="$(sudo du -sh "$base" 2>/dev/null | awk 'NR==1{print $1}')"
-      note=' (root-read)'
-    fi
-    if [ -z "${total:-}" ]; then
-      total="$(du -sh "$base" 2>/dev/null | awk 'NR==1{print $1}')"
-      note=' (partial — re-run with sudo for the Incus pool)'
-    fi
-  else
-    total="$(du -sh "$base" 2>/dev/null | awk 'NR==1{print $1}')"
-  fi
-  printf '  space    %s%s  (%s)\n' "${total:-?}" "$note" "$base"
+# Yard size on every status, instantly: a cached figure measured from INSIDE the yard.
+# There is no fast source (dir pool — Incus tracks no per-instance usage), so a plain
+# status prints the cache with its age and, when it is older than SPACE_TTL and the yard
+# runs, kicks off one background refresh via incus exec — the container's own root reads
+# everything, no host sudo; the next status picks the fresh figure up. The walk covers /
+# plus /srv (the yard's own volume) and path-excludes every other mountpoint: `du -x`
+# alone is NOT enough, since bind mounts from the same filesystem pass its st_dev check —
+# bound host projects would be counted as yard data, and a bind of an in-yard dir would
+# be counted twice (du does not dedupe same-fs binds). This is the yard's own data; for
+# the full on-host footprint (pool + Incus images + logs, stopped yard included) there is
+# no command — it is simply `sudo du -sh ~/.subyard`.
+SPACE_CACHE="$SUBYARD_HOME/space.cache"   # "<figure> <epoch>" from the last in-yard du
+SPACE_TTL="${SPACE_TTL:-600}"             # cache older than this: refresh in the background
+
+age_human() { # seconds -> 45s / 12m / 3h / 2d
+  local s="$1"
+  if [ "$s" -lt 60 ]; then echo "${s}s"; elif [ "$s" -lt 3600 ]; then echo "$((s/60))m"
+  elif [ "$s" -lt 86400 ]; then echo "$((s/3600))h"; else echo "$((s/86400))d"; fi
 }
+
+# One walker at a time (flock -n): a second status during the ~minute-long walk just keeps
+# showing the stale figure. The subshell survives this script's exit; write is atomic.
+space_refresh_bg() {
+  [ -d "$SUBYARD_HOME" ] || return 0
+  (
+    flock -n 9 || exit 0
+    fig="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c '
+      set --
+      while read -r _ mp _; do
+        case "$mp" in /|/srv) ;; *) set -- "$@" "--exclude=$mp" ;; esac
+      done < /proc/mounts
+      du -sxh "$@" / 2>/dev/null' | awk '{print $1}' || true)"
+    [ -n "$fig" ] || exit 0
+    printf '%s %s\n' "$fig" "$(date +%s)" > "$SPACE_CACHE.tmp" && mv -f "$SPACE_CACHE.tmp" "$SPACE_CACHE"
+  ) 9>"$SPACE_CACHE.lock" </dev/null >/dev/null 2>&1 &
+}
+
+print_space_cached() {
+  local running="$1" fig='' ts='' now note=''
+  if [ -f "$SPACE_CACHE" ]; then read -r fig ts < "$SPACE_CACHE" || true; fi
+  case "$ts" in '' | *[!0-9]*) fig='' ts=0 ;; esac   # tolerate a corrupt/legacy cache
+  now="$(date +%s)"
+  if [ "$running" = 1 ] && { [ -z "$fig" ] || [ $((now - ts)) -gt "$SPACE_TTL" ]; }; then
+    space_refresh_bg
+    if [ -n "$fig" ]; then note=', refreshing'; fi
+  fi
+  if [ -n "$fig" ]; then
+    printf '  space    %s  (in-yard rootfs, %s ago%s)\n' "$fig" "$(age_human $((now - ts)))" "$note"
+  elif [ "$running" = 1 ]; then
+    printf '  space    measuring in the yard — re-run status in a moment\n'
+  else
+    printf '  space    —  (yard stopped; on-host size: sudo du -sh %s)\n' "$SUBYARD_HOME"
+  fi
+}
+
 
 # Shared resources profiles declare (descriptors under config/profiles/*/resources/*.res — the
 # registry, via svc_resources_for), one row per resource under a `shared:` heading. Always lists
@@ -154,10 +187,9 @@ case "$action" in
     # Shared resources profiles expose (emulator / staging gateway). Probe live state only when
     # the yard is up; otherwise just list what is declared (state '?').
     if [ "$s" = RUNNING ]; then print_shared 1; else print_shared 0; fi
-    # On-demand disk footprint (du can be slow on a big pool, so opt-in via --space).
-    # Must be `if`, not `[ … ] && …`: as the case branch's last command under `set -e`, a bare
-    # `&&` returns 1 whenever --space is absent, making a plain `yard status` exit 1 every time.
-    if [ "$SHOW_SPACE" = 1 ]; then print_space; fi
+    # Yard size, always, as the last line: instant from the cache, background-refreshed
+    # from inside the yard when stale.
+    if [ "$s" = RUNNING ]; then print_space_cached 1; else print_space_cached 0; fi
     ;;
   *)
     die "unknown action '$action' (expected: start | stop | status)"

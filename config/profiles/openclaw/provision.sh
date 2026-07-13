@@ -58,7 +58,9 @@ fi
 # only as a CLI flag (not .npmrc / npm_config_* env), and the yard's egress is slow on OpenClaw's huge
 # native/ML tarballs → inject a generous one for install-type commands. store-dir (baked below) points
 # pnpm at the shared store; it is a pnpm-only flag, so npm/npx never see it (no "Unknown config" warn).
-ft=; case "${1:-}" in install|add|update|up|i|fetch) ft="--fetch-timeout=1800000" ;; esac
+# confirmModulesPurge: pointing pnpm at the shared store invalidates a node_modules built against any
+# other one, and pnpm's purge prompt ABORTS with no TTY — which is every agent shell.
+ft=; case "${1:-}" in install|add|update|up|i|fetch) ft="--fetch-timeout=1800000 --config.confirmModulesPurge=false" ;; esac
 SH
   printf 'sd=%q\n' "$CACHE_PNPM_STORE"
   cat <<'SH'
@@ -95,8 +97,14 @@ chmod +x /usr/local/bin/pnpm
 #     Install-if-missing so a re-provision never re-fetches; an empty CCUSAGE_VERSION skips it (yard
 #     usage then falls back to npx/bunx). Root's default npm cache is used (the shared /srv/cache keys
 #     were unset above), exactly like the corepack install — so /srv/cache is never root-contaminated.
-if [ -n "${CCUSAGE_VERSION:-}" ] && ! command -v ccusage >/dev/null 2>&1; then
-  /usr/local/bin/npm install -g "ccusage@${CCUSAGE_VERSION}" >/dev/null
+if [ -n "${CCUSAGE_VERSION:-}" ]; then
+  command -v ccusage >/dev/null 2>&1 \
+    || /usr/local/bin/npm install -g "ccusage@${CCUSAGE_VERSION}" >/dev/null
+  # npm unpacks ccusage's optional native binary without +x; ccusage chmods it on first run, which
+  # EPERMs — the tree is root-owned and `yard usage` runs as dev. Set the bit here, as root. Outside
+  # the install guard on purpose: a re-provision must heal an already-broken install, not skip it.
+  find /usr/local/lib/node_modules/ccusage -type f -path '*/bin/*' ! -perm -u+x \
+    -exec chmod a+rx {} + 2>/dev/null || true
 fi
 
 # 3. Python dev venv.
@@ -128,9 +136,26 @@ usage() { cat <<'H'
 sy-cache <prune|clean|purge|all|lock -- CMD...> — single-writer guard for /srv/cache mutations.
   prune  pnpm store prune     clean  npm cache clean --force     purge  pip cache purge
   all    all three in order   lock -- CMD...  run CMD under the exclusive lock
+  --force  prune/all only: proceed even if the store has no hardlinked references (see below)
 pnpm installs/fetches hold a shared lock, so these wait for in-flight pnpm installs. npm/pip installs
 are NOT shared-locked — don't run clean/purge while an npm/pip install is running.
 H
+}
+# prune removes packages nothing REFERENCES — and a reference is a hardlink out of the store. Across a
+# mount boundary (bind-mounted workspace, store on the yard volume) pnpm cannot hardlink and copies
+# instead, so nothing ever references the store and a prune empties all of it.
+store_prune_is_a_wipe() {
+  local store
+  store=$(pnpm store path 2>/dev/null) || return 1
+  [ -d "$store" ] || return 1
+  [ -n "$(find "$store" -type f -print -quit 2>/dev/null)" ] || return 1   # empty store: nothing to lose
+  [ -z "$(find "$store" -type f -links +1 -print -quit 2>/dev/null)" ]     # no file hardlinked out
+}
+guard_prune() {
+  [ "${SY_CACHE_FORCE:-}" = 1 ] && return 0
+  store_prune_is_a_wipe || return 0
+  die "refusing: nothing hardlinks this store, so a prune would delete the WHOLE shared cache, not
+     just orphans, and every agent would re-download it. --force to override."
 }
 run_locked() {
   [ -n "${SY_CACHE_SHARED_HELD:-}" ] && die "refusing to mutate the cache from inside a build holding the shared lock — run sy-cache outside the build"
@@ -139,11 +164,13 @@ run_locked() {
   exec flock -o -w 3600 -x "$LOCK" env SY_CACHE_LOCKED=1 "$@"
 }
 sub="${1:-}"; shift || true
+# `case`, not `[ ] && …`: under set -e a loop ending in a false test returns 1 and kills the script.
+for a in "$@"; do case "$a" in --force) export SY_CACHE_FORCE=1 ;; esac; done
 case "$sub" in
-  prune) run_locked pnpm store prune ;;
+  prune) guard_prune; run_locked pnpm store prune ;;
   clean) run_locked npm cache clean --force ;;
   purge) run_locked sh -c 'if command -v pip >/dev/null 2>&1; then exec pip cache purge; else exec /opt/venv/bin/pip cache purge; fi' ;;
-  all)   run_locked sh -c 'set -e; pnpm store prune; npm cache clean --force; if command -v pip >/dev/null 2>&1; then pip cache purge; else /opt/venv/bin/pip cache purge; fi' ;;
+  all)   guard_prune; run_locked sh -c 'set -e; pnpm store prune; npm cache clean --force; if command -v pip >/dev/null 2>&1; then pip cache purge; else /opt/venv/bin/pip cache purge; fi' ;;
   lock)  [ "${1:-}" = -- ] && shift; [ "$#" -gt 0 ] || die "usage: sy-cache lock -- CMD..."; run_locked "$@" ;;
   -h|--help|help) usage; exit 0 ;;
   "")    usage >&2; exit 2 ;;
@@ -286,9 +313,11 @@ override the store/cache dirs per checkout, or you fork the cache and re-downloa
   waits for in-flight `pnpm install`/fetch (which hold a shared lock) and blocks new ones, so a prune
   never corrupts the store mid-fetch. The npm/pip caches are NOT shared-locked — don't run `sy-cache
   clean`/`purge` while an `npm install` / `pip install` is in flight.
-- pnpm hardlinks the store into `node_modules` only when `/srv/cache` and your workspace are on the
-  same filesystem; otherwise it copies (slower, more disk) but still works. See profile.conf for the
-  authoritative sharing rules.
+- DO NOT prune the pnpm store. Your workspace is a bind-mounted host dir — a different MOUNT than the
+  store — so pnpm cannot hardlink into `node_modules` (EXDEV) and copies instead. Nothing references
+  the store, so a prune deletes ALL of it and every agent re-downloads. (`sy-cache prune` now refuses;
+  a raw `pnpm store prune` does not.) Hence the store dedupes DOWNLOADS, not disk: each checkout
+  carries its own full `node_modules` (OpenClaw: ~3.3 GB). See profile.conf for the sharing rules.
 
 ## This lane does NOT
 - start a gateway or connect Telegram (that is the staging/qa lane, operator-provisioned);

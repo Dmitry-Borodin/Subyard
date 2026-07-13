@@ -2,7 +2,7 @@
 
 > **Give agents a yard, not the house keys.**
 
-Subyard is the default backyard for AI coding agents: a full-OS, host-like workspace for any project, where agents can build, test, and propose changes with room to run — without roaming through your laptop, secrets, or deploy controls. One developer runs many coding agents (Pi, OpenCode, Claude Code, Codex, …) in parallel; each works in its own workspace, runs the full test suite (emulators, build caches, …), and never touches the host.
+Subyard is the default backyard for AI coding agents: a full-OS, host-like workspace for any project, where agents can build, test, and propose changes with room to run — without roaming through your machine, secrets, or deploy controls. One developer runs many coding agents (Pi, OpenCode, Claude Code, Codex, …) in parallel; each works in its own workspace, runs the full test suite (emulators, build caches, …), and never touches the host.
 
 ## Model
 
@@ -14,7 +14,7 @@ Subyard is the default backyard for AI coding agents: a full-OS, host-like works
 
 ## Getting started
 
-You need a **Linux host**; `yard init` installs Incus for you. Native Windows/macOS support isn't planned — but it's easy to add yourself: Incus runs happily in a Linux VM (WSL2, Colima, or any plain VM), so wrap one around it and the steps below work unchanged.
+You need a **Linux host** — laptop, workstation, or a remote/headless server; `yard init` installs Incus for you. Native Windows/macOS support isn't planned — but it's easy to add yourself: Incus runs happily in a Linux VM (WSL2, Colima, or any plain VM), so wrap one around it and the steps below work unchanged.
 
 Put the CLI on your PATH, preflight the host, and stand the yard up:
 

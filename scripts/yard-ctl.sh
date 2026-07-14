@@ -144,7 +144,7 @@ print_space_cached() {
 # '?'. A down resource gets a bring-up hint; an up resource gets a stop hint. Nothing declared
 # => one `shared   none`.
 #   shared:
-#     android   emulator         up     (yard emu stop)
+#     android   emulator         up     (yard emu down)
 #     openclaw  staging-gateway  down   (yard staging start)
 print_shared() {
   local running="$1" name res st hint any=0

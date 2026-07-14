@@ -6,27 +6,19 @@
 # already use that loopback directly; these verbs add a host-side view of the same
 # emulator — through the yard, never exposing it on the LAN.
 #
-# Emulator lifecycle (in the yard — the emulator is shared with in-yard agents):
-#   up [avd] [-- args]  boot the emulator headless in the yard, detached: push the launcher
-#                     (config/profiles/android/emulator-run.sh + profile.conf) into the yard
-#                     and run it as the dev user via cage+Xwayland HW-GPU. Idempotent — a
-#                     no-op if it is already listening. Waits briefly for the adb port.
-#   stop              stop the in-yard emulator (disrupts agents using it — confirms first).
+# One symmetric pair — the host bridge is managed automatically, never as a separate verb:
+#   up [avd] [-- args]  boot the emulator headless in the yard (launcher via cage+Xwayland
+#                     HW-GPU, detached) AND bridge it to the host: an Incus proxy device
+#                     host 127.0.0.1:$ADB_PROXY_PORT -> yard 127.0.0.1:$ADB_EMULATOR_PORT
+#                     (loopback only, never on the LAN). Idempotent; waits for the adb port.
+#   down              stop the emulator (disrupts agents using it — confirms first) AND
+#                     remove the proxy device(s). The full reverse of `up`.
 #   status            show emulator (process / adb port / boot_completed) and bridge state.
-#
-# Host bridge (host-facing view of that emulator, through the yard — never on the LAN):
-#   adb               add an Incus proxy device (host 127.0.0.1:$ADB_PROXY_PORT ->
-#                     yard 127.0.0.1:$ADB_EMULATOR_PORT) and print the `adb connect` line.
-#                     Idempotent. The proxy binds host loopback only.
-#   view [--no-control]  ensure the proxy, `adb connect`, then scrcpy the screen. Control
-#                     is ON by default (poke at the emulator from the host); pass
-#                     --no-control (alias --view-only) for a look-but-don't-touch window —
-#                     use it when an agent is driving the shared emulator so you don't
-#                     disrupt its test. Extra args after `--` go to scrcpy. Needs host adb+scrcpy.
-#   tunnel            fallback bridge with no yard-config change: an SSH local-forward
-#                     (ssh -N -L $ADB_PROXY_PORT:127.0.0.1:$ADB_EMULATOR_PORT $SSH_HOST).
-#                     Use this OR `adb`, not both — they claim the same host port.
-#   down              remove the proxy device(s) added by `adb` (the emulator keeps running).
+#   view [--no-control]  `adb connect` + scrcpy the screen (bridge ensured). Control is ON
+#                     by default; --no-control (alias --view-only) = look-but-don't-touch,
+#                     for when an agent is driving the emulator. `-- args` go to scrcpy.
+#                     Needs host adb+scrcpy.
+# (`stop` is accepted as an alias of `down`; the old bridge-only `adb`/`tunnel` verbs are gone.)
 #
 # Operator-owned; no root. Config: config/ports.env + config/incus.project.env + subyard.env.
 set -euo pipefail
@@ -77,41 +69,32 @@ warn_if_emulator_down() {
   fi
 }
 
-# Idempotent proxy-device add. $1 device name, $2 host port, $3 yard port.
+# Idempotent proxy-device add. $1 device name, $2 host port, $3 yard port, $4 'quiet' to
+# skip the announce/confirm (the caller's own announce already covered the bridge).
 ensure_proxy() {
-  local dev="$1" hport="$2" yport="$3"
+  local dev="$1" hport="$2" yport="$3" quiet="${4:-}"
   if device_exists "$dev"; then
     ok "proxy device '$dev' already attached (127.0.0.1:$hport -> yard:$yport)"
     return 0
   fi
-  announce "yard emu: adb bridge" \
-    "Add an Incus proxy device '$dev': host 127.0.0.1:$hport -> yard 127.0.0.1:$yport (loopback only)." \
-    "The emulator is NOT exposed on the LAN; host traffic reaches it through the yard."
-  proceed_or_die y   # transient bring-up (bridge the shared emulator) — default Yes
+  if [ "$quiet" != quiet ]; then
+    announce "yard emu: adb bridge" \
+      "Add an Incus proxy device '$dev': host 127.0.0.1:$hport -> yard 127.0.0.1:$yport (loopback only)." \
+      "The emulator is NOT exposed on the LAN; host traffic reaches it through the yard."
+    proceed_or_die y   # transient bring-up (bridge the shared emulator) — default Yes
+  fi
   incus config device add "$INSTANCE_NAME" "$dev" proxy "${PROJ[@]}" \
     listen="tcp:127.0.0.1:$hport" connect="tcp:127.0.0.1:$yport" bind=host >/dev/null
   ok "added proxy 127.0.0.1:$hport -> yard:$yport"
 }
 
-cmd_adb() {
-  require_yard_running
-  echo "adb bridge:"
-  ensure_proxy "$ADB_DEVICE" "$ADB_PROXY_PORT" "$ADB_EMULATOR_PORT"
+# The whole host bridge (adb proxy + optional console proxy), used by `up` and `view`.
+ensure_bridge() {
+  local quiet="${1:-}"
+  ensure_proxy "$ADB_DEVICE" "$ADB_PROXY_PORT" "$ADB_EMULATOR_PORT" "$quiet"
   if [ -n "$ADB_CONSOLE_PROXY_PORT" ]; then
-    ensure_proxy "$ADB_CONSOLE_DEVICE" "$ADB_CONSOLE_PROXY_PORT" "$ADB_CONSOLE_EMULATOR_PORT"
+    ensure_proxy "$ADB_CONSOLE_DEVICE" "$ADB_CONSOLE_PROXY_PORT" "$ADB_CONSOLE_EMULATOR_PORT" "$quiet"
   fi
-  warn_if_emulator_down
-  echo
-  ok "host adb bridge ready."
-  cat <<MSG
-
-Connect from the host:
-  adb connect 127.0.0.1:$ADB_PROXY_PORT
-  adb -s 127.0.0.1:$ADB_PROXY_PORT shell getprop sys.boot_completed   # 1 when booted
-  yard emu view                                                       # scrcpy (view-only)
-
-Remove the bridge later:  yard emu down
-MSG
 }
 
 # scrcpy/adb are host tools — detect→advise (we do not install them onto the host).
@@ -153,7 +136,7 @@ cmd_view() {
   warn_if_old_scrcpy
   require_yard_running
   echo "adb bridge:"
-  ensure_proxy "$ADB_DEVICE" "$ADB_PROXY_PORT" "$ADB_EMULATOR_PORT"
+  ensure_bridge
   warn_if_emulator_down
   local serial="127.0.0.1:$ADB_PROXY_PORT"
   # Reset first: if the proxy was attached before the emulator booted, adb cached the
@@ -173,21 +156,8 @@ cmd_view() {
   exec scrcpy -s "$serial" ${control:+$control} ${extra[@]+"${extra[@]}"}
 }
 
-cmd_tunnel() {
-  if device_exists "$ADB_DEVICE"; then
-    die "proxy device '$ADB_DEVICE' is attached and already owns host port $ADB_PROXY_PORT — use 'yard emu adb', or 'yard emu down' first."
-  fi
-  announce "yard emu: adb bridge over SSH (fallback)" \
-    "Open an SSH local-forward: host 127.0.0.1:$ADB_PROXY_PORT -> yard 127.0.0.1:$ADB_EMULATOR_PORT." \
-    "No yard config changes; the tunnel lives only as long as this ssh process." \
-    "In another shell: adb connect 127.0.0.1:$ADB_PROXY_PORT"
-  proceed_or_die y   # transient bring-up (ssh tunnel to the shared emulator) — default Yes
-  info "ssh -N -L $ADB_PROXY_PORT:127.0.0.1:$ADB_EMULATOR_PORT $SSH_HOST  (Ctrl-C to close)"
-  exec ssh -N -L "$ADB_PROXY_PORT:127.0.0.1:$ADB_EMULATOR_PORT" "$SSH_HOST"
-}
-
-cmd_down() {
-  require_yard_running
+# Remove the proxy device(s) — the bridge half of `down`.
+remove_bridge() {
   local removed=0 dev
   for dev in "$ADB_DEVICE" "$ADB_CONSOLE_DEVICE"; do
     if device_exists "$dev"; then
@@ -220,7 +190,9 @@ cmd_up() {
   require_yard_running
   if emulator_listening; then
     ok "emulator already listening on yard 127.0.0.1:$ADB_EMULATOR_PORT — nothing to boot."
-    info "bridge it to the host: yard emu adb   (then: yard emu view)"
+    echo "adb bridge:"
+    ensure_bridge
+    finish_up
     return 0
   fi
   if emulator_proc; then
@@ -230,7 +202,8 @@ cmd_up() {
     announce "yard emu: boot the emulator in the yard ($INSTANCE_NAME)" \
       "Stage the launcher into the yard ($EMU_DIR) and run it as '$DEV_USER', detached." \
       "Headless HW-GPU (cage + Xwayland on the passed-through render node); shared with in-yard agents." \
-      "Log: $EMU_LOG (in the yard). Stop it later with: yard emu stop"
+      "Bridge it to the host: proxy 127.0.0.1:$ADB_PROXY_PORT -> yard:$ADB_EMULATOR_PORT (loopback only)." \
+      "Log: $EMU_LOG (in the yard). The full reverse is: yard emu down"
     proceed_or_die y   # transient start (boot the shared emulator) — default Yes
     stage_launcher
     ok "launcher staged at $EMU_DIR (in the yard)"
@@ -247,13 +220,9 @@ cmd_up() {
   for _i in $(seq 1 60); do
     if emulator_listening; then
       ok "emulator is up — adb listening on yard 127.0.0.1:$ADB_EMULATOR_PORT"
-      cat <<MSG
-
-Next:
-  yard emu status                  # check boot_completed
-  yard emu adb                     # bridge it to the host
-  yard emu view                    # scrcpy (view-only)
-MSG
+      echo "adb bridge:"
+      ensure_bridge quiet   # covered by the announce above
+      finish_up
       return 0
     fi
     if ! emulator_proc; then
@@ -267,20 +236,37 @@ MSG
   warn "log (in the yard): yard shell -- tail -n40 $EMU_LOG"
 }
 
-cmd_stop() {
+# Shared tail of a successful `up`: the connect line + next steps.
+finish_up() {
+  cat <<MSG
+
+Connect from the host:
+  adb connect 127.0.0.1:$ADB_PROXY_PORT
+  yard emu status                  # check boot_completed
+  yard emu view                    # scrcpy the screen
+Shut it down (emulator + bridge):  yard emu down
+MSG
+}
+
+cmd_down() {
   require_yard_running
-  if ! emulator_listening && ! emulator_proc; then
-    ok "no emulator running in the yard — nothing to stop."
-    return 0
+  # Emulator half (confirm — it disrupts in-yard agents), then the bridge half. `down` is
+  # the full reverse of `up`: nothing emulator-related stays behind.
+  if emulator_listening || emulator_proc; then
+    announce "yard emu: shut down the in-yard emulator (and its host bridge)" \
+      "Kill the emulator (and its cage wrapper) in the yard '$INSTANCE_NAME'." \
+      "This DISRUPTS any in-yard agent currently using the emulator for tests." \
+      "Remove the host proxy device(s)."
+    proceed_or_die y   # transient stop (shut the shared emulator down) — default Yes
+    # Clean shutdown via the console if reachable, then make sure the processes are gone.
+    yexec su - "$DEV_USER" -c 'adb -s emulator-'"$ADB_CONSOLE_EMULATOR_PORT"' emu kill 2>/dev/null; true' >/dev/null 2>&1 || true
+    yexec sh -c "pkill -f qemu-system 2>/dev/null; pkill -f emulator-run.sh 2>/dev/null; pkill cage 2>/dev/null; true" >/dev/null 2>&1 || true
+    ok "emulator stopped"
+  else
+    ok "no emulator running in the yard"
   fi
-  announce "yard emu: stop the in-yard emulator" \
-    "Kill the emulator (and its cage wrapper) in the yard '$INSTANCE_NAME'." \
-    "This DISRUPTS any in-yard agent currently using the emulator for tests."
-  proceed_or_die y   # transient stop (shut the shared emulator down) — default Yes
-  # Clean shutdown via the console if reachable, then make sure the processes are gone.
-  yexec su - "$DEV_USER" -c 'adb -s emulator-'"$ADB_CONSOLE_EMULATOR_PORT"' emu kill 2>/dev/null; true' >/dev/null 2>&1 || true
-  yexec sh -c "pkill -f qemu-system 2>/dev/null; pkill -f emulator-run.sh 2>/dev/null; pkill cage 2>/dev/null; true" >/dev/null 2>&1 || true
-  ok "emulator stopped (the bridge proxy, if any, stays — remove it with: yard emu down)"
+  echo "adb bridge:"
+  remove_bridge
 }
 
 cmd_status() {
@@ -305,20 +291,18 @@ cmd_status() {
     ok "proxy 'adb-emu' attached: host 127.0.0.1:$ADB_PROXY_PORT -> yard 127.0.0.1:$ADB_EMULATOR_PORT"
     info "connect: adb connect 127.0.0.1:$ADB_PROXY_PORT   |   view: yard emu view"
   else
-    warn "no bridge attached. Add it: yard emu adb"
+    warn "no bridge attached. 'yard emu up' adds it (with the emulator)."
   fi
 }
 
 sub="${1:-}"; [ $# -gt 0 ] && shift
 case "$sub" in
   up)     cmd_up "$@" ;;
-  stop)   cmd_stop "$@" ;;
+  down | stop) cmd_down "$@" ;;   # stop: back-compat alias
   status) cmd_status "$@" ;;
-  adb)    cmd_adb "$@" ;;
   view)   cmd_view "$@" ;;
-  tunnel) cmd_tunnel "$@" ;;
-  down)   cmd_down "$@" ;;
+  adb | tunnel) die "'yard emu $sub' is gone — the bridge is managed by up/down (boot+bridge: yard emu up; shut down both: yard emu down)" ;;
   is-up)  emulator_listening && exit 0 || exit 1 ;;  # silent registry probe (yard status)
   ''|-h|--help) _yard_help_and_exit ;;
-  *) die "unknown 'yard emu' subcommand: '$sub' (try: up | stop | status | adb | view | tunnel | down)" ;;
+  *) die "unknown 'yard emu' subcommand: '$sub' (try: up | down | status | view)" ;;
 esac

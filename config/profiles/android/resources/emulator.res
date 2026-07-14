@@ -4,7 +4,7 @@
 # HANDLER (scripts/yard-emu.sh), which the core never has to know about.
 COMMAND=emu
 HANDLER=yard-emu.sh
-TITLE="Android emulator (in the yard + host-facing adb/scrcpy bridge)"
-VERBS="up stop status adb view tunnel down"
+TITLE="Android emulator (in the yard; up/down include the host adb bridge)"
+VERBS="up down status view"
 BRINGUP=up
-SHUTDOWN=stop
+SHUTDOWN=down

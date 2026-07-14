@@ -49,18 +49,24 @@ if incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; then
 else
   info "launching $INSTANCE_NAME from $BASE_IMAGE"
   if err="$(incus launch "$BASE_IMAGE" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" 2>&1)"; then
-    :
+    ok "launched $INSTANCE_NAME"
+  elif incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; then
+    # The instance WAS created — the image is fine and only its FIRST START failed (e.g. host
+    # userns/idmap limits). A fallback-image retry would just hit "already exists" and mask the
+    # cause; surface it — the start step below retries with the actionable error.
+    warn "launch created '$INSTANCE_NAME' but its first start failed:"
+    printf '%s\n' "$err" >&2
   elif printf '%s' "$err" | grep -qiE 'image|not found|no such|remote'; then
     # Only the base image looks missing — try the fallback. Other failures (e.g. a
     # missing root device) would just repeat, so surface them instead of retrying.
     warn "launch from $BASE_IMAGE failed (image unavailable); trying fallback $BASE_IMAGE_FALLBACK"
     incus launch "$BASE_IMAGE_FALLBACK" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" \
       || die "instance launch failed (check image remotes and INSTANCE_TYPE)"
+    ok "launched $INSTANCE_NAME (fallback image)"
   else
     printf '%s\n' "$err" >&2
     die "instance launch failed"
   fi
-  ok "launched $INSTANCE_NAME"
 fi
 
 # Ensure it's RUNNING — covers resume after a partial setup or a host reboot
@@ -78,8 +84,18 @@ if [ "$INSTANCE_TYPE" = vm ]; then
 elif device_exists kvm; then
   ok "kvm device already attached"
 elif [ -e /dev/kvm ]; then
-  incus config device add "$INSTANCE_NAME" kvm unix-char "${PROJ[@]}" \
-    source=/dev/kvm path=/dev/kvm mode=0660 >/dev/null
+  # Nested hosts (this host is itself a container) reject the mode property on unix-char
+  # devices — retry without it.
+  if ! err="$(incus config device add "$INSTANCE_NAME" kvm unix-char "${PROJ[@]}" \
+        source=/dev/kvm path=/dev/kvm mode=0660 2>&1 >/dev/null)"; then
+    case "$err" in
+      *"nested container"*)
+        incus config device add "$INSTANCE_NAME" kvm unix-char "${PROJ[@]}" \
+          source=/dev/kvm path=/dev/kvm >/dev/null
+        warn "nested host: /dev/kvm attached without an explicit mode" ;;
+      *) printf '%s\n' "$err" >&2; die "could not attach /dev/kvm" ;;
+    esac
+  fi
   ok "added /dev/kvm passthrough (gid fix deferred to Phase 3, after group 'kvm' exists)"
 else
   warn "/dev/kvm absent on host — emulator won't be hardware-accelerated; skipping passthrough"

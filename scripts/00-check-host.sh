@@ -8,6 +8,46 @@ case "${1:-}" in
   -h | --help) awk 'NR==1{next} /^#/{sub(/^#[ ]?/,""); print; next} {exit}' "$0"; exit 0 ;;
 esac
 
+# Source lib.sh for the yard context + registry helpers used by the port-collision preflight.
+# The local pass/warn/fail helpers are (re)defined AFTER this so the check counters keep working
+# (lib.sh's own warn() does not count).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib.sh
+. "$SCRIPT_DIR/lib.sh"
+
+# --- remote context: probe the owner host, skip the local host checks ------------------------
+# `yard -Y <remote> check` runs HERE, but the checks below measure THIS controller — meaningless
+# for a yard on another machine. Short-circuit to a lightweight probe (reachability + _info parse
+# + CLI version drift) and exit. Uses lib.sh's info/ok/warn/die.
+if [ "${YARD_TYPE:-local}" = remote ]; then
+  dest="${REMOTE_DEST:-}"; ryard="${REMOTE_YARD:-}"
+  [ -n "$dest" ] || die "remote yard '${YARD_NAME:-?}' has no REMOTE_DEST — re-run 'yard remote add'"
+  echo "Subyard remote check: ${YARD_NAME:-?} -> $dest${ryard:+ (yard $ryard)}"
+  echo
+  rc='yard _info'; [ -n "$ryard" ] && rc="yard -Y $(printf '%q' "$ryard") _info"
+  json="$(ssh -o BatchMode=yes -o ConnectTimeout="${SUBYARD_REMOTE_TIMEOUT:-10}" \
+          -o StrictHostKeyChecking=accept-new "$dest" -- bash -lc "$(printf '%q' "$rc")" 2>/dev/null)" || json=''
+  case "$json" in
+    '{'*'}') ok "reachable: $dest answered 'yard _info'" ;;
+    *) die "cannot reach '$dest' or run 'yard _info' there — check ssh access and that the owner host is up" ;;
+  esac
+  state="$(printf '%s' "$json" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p' | head -n1)"
+  rver="$(printf '%s' "$json" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' | head -n1)"
+  case "$state" in
+    RUNNING)     ok "remote yard state: RUNNING" ;;
+    ''|UNKNOWN)  warn "remote yard state unknown (owner host reachable; its incus is not answering)" ;;
+    *)           warn "remote yard state: $state — start it: ssh $dest -- yard ${ryard:+-Y $ryard }start" ;;
+  esac
+  if [ -n "$rver" ] && [ "$rver" != "${YARD_VERSION:-}" ]; then
+    warn "version drift: remote $rver vs local ${YARD_VERSION:-?} (forwarded commands run the remote CLI)"
+  else
+    ok "CLI version matches (${YARD_VERSION:-?})"
+  fi
+  echo
+  ok "Remote yard reachable."
+  exit 0
+fi
+
 STORAGE_PATH="${STORAGE_PATH:-/srv}"
 MIN_DISK_GIB="${MIN_DISK_GIB:-20}"   # hard floor: a base yard won't fit below this
 REC_DISK_GIB="${REC_DISK_GIB:-50}"   # recommended: the 'android' profile (SDK/AVD) is heavy
@@ -107,6 +147,61 @@ if command -v docker >/dev/null 2>&1; then
   warn "docker present on host — Subyard runs Docker inside the yard, not on the host"
 else
   pass "no host Docker (expected; Docker lives inside the yard)"
+fi
+
+# --- yard SSH port collision -------------------------------------------------
+# Each yard needs its OWN host loopback port for the ssh proxy device. Compare this context's
+# SSH_PORT against every other configured yard and the default yard's port. A duplicate is fatal
+# only under SUBYARD_PREFLIGHT_STRICT=1 (set by 'yard init'); a plain 'yard check' warns. The
+# listening probe is advisory (it also trips when this yard is already running — not a conflict).
+echo "Yard SSH port:"
+our_port="${SSH_PORT:-}"
+me="${YARD_NAME:-default}"
+# The default yard's port comes from config, not a yard file — resolve it once, cleanly.
+# shellcheck disable=SC1091
+default_port="$(unset SSH_PORT SUBYARD_YARD; . "$SCRIPT_DIR/../config/subyard.env" >/dev/null 2>&1; printf '%s' "${SSH_PORT:-}")"
+if [ -z "$our_port" ]; then
+  warn "no SSH_PORT resolved for this context — a local yard must declare one"
+else
+  dups=''
+  while IFS= read -r yn; do
+    [ -n "$yn" ] || continue
+    [ "$yn" = "$me" ] && continue
+    if [ "$yn" = default ]; then
+      yp="$default_port"
+    else
+      yf="$(yard_env_file "$yn" 2>/dev/null)" || continue
+      # A REMOTE yard's SSH_PORT is a port on the OWNER host, not this loopback — comparing it
+      # against a local port is a false collision. Emit nothing for YARD_TYPE=remote (an empty
+      # yp is not counted as a duplicate below).
+      # shellcheck disable=SC1090
+      yp="$(unset SSH_PORT SUBYARD_YARD YARD_TYPE
+            . "$yf" >/dev/null 2>&1
+            [ "${YARD_TYPE:-local}" = remote ] && exit 0
+            printf '%s' "${SSH_PORT:-}")"
+    fi
+    [ -n "$yp" ] && [ "$yp" = "$our_port" ] && dups="$dups $yn"
+  done < <(yard_registry_names)
+  if [ -n "$dups" ]; then
+    if [ "${SUBYARD_PREFLIGHT_STRICT:-0}" = 1 ]; then
+      fail "SSH_PORT $our_port also used by yard(s):$dups — give each yard a unique host loopback port"
+    else
+      warn "SSH_PORT $our_port also used by yard(s):$dups — give each yard a unique host loopback port"
+    fi
+  else
+    pass "SSH_PORT $our_port is unique across configured yards"
+  fi
+  # Loopback listening probe (advisory): is something already bound to our port?
+  if command -v ss >/dev/null 2>&1; then
+    inuse=0
+    while IFS= read -r la; do case "$la" in *:"$our_port") inuse=1 ;; esac; done \
+      < <(ss -ltn 2>/dev/null | awk 'NR>1 {print $4}')
+    if [ "$inuse" = 1 ]; then
+      warn "host port $our_port is already listening (another service, or this yard is already running)"
+    else
+      pass "host loopback port $our_port is free"
+    fi
+  fi
 fi
 
 # --- summary -----------------------------------------------------------------

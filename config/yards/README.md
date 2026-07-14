@@ -1,0 +1,67 @@
+# Named yards
+
+Run several independent yards on one host, each with its own Incus instance, `/srv`, ssh
+port, personal-data mount root and projects — while the default (unnamed) yard keeps working
+exactly as before. Pick a yard for a command with `-Y <name>` / `--yard <name>`, or the
+first-token sugar `@<name>`:
+
+```
+yard -Y openclaw init
+yard @openclaw status
+yard yards                 # table of every yard on this host
+```
+
+## Defining a yard
+
+A yard is one env file, named after the yard. Drop it in a **registry** location (first match
+wins):
+
+| Location | Use |
+| --- | --- |
+| `private/yards/<name>.env` | operator overlay (private repo); wins over machine-local |
+| `~/.config/subyard/yards/<name>.env` | machine-local, no private repo needed |
+
+`config/yards/` (this directory) is **not** a registry — it only ships
+[`example.env`](example.env) as a documented template. Copy it to one of the paths above and
+rename it to the yard you want.
+
+The only value you must set is `SSH_PORT` (a unique host loopback port — the one thing Subyard
+cannot derive without risking a collision). Everything else is derived from the yard name and
+overridable:
+
+| Derived | Default for yard `<name>` |
+| --- | --- |
+| `INSTANCE_NAME` | `yard-<name>` |
+| `INCUS_PROJECT` | `subyard-<name>` |
+| `SSH_HOST` (ssh alias) | `yard-<name>` |
+| `SRV_VOLUME` | `yard-srv-<name>` |
+| `RESTRICTED_DISK_PATHS` ⇒ `HOST_BASE` | `/srv/subyard-<name>` |
+| project state dir | `~/.config/subyard/yards/<name>/projects/` |
+
+The default yard keeps the historical unnamed values (`yard`, `subyard`, `/srv/subyard`,
+`~/.config/subyard/projects/`), so existing setups are untouched.
+
+**Precedence.** Per-yard files beat `private/config.env`: config is layered as env override >
+yard context > `private/config.env` > shipped defaults. Put machine-wide **globals** in
+`private/config.env` (or `config/*.env`), and anything that must differ **per yard** — above all
+`SSH_PORT` — in `yards/<name>.env`. A global `SSH_PORT` in `private/config.env` applies only to
+yards that do not set their own; it can never collapse every named yard onto one port.
+
+## Personal-data isolation
+
+Each yard has its own `HOST_BASE` (`/srv/subyard-<name>`), and its Incus project restricts disk
+devices to that prefix — so yard A can never mount yard B's secrets/sessions/memory, even by
+mistake. This is the whole point of a separate yard versus a container inside one.
+
+## Per-yard profiles
+
+Set `YARD_PROFILES="<profile> …"` in a yard's env to scope it to specific profiles. `yard
+provision` (no argument) then provisions exactly those, and `yard status` lists only their
+shared resources. Unset = all profiles (the default-yard behavior).
+
+## Lifecycle
+
+Every lifecycle command takes the context: `yard -Y <name> {init,start,stop,status,provision,
+logs,teardown,…}`. `yard -Y <name> teardown` removes only that yard's instance, project,
+volume, ssh snippet and state — never another yard's. Shared host objects (the storage pool,
+bridge, NetworkManager guard) are only removed when the last yard goes away.

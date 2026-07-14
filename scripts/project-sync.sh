@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # project-sync.sh — bring a project into the yard:
-#   sync [path]  copy host project → /srv/workspaces/<id>/src (create-or-update; pull back via `yard export`)
-#   bind [path]  mount the host folder into the yard (shared files, isolation reduced)
+#   sync [path] [@yard]  copy host project → /srv/workspaces/<id>/src (create-or-update; pull back via `yard export`)
+#   bind [path] [@yard]  mount the host folder into the yard (shared files, isolation reduced)
 # One mode per project; switch with `yard remove` + re-add. Sync transport: rsync over ssh
-# (tar-over-`incus exec` fallback). Operator-owned; no root.
+# (tar-over-`incus exec` fallback for a LOCAL yard only). Operator-owned; no root.
+#
+# Remote yards (YARD_TYPE=remote): no local incus — reachability is an ssh probe over the
+# yard-<name> ProxyJump alias, the dest is pre-created over ssh, and the copy is rsync over
+# that alias. `bind` is refused (the host path does not exist on the remote yard). A yard-side
+# .subyard-meta.json is written on success for local AND remote yards (best-effort).
+#
+# Yard addressing (multi-yard): with no -Y/@ context the target follows the path — a first sync
+# stays in the default yard, a re-sync routes to the yard already holding it. A trailing `@<yard>`
+# picks the target for a FIRST sync/bind (like -Y <yard>); a path in two+ yards is ambiguous and dies.
 # Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,12 +33,13 @@ PROJ=(--project "$INCUS_PROJECT")
 # unset on re-add keeps the stored value.
 mode="${1:-}"; shift || true
 case "$mode" in sync | bind) ;; *) die "internal: mode must be sync|bind (got '$mode')" ;; esac
-path="."; target=""
+path="."; target=""; at_yard=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)   target="${2:?--target needs yard|<profile>}"; shift ;;
     --target=*) target="${1#*=}" ;;
     -y | --yes) ;;  # handled by lib.sh (ASSUME_YES); ignore here
+    @?*)        at_yard="${1#@}" ;;  # trailing `@<yard>` — target yard (first sync/bind)
     -*)         die "unknown option '$1'" ;;
     *)          path="$1" ;;
   esac
@@ -42,6 +52,11 @@ hostPath="$(realpath -- "$path")"
 id="$(project_id "$hostPath")"
 yardPath="$(yard_path_for "$id")"
 name="$(basename -- "$hostPath")"
+
+# --- route to the target yard (multi-yard) -----------------------------------
+# Pick the yard from `@<yard>` or the path's existing registration and re-exec there if it is not
+# the loaded context. Everything below then runs in the correct yard's STATE_DIR. (See route_sync_target.)
+route_sync_target "$id" "$at_yard"
 
 # --- resolve & validate target (L1 `yard` vs L2 profile box) -----------------
 # Unset → stored target, else `yard`; a non-yard value must be a profile under config/profiles/.
@@ -60,12 +75,23 @@ if state_exists "$id"; then
     && die "'$name' is already in the yard as '$prev' — run: ${PROG:-yard} remove $path, then re-add as $mode"
 fi
 
-# --- preflight: yard must be running -----------------------------------------
-incus_preflight
-incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
-[ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it first (yard start)"
+# --- bind is host-local: a remote yard has no such host path (dispatcher already refuses;
+#     defend here too so a direct script call fails with the same clear message). ------------
+if yard_is_remote && [ "$mode" = bind ]; then
+  die "bind is host-local — use sync or clone (a bind mounts a host path that does not exist on the remote yard)"
+fi
+
+# --- preflight: yard must be reachable ---------------------------------------
+# Remote: probe the ssh alias (never incus). Local: incus daemon + instance RUNNING.
+if yard_is_remote; then
+  require_remote_reachable
+else
+  incus_preflight
+  incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
+    || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
+  [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
+    || die "yard is not running — start it first (yard start)"
+fi
 
 # --- bind: mount the host folder via an Incus disk device (shared files; shift=true → owned by 'dev')
 if [ "$mode" = bind ]; then
@@ -73,6 +99,7 @@ if [ "$mode" = bind ]; then
   if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$dev"; then
     state_write "$id" "$name" "$hostPath" "$yardPath" bind "$SSH_HOST"
     state_set "$id" target "$target"
+    write_yard_meta "$id" "$name" bind   # so `list --live` shows it (bind is local-only)
     ok "bind already attached: $hostPath → $INSTANCE_NAME:$yardPath (target $target)"
     info "id: $id"
     exit 0
@@ -90,6 +117,9 @@ if [ "$mode" = bind ]; then
     || die "could not attach bind mount (does the host kernel support idmapped/shifted mounts?)"
   state_write "$id" "$name" "$hostPath" "$yardPath" bind "$SSH_HOST"
   state_set "$id" target "$target"
+  # Yard-side meta (best-effort) — bind exits before the sync path's write_yard_meta, so without
+  # this a bind project shows `missing` under `yard list --live`. Bind is local-only.
+  write_yard_meta "$id" "$name" bind
   ok "bind done: $hostPath ↔ $INSTANCE_NAME:$yardPath (target $target)"
   info "id: $id"
   exit 0
@@ -105,13 +135,24 @@ announce "yard sync — $name" \
   "Record machine-local state in $(state_file "$id")."
 proceed_or_die
 
-# Pre-create the dest owned by 'dev' (root op; rsync then writes as the unprivileged dev user).
-incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- install -d -o "$DEV_UID" -g "$DEV_UID" "$yardPath" \
-  || die "could not create $yardPath in the yard"
+# Pre-create the dest owned by 'dev'. Local: a root incus op then chowns to dev. Remote: no
+# local incus — create it over ssh (the alias logs in as dev, so the tree is dev-owned).
+if yard_is_remote; then
+  ssh "$SSH_HOST" -- install -d "$yardPath" \
+    || die "could not create $yardPath in the remote yard"
+else
+  # -o/-g apply only to the LEAF dir; name the project dir explicitly too, or it is left
+  # root-owned and dev can neither write next to src/ (yard meta) nor remove the tree over ssh.
+  incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- \
+    install -d -o "$DEV_UID" -g "$DEV_UID" "$(dirname "$yardPath")" "$yardPath" \
+    || die "could not create $yardPath in the yard"
+fi
 
 # rsync over ssh (incremental). No --delete: agents build in the yard, so yard-only files
-# (node_modules, build output) survive. Falls back to a tar stream over `incus exec` if ssh is down.
-if ssh -o BatchMode=yes -o ConnectTimeout=5 "$SSH_HOST" true 2>/dev/null; then
+# (node_modules, build output) survive. A LOCAL yard probes ssh to choose rsync vs a tar-over-
+# `incus exec` fallback; a REMOTE yard has no fallback and its reachability was already proven by
+# the `install -d` above, so it goes straight to rsync (skip the redundant probe).
+if yard_is_remote || ssh -o BatchMode=yes -o ConnectTimeout=5 "$SSH_HOST" true 2>/dev/null; then
   info "rsync $hostPath → $SSH_HOST:$yardPath …"
   rsync -a -e ssh "$hostPath/" "$SSH_HOST:$yardPath/" || die "rsync failed"
 else
@@ -124,5 +165,7 @@ fi
 
 state_write "$id" "$name" "$hostPath" "$yardPath" sync "$SSH_HOST"
 state_set "$id" target "$target"
+# Yard-side meta (best-effort; local AND remote) — lets another controller discover this copy.
+write_yard_meta "$id" "$name" sync
 ok "sync done: $name → $yardPath (target $target)"
 info "id: $id"

@@ -6,7 +6,7 @@ set -euo pipefail
 SELF="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
 REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
 S="$REPO/scripts"
-YARD_VERSION="0.1.0-dev"
+export YARD_VERSION="0.1.0-dev"
 PROG="${0##*/}"
 
 # Host paths live in config/host.env (the single source). Source it best-effort — it is
@@ -23,7 +23,7 @@ PROG="${0##*/}"
 # Core command names (yard lifecycle / project workflow / project-env L2). Profile-resource
 # commands are appended from the registry below, so adding a resource needs no edit here. Drives
 # `yard --list` and both completions.
-COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info)
+COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info yards remote)
 if command -v res_commands >/dev/null 2>&1; then
   while IFS= read -r _rc; do [ -n "$_rc" ] && COMMANDS+=("$_rc"); done < <(res_commands 2>/dev/null)
 fi
@@ -50,10 +50,16 @@ audit() {
   sz="$(stat -c%s "$log" 2>/dev/null || echo 0)"
   [ "${sz:-0}" -ge "$max" ] 2>/dev/null && mv -f "$log" "$log.1" 2>/dev/null || true
   side="$(yard_side)" || side=host
+  # Append ` yard=<name>` for a named context; absent for the default yard (format unchanged).
+  local yardf=''
+  case "${SUBYARD_YARD:-}" in '' | default) ;; *) yardf=" yard=$SUBYARD_YARD" ;; esac
+  # Remote context: note the owner host the command forwards to.
+  local remotef=''
+  [ -n "${REMOTE_DEST:-}" ] && remotef=" remote=$REMOTE_DEST"
   # mask URL creds (keep user), then drop the payload after a standalone `--`
   msg="$(printf '%s' "$*" | sed -E 's#(://[^/:@ ]+:)[^/@ ]*@#\1***@#g; s#(://)[^/:@ ]+@#\1***@#g; s/(^| )-- .*/\1-- ***/')" || msg="$*"
-  printf '%s pid=%s cwd=%s where=%s -- %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PWD" "$side" "$msg" >>"$log" 2>/dev/null || true
+  printf '%s pid=%s cwd=%s where=%s%s%s -- %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$PWD" "$side" "$yardf" "$remotef" "$msg" >>"$log" 2>/dev/null || true
 }
 
 version() { printf '%s %s\n' "$PROG" "$YARD_VERSION"; }
@@ -82,6 +88,7 @@ Yard lifecycle:
                   directly in the yard (P1 baseline); no arg = all in-yard profiles. Heavy/explicit.
   stop            stop the yard
   teardown        tear down the yard + free disk (--keep-data preserves /srv); keeps Incus
+  yards           list all yards (name, type, instance, state, ssh, projects, size)
 
 Project workflow (default path '.'):
   sync   [path]   copy a project into the yard (host -> yard; --target yard|<profile>)
@@ -103,7 +110,24 @@ U
 
   (init runs the phases in scripts/00-05; run those directly only for debugging.)
 
+Named yards:
+  Run several independent yards on one host, each with its own instance, /srv, ssh port,
+  personal-data mount root and projects. Pick one for a command with -Y/--yard (or the
+  sugar '@<name>' as the first token); no selection = the default yard, unchanged. Define a
+  yard in private/yards/<name>.env or ~/.config/subyard/yards/<name>.env (SSH_PORT required).
+  '$PROG yards' lists them all.
+
+Remote yards:
+  Drive a yard on ANOTHER host as if it were local. '$PROG remote add <name> <user@host>'
+  probes it, registers a context, wires a ProxyJump ssh alias and authorizes your key.
+  Then '$PROG -Y <name> <cmd>': lifecycle commands (start/stop/status/provision/logs/shell/…)
+  forward over ssh to the owner host with their native prompts; data-plane commands
+  (ssh/code/sync/export/clone/remove) go straight into the yard. 'bind' is host-local and
+  disabled for remote yards. Keys and secrets stay on the owner host.
+  Subcommands:  remote add <name> <user@host> [--yard <remote-yard>] | remote remove <name> | remote list
+
 Options:
+  -Y, --yard <name>  run the command against a named yard ('@<name>' first-token sugar)
   -h, --help      show this help and exit
   -l, --list      list command names (one per line) and exit
       --resources list profile-resource commands + verbs (tab-separated) and exit
@@ -131,6 +155,49 @@ $rows
 EOF
 }
 
+# --- yard context selection (global, before the command) ---------------------
+# Pick a named yard: -Y/--yard <name>, --yard=<name>, or the sugar `@<name>` as the first token.
+# Only leading occurrences (before the command) are consumed. Exported so lib.sh (load_config)
+# sources that yard's env layer FIRST. No selection keeps the inherited SUBYARD_YARD (today's
+# path). SUBYARD_YARD_EXPLICIT marks a flag/@ selection (vs. a session env) for cross-yard resolution.
+SUBYARD_YARD="${SUBYARD_YARD:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -Y | --yard)
+      if [ $# -ge 2 ]; then SUBYARD_YARD="$2"; SUBYARD_YARD_EXPLICIT=1; shift 2
+      else printf "%s: unknown option '%s'\nTry '%s --help'.\n" "$PROG" "$1" "$PROG" >&2; exit 2; fi ;;
+    --yard=*) SUBYARD_YARD="${1#--yard=}"; SUBYARD_YARD_EXPLICIT=1; shift ;;
+    @?*)      SUBYARD_YARD="${1#@}";       SUBYARD_YARD_EXPLICIT=1; shift ;;
+    *) break ;;
+  esac
+done
+export SUBYARD_YARD
+[ -n "${SUBYARD_YARD_EXPLICIT:-}" ] && export SUBYARD_YARD_EXPLICIT
+
+# --- remote-context peek -----------------------------------------------------
+# A REMOTE yard's control-plane commands forward over ssh to the owner host instead of a
+# (non-existent) local instance. Targeted-parse the env file for three keys rather than source
+# lib.sh (no config layers, no incus). REMOTE_DEST stays empty for the default and LOCAL yards,
+# so the remote path below is inert unless a remote context is selected.
+REMOTE_DEST=''; REMOTE_YARD=''
+_yard_env_val() { # <file> <KEY> -> value (last `KEY=value` line wins, surrounding quotes stripped)
+  # Deliberate twin of scripts/lib.sh:yard_env_val, so this peek needs no lib.sh. Keep in sync.
+  sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -n1 | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
+}
+_yard_remote_peek() {
+  case "${SUBYARD_YARD:-}" in '' | default) return 0 ;; esac
+  local name="$SUBYARD_YARD" ch dir f=''
+  ch="${SUBYARD_CONFIG_HOME:-${SUBYARD_OPERATOR_HOME:-$HOME}/.config/subyard}"
+  for dir in "$REPO/private/yards" "$ch/yards"; do
+    [ -r "$dir/$name.env" ] && { f="$dir/$name.env"; break; }
+  done
+  [ -n "$f" ] || return 0
+  [ "$(_yard_env_val "$f" YARD_TYPE)" = remote ] || return 0
+  REMOTE_DEST="$(_yard_env_val "$f" REMOTE_DEST)"
+  REMOTE_YARD="$(_yard_env_val "$f" REMOTE_YARD)"
+}
+_yard_remote_peek
+
 # --- global options / no command ---------------------------------------------
 case "${1:-}" in
   ''            ) usage; exit 0 ;;
@@ -142,7 +209,8 @@ case "${1:-}" in
 esac
 
 cmd="$1"; shift
-audit "$cmd" "$@"
+# _info is a silent machine-readable probe (remote yards poll it) — keep it out of the audit log.
+case "$cmd" in _info) ;; *) audit "$cmd" "$@" ;; esac
 
 # Commands talk to incusd via the scripts, which call lib.sh's incus_preflight for an
 # accurate message if the daemon is unreachable (e.g. a session that predates the
@@ -152,6 +220,29 @@ audit "$cmd" "$@"
 # Reserved but not wired yet. Friendlier than "unknown command".
 soon() { printf "%s: '%s' is planned for %s — not implemented yet.\n" "$PROG" "$1" "$2" >&2; exit 2; }
 
+# --- remote-context routing --------------------------------------------------
+# For a REMOTE yard, split commands by plane:
+#   • control plane  → FORWARD to the owner host over `ssh -t` (tty preserved) so its OWN yard
+#     runs the command with its native `Proceed? [y/N]` prompts intact; any -y/--yes rides along.
+#   • data plane + registry ops (ssh code sync export clone remove list check yards remote _info,
+#     help) run LOCALLY — reaching the yard through the 'yard-<name>' ssh alias, or pure bookkeeping.
+#   • bind is host-local: the host path does not exist on the remote machine → hard refusal.
+# Two-level %q quoting so a token survives BOTH the remote login shell and the inner `bash -lc`.
+# exec: this process becomes ssh, so its exit status is the remote command's.
+remote_forward() {   # <cmd> <args…>
+  local rc='yard' a
+  [ -n "$REMOTE_YARD" ] && rc="$rc -Y $(printf '%q' "$REMOTE_YARD")"
+  for a in "$@"; do rc="$rc $(printf '%q' "$a")"; done
+  exec ssh -t "$REMOTE_DEST" -- bash -lc "$(printf '%q' "$rc")"
+}
+if [ -n "$REMOTE_DEST" ]; then
+  case "$cmd" in
+    bind) printf 'bind is host-local — use sync or clone\n' >&2; exit 1 ;;
+    ssh | code | sync | export | clone | remove | list | check | yards | remote | _info | help) ;; # local, fall through
+    *) remote_forward "$cmd" "$@" ;;   # forward lifecycle / project-env / resource commands
+  esac
+fi
+
 case "$cmd" in
   init | setup) exec "$S/init.sh" "$@" ;;            # setup: back-compat alias
   teardown | uninstall) exec "$S/99-teardown.sh" "$@" ;;  # uninstall: back-compat alias
@@ -159,6 +250,10 @@ case "$cmd" in
   sync)      exec "$S/project-sync.sh" sync "$@" ;;
   bind)      exec "$S/project-sync.sh" bind "$@" ;;
   list)      exec "$S/project-list.sh" "$@" ;;
+  yards)     exec "$S/yard-yards.sh" "$@" ;;
+  remote)    exec "$S/yard-remote.sh" "$@" ;;                 # manage remote yards (add/remove/list)
+  _info)     exec "$S/yard-info.sh" "$@" ;;   # machine-readable probe (hidden; used by remote yards)
+  _authorize) exec "$S/yard-authorize.sh" "$@" ;;  # hidden: authorize a controller key IN the yard (remote add)
   logs)      exec "$S/yard-logs.sh" "$@" ;;
   usage)     exec "$S/yard-usage.sh" "$@" ;;
   start | stop | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;

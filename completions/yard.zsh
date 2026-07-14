@@ -18,6 +18,30 @@ _yard_profiles() {
   print -r -- ${(@)$(cd "$d" && print -r -- *.conf(N:r))}
 }
 
+# Registry yard names: 'default' plus every *.env basename under private/yards/ and
+# ~/.config/subyard/yards/ — read cheaply in the shell (NEVER invoke incus). Mirrors lib.sh's
+# yard_registry_names so completion and the CLI agree on valid yard names.
+_yard_yards() {
+  local repo home d f
+  local -a names dirs
+  names=( default )
+  repo="$(_yard_repo)" || repo=""
+  [[ -n $repo ]] && dirs=( "$repo/private/yards" )
+  home="$(_yard_config_home)" || home=""
+  [[ -n $home ]] && dirs+=( "$home/yards" )
+  for d in $dirs; do
+    [[ -d $d ]] || continue
+    for f in $d/*.env(N); do names+=( ${f:t:r} ); done
+  done
+  print -r -- ${(u)names}
+}
+
+# _arguments action: complete a yard name for -Y/--yard.
+_yard_yard_names() {
+  local -a n; n=( ${(f)"$(_yard_yards)"} )
+  compadd -a n
+}
+
 # Host-side state home: honor an explicit override, else derive the same default as
 # config/host.env (so completion and the CLI agree on where state lives).
 _yard_config_home() {
@@ -51,12 +75,13 @@ _yard_code_target() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info emu staging qa-pool )
+  [[ -n $cmds ]] || cmds=( check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging qa-pool )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args
 
   _arguments -C \
+    '(-Y --yard)'{-Y,--yard}'[run the command against a named yard]:yard:_yard_yard_names' \
     '(-h --help)'{-h,--help}'[show help]' \
     '(-l --list)'{-l,--list}'[list command names]' \
     '(-V --version)'{-V,--version}'[show version]' \
@@ -68,6 +93,9 @@ _yard() {
   case $state in
     cmd)
       _describe -t commands 'yard command' cmds
+      # First-token sugar: @<name> selects a yard context (== -Y <name>).
+      local -a atnames; atnames=( ${${(f)"$(_yard_yards)"}/#/@} )
+      _describe -t yards 'yard context (@name)' atnames
       ;;
     args)
       case ${words[1]} in
@@ -94,7 +122,19 @@ _yard() {
           fi
           ;;
         code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
-        status) _arguments '--yes[skip prompt]' '--help[show help]' ;;
+        status) _arguments '--all[status for every registered yard]' '--yes[skip prompt]' '--help[show help]' ;;
+        remote)
+          if (( CURRENT == 2 )); then
+            local -a sub; sub=( 'add:register a remote yard (probe + ssh alias + authorize key)' 'remove:unregister a remote yard' 'list:list registered remote yards' )
+            _describe -t subcommands 'remote subcommand' sub
+          elif [[ ${words[2]} == remove ]]; then
+            local -a n; n=( ${(f)"$(_yard_yards)"} ); _describe -t yards 'remote yard' n
+          elif [[ ${words[2]} == add ]]; then
+            _arguments '--yard[target a named yard on the remote host]:remote yard:' '--yes[skip prompt]'
+          else
+            _arguments '--yes[skip prompt]'
+          fi
+          ;;
         teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;
         clone)
           if [[ ${words[CURRENT-1]} == --target ]]; then

@@ -25,9 +25,9 @@ device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/
 # --- preconditions -----------------------------------------------------------
 incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
+  || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: yard start"
+  || die "yard is not running — start it: $(yard_cmd_hint) start"
 
 fwd_note=()
 [ "$FORWARD_SSH_AGENT" = 1 ] && fwd_note=("Enable ssh-agent forwarding for '$SSH_HOST' (no private key enters the yard).")
@@ -84,7 +84,13 @@ ok "$DEV_USER@$SSH_HOST authorized for your key"
 # --- 4. ~/.ssh Host entry via an Include (does not rewrite your config) -------
 echo "SSH client config:"
 sshdir="$HOME/.ssh"; install -d -m 700 "$sshdir"
-snip="$sshdir/subyard.config"
+# Per-yard snippet: the default yard keeps ~/.ssh/subyard.config (byte-identical); a named
+# yard gets its own ~/.ssh/subyard-<name>.config so several yards' Host blocks never collide
+# and teardown of one removes only that file. Its Include line is added per file (below).
+snip="$sshdir/subyard${YARD_NAME:+-$YARD_NAME}.config"
+snip_name="$(basename "$snip")"
+# Shared across yards, but host-key entries are keyed by [127.0.0.1]:<port> and each yard
+# has a unique port, so entries never collide — one known_hosts is correct and intended.
 known="$SUBYARD_HOME/ssh/known_hosts"
 install -d -m 700 "$SUBYARD_HOME/ssh"   # so ssh can record the yard's host key
 # Opt-in agent forwarding: lets in-yard `git pull/push` over SSH use the host keys
@@ -103,11 +109,12 @@ Host $SSH_HOST
 EOF
 chmod 600 "$snip"
 cfg="$sshdir/config"; touch "$cfg"; chmod 600 "$cfg"
-# Prepend the Include once (must precede Host blocks to apply globally).
-if ! grep -qxF "Include subyard.config" "$cfg"; then
-  { printf 'Include subyard.config\n'; cat "$cfg"; } > "$cfg.tmp" && mv -f "$cfg.tmp" "$cfg"
+# Prepend this yard's Include once (must precede Host blocks to apply globally). One line per
+# snippet file, idempotent: each yard has its own `Include subyard[-<name>].config`.
+if ! grep -qxF "Include $snip_name" "$cfg"; then
+  { printf 'Include %s\n' "$snip_name"; cat "$cfg"; } > "$cfg.tmp" && mv -f "$cfg.tmp" "$cfg"
 fi
-ok "ssh Host '$SSH_HOST' ready (~/.ssh/subyard.config)"
+ok "ssh Host '$SSH_HOST' ready (~/.ssh/$snip_name)"
 
 echo
 ok "SSH access ready."

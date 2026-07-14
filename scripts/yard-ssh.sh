@@ -6,6 +6,9 @@
 # The first non-option token is treated as a PROJECT selector ONLY when it resolves to a
 # known project whose target is a profile (not `yard`); otherwise every arg passes to ssh
 # (L1). A target=yard project name is not an ssh host, so we fall back to a plain L1 shell.
+# Remote yards (YARD_TYPE=remote): the L1 shell path is plain `ssh $SSH_HOST` over the
+# yard-<name> alias and works unchanged; an L2-box selector cannot be reached from here
+# (boxes are managed on the owner host), so it degrades to an L1 shell with a warning.
 # Operator-owned; no root. Config: config/subyard.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,12 +56,19 @@ if [ -n "$first" ]; then
   if id="$(resolve_soft "$first")"; then
     target="$(state_get "$id" target)"
     if [ -n "$target" ] && [ "$target" != yard ]; then
-      # L2 box: drop the selector, hand the rest (incl. `-- cmd`) to the project-env runner.
+      # Drop the selector; keep the rest (incl. `-- cmd`) to hand on.
       rest=(); dropped=0
       for a in "$@"; do
         if [ "$dropped" = 0 ] && [ "$a" = "$first" ]; then dropped=1; continue; fi
         rest+=("$a")
       done
+      if yard_is_remote; then
+        # The L2 box lives on the owner host; there is no local Docker to reach it. Degrade to
+        # an L1 shell in the remote yard and point at where the box is actually managed.
+        warn "'$first' runs in an L2 box, managed on the yard's owner host — opening an L1 shell in the remote yard instead (manage it there: ssh ${REMOTE_DEST:-<dest>} yard${REMOTE_YARD:+ -Y $REMOTE_YARD} up $first)"
+        exec ssh "$SSH_HOST" ${rest[@]+"${rest[@]}"}
+      fi
+      # L2 box (local): hand the rest to the project-env runner.
       if [ "${#rest[@]}" -gt 0 ]; then
         exec "$SCRIPT_DIR/project-env.sh" exec "$first" "${rest[@]}"
       fi

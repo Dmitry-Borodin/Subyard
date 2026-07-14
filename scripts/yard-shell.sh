@@ -24,7 +24,7 @@ done
 
 incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: ${PROG:-yard} start"
+  || die "yard is not running — start it: $(yard_cmd_hint) start"
 
 if [ "${#cmd[@]}" -gt 0 ]; then
   exec incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- "${cmd[@]}"

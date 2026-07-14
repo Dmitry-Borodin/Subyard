@@ -20,7 +20,7 @@ PROJ=(--project "$INCUS_PROJECT")
 # --- preconditions -----------------------------------------------------------
 incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: yard start"
+  || die "yard is not running — start it: $(yard_cmd_hint) start"
 
 # --- resolve identity on the host --------------------------------------------
 dropin="$SUBYARD_HOME/gitconfig"

@@ -21,11 +21,67 @@ FORWARD_SSH_AGENT="${FORWARD_SSH_AGENT:-0}"
 PROJ=(--project "$INCUS_PROJECT")
 
 action="${1:-status}"; shift || true
-for a in "$@"; do case "$a" in -y|--yes) ;; -*) die "unknown option '$a'" ;; *) ;; esac; done  # tolerate --yes; reject unknown flags
+all=0
+for a in "$@"; do
+  case "$a" in
+    --all) all=1 ;;                       # status --all: one status per registered yard
+    -y|--yes) ;;
+    -*) die "unknown option '$a'" ;;
+    *) ;;
+  esac
+done  # tolerate --yes/--all; reject unknown flags
+
+# `status --all`: re-run a plain status for every registry yard, each in a fresh process under
+# SUBYARD_YARD=<name> so it loads that yard's own context (each child does its own preflight).
+# A REMOTE yard can't run local status (no incus, and the child re-exec bypasses the dispatcher's
+# ssh-forward) — so it is summarized from an _info probe / last-seen cache instead (cache format
+# matches yard-remote.sh).
+remote_status_line() { # <name> <dest> <ryard>
+  local name="$1" dest="$2" ryard="$3" rc='yard _info' json state projects cache epoch age=''
+  [ -n "$ryard" ] && rc="yard -Y $(printf '%q' "$ryard") _info"
+  json="$(ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=accept-new \
+          "$dest" -- bash -lc "$(printf '%q' "$rc")" 2>/dev/null)" || json=''
+  cache="$(remote_cache_path "$name")"
+  case "$json" in
+    '{'*'}')  # reachable — refresh the last-seen cache
+      install -d -m 700 "$SUBYARD_HOME" 2>/dev/null || true
+      { printf '%s\n' "$(date +%s)"; printf '%s\n' "$json"; } > "$cache.tmp" 2>/dev/null \
+        && mv -f "$cache.tmp" "$cache" 2>/dev/null || true ;;
+    *)        # unreachable — fall back to the cache
+      json=''
+      if [ -f "$cache" ]; then
+        epoch="$(sed -n 1p "$cache")"; json="$(sed -n 2p "$cache")"
+        case "$epoch" in ''|*[!0-9]*) ;; *) age=", seen $(age_human $(( $(date +%s) - epoch ))) ago" ;; esac
+      fi ;;
+  esac
+  if [ -n "$json" ]; then
+    state="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' <<<"$json" | head -n1)"
+    projects="$(sed -n 's/.*"projects":\([0-9][0-9]*\).*/\1/p' <<<"$json" | head -n1)"
+  else state='?'; projects='?'; fi
+  printf '%s%s%s  %s  (remote %s, %s projects%s)\n' \
+    "$C_HEAD" "$name" "$C_OFF" "${state:-?}" "$dest" "${projects:-?}" "$age"
+}
+if [ "$all" = 1 ]; then
+  [ "$action" = status ] || die "--all is only valid with status"
+  first=1
+  while IFS= read -r yn; do
+    [ -n "$yn" ] || continue
+    [ "$first" = 1 ] || echo; first=0
+    if [ "$yn" != default ]; then
+      yf="$(yard_env_file "$yn" 2>/dev/null)" || yf=''
+      if [ -n "$yf" ] && [ "$(yard_env_val "$yf" YARD_TYPE)" = remote ]; then
+        remote_status_line "$yn" "$(yard_env_val "$yf" REMOTE_DEST)" "$(yard_env_val "$yf" REMOTE_YARD)"
+        continue
+      fi
+    fi
+    SUBYARD_YARD="$yn" "$SUBYARD_SCRIPT_PATH" status || true
+  done < <(yard_registry_names)
+  exit 0
+fi
 
 incus_preflight "$action"
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
+  || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
 
 state() { incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null; }
 
@@ -40,14 +96,10 @@ state() { incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null; }
 # be counted twice (du does not dedupe same-fs binds). This is the yard's own data; for
 # the full on-host footprint (pool + Incus images + logs, stopped yard included) there is
 # no command — it is simply `sudo du -sh ~/.subyard`.
-SPACE_CACHE="$SUBYARD_HOME/space.cache"   # "<figure> <epoch>" from the last in-yard du
+# Per-yard size cache: the default yard keeps space.cache (byte-identical); a named yard
+# gets space-<name>.cache so each yard's figure is independent (and yard-yards.sh reads it).
+SPACE_CACHE="$SUBYARD_HOME/space${YARD_NAME:+-$YARD_NAME}.cache"   # "<figure> <epoch>" from the last in-yard du
 SPACE_TTL="${SPACE_TTL:-600}"             # cache older than this: refresh in the background
-
-age_human() { # seconds -> 45s / 12m / 3h / 2d
-  local s="$1"
-  if [ "$s" -lt 60 ]; then echo "${s}s"; elif [ "$s" -lt 3600 ]; then echo "$((s/60))m"
-  elif [ "$s" -lt 86400 ]; then echo "$((s/3600))h"; else echo "$((s/86400))d"; fi
-}
 
 # One walker at a time (flock -n): a second status during the ~minute-long walk just keeps
 # showing the stale figure. The subshell survives this script's exit; write is atomic.
@@ -96,9 +148,11 @@ print_space_cached() {
 #     openclaw  staging-gateway  down   (yard staging start)
 print_shared() {
   local running="$1" name res st hint any=0
-  for d in "$PROFILES_DIR"/*/; do
-    [ -r "$d/profile.conf" ] || continue
-    name="$(basename "$d")"
+  # Only the yard's ACTIVE profiles (YARD_PROFILES when set, else all on disk — default yard
+  # unchanged), so a named yard lists just its own profiles' shared resources.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ -r "$PROFILES_DIR/$name/profile.conf" ] || continue
     for res in $(svc_resources_for "$name"); do
       [ "$any" = 1 ] || { printf '  shared:\n'; any=1; }
       hint=''
@@ -117,7 +171,7 @@ print_shared() {
         printf '    %-9s %-16s %s\n' "$name" "$res" "$st"
       fi
     done
-  done
+  done < <(yard_profiles_active)
   [ "$any" = 1 ] || printf '  shared   none\n'
 }
 
@@ -143,7 +197,9 @@ case "$action" in
     ;;
   status)
     s="$(state)"
-    printf '%syard%s  %s\n' "$C_HEAD" "$C_OFF" "${s:-unknown}"
+    # Header names the active yard: the default yard prints 'yard' (byte-identical to HEAD);
+    # a named yard prints its own name so `status` and `status --all` are unambiguous.
+    printf '%s%s%s  %s\n' "$C_HEAD" "${YARD_NAME:-yard}" "$C_OFF" "${s:-unknown}"
     if [ "$s" = RUNNING ]; then
       # eth0 only (the yard also has docker0 172.17.x once Docker is up).
       ip="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c \
@@ -154,7 +210,7 @@ case "$action" in
     if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; then
       printf '  ssh      127.0.0.1:%s  (ssh %s)\n' "$SSH_PORT" "$SSH_HOST"
     else
-      printf '  ssh      not set up  (run: yard init, or scripts/07-ssh-access.sh)\n'
+      printf '  ssh      not set up  (run: %s init, or scripts/07-ssh-access.sh)\n' "$(yard_cmd_hint)"
     fi
     # host mounts attached to the instance
     # `|| true`: with no host-* mount, grep exits 1 and pipefail would abort the assignment
@@ -178,12 +234,14 @@ case "$action" in
       fwd=off; [ "$FORWARD_SSH_AGENT" = 1 ] && fwd=on
       printf '  vscode   %s agent-fwd=%s  (yard code <project>)\n' "${vc:-?}" "$fwd"
     fi
-    # project count (machine-local state; no jq dependency here)
+    # project count (machine-local state; no jq dependency here). Per-yard: reads SUBYARD_STATE_DIR
+    # (a named yard's own dir, set by lib.sh's context step; the default yard's projects/).
     n=0
-    if [ -d "$SUBYARD_CONFIG_HOME/projects" ]; then
-      for f in "$SUBYARD_CONFIG_HOME/projects"/*.json; do [ -e "$f" ] && n=$((n+1)); done
+    statedir="${SUBYARD_STATE_DIR:-$SUBYARD_CONFIG_HOME/projects}"
+    if [ -d "$statedir" ]; then
+      for f in "$statedir"/*.json; do [ -e "$f" ] && n=$((n+1)); done
     fi
-    printf '  projects %s  (yard list)\n' "$n"
+    printf '  projects %s  (%s list)\n' "$n" "$(yard_cmd_hint)"
     # Shared resources profiles expose (emulator / staging gateway). Probe live state only when
     # the yard is up; otherwise just list what is declared (state '?').
     if [ "$s" = RUNNING ]; then print_shared 1; else print_shared 0; fi

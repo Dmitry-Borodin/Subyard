@@ -4,7 +4,8 @@
 # Usage: project-export.sh [path]   (default '.')
 # Diffs the yard copy against the host copy and writes a unified patch you review and
 # apply yourself (git apply -p1 / patch -p1), keeping the host copy isolated.
-# Transport mirrors sync: a tar stream over `incus exec`.
+# Transport mirrors sync: a tar stream over `incus exec` for a local yard, or over the
+# yard-<name> ssh alias for a remote yard (no local incus).
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,36 +17,47 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_UID="${DEV_UID:-1000}"
+SSH_HOST="${SSH_HOST:-yard}"   # remote yards read the yard copy over this alias
 PROJ=(--project "$INCUS_PROJECT")
 
 # --- parse args --------------------------------------------------------------
-path="."
+# Accept a path (default '.'), an exact id, or a project NAME from `yard list`.
+arg="."
 for a in "$@"; do
   case "$a" in
     -y | --yes) ;;                       # no mutation on host beyond writing a patch file
     -*)         die "unknown option '$a'" ;;
-    *)          path="$a" ;;
+    *)          arg="$a" ;;
   esac
 done
-[ -d "$path" ] || die "not a directory: $path"
 
 # --- resolve identity / state ------------------------------------------------
-hostPath="$(realpath -- "$path")"
-id="$(project_id "$hostPath")"
-name="$(basename -- "$hostPath")"
-state_exists "$id" || die "'$name' is not in the yard — run: ${PROG:-yard} sync $path"
+# resolve_project_ctx resolves across yards and re-execs in the owning yard when it lives elsewhere.
+resolve_project_ctx "$arg"
+id="$RESOLVED_ID"
+name="$(state_get "$id" name)"; name="${name:-$id}"
+hostPath="$(state_get "$id" hostPath)"
 yardPath="$(state_get "$id" yardPath)"
 mode="$(state_get "$id" mode)"
-if [ "$mode" = bind ]; then
-  die "'$name' is a bind project — its changes are already on the host; nothing to export"
-fi
+case "$mode" in
+  bind) die "'$name' is a bind project — its changes are already on the host; nothing to export" ;;
+  git)  die "'$name' is a git-mode clone (no host copy) — pull changes with git inside the yard, not export" ;;
+esac
+[ -d "$hostPath" ] || die "host copy is gone ($hostPath) — cannot diff; re-add it with ${PROG:-yard} sync <path>"
 
-# --- preflight: yard must be running -----------------------------------------
-incus_preflight
-[ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: ${PROG:-yard} up"
-incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -d "$yardPath" \
-  || die "yard copy missing at $yardPath — re-run: ${PROG:-yard} sync $path"
+# --- preflight: yard must be reachable, yard copy must exist -----------------
+# Remote: probe the ssh alias (never incus) and test the copy over it. Local: incus.
+if yard_is_remote; then
+  require_remote_reachable
+  ssh "$SSH_HOST" -- test -d "$yardPath" \
+    || die "yard copy missing at $yardPath — re-run: ${PROG:-yard} sync $arg"
+else
+  incus_preflight
+  [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
+    || die "yard is not running — start it: ${PROG:-yard} up"
+  incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -d "$yardPath" \
+    || die "yard copy missing at $yardPath — re-run: ${PROG:-yard} sync $arg"
+fi
 
 # --- materialise both sides into a temp tree and diff ------------------------
 # a/ = host copy, b/ = yard copy; relative a/ b/ prefixes so the patch applies with
@@ -56,9 +68,15 @@ mkdir -p "$tmp/a" "$tmp/b"
 
 info "snapshotting host copy …"
 tar -C "$hostPath" --exclude=.git -cf - . | tar -C "$tmp/a" -xf - || die "could not read host copy"
-info "pulling yard copy from $INSTANCE_NAME:$yardPath …"
-incus exec "$INSTANCE_NAME" "${PROJ[@]}" --user "$DEV_UID" --group "$DEV_UID" -- \
-  tar -C "$yardPath" --exclude=.git -cf - . | tar -C "$tmp/b" -xf - || die "could not read yard copy"
+if yard_is_remote; then
+  info "pulling yard copy from $SSH_HOST:$yardPath …"
+  ssh "$SSH_HOST" -- tar -C "$yardPath" --exclude=.git -cf - . | tar -C "$tmp/b" -xf - \
+    || die "could not read yard copy"
+else
+  info "pulling yard copy from $INSTANCE_NAME:$yardPath …"
+  incus exec "$INSTANCE_NAME" "${PROJ[@]}" --user "$DEV_UID" --group "$DEV_UID" -- \
+    tar -C "$yardPath" --exclude=.git -cf - . | tar -C "$tmp/b" -xf - || die "could not read yard copy"
+fi
 
 patch="$tmp/changes.patch"
 set +e

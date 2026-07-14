@@ -69,7 +69,7 @@ proceed_or_die
 
 incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
+  || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
 
 # --- 1. mounts (yx-* devices, host dirs under HOST_BASE) ---------------------
 want_mounts=""
@@ -128,11 +128,21 @@ done
 
 # --- 3. devices (/dev passthrough as unix-char) ------------------------------
 ensure_unix_char() {  # <device-name> <host-source>
-  local name="$1" source="$2"
+  local name="$1" source="$2" err
   device_exists "$name" && { ok "$name present"; return; }
   [ -e "$source" ] || { warn "$source absent on host — skipping $name"; return; }
-  incus config device add "$INSTANCE_NAME" "$name" unix-char "${PROJ[@]}" \
-    source="$source" path="$source" mode=0666 >/dev/null
+  # Nested hosts reject the mode property on unix-char devices — retry without it
+  # (in-yard perms then follow the source node; consumers may need the device group).
+  if ! err="$(incus config device add "$INSTANCE_NAME" "$name" unix-char "${PROJ[@]}" \
+        source="$source" path="$source" mode=0666 2>&1 >/dev/null)"; then
+    case "$err" in
+      *"nested container"*)
+        incus config device add "$INSTANCE_NAME" "$name" unix-char "${PROJ[@]}" \
+          source="$source" path="$source" >/dev/null
+        warn "nested host: $name attached without an explicit mode" ;;
+      *) printf '%s\n' "$err" >&2; die "could not attach device '$name'" ;;
+    esac
+  fi
   ok "$name → $source"
 }
 # 'gpu' → pass the host GPU RENDER NODE(s) as unix-char (Mesa headless GLES for -gpu host). The incus

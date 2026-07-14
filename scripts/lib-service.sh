@@ -34,9 +34,9 @@ yexec() { incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- "$@"; }
 svc_require_yard_running() {
   incus_preflight
   incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-    || die "instance '$INSTANCE_NAME' missing — run '${PROG:-yard} init' first"
+    || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
   [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-    || die "yard is not running — start it: ${PROG:-yard} start"
+    || die "yard is not running — start it: $(yard_cmd_hint) start"
 }
 
 # Resource NAMES a profile declares — its descriptors under config/profiles/<profile>/resources/.
@@ -59,7 +59,7 @@ svc_resource_up() {
 # status hint next to a down resource (from the descriptor's COMMAND + BRINGUP). Empty if unknown.
 svc_resource_hint() {
   local hint; hint="$(res_hint_for_name "$1" 2>/dev/null || true)"
-  [ -n "$hint" ] && printf '%s' "${PROG:-yard} $hint"
+  [ -n "$hint" ] && printf '%s' "$(yard_cmd_hint) $hint"
   # Explicit success: the trailing `[ -n … ] &&` above returns 1 for a resource with no hint, and
   # callers run under `set -e` — without this, an empty hint would abort the caller mid-status.
   return 0
@@ -68,6 +68,6 @@ svc_resource_hint() {
 # svc_resource_stop_hint <resource-name> — the operator command that stops an up resource.
 svc_resource_stop_hint() {
   local hint; hint="$(res_stop_hint_for_name "$1" 2>/dev/null || true)"
-  [ -n "$hint" ] && printf '%s' "${PROG:-yard} $hint"
+  [ -n "$hint" ] && printf '%s' "$(yard_cmd_hint) $hint"
   return 0
 }

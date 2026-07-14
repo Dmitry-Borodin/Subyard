@@ -132,9 +132,31 @@ else
 fi
 
 # --- 4. initialize Incus (idempotent) ----------------------------------------
+# Reconcile the pool and the bridge INDEPENDENTLY: a host can arrive half-initialized
+# (e.g. a pool but no bridge from an earlier manual `incus admin init`), and gating on
+# the pool alone would skip the bridge forever — the yard's nic then fails at create.
 echo "Init:"
 if incus storage show "$STORAGE_POOL" >/dev/null 2>&1; then
-  ok "Incus already initialized (pool '$STORAGE_POOL' exists) — leaving as-is"
+  ok "storage pool '$STORAGE_POOL' present"
+  if incus network show "$INCUS_BRIDGE" >/dev/null 2>&1; then
+    ok "bridge '$INCUS_BRIDGE' present — Incus already initialized"
+  else
+    info "pool exists but bridge '$INCUS_BRIDGE' is missing — creating it"
+    # Nested/AppArmor-stacked hosts (e.g. a yard inside a yard): dnsmasq may be denied the
+    # syslog unix socket ("cannot open log : Permission denied") — retry logging to a file
+    # under the network's own state dir, which the generated profile does allow.
+    if ! out="$(incus network create "$INCUS_BRIDGE" ipv4.address=auto ipv6.address=none 2>&1)"; then
+      case "$out" in
+        *"cannot open log"*)
+          warn "dnsmasq cannot reach syslog (nested/AppArmor host) — retrying with a file log"
+          incus network create "$INCUS_BRIDGE" ipv4.address=auto ipv6.address=none \
+            raw.dnsmasq="log-facility=/var/lib/incus/networks/$INCUS_BRIDGE/dnsmasq.log"
+          ;;
+        *) printf '%s\n' "$out" >&2; die "could not create bridge '$INCUS_BRIDGE'" ;;
+      esac
+    fi
+    ok "created bridge '$INCUS_BRIDGE'"
+  fi
 else
   info "running incus admin init (pool '$STORAGE_POOL' → $STORAGE_PATH)"
   incus admin init --preseed <<EOF

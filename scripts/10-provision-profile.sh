@@ -39,9 +39,22 @@ for a in "$@"; do
   esac
 done
 
-# Which to provision: explicit arg → that one; else state-registered profiles; else all on disk.
+# Which to provision: explicit arg → that one; else this yard's YARD_PROFILES UNION the profiles
+# any registered project targets (a project pinned to a profile outside YARD_PROFILES must still
+# be provisioned, not silently skipped); else state-registered profiles; else all on disk.
+# The default yard sets no YARD_PROFILES, so its no-arg behavior is unchanged.
 if [ -n "$want" ]; then
   profiles=("$want"); src="requested"
+elif [ -n "${YARD_PROFILES:-}" ]; then
+  # Union, YARD_PROFILES first then state-registered profiles, order-stable and deduped.
+  read -ra _yp <<<"$YARD_PROFILES"
+  mapfile -t _st < <(for id in $(state_ids); do state_get "$id" profile; done | sed '/^$/d')
+  declare -A _seen=(); profiles=()
+  for prof in "${_yp[@]}" ${_st[@]+"${_st[@]}"}; do
+    [ -n "$prof" ] && [ -z "${_seen[$prof]:-}" ] || continue
+    _seen["$prof"]=1; profiles+=("$prof")
+  done
+  src="yard profiles (${YARD_NAME:-default}) ∪ in-yard projects"
 else
   mapfile -t profiles < <(for id in $(state_ids); do state_get "$id" profile; done | sed '/^$/d' | sort -u)
   if [ "${#profiles[@]}" -gt 0 ]; then src="in-yard projects"
@@ -65,7 +78,7 @@ proceed_or_die
 
 incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run 'yard init' first"
+  || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
 
 for prof in "${todo[@]}"; do
   pf="$PROFILES_DIR/$prof/profile.conf"

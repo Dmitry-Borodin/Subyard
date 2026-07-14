@@ -16,7 +16,7 @@ PROJ=(--project "$INCUS_PROJECT")
 
 incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: ${PROG:-yard} start"
+  || die "yard is not running — start it: $(yard_cmd_hint) start"
 
 # Run ccusage in the yard as 'dev'. Prefer an installed binary; fall back to bunx/npx.
 # (printf '%q' with zero args emits a quoted '' — guard the no-arg case.)

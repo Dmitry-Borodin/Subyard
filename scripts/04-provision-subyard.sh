@@ -144,8 +144,16 @@ echo "KVM gid:"
 if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx kvm; then
   KVM_GID="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- getent group kvm | cut -d: -f3)"
   if [ -n "${KVM_GID:-}" ]; then
-    incus config device set "$INSTANCE_NAME" kvm gid "$KVM_GID" "${PROJ[@]}"
-    ok "set kvm device gid=$KVM_GID (matches in-yard 'kvm' group)"
+    # Nested hosts reject the gid property on unix-char devices — degrade with a warn
+    # (KVM stays root-owned in the yard; the emulator then needs sudo/acl there).
+    if err="$(incus config device set "$INSTANCE_NAME" kvm gid "$KVM_GID" "${PROJ[@]}" 2>&1)"; then
+      ok "set kvm device gid=$KVM_GID (matches in-yard 'kvm' group)"
+    elif printf '%s' "$err" | grep -q "nested container"; then
+      warn "nested host: kvm device gid not settable — /dev/kvm stays root-owned in the yard"
+    else
+      printf '%s\n' "$err" >&2
+      die "could not set the kvm device gid"
+    fi
   else
     warn "could not resolve in-yard 'kvm' GID — skipping gid fix"
   fi

@@ -43,6 +43,30 @@ Everything goes through one host command, `yard` (alias `sy`) — a thin dispatc
 - **L2 project box** — `up` / `down` / `info` for a project added with `--target <profile>` (build/start/inspect its toolchain container).
 - **Profile resources** — commands contributed by the active profiles' `.res` descriptors, e.g. `yard emu` (Android emulator + adb/scrcpy bridge), `yard staging` (live staging gateway), `yard qa-pool` (QA-bot broker). These are discovered at runtime, not hardcoded.
 
+## Named yards
+
+Run several independent yards on one host — for example one per agent ecosystem with its own
+secrets and toolchain — while the default (unnamed) yard keeps working exactly as today. Each
+yard is one env file named after it (`private/yards/<name>.env` or
+`~/.config/subyard/yards/<name>.env`); the only required value is a unique `SSH_PORT`, and
+everything else (instance, Incus project, ssh alias, `/srv` volume, project state) is derived
+from the name. Pick a yard for a command with `-Y <name>` / `--yard <name>`, or the first-token
+sugar `@<name>`:
+
+```
+yard -Y openclaw init         # stand up a second, fully independent yard
+yard @openclaw sync .         # its own projects, separate from the default yard
+yard yards                    # table of every yard: state, ssh port, projects, size
+yard status --all             # status of each yard in turn
+```
+
+Each yard gets its **own** personal-data root (`HOST_BASE=/srv/subyard-<name>`), and its Incus
+project restricts host mounts to that prefix — so one yard can never reach another's
+secrets/sessions/memory. Set `YARD_PROFILES="<profile> …"` in a yard's env to scope it to
+specific profiles (`yard provision` and `yard status` then honor that list). Tearing a yard
+down removes only its own artifacts. See [`config/yards/`](config/yards/) for the template and
+full reference.
+
 ## Threat model
 
 Subyard protects the **host** (its files and system) from the agents running inside the yard. The trust boundary is the host: agents are trusted peers of a single developer, isolated from the machine they run on. Defense-in-depth: an agent's L2 container sits **inside** the yard, so escaping the container is not the same as reaching the host. For a stronger host boundary, run the yard as a VM (see below).
@@ -57,7 +81,30 @@ The yard runs as an Incus system container by default (shared host kernel, fast,
 
 ## Local or remote yard
 
-The yard is reached over SSH — VS Code Remote-SSH for L1, plus Dev Containers ("Reopen/Attach in Container") for L2 boxes. Because access is uniform, a **remote** yard on another machine is meant to be used exactly like a local one: point the CLI at a remote SSH target and the workflow is unchanged. This is not fully implemented yet — today the yard runs locally, and remote selection (`yard remote …`) is planned.
+The yard is reached over SSH — VS Code Remote-SSH for L1, plus Dev Containers ("Reopen/Attach in Container") for L2 boxes. Because access is uniform, a yard on **another machine** is driven exactly like a local one: register it once, then prefix commands with `-Y <name>`.
+
+Set up a host that already runs Subyard (`yard init` done there), then from your laptop:
+
+```
+yard remote add srv1 me@srv1        # probe it, register a context, wire an ssh alias + key
+yard -Y srv1 status                 # lifecycle commands forward to srv1 (native prompts kept)
+yard -Y srv1 sync .                 # data plane: copy this project straight into the remote yard
+yard -Y srv1 code .                 # VS Code Remote-SSH opens it, over ProxyJump
+yard yards                          # local and remote yards in one table (with last-seen state)
+```
+
+`remote add` targets a **named** yard on that host with `--yard <name>`. Manage the registry with `yard remote list` and `yard remote remove <name>`.
+
+How commands are routed for a remote yard:
+
+- **Lifecycle** (`init`, `start`, `stop`, `provision`, `status`, `logs`, `usage`, `shell`, `up`/`down`, resource commands, …) **forward** over `ssh -t` to the owner host and run its own `yard` — so the remote side's `Proceed? [y/N]` prompts stay intact; nothing is duplicated locally.
+- **Data plane** (`ssh`, `code`, `sync`, `export`, `clone`, `remove`) runs on your machine and reaches the yard directly through a generated `Host yard-<name>` ssh alias (`ProxyJump` via the owner host to the yard's loopback port, with connection multiplexing for speed).
+- **`bind` is refused** for a remote yard — it mounts a host path that does not exist on the remote machine; use `sync` or `clone` instead.
+- **`check`** probes reachability, parses `yard _info`, and warns on CLI version drift, skipping the local-host checks.
+
+On a successful `sync`/`clone` the yard also gets a small `.subyard-meta.json` next to the copy (local **and** remote yards). Project state is otherwise machine-local, so a second controller does not see what you synced — run `yard list --live` to read that meta over the wire: it marks which projects are actually in the yard and lists any that live only there (a `(yard)` marker). `yard remove`/`yard code` accept such yard-only projects, registering a minimal local record on demand.
+
+Trust and secrets: an account on the remote host means full trust of it (it sees everything you sync there). No private keys or secrets are copied over — host secrets and staging/qa environments live on the owner host and are filled in there. Agent-forwarding to a remote yard is **off by default** (the agent socket must never land on someone else's machine); enable it explicitly in the context env file if you need it. The registry file (`~/.config/subyard/yards/<name>.env`) and the generated ssh alias are machine-local and not committed.
 
 ## Coding agents
 
@@ -77,6 +124,8 @@ config/             Settings: subyard.env (instance), incus.project.env (project
                     host.env (all host paths + host→yard mounts/symlinks),
                     ports.env (host loopback ports for proxy devices, e.g. emulator adb),
                     agents.env (per-agent config + persistence)
+config/yards/       Named-yard reference + example.env template (registry lives elsewhere:
+                    private/yards/ or ~/.config/subyard/yards/)
 config/agents/      Per-agent default configs laid into the yard (claude, codex, pi)
 config/profiles/    Dependency profiles, one directory each (android, default, openclaw):
                     profile.conf (non-secret contract), provision.sh, and

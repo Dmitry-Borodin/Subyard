@@ -18,6 +18,9 @@
 # is the project's own. Otherwise it runs BASE_IMAGE directly. An optional sibling profile.env
 # (gitignored, host-only) carries secrets: it is staged into the yard and bind-mounted as a
 # file at /run/subyard/profile.env (via the file mount, not -e).
+# Remote yards (YARD_TYPE=remote): boxes need local incus + the yard's Docker, which live on
+# the owner host — every subcommand refuses with a "run it there" hint (manage boxes via
+# `ssh <dest> yard up …`).
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,6 +116,13 @@ preflight() {
 sub="${1:-}"; shift || true
 [ -n "$sub" ] || die "need a subcommand: up | info | shell | exec | down | destroy | list"
 
+# L2 project-env boxes need the yard's nested Docker + local incus — both live ON the owner
+# host. A remote context cannot manage them from here, so refuse EVERY subcommand up front
+# (before any resolution or incus) with a run-there hint.
+if yard_is_remote; then
+  die "L2 project-env boxes are managed on the yard's owner host — run there: ssh ${REMOTE_DEST:-<dest>} yard${REMOTE_YARD:+ -Y $REMOTE_YARD} $sub …"
+fi
+
 # --- list: no project needed -------------------------------------------------
 if [ "$sub" = list ]; then
   preflight
@@ -134,8 +144,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-# Accept a path (default '.'), an exact id, or a project NAME from `yard list`.
-id="$(resolve_project_id "$path")"
+# Accept a path (default '.'), an exact id, or a project NAME. resolve_project_ctx resolves
+# across yards and re-execs in the owning yard when the box lives elsewhere.
+resolve_project_ctx "$path"
+id="$RESOLVED_ID"
 name="$(state_get "$id" name)"
 yardPath="$(state_get "$id" yardPath)"
 cname="$(cname_for "$id")"

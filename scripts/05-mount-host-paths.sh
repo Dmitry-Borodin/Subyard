@@ -86,7 +86,18 @@ reconcile_mount() {
   local opts=(source="$src" path="$path")
   [ "$want_ro" = 1 ] && opts+=(readonly=true)
   [ -n "$SHIFT_OPT" ] && opts+=("$SHIFT_OPT")
-  incus config device add "$INSTANCE_NAME" "$name" disk "${PROJ[@]}" "${opts[@]}" >/dev/null
+  local err
+  if ! err="$(incus config device add "$INSTANCE_NAME" "$name" disk "${PROJ[@]}" "${opts[@]}" 2>&1 >/dev/null)"; then
+    # Kernels/hosts without idmapped-mount support (e.g. a nested host) reject shift
+    # at ATTACH time with this exact cause — point at the documented fallback instead
+    # of leaving a bare incus error.
+    case "$err" in
+      *idmapping*)
+        printf '%s\n' "$err" >&2
+        die "this host cannot idmap-shift mounts — set SHIFT_MODE=acl (yard env or environment) and re-run" ;;
+      *) printf '%s\n' "$err" >&2; die "could not attach host mount '$name'" ;;
+    esac
+  fi
   ok "$name → $path (${ro:-rw})"
 }
 for i in "${!m_name[@]}"; do

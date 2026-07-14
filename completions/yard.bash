@@ -18,6 +18,26 @@ _yard_profiles() {
   ( cd "$d" && ls -1 ./*.conf 2>/dev/null | sed 's,^\./,,;s,\.conf$,,' )
 }
 
+# Registry yard names: 'default' plus the basename of every *.env under private/yards/ and
+# ~/.config/subyard/yards/ — read cheaply in the shell (NEVER invoke incus). $2, if set, is a
+# prefix emitted before each name (e.g. '@' for the first-token sugar). Mirrors lib.sh's
+# yard_registry_names so completion and the CLI agree on what a valid yard name is.
+_yard_yards() {
+  local repo pfx="${2:-}" d f n home
+  printf '%s%s\n' "$pfx" default
+  repo="$(_yard_repo "$1")" || return 0
+  local dirs=( "$repo/private/yards" )
+  home="$(_yard_config_home "$1")" || home=""
+  [ -n "$home" ] && dirs+=( "$home/yards" )
+  for d in "${dirs[@]}"; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*.env; do
+      [ -e "$f" ] || continue
+      n="$(basename "$f" .env)"; printf '%s%s\n' "$pfx" "$n"
+    done
+  done
+}
+
 # Host-side state home: honor an explicit override, else derive the same default as
 # config/host.env (so completion and the CLI can never disagree on where state lives).
 _yard_config_home() {
@@ -47,13 +67,31 @@ _yard() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   cword=$COMP_CWORD
 
-  local globals='-h --help -l --list -V --version -y --yes'
+  local globals='-Y --yard -h --help -l --list -V --version -y --yes'
 
-  # First word: a global option or a command.
-  if [ "$cword" -eq 1 ]; then
+  # A named-yard context may precede the command: -Y <name> / --yard <name> / --yard=<name>
+  # / @<name>. Complete its VALUE with registry yard names, and skip it when locating the
+  # command slot below.
+  if [ "$prev" = "-Y" ] || [ "$prev" = "--yard" ]; then
+    local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}")" -- "$cur") ); return 0
+  fi
+  case "$cur" in
+    @*)       local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}" @)" -- "$cur") ); return 0 ;;
+    --yard=*) local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}" '--yard=')" -- "$cur") ); return 0 ;;
+  esac
+
+  # Command slot: 1, or shifted past a leading context selector.
+  local cmdidx=1
+  case "${COMP_WORDS[1]:-}" in
+    -Y | --yard)     cmdidx=3 ;;
+    --yard=* | @?*)  cmdidx=2 ;;
+  esac
+
+  # The command position: a global option or a command name.
+  if [ "$cword" -eq "$cmdidx" ]; then
     local cmds
     cmds="$("${COMP_WORDS[0]}" --list 2>/dev/null)"
-    [ -n "$cmds" ] || cmds='check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info emu staging'
+    [ -n "$cmds" ] || cmds='check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging'
     case "$cur" in
       -*) COMPREPLY=( $(compgen -W "$globals" -- "$cur") ) ;;
       *)  COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ) ;;
@@ -61,7 +99,7 @@ _yard() {
     return 0
   fi
 
-  cmd="${COMP_WORDS[1]}"
+  cmd="${COMP_WORDS[cmdidx]}"
 
   case "$cmd" in
     up)
@@ -96,7 +134,15 @@ _yard() {
       fi
       ;;
     teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
-    init|setup|check|list|logs|usage|start|stop|status) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
+    init|setup|check|list|logs|usage|start|stop|yards) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
+    status) COMPREPLY=( $(compgen -W '--all --yes --help' -- "$cur") ) ;;
+    remote)
+      # remote <add|remove|list>; `remove` takes a registered yard name; `add` a name then dest.
+      if [ "$cword" -eq "$((cmdidx + 1))" ]; then COMPREPLY=( $(compgen -W 'add remove list' -- "$cur") )
+      elif [ "${COMP_WORDS[cmdidx+1]}" = remove ]; then local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}")" -- "$cur") )
+      elif [ "${COMP_WORDS[cmdidx+1]}" = add ]; then [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yard --yes' -- "$cur") )
+      else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
+      ;;
     clone)
       if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
       [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--target --yes' -- "$cur") ) ;;

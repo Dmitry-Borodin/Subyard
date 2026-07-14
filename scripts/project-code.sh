@@ -5,6 +5,10 @@
 # `code` against vscode-remote://ssh-remote+<host><yardPath>. target=yard => edit in L1;
 # target=<profile> => the project runs in an L2 project-env box (Attach in Container,
 # brought up with `yard up`). Operator; no root.
+# Remote yards (YARD_TYPE=remote): pure ssh — reachability is an ssh probe (never incus) and
+# the VS Code workspace file is written over the yard-<name> alias; Remote-SSH reaches the
+# yard through the same ProxyJump alias. A project found only in the yard is registered on
+# demand from its meta.
 # Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,8 +34,12 @@ for a in "$@"; do
   case "$a" in -y|--yes) ;; -*) die "unknown option '$a'" ;; *) arg="$a" ;; esac
 done
 
-# Accept a path (default '.'), an exact id, or a project NAME from `yard list`.
-id="$(resolve_project_id "$arg")"
+# Accept a path (default '.'), an exact id, or a project NAME. maybe_reconcile registers on
+# demand a project that lives only in the yard (explicit context); resolve_project_ctx then
+# resolves across yards and re-execs in the owning yard.
+maybe_reconcile "$arg"
+resolve_project_ctx "$arg"
+id="$RESOLVED_ID"
 yardPath="$(state_get "$id" yardPath)"
 host="$(state_get "$id" sshHost)"; host="${host:-$SSH_HOST}"
 name="$(state_get "$id" name)"; name="${name:-$id}"
@@ -53,12 +61,17 @@ Opening the Remote-SSH entry to the yard now ...
 MSG
 fi
 
-# Yard must be up, and SSH access must be set up (Remote-SSH needs the proxy + key).
-incus_preflight code
-[ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: yard start"
-incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh \
-  || die "SSH access not set up — run 'yard init' (or scripts/07-ssh-access.sh)"
+# Yard must be up, and SSH access must be set up (Remote-SSH needs the proxy + key). Remote:
+# the ssh alias is the only path — probe it (never incus); the proxy/key live on the owner host.
+if yard_is_remote; then
+  require_remote_reachable
+else
+  incus_preflight code
+  [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
+    || die "yard is not running — start it: yard start"
+  incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh \
+    || die "SSH access not set up — run 'yard init' (or scripts/07-ssh-access.sh)"
+fi
 
 # VS Code labels a window by its leaf folder — for us that's the useless "src". Write a
 # tiny .code-workspace that names the (absolute) src path with the project, so the title
@@ -73,11 +86,20 @@ recs=""   # JSON array body: "ext.one","ext.two",… (each id escaped)
 for _ext in $CODE_RECOMMENDED_EXTENSIONS; do
   _e="${_ext//\\/\\\\}"; _e="${_e//\"/\\\"}"; recs="$recs${recs:+,}\"$_e\""
 done
-incus exec "$INSTANCE_NAME" "${PROJ[@]}" --user "$DEV_UID" --group "$DEV_GID" \
-  --env HOME="/home/$DEV_USER" --env WSDIR="${wsfile%/*}" --env WSFILE="$wsfile" \
-  --env WSJSON='{"folders":[{"name":"'"$esc_name"'","path":"'"$esc_path"'"}],"extensions":{"recommendations":['"$recs"']}}' -- \
-  sh -c 'mkdir -p "$WSDIR" && printf "%s\n" "$WSJSON" > "$WSFILE"' \
-  || die "could not write the VS Code workspace file in the yard"
+wsjson='{"folders":[{"name":"'"$esc_name"'","path":"'"$esc_path"'"}],"extensions":{"recommendations":['"$recs"']}}'
+wsdir="${wsfile%/*}"
+if yard_is_remote; then
+  # No local incus — write over the alias (logs in as dev). wsdir/wsfile hold only sanitized
+  # chars, so single-quoting them for the remote shell is safe; the JSON rides in on stdin.
+  printf '%s\n' "$wsjson" | ssh "$host" "mkdir -p '$wsdir' && cat > '$wsfile'" \
+    || die "could not write the VS Code workspace file in the yard"
+else
+  incus exec "$INSTANCE_NAME" "${PROJ[@]}" --user "$DEV_UID" --group "$DEV_GID" \
+    --env HOME="/home/$DEV_USER" --env WSDIR="$wsdir" --env WSFILE="$wsfile" \
+    --env WSJSON="$wsjson" -- \
+    sh -c 'mkdir -p "$WSDIR" && printf "%s\n" "$WSJSON" > "$WSFILE"' \
+    || die "could not write the VS Code workspace file in the yard"
+fi
 uri="vscode-remote://ssh-remote+$host$wsfile"
 if command -v code >/dev/null 2>&1; then
   # Remote-SSH must be installed, or `code` gets an ssh-remote:// URI it can't handle and

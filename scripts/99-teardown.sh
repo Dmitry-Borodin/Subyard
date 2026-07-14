@@ -32,6 +32,16 @@ STORAGE_POOL="${STORAGE_POOL:-default}"
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
 STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/incus/storage}"
 
+# Per-yard, context-scoped artifacts this teardown removes — and ONLY these, never a sibling
+# yard's. All derive from the loaded context: instance/project/volume (already carry -<name>),
+# ssh snippet + Include, project-state dir, size cache. The default yard keeps the historical
+# names (subyard.config, $SUBYARD_CONFIG_HOME/projects, space.cache). Shared cross-yard artifacts
+# (ssh keys/known_hosts, audit log, storage pool + bridge + NM guard) go only on the LAST yard
+# (no other Incus instances) — see the branches below.
+YARD_SNIP="subyard${YARD_NAME:+-$YARD_NAME}.config"
+YARD_STATE_DIR="${SUBYARD_STATE_DIR:-$SUBYARD_CONFIG_HOME/projects}"
+YARD_SPACE_CACHE="$SUBYARD_HOME/space${YARD_NAME:+-$YARD_NAME}.cache"
+
 KEEP_DATA=0
 # Reject unknown flags: a typo like `--keepdata` MUST NOT silently fall through to a FULL,
 # data-destroying teardown. `-y`/`--yes`/`-h`/`--help` are consumed by lib.sh (present in argv
@@ -52,15 +62,15 @@ if [ "$KEEP_DATA" = 1 ]; then
   announce "Subyard teardown — KEEP DATA ($INSTANCE_NAME)" \
     "Delete the '$INSTANCE_NAME' instance (project '$INCUS_PROJECT')." \
     "KEEP the storage pool, the '$SRV_VOLUME' volume and all /srv data, the project, and the '$BRIDGE' bridge." \
-    "Remove client config: ufw rules, ssh client config (~/.ssh/subyard.config), machine state (~/.config/subyard)." \
+    "Remove this yard's client config: ssh snippet (~/.ssh/$YARD_SNIP), project state ($YARD_STATE_DIR); ufw bridge rules stay (bridge kept)." \
     "Keep the NetworkManager guard (the bridge stays), the 'incus' package, and the yard CLI."
 else
   announce "Subyard teardown — FULL (frees disk)" \
     "Delete the '$INSTANCE_NAME' instance and the '$INCUS_PROJECT' project (with its '$SRV_VOLUME' volume)." \
     "Delete the '$BRIDGE' bridge and the '$STORAGE_POOL' storage pool (only if no other Incus instances use them)." \
-    "DELETE ALL DATA under $STORAGE_PATH (the yard rootfs + /srv) — frees the disk, IRREVERSIBLE." \
-    "Remove host config: NetworkManager guard, ufw rules, ssh client config, machine state (~/.subyard, ~/.config/subyard)." \
-    "Keep the 'incus' package, the 'incus-admin' group, and the yard CLI (so 'yard init' can rebuild)."
+    "DELETE ALL DATA under $STORAGE_PATH (the yard rootfs + /srv) — frees the disk, IRREVERSIBLE (only if no other yard shares the pool)." \
+    "Remove this yard's config: ssh snippet (~/.ssh/$YARD_SNIP), project state ($YARD_STATE_DIR); ufw bridge rules + the NetworkManager guard only when the shared bridge goes (last yard)." \
+    "Keep the 'incus' package, the 'incus-admin' group, and the yard CLI (so '$(yard_cmd_hint) init' can rebuild)."
 fi
 proceed_or_die
 require_root "removing the NetworkManager guard, ufw rules, and the Incus storage data needs root"
@@ -160,31 +170,57 @@ fi
 
 # --- 4. host config (operator-owned; we are root here) -----------------------
 echo "Host config:"
-# ufw rules (reverse of 06-network.sh) — best-effort, only if ufw present.
-if command -v ufw >/dev/null 2>&1; then
+# ufw rules (reverse of 06-network.sh) — best-effort, only if ufw present. The rules are
+# per-BRIDGE and the bridge is SHARED across yards: drop them only when the bridge is gone, else
+# a surviving sibling would lose DHCP/DNS (a later 'yard init' re-applies them idempotently).
+if command -v ufw >/dev/null 2>&1 && [ "$bridge_gone" = 1 ]; then
   ufw delete allow in on "$BRIDGE" to any port 67 proto udp >/dev/null 2>&1 || true
   ufw delete allow in on "$BRIDGE" to any port 53 >/dev/null 2>&1 || true
   ufw route delete allow in on "$BRIDGE" >/dev/null 2>&1 || true
   ufw route delete allow out on "$BRIDGE" >/dev/null 2>&1 || true
   ok "removed Subyard ufw rules for '$BRIDGE' (if any)"
+elif command -v ufw >/dev/null 2>&1; then
+  ok "kept ufw rules for '$BRIDGE' (bridge still exists — shared with other yards)"
 fi
-# ssh client config (reverse of 07-ssh-access.sh)
-snip="$OPERATOR_HOME/.ssh/subyard.config"; cfg="$OPERATOR_HOME/.ssh/config"
-rm -f "$snip" && ok "removed ~/.ssh/subyard.config (if present)"
-if [ -f "$cfg" ] && grep -qxF "Include subyard.config" "$cfg"; then
-  grep -vxF "Include subyard.config" "$cfg" > "$cfg.tmp" && mv -f "$cfg.tmp" "$cfg"
+# ssh client config (reverse of 07-ssh-access.sh) — this yard's snippet + Include ONLY.
+snip="$OPERATOR_HOME/.ssh/$YARD_SNIP"; cfg="$OPERATOR_HOME/.ssh/config"
+rm -f "$snip" && ok "removed ~/.ssh/$YARD_SNIP (if present)"
+if [ -f "$cfg" ] && grep -qxF "Include $YARD_SNIP" "$cfg"; then
+  grep -vxF "Include $YARD_SNIP" "$cfg" > "$cfg.tmp" && mv -f "$cfg.tmp" "$cfg"
   chown "$OPERATOR_USER":"$(id -gn "$OPERATOR_USER" 2>/dev/null || echo "$OPERATOR_USER")" "$cfg" 2>/dev/null || true
-  ok "removed 'Include subyard.config' from ~/.ssh/config"
+  ok "removed 'Include $YARD_SNIP' from ~/.ssh/config"
 fi
-# machine-local state (project pointers) — always; meaningless without the yard.
-rm -rf "$SUBYARD_CONFIG_HOME" && ok "removed $SUBYARD_CONFIG_HOME"
+# Drop THIS yard's host-key entry from the SHARED known_hosts (entries keyed by [127.0.0.1]:<port>,
+# one file for all yards). A surviving sibling keeps the file, so a stale entry would make a re-init
+# on the same port fail accept-new with "HOST IDENTIFICATION CHANGED". Best-effort.
+known="$SUBYARD_HOME/ssh/known_hosts"
+if [ -f "$known" ] && [ -n "${SSH_PORT:-}" ]; then
+  ssh-keygen -R "[127.0.0.1]:$SSH_PORT" -f "$known" >/dev/null 2>&1 || true
+  ok "cleared this yard's host-key entry ([127.0.0.1]:$SSH_PORT) from known_hosts"
+fi
+# machine-local state (project pointers) — THIS yard's dir only. Never $SUBYARD_CONFIG_HOME
+# wholesale: for the default yard that would also wipe named yards' state under yards/. A named
+# yard drops its now-empty yards/<name>/; the default yard drops $SUBYARD_CONFIG_HOME only when
+# nothing else remains under it.
+rm -rf "$YARD_STATE_DIR" && ok "removed yard state $YARD_STATE_DIR"
+if [ -n "${YARD_NAME:-}" ]; then
+  rmdir "$SUBYARD_CONFIG_HOME/yards/$YARD_NAME" 2>/dev/null || true
+  rmdir "$SUBYARD_CONFIG_HOME/yards" 2>/dev/null || true
+else
+  rmdir --ignore-fail-on-non-empty "$SUBYARD_CONFIG_HOME" 2>/dev/null || true
+fi
+# This yard's size cache (+ its lock/tmp) — a per-yard file, safe to drop in every branch.
+rm -f "$YARD_SPACE_CACHE" "$YARD_SPACE_CACHE.lock" "$YARD_SPACE_CACHE.tmp" 2>/dev/null || true
 if [ "$KEEP_DATA" = 1 ]; then
   ok "kept data: $STORAGE_PATH (and $SUBYARD_HOME)"
 elif [ "$pool_gone" = 1 ]; then
+  # Last yard on this host (pool deleted) → remove the shared home wholesale (storage data,
+  # ssh keys, logs — nothing else references them now).
   rm -rf "$SUBYARD_HOME" && ok "removed $SUBYARD_HOME (storage data, ssh keys, logs)"
 else
-  rm -rf "$SUBYARD_HOME/ssh" "$SUBYARD_HOME/logs" 2>/dev/null || true
-  warn "kept $STORAGE_PATH — pool '$STORAGE_POOL' still references it; delete the pool, then: sudo rm -rf $SUBYARD_HOME"
+  # Another yard still shares the pool: keep the shared ssh keys/known_hosts and audit log —
+  # they belong to the surviving yard(s). Only this yard's own cache (dropped above) goes.
+  warn "kept $STORAGE_PATH and shared $SUBYARD_HOME/{ssh,logs} — another yard still uses the pool"
 fi
 
 # --- 5. NetworkManager guard — LAST (bridge + veths are gone by now) ----------

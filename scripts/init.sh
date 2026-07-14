@@ -231,9 +231,12 @@ print_plan() {
 # ============================================================================
 
 # Read-only host preflight (00). Hard failures abort before anything mutates.
+# SUBYARD_PREFLIGHT_STRICT=1 makes a cross-yard SSH_PORT collision a HARD failure here (init
+# must not create a second yard on a port another yard already claims); a plain `yard check`
+# leaves that check advisory (warn only).
 host_preflight() {
-  STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME}" "$SCRIPT_DIR/00-check-host.sh" \
-    || die "host preflight failed — fix the items above, then re-run 'yard init'"
+  STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME}" SUBYARD_PREFLIGHT_STRICT=1 "$SCRIPT_DIR/00-check-host.sh" \
+    || die "host preflight failed — fix the items above, then re-run '$(yard_cmd_hint) init'"
 }
 
 # Install Incus on first run (then continue under a fresh group session), or upgrade it
@@ -359,11 +362,14 @@ run_steps
 
 echo
 ok "Subyard is up."
-cat <<'MSG'
+# Context-aware next steps: the default yard shows plain `yard …`; a named yard carries -Y so
+# the copy-pasted commands target the same yard.
+_hint="$(yard_cmd_hint)"
+cat <<MSG
 
 Next:
-  yard status
-  yard sync .       # copy a code project into the yard (or: bind . to mount it)
-  yard code .       # open it in VS Code (Remote-SSH into the yard)
+  $_hint status
+  $_hint sync .       # copy a code project into the yard (or: bind . to mount it)
+  $_hint code .       # open it in VS Code (Remote-SSH into the yard)
 MSG
 offer_provision

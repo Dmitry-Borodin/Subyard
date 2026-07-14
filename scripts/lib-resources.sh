@@ -87,3 +87,16 @@ res_stop_hint_for_name() {
 res_completion_rows() {
   local p n c h b s v; while IFS=$'\t' read -r p n c h b s v _; do printf '%s\t%s\n' "$c" "$v"; done < <(res_rows)
 }
+
+# yard_profiles_active — the profiles ACTIVE in the current yard context, one per line: the
+# yard's YARD_PROFILES when set, else every profile dir on disk (default-yard behavior). Lets a
+# named yard surface only its own profiles' resources (status listing, per-yard provisioning).
+yard_profiles_active() {
+  if [ -n "${YARD_PROFILES:-}" ]; then
+    local p
+    for p in $YARD_PROFILES; do printf '%s\n' "$p"; done
+  else
+    local d
+    for d in "$_LIBRES_PROFILES"/*/; do [ -d "$d" ] && basename "$d"; done
+  fi
+}

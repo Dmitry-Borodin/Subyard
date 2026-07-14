@@ -16,9 +16,9 @@ PROJ=(--project "$INCUS_PROJECT")
 
 incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "instance '$INSTANCE_NAME' missing — run '${PROG:-yard} init' first"
+  || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it: ${PROG:-yard} start"
+  || die "yard is not running — start it: $(yard_cmd_hint) start"
 
 announce_confirm "Refresh agent instructions and configs in $INSTANCE_NAME" \
   "Overwrite the in-yard copies of global Claude/Codex instructions when their host sources exist." \

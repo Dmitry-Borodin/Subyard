@@ -30,7 +30,7 @@ done
 
 incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-  || die "yard is not running — start it first (yard start)"
+  || die "yard is not running — start it first ($(yard_cmd_hint) start)"
 
 jargs=(journalctl -n "$lines")
 [ -n "$unit" ] && jargs+=(-u "$unit")

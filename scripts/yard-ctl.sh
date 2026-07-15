@@ -148,9 +148,13 @@ print_space_cached() {
 #     openclaw  staging-gateway  down   (yard staging start)
 print_shared() {
   local running="$1" name res st hint any=0
+  local -a active_profiles=()
   # Only the yard's ACTIVE profiles (YARD_PROFILES when set, else all on disk — default yard
-  # unchanged), so a named yard lists just its own profiles' shared resources.
-  while IFS= read -r name; do
+  # unchanged), so a named yard lists just its own profiles' shared resources. Materialize the
+  # list before probing: resource handlers run `incus exec`, which may consume inherited stdin
+  # and would otherwise drain a `while read` profile iterator after the first resource.
+  mapfile -t active_profiles < <(yard_profiles_active)
+  for name in "${active_profiles[@]}"; do
     [ -n "$name" ] || continue
     [ -r "$PROFILES_DIR/$name/profile.conf" ] || continue
     for res in $(svc_resources_for "$name"); do
@@ -171,7 +175,7 @@ print_shared() {
         printf '    %-9s %-16s %s\n' "$name" "$res" "$st"
       fi
     done
-  done < <(yard_profiles_active)
+  done
   [ "$any" = 1 ] || printf '  shared   none\n'
 }
 

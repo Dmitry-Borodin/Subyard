@@ -76,9 +76,7 @@ have_mounts() {
   return 0
 }
 
-# Presence-only check of what 04 applies (docker, dev user, global agent instructions, HOST_LINKS, and
-# dev sudoers matching DEV_SUDO). PRESENCE only, so it never flip-flops; a content/
-# dotfiles refresh is deliberately NOT caught here — use 'yard init --reset' for that.
+# Presence check for Phase 3. Refresh agent template drift with `yard init --configs`.
 have_provision() {
   reachable || return 1
   local claude_req=0 codex_agents_req=0
@@ -105,6 +103,10 @@ for e in $(printf '%s\n' "${HOST_LINKS:-}" | sed 's/[[:space:]]//g'); do
   [ -d "$mroot" ] || continue
   { [ -e "$home/$name" ] || [ -L "$home/$name" ]; } || drift=1
 done
+legacy="$home/.local/share/opencode/storage"
+if [ -L "$legacy" ] && [ "$(readlink "$legacy")" = /mnt/host/agent-sessions/opencode/storage ]; then
+  exit 1
+fi
 [ "$drift" = 0 ]
 CHK
 }

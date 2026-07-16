@@ -126,7 +126,7 @@ config/             Settings: subyard.env (instance), incus.project.env (project
                     agents.env (per-agent config + persistence)
 config/yards/       Named-yard reference + example.env template (registry lives elsewhere:
                     private/yards/ or ~/.config/subyard/yards/)
-config/agents/      Per-agent default configs laid into the yard (claude, codex, pi)
+config/agents/      Per-agent default configs laid into the yard (claude, codex, opencode, pi)
 config/profiles/    Dependency profiles, one directory each (android, default, openclaw):
                     profile.conf (non-secret contract), provision.sh, and
                     resources/*.res (shared-resource descriptors). A gitignored
@@ -134,4 +134,3 @@ config/profiles/    Dependency profiles, one directory each (android, default, o
 config/staging/     Staging-gateway zone config (canonical.conf + .example templates)
 config/qa-pool/     QA-bot broker config (.example templates)
 ```
-

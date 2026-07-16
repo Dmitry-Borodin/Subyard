@@ -85,10 +85,8 @@ else
   rm -f "$sudoers"
 fi
 
-# Coding-agent state. Credentials live per-yard in rootfs (~/.claude, ~/.codex) and are
-# never shared with the host; only sessions are shared via HOST_LINKS (below), pointing
-# ~/.claude/projects and ~/.codex/sessions at the host-agent-sessions mount. CLAUDE.md is
-# copied in host-side (section 3), not symlinked.
+# Agent credentials stay in the yard rootfs; only declared session/state paths use HOST_LINKS.
+# CLAUDE.md is copied in host-side (section 3), not symlinked.
 dev_home="$(getent passwd "$DEV_USER" | cut -d: -f6)"
 
 # Agent homes are real rootfs dirs (creds land here). Drop any stale symlink so
@@ -120,6 +118,13 @@ if [ -n "${HOST_LINKS:-}" ]; then
       echo "WARNING: $link exists and is not a symlink — leaving it (move it aside to share)" >&2
     fi
   done
+fi
+
+# Detach the exact legacy OpenCode storage symlink; leave real directories untouched.
+legacy_opencode_storage="$dev_home/.local/share/opencode/storage"
+if [ -L "$legacy_opencode_storage" ] \
+  && [ "$(readlink "$legacy_opencode_storage")" = /mnt/host/agent-sessions/opencode/storage ]; then
+  rm -f "$legacy_opencode_storage"
 fi
 
 # /srv skeleton (generic core; profile caches like android-sdk come in Phase 4).

@@ -1,7 +1,18 @@
 # Codex command rules for the yard (laid down at ~/.codex/rules/repo.rules).
-# Gate publishing git history at the Codex level — every push prompts the operator —
-# rather than a yard-wide git shim. Routine local work (edits, builds, tests, git reset)
-# stays free per П1; only push is gated here. Mirrors the operator's dotfiles convention.
+# Gate creating and publishing git history at the Codex level — every commit and push prompts
+# the operator — rather than a yard-wide git shim. Routine local work (edits, builds, tests,
+# git reset) stays free.
+
+prefix_rule(
+    pattern = ["git", "commit"],
+    decision = "prompt",
+    justification = "Creating or amending a commit must be explicitly approved by the operator.",
+    match = [
+        "git commit",
+        "git commit -m msg",
+        "git commit --amend",
+    ],
+)
 
 prefix_rule(
     pattern = ["git", "push"],

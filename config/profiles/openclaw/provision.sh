@@ -180,7 +180,7 @@ SC
 chmod +x /usr/local/bin/sy-cache
 
 # 4b. Wire the shared cache into the DEV user's own TOOL config — read by the tools regardless of
-#     shell type (login or `yard ssh -- cmd`), so no /etc/profile.d/pam_env plumbing is needed, and
+#     shell type (login or `yard shell -- cmd`), so no /etc/profile.d/pam_env plumbing is needed, and
 #     NO global env is forced on unrelated yard tools (that broke `yard usage`/npx). Per-dev (not
 #     /etc): root provision reads none of these, so it cannot re-contaminate /srv/cache.
 #       pnpm store → the shim (step 2, pnpm-only flag — no npm warning);
@@ -200,7 +200,7 @@ fi
 
 # 4c. The few things that genuinely ARE env (no tool-config equivalent): the docs pointer, and the
 #     Playwright browser-cache path when browser_tests is on. Neither affects npm, so neither warns.
-#     Login shells via /etc/profile.d; non-login `yard ssh -- cmd` via /etc/environment (pam_env).
+#     Login shells via /etc/profile.d; non-login `yard shell -- cmd` via /etc/environment (pam_env).
 browser_on=0
 case " ${OPTIONAL_FEATURES:-} " in *" browser_tests "*) browser_on=1 ;; esac
 {
@@ -305,7 +305,7 @@ That injected key is what un-skips the project's key-gated live tests; with no k
 
 All agents in this yard share `/srv/cache` (pnpm store, npm, pip[, playwright]). The cache locations
 are preconfigured for you — pnpm's store via the `pnpm` wrapper, npm + pip via your `~/.npmrc` and
-`~/.config/pip/pip.conf` — so they apply in every shell (login or `yard ssh -- <cmd>`). Do NOT
+`~/.config/pip/pip.conf` — so they apply in every shell (login or `yard shell -- <cmd>`). Do NOT
 override the store/cache dirs per checkout, or you fork the cache and re-download everything.
 
 - Cache mutations self-serialize: run `sy-cache prune|clean|purge|all` (or even a raw `pnpm store

@@ -23,7 +23,7 @@ PROG="${0##*/}"
 # Core command names (yard lifecycle / project workflow / project-env L2). Profile-resource
 # commands are appended from the registry below, so adding a resource needs no edit here. Drives
 # `yard --list` and both completions.
-COMMANDS=(check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info yards remote)
+COMMANDS=(check init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote)
 if command -v res_commands >/dev/null 2>&1; then
   while IFS= read -r _rc; do [ -n "$_rc" ] && COMMANDS+=("$_rc"); done < <(res_commands 2>/dev/null)
 fi
@@ -82,8 +82,8 @@ Yard lifecycle:
                   yard's size (cached, refreshed in the background when >10 min old)
   logs            tail the yard's runtime logs (systemd journal + docker)
   usage [args]    show the yard's coding-agent token usage (ccusage over the shared store)
-  ssh    [proj]   shell in the yard as dev (or, for a --target <profile> project, in its box)
-  shell  [-- cmd] open a ROOT shell in the yard (or run a root command) via incus exec
+  shell  [proj]   shell in the yard as dev, optionally in a project's directory
+         [--root] use root instead of dev; add \`-- <cmd>\` to run a command
   provision [prof] install a profile's toolchain INTO the yard (L1) so agents work
                   directly in the yard (P1 baseline); no arg = all in-yard profiles. Heavy/explicit.
   stop            stop the yard
@@ -103,7 +103,7 @@ Project-env (L2 box; for a project added with --target <profile>):
   up     [path]   build/start the project's box (--rebuild to rebuild the image)
   down   [path]   stop the box (keeps it)
   info   [path]   show what the profile exposes inside the box (visibility manifest)
-                  (a box shell is \`yard ssh <project>\`; open it in VS Code with \`yard code\`)
+                  (open a project shell with \`yard shell <project>\`; use \`yard code\` for VS Code)
 U
   usage_resources
   cat <<U
@@ -122,7 +122,7 @@ Remote yards:
   probes it, registers a context, wires a ProxyJump ssh alias and authorizes your key.
   Then '$PROG -Y <name> <cmd>': lifecycle commands (start/stop/status/provision/logs/shell/…)
   forward over ssh to the owner host with their native prompts; data-plane commands
-  (ssh/code/sync/export/clone/remove) go straight into the yard. 'bind' is host-local and
+  (code/sync/export/clone/remove) go straight into the yard. 'bind' is host-local and
   disabled for remote yards. Keys and secrets stay on the owner host.
   Subcommands:  remote add <name> <user@host> [--yard <remote-yard>] | remote remove <name> | remote list
 
@@ -224,7 +224,7 @@ soon() { printf "%s: '%s' is planned for %s — not implemented yet.\n" "$PROG" 
 # For a REMOTE yard, split commands by plane:
 #   • control plane  → FORWARD to the owner host over `ssh -t` (tty preserved) so its OWN yard
 #     runs the command with its native `Proceed? [y/N]` prompts intact; any -y/--yes rides along.
-#   • data plane + registry ops (ssh code sync export clone remove list check yards remote _info,
+#   • data plane + registry ops (code sync export clone remove list check yards remote _info,
 #     help) run LOCALLY — reaching the yard through the 'yard-<name>' ssh alias, or pure bookkeeping.
 #   • bind is host-local: the host path does not exist on the remote machine → hard refusal.
 # Two-level %q quoting so a token survives BOTH the remote login shell and the inner `bash -lc`.
@@ -238,7 +238,7 @@ remote_forward() {   # <cmd> <args…>
 if [ -n "$REMOTE_DEST" ]; then
   case "$cmd" in
     bind) printf 'bind is host-local — use sync or clone\n' >&2; exit 1 ;;
-    ssh | code | sync | export | clone | remove | list | check | yards | remote | _info | help) ;; # local, fall through
+    code | sync | export | clone | remove | list | check | yards | remote | _info | help) ;; # local, fall through
     *) remote_forward "$cmd" "$@" ;;   # forward lifecycle / project-env / resource commands
   esac
 fi
@@ -262,7 +262,6 @@ case "$cmd" in
   export)    exec "$S/project-export.sh" "$@" ;;
   up | down | info) exec "$S/project-env.sh" "$cmd" "$@" ;;   # L2 project-env box lifecycle
   provision) exec "$S/10-provision-profile.sh" "$@" ;;
-  ssh)       exec "$S/yard-ssh.sh" "$@" ;;                    # target-aware: L1 yard shell / L2 box
   shell)     exec "$S/yard-shell.sh" "$@" ;;
   clone)     exec "$S/project-clone.sh" "$@" ;;
   help)      usage ;;

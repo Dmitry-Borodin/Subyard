@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 07-ssh-access.sh — give the operator SSH into the yard, so `yard ssh` and VS Code
+# 07-ssh-access.sh — give the operator SSH into the yard for VS Code and data transfer
 # Remote-SSH (`yard code`) work. Three idempotent steps, all operator-owned (no root):
 #   1. an Incus proxy device  host 127.0.0.1:$SSH_PORT -> yard:22  (loopback only),
 #   2. the operator's public key in the yard user's authorized_keys,

@@ -75,7 +75,7 @@ _yard_code_target() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging qa-pool )
+  [[ -n $cmds ]] || cmds=( check init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging qa-pool )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args
@@ -122,6 +122,7 @@ _yard() {
           fi
           ;;
         code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
+        shell) _arguments '--root[run as root instead of dev]' '--yes[skip prompt]' '--help[show help]' '1:project:_yard_code_target' '*::command: _normal' ;;
         status) _arguments '--all[status for every registered yard]' '--yes[skip prompt]' '--help[show help]' ;;
         remote)
           if (( CURRENT == 2 )); then

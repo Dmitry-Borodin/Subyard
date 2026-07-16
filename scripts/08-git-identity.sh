@@ -75,5 +75,5 @@ ok "git identity ready."
 cat <<MSG
 
 Verify:
-  yard ssh -- git config --global --list | grep -E 'user\.(name|email)'
+  yard shell -- git config --global --list | grep -E 'user\.(name|email)'
 MSG

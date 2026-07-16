@@ -29,7 +29,7 @@ Then drop a project in and open it:
 ```sh
 yard sync .                   # copy the current project into the yard
 yard code .                   # open it in VS Code over Remote-SSH
-yard status                   # yard + ssh + mounts + services + projects
+yard status                   # yard + mounts + services + projects
 ```
 
 Run `yard --help` for the full command set (`yard <command> -h` for one). `yard init --reset` does a clean teardown + fresh init.
@@ -39,7 +39,7 @@ Run `yard --help` for the full command set (`yard <command> -h` for one). `yard 
 Everything goes through one host command, `yard` (alias `sy`) — a thin dispatcher over `scripts/`. Run `yard --help` for the full list; the main groups:
 
 - **Yard lifecycle** — `check` (read-only host preflight), `init` (install Incus → project → yard → mounts → provision), `start` / `stop` / `teardown`, `status`, `logs`, `usage` (coding-agent token usage via ccusage).
-- **Projects** — `sync` / `bind` / `clone` a project into the yard, `list`, `code` (open in VS Code over Remote-SSH), `export` (pull a diff back to the host), `remove`, plus `ssh` / `shell` to get a prompt inside.
+- **Projects** — `sync` / `bind` / `clone` a project into the yard, `list`, `code` (open in VS Code over Remote-SSH), `shell`, `export` (pull a diff back to the host), and `remove`.
 - **L2 project box** — `up` / `down` / `info` for a project added with `--target <profile>` (build/start/inspect its toolchain container).
 - **Profile resources** — commands contributed by the active profiles' `.res` descriptors, e.g. `yard emu` (Android emulator + adb/scrcpy bridge), `yard staging` (live staging gateway), `yard qa-pool` (QA-bot broker). These are discovered at runtime, not hardcoded.
 
@@ -98,7 +98,7 @@ yard yards                          # local and remote yards in one table (with 
 How commands are routed for a remote yard:
 
 - **Lifecycle** (`init`, `start`, `stop`, `provision`, `status`, `logs`, `usage`, `shell`, `up`/`down`, resource commands, …) **forward** over `ssh -t` to the owner host and run its own `yard` — so the remote side's `Proceed? [y/N]` prompts stay intact; nothing is duplicated locally.
-- **Data plane** (`ssh`, `code`, `sync`, `export`, `clone`, `remove`) runs on your machine and reaches the yard directly through a generated `Host yard-<name>` ssh alias (`ProxyJump` via the owner host to the yard's loopback port, with connection multiplexing for speed).
+- **Data plane** (`code`, `sync`, `export`, `clone`, `remove`) runs on your machine and reaches the yard directly through a generated `Host yard-<name>` ssh alias (`ProxyJump` via the owner host to the yard's loopback port, with connection multiplexing for speed).
 - **`bind` is refused** for a remote yard — it mounts a host path that does not exist on the remote machine; use `sync` or `clone` instead.
 - **`check`** probes reachability, parses `yard _info`, and warns on CLI version drift, skipping the local-host checks.
 

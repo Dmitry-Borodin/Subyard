@@ -158,7 +158,7 @@ ymeta="/srv/env-meta/$id/profile.json"        # dev-owned, 0644, no secret value
 # L1, there is no box — say so plainly for every subcommand.
 target="$(state_get "$id" target)"
 case "$target" in
-  ""|yard) die "'$name' has target=${target:-yard} — it runs in L1 (the yard), there is no L2 box. Work in the yard ('${PROG:-yard} ssh' / '${PROG:-yard} code'), or re-add with --target <profile> to use a box." ;;
+  ""|yard) die "'$name' has target=${target:-yard} — it runs in L1 (the yard), there is no L2 box. Work in the yard ('${PROG:-yard} shell $name' / '${PROG:-yard} code $name'), or re-add with --target <profile> to use a box." ;;
 esac
 profile="$target"
 preflight
@@ -309,7 +309,7 @@ MSG
     ;;
 
   exec)
-    [ "${#cmd[@]}" -gt 0 ] || die "usage: ${PROG:-yard} ssh $path -- <cmd...>"
+    [ "${#cmd[@]}" -gt 0 ] || die "project-env exec needs a command after '--'"
     ydocker inspect "$cname" >/dev/null 2>&1 || die "no box for '$name' — run: ${PROG:-yard} up $path"
     ydocker start "$cname" >/dev/null 2>&1 || true
     exec incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- docker exec "$cname" "${cmd[@]}"

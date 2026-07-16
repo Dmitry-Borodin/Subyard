@@ -91,7 +91,7 @@ _yard() {
   if [ "$cword" -eq "$cmdidx" ]; then
     local cmds
     cmds="$("${COMP_WORDS[0]}" --list 2>/dev/null)"
-    [ -n "$cmds" ] || cmds='check init start status logs usage ssh shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging'
+    [ -n "$cmds" ] || cmds='check init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging'
     case "$cur" in
       -*) COMPREPLY=( $(compgen -W "$globals" -- "$cur") ) ;;
       *)  COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ) ;;
@@ -123,10 +123,11 @@ _yard() {
       [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--target --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") )
       ;;
     export) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
-    code)
-      # `yard code` takes a project NAME (from `yard list`) or a directory path.
+    code|shell)
+      # `yard code` and `yard shell` take a project NAME (from `yard list`) or a directory path.
       if [[ "$cur" == -* ]]; then
-        COMPREPLY=( $(compgen -W '--yes' -- "$cur") )
+        if [ "$cmd" = shell ]; then COMPREPLY=( $(compgen -W '--root --yes --help' -- "$cur") )
+        else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
       else
         local IFS=$'\n'  # keep project names with spaces intact
         COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") )
@@ -156,7 +157,7 @@ _yard() {
         if [ "$cword" -eq 2 ]; then COMPREPLY=( $(compgen -W "$_verbs" -- "$cur") )
         else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
       fi
-      ;;  # otherwise (ssh, …): leave to default
+      ;;  # otherwise: leave to default
   esac
   return 0
 }

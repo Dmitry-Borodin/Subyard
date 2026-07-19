@@ -126,7 +126,10 @@ run_add() { "$ROOT/scripts/yard-remote.sh" add "$@" --yes; }
 mkdir -p "$SUBYARD_HOME/ssh"
 printf '[127.0.0.1]:2222 %s\n' "$(cut -d' ' -f1,2 "$TMP/state/local.pub")" \
   > "$SUBYARD_HOME/ssh/known_hosts"
-run_add one owner-one >/dev/null
+output="$(run_add one owner-one)"
+assert_contains "$output" 'sync <project-dir>'
+assert_contains "$output" 'remote host can read everything explicitly synced'
+assert_not_contains "$output" 'sync .'
 run_add two owner-two >/dev/null
 run_add named owner-two --yard inner >/dev/null
 run_add named owner-two --yard inner >/dev/null

@@ -46,7 +46,8 @@ remote_status_line() { # <name> <dest> <ryard>
           "$dest" -- bash -lc "$(printf '%q' "$rc")" 2>/dev/null)" || json=''
   cache="$(remote_cache_path "$name")"
   case "$json" in
-    '{'*'}')  # reachable — refresh the last-seen cache
+    '{'*'}')  # reachable — refresh state and retain last-good projects if live metadata failed
+      json="$(remote_info_keep_cached_projects "$json" "$cache")"
       install -d -m 700 "$SUBYARD_HOME" 2>/dev/null || true
       { printf '%s\n' "$(date +%s)"; printf '%s\n' "$json"; } > "$cache.tmp" 2>/dev/null \
         && mv -f "$cache.tmp" "$cache" 2>/dev/null || true ;;

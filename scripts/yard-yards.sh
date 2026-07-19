@@ -7,7 +7,7 @@
 #             from an `_info` probe of the owner host, else the cached state + 'seen <age> ago',
 #             else '?' (never dies, never blocks longer than the 2s probe timeout)
 #   SSH       local: the yard's host loopback port; remote: the 'yard-<name>' ProxyJump alias
-#   PROJECTS  count of machine-local project records (local) / remote-reported project count
+#   PROJECTS  count of machine-local project records (local) / live yard-side remote metadata
 #   SIZE      the yard's last cached size (yard status refreshes it), or '-'
 # Read-only; operator-owned; no root. Works with or without incus on PATH; remote probes need ssh.
 set -euo pipefail
@@ -129,7 +129,8 @@ EOF
   json=''; [ -n "$probe_tmp" ] && [ -f "$probe_tmp/$name.json" ] && json="$(cat "$probe_tmp/$name.json")"
   rstate=''; rprojects=''; marker=''; rsize='-'
   case "$json" in
-    '{'*'}')   # reachable — refresh the last-seen cache
+    '{'*'}')   # reachable — refresh state and retain last-good projects if live metadata failed
+      json="$(remote_info_keep_cached_projects "$json" "$remcache")"
       rstate="$(json_str "$json" state)"; rprojects="$(json_num "$json" projects)"
       install -d -m 700 "$SUBYARD_HOME" 2>/dev/null || true
       { printf '%s\n' "$now"; printf '%s\n' "$json"; } > "$remcache.tmp" 2>/dev/null \

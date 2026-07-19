@@ -435,6 +435,21 @@ yard_live_projects() {
     | _yard_meta_parse
 }
 
+# yard_live_project_count_local — strict owner-side count for `yard _info`. Unlike the
+# best-effort list helpers above, this distinguishes an empty running yard (prints 0) from a
+# failed/unparseable observation (returns non-zero and prints nothing), so remote controllers can
+# retain a last-good count instead of caching a false zero. Project IDs are deduplicated because
+# yard-side metadata, not controller-local state, is the source of truth for remote inventory.
+yard_live_project_count_local() {
+  local inst="${INSTANCE_NAME:-yard}" proj="${INCUS_PROJECT:-subyard}" raw ids
+  local cmd='for f in /srv/workspaces/*/.subyard-meta.json; do [ -e "$f" ] || continue; cat "$f"; printf "\n"; done'
+  command -v incus >/dev/null 2>&1 || return 1
+  raw="$(incus exec "$inst" --project "$proj" -- sh -c "$cmd" 2>/dev/null)" || return 1
+  ids="$(jq -r 'select(type == "object" and (.projectId | type == "string") and .projectId != "") | .projectId' \
+    <<<"$raw" 2>/dev/null)" || return 1
+  awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }' <<<"$ids"
+}
+
 # _yard_env_peek <name> <VAR> — read one KEY=VALUE from a yard's env file without sourcing it.
 # Prints nothing (and still returns 0) when the yard has no env file — e.g. the default yard —
 # so a `var="$(_yard_env_peek …)"` under `set -e` never aborts; callers fall back to defaults.

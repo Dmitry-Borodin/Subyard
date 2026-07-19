@@ -206,6 +206,30 @@ age_human() {
 # line 2 = the _info JSON). Shared by yard-remote.sh / yard-yards.sh / yard-ctl.sh.
 remote_cache_path() { printf '%s/remote-%s.cache\n' "$SUBYARD_HOME" "$1"; }
 
+# remote_info_keep_cached_projects <live-json> <cache-file> — `_info` deliberately reports
+# projects:null when the owner host cannot read the live yard metadata. Preserve the last
+# successfully observed numeric count in that case while keeping every other field (notably the
+# current state) from the fresh probe. With no previous count the null stays null and callers show
+# '-'; a failed observation must never turn into the misleading number zero.
+remote_info_keep_cached_projects() {
+  local json="$1" cache="$2" projects cached
+  projects="$(json_num "$json" projects)"
+  if [ -n "$projects" ] || [ ! -f "$cache" ]; then
+    printf '%s\n' "$json"
+    return 0
+  fi
+  cached="$(sed -n '2p' "$cache" 2>/dev/null)"
+  projects="$(json_num "$cached" projects)"
+  if [ -z "$projects" ]; then
+    printf '%s\n' "$json"
+    return 0
+  fi
+  case "$json" in
+    *'"projects":null'*) printf '%s\n' "${json/\"projects\":null/\"projects\":$projects}" ;;
+    *)                   printf '%s\n' "$json" ;;
+  esac
+}
+
 # count_json_files <dir> — number of *.json files in <dir> (0 for a missing/empty dir).
 count_json_files() {
   local dir="$1" n=0 f

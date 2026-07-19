@@ -127,12 +127,18 @@ fi
 
 # --- sync: copy host → yard (create-or-update) -------------------------------
 state_exists "$id" && note="refresh the yard copy" || note="first copy into the yard"
-announce "yard sync — $name" \
+sync_details=(
   "Host source : $hostPath" \
   "Yard target : $yardPath (mode sync — $note)" \
   "Run target  : $target_note" \
-  "Copy the project into the yard via rsync over ssh (incremental; updates, no deletes)." \
+  "Copy the project into the yard via rsync over ssh (incremental; updates, no deletes).")
+if yard_is_remote; then
+  sync_details+=("The remote owner host can read everything copied from this resolved source: $hostPath.")
+fi
+sync_details+=(
   "Record machine-local state in $(state_file "$id")."
+)
+announce "yard sync — $name" "${sync_details[@]}"
 proceed_or_die
 
 # Pre-create the dest owned by 'dev'. Local: a root incus op then chowns to dev. Remote: no

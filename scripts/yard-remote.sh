@@ -238,6 +238,7 @@ remove_hostkey_pin() {   # <name>; exact HostKeyAlias only, never endpoint/port 
 write_cache() {   # <name> <json>
   local name="$1" json="$2" c; c="$(remote_cache_path "$name")"
   install -d -m 700 "$SUBYARD_HOME" 2>/dev/null || return 0
+  json="$(remote_info_keep_cached_projects "$json" "$c")"
   { printf '%s\n' "$(date +%s)"; printf '%s\n' "$json"; } > "$c.tmp" && mv -f "$c.tmp" "$c"
 }
 
@@ -539,7 +540,8 @@ cmd_add() {
     "Generate the ProxyJump ssh alias 'yard-$name' with HostKeyAlias '$(hostkey_alias_for "$name")'." \
     "Authorize this controller's ssh public key in the remote yard (via 'yard _authorize')." \
     "Probe the complete data plane before reporting the context ready; roll back local files on failure." \
-    "Lifecycle commands will forward to $dest; 'bind' stays disabled for remote yards."
+    "Lifecycle commands will forward to $dest; 'bind' stays disabled for remote yards." \
+    "The remote owner host can read everything you explicitly sync into this yard; choose each source directory intentionally."
   proceed_or_die
 
   resolve_pubkey
@@ -575,8 +577,10 @@ cmd_add() {
 
 Use it like a local yard:
   $PROG -Y $name status          # forwarded to $dest (native prompts preserved)
-  $PROG -Y $name sync . && $PROG -Y $name code .   # data plane via 'yard-$name'
+  $PROG -Y $name sync <project-dir> && $PROG -Y $name code <project-dir>   # data plane via 'yard-$name'
   $PROG yards                     # $name now appears in the table
+
+Security: the remote host can read everything explicitly synced into this yard; choose the project directory intentionally.
 MSG
 }
 

@@ -2,10 +2,11 @@
 # yard-info.sh — `yard _info`: machine-readable one-line JSON describing THIS yard context.
 # A probe, not a command: no announce/prompt, no audit noise, and it ALWAYS exits 0 — when
 # incus is unreachable the state is reported as "UNKNOWN" rather than dying (the remote probe
-# and `yard yards`/`status --all` rely on that). Reads the loaded config + the context's
-# project state only. jq-free output (printf), but jq-parseable.
+# and `yard yards`/`status --all` rely on that). A running yard's project count comes from its
+# yard-side metadata; an unavailable observation is JSON null so controllers can use last-good
+# cache without inventing zero. jq-free output (printf), but jq-parseable.
 #   {"name":…,"type":"local","version":…,"instance":…,"project":…,
-#    "state":"RUNNING|STOPPED|UNKNOWN","sshHost":…,"sshPort":N,"devUser":…,"projects":N}
+#    "state":"RUNNING|STOPPED|UNKNOWN","sshHost":…,"sshPort":N,"devUser":…,"projects":N|null}
 # Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,10 +37,12 @@ fi
 sshPort="${SSH_PORT:-0}"
 case "$sshPort" in ''|*[!0-9]*) sshPort=0 ;; esac
 
-# Projects registered in THIS context's state dir.
-projects=0
-if [ -d "$STATE_DIR" ]; then
-  for f in "$STATE_DIR"/*.json; do [ -e "$f" ] && projects=$((projects + 1)); done
+# Only a successful read of the running yard can establish its inventory. Owner-host state is
+# controller-local bookkeeping and may legitimately be empty even while another controller's
+# projects are present in the yard.
+projects=null
+if [ "$state" = RUNNING ]; then
+  projects="$(yard_live_project_count_local)" || projects=null
 fi
 
 printf '{"name":"%s","type":"local","version":"%s","instance":"%s","project":"%s","state":"%s","sshHost":"%s","sshPort":%s,"devUser":"%s","projects":%s}\n' \

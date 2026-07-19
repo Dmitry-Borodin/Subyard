@@ -5,9 +5,9 @@
 #              at /srv/workspaces/<id> (bind projects: host files are never touched)
 #   --soft     keep the yard copy; only drop the state and the L2 project-env box
 # Remote yards (YARD_TYPE=remote): no local incus — reachability is an ssh probe, the in-yard
-# copy is deleted over the yard-<name> alias (`rm -rf`, as dev), and L2 box teardown is skipped
-# (boxes are managed on the owner host). A project found only in the yard (no local record) is
-# registered on demand from its meta so it can still be removed.
+# copy is deleted over the yard-<name> alias (`rm -rf`, as dev), and an L2 box is torn down by
+# asking the owner host to execute inside its yard. A project found only in the yard (no local
+# record) is registered on demand from its meta so it can still be removed.
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,12 +52,32 @@ running() {
     [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; fi
 }
 
-# Remove the project's L2 project-env box (if any) and its staged secrets/manifest.
-# Best-effort: a project that runs in L1 (target=yard) has no box — this no-ops. Remote yards
-# manage their boxes on the owner host, so there is nothing to tear down from here.
+# Run a non-interactive yard command on the owner host in the context mapped by this remote yard.
+# Token-by-token quoting preserves the validated project id through ssh + the remote login shell.
+remote_owner_yard_cmd() {
+  local rc='yard' a
+  [ -n "${REMOTE_YARD:-}" ] && rc="$rc -Y $(printf '%q' "$REMOTE_YARD")"
+  for a in "$@"; do rc="$rc $(printf '%q' "$a")"; done
+  ssh -o BatchMode=yes -o ConnectTimeout="${SUBYARD_REMOTE_TIMEOUT:-10}" \
+      -o StrictHostKeyChecking=accept-new "$REMOTE_DEST" -- bash -lc "$(printf '%q' "$rc")"
+}
+
+# Remove the project's L2 project-env box (if any) and its staged secrets/manifest. L1 projects
+# have no L2 resources and return silently. For a remote L2 project this is a hard prerequisite:
+# any owner-side failure stops removal before either the workspace or controller state is deleted.
 remove_box() {
+  [ "${target:-yard}" != yard ] || return 0
   if yard_is_remote; then
-    warn "L2 project-env boxes are managed on the yard's owner host — skipping box teardown"
+    local cleanup_script
+    cleanup_script='id=$1
+case "$id" in ""|-*|*[!A-Za-z0-9._-]*) exit 64;; esac
+box="subyard-box-$id"
+docker info >/dev/null
+if docker inspect "$box" >/dev/null 2>&1; then docker rm -f "$box" >/dev/null; fi
+rm -rf -- "/srv/env-secrets/$id" "/srv/env-meta/$id"'
+    remote_owner_yard_cmd shell --root -- sh -eu -c "$cleanup_script" _ "$id" \
+      || die "could not remove L2 box/staged env for '$name' on the owner host; project state and workspace were kept"
+    ok "removed remote L2 box/staged env for '$name'"
     return 0
   fi
   running || return 0
@@ -71,11 +91,14 @@ remove_box() {
 # --- bind: detach the disk device; NEVER delete (the source is the host folder) ----
 if [ "$mode" = bind ]; then
   dev="$(ws_device_for "$id")"
-  announce "yard remove — $name (bind)" \
+  remove_details=(
     "Yard      : $yard    Host path: $hostPath" \
-    "Drop machine-local state: $(state_file "$id")." \
-    "Remove its L2 project-env box if present (target=${target:-yard}); workspace/caches kept." \
+    "Drop machine-local state: $(state_file "$id").")
+  [ "${target:-yard}" = yard ] || remove_details+=("Remove its L2 project-env box and staged env (target=$target); workspace/caches kept.")
+  remove_details+=(
     "Detach the bind mount '$dev' from the yard. The host folder $yardPath is untouched."
+  )
+  announce "yard remove — $name (bind)" "${remove_details[@]}"
   proceed_or_die
   remove_box
   if running; then
@@ -95,11 +118,14 @@ fi
 
 # --- sync/clone: delete the yard copy unless --soft --------------------------
 if [ "$soft" = 1 ]; then
-  announce "yard remove --soft — $name" \
+  remove_details=(
     "Yard      : $yard    Host path: $hostPath" \
-    "Drop machine-local state: $(state_file "$id")." \
-    "Remove its L2 project-env box if present (target=${target:-yard})." \
+    "Drop machine-local state: $(state_file "$id").")
+  [ "${target:-yard}" = yard ] || remove_details+=("Remove its L2 project-env box and staged env (target=$target).")
+  remove_details+=(
     "Leave the yard copy at $yardDir in place (re-add it later with 'yard sync'/'yard clone')."
+  )
+  announce "yard remove --soft — $name" "${remove_details[@]}"
 else
   # Fail BEFORE dropping state: once the state is gone the copy can no longer be
   # resolved by name, and it would be orphaned in the yard.
@@ -108,11 +134,14 @@ else
   elif ! running; then
     die "yard is down — start it ('yard start') to delete the yard copy, or re-run with --soft to keep it"
   fi
-  announce "yard remove — $name" \
+  remove_details=(
     "Yard      : $yard    Host path: $hostPath" \
-    "Drop machine-local state: $(state_file "$id")." \
-    "Remove its L2 project-env box if present (target=${target:-yard})." \
+    "Drop machine-local state: $(state_file "$id").")
+  [ "${target:-yard}" = yard ] || remove_details+=("Remove its L2 project-env box and staged env (target=$target).")
+  remove_details+=(
     "DELETE the yard copy: $INSTANCE_NAME:$yardDir (irreversible; use --soft to keep it)."
+  )
+  announce "yard remove — $name" "${remove_details[@]}"
 fi
 proceed_or_die
 remove_box

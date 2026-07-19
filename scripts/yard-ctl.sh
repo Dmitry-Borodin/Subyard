@@ -189,6 +189,7 @@ print_shared() {
 
 case "$action" in
   start | up)  # up: back-compat alias
+    power_nm_prepare_reader || die "$POWER_ERROR"
     prepare_power_marker
     [ "$(state)" = RUNNING ] && info "$INSTANCE_NAME already running; validating host route" \
       || info "starting $INSTANCE_NAME"

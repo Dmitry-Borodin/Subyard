@@ -86,7 +86,7 @@ set +e
 "$ROOT/bin/yard" -Y usage-test usage daily >"$tmp/missing.out" 2>"$tmp/missing.err"
 missing_rc=$?
 set -e
-[ "$missing_rc" -eq 127 ] || fail "missing ccusage returned $missing_rc instead of 127"
+[ "$missing_rc" -eq 1 ] || fail "missing ccusage returned $missing_rc instead of 1"
 grep -Fq 'repair with: yard -Y usage-test init' "$tmp/missing.err" \
   || fail "named-yard repair hint lost its context"
 [ ! -e "$FALLBACK_LOG" ] || fail "missing ccusage invoked npx or bunx"
@@ -96,7 +96,7 @@ fi
 
 SUBYARD_USAGE_REPAIR_HINT='yard -Y controller init' \
   "$ROOT/bin/yard" usage >"$tmp/controller.out" 2>"$tmp/controller.err" || controller_rc=$?
-[ "${controller_rc:-0}" -eq 127 ] || fail "controller repair case returned ${controller_rc:-0}"
+[ "${controller_rc:-0}" -eq 1 ] || fail "controller repair case returned ${controller_rc:-0}"
 grep -Fq 'repair with: yard -Y controller init' "$tmp/controller.err" \
   || fail "forwarded repair hint was ignored"
 

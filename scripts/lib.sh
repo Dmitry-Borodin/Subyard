@@ -337,14 +337,17 @@ nm_unmanaged_guard() {
   # Filename must sort AFTER distro drop-ins: Ubuntu's ubuntu-system-adjustments.conf
   # sets `unmanaged-devices=none` and, read last, would override ours. 'zz-' wins.
   # Belt-and-suspenders: independent [device] match (managed=0) + no-auto-default.
-  local bridge="${1:-incusbr0}" conf=/etc/NetworkManager/conf.d/zz-subyard-unmanaged.conf want
-  if ! command -v systemctl >/dev/null 2>&1 || ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
-    ok "NetworkManager not active — no route-hijack guard needed"; return 0
+  local bridge="${1:-incusbr0}" conf="${2:-/etc/NetworkManager/conf.d/zz-subyard-unmanaged.conf}"
+  local want changed=0 nm_rc
+  if power_nm_active; then :; else
+    nm_rc=$?
+    if [ "$nm_rc" -eq 1 ]; then
+      ok "NetworkManager not active — no route-hijack guard needed"; return 0
+    fi
+    die "$POWER_ERROR"
   fi
-  command -v NetworkManager >/dev/null 2>&1 \
-    || die "NetworkManager is active but 'NetworkManager --print-config' is unavailable — cannot verify the host route guard"
-  install -d -m 0755 /etc/NetworkManager/conf.d
-  rm -f /etc/NetworkManager/conf.d/99-subyard-unmanaged.conf 2>/dev/null  # remove the old, overridden name
+  install -d -m 0755 "$(dirname "$conf")"
+  rm -f "$(dirname "$conf")/99-subyard-unmanaged.conf" 2>/dev/null
   # Match by type/driver AND name: an orphaned veth (e.g. left by a crashed instance)
   # can lose its 'veth*' name but is still type veth. Also cover docker/libvirt bridges
   # (Docker's own docs ask NM to ignore them). ';' list for keyfile, ',' for match-device.
@@ -361,7 +364,13 @@ match-device=$mspec
 managed=0"
   if [ ! -f "$conf" ] || ! printf '%s\n' "$want" | cmp -s - "$conf"; then
     printf '%s\n' "$want" > "$conf"
-    systemctl reload NetworkManager 2>/dev/null || nmcli general reload 2>/dev/null || true
+    changed=1
+  fi
+  chmod 0644 "$conf"
+  systemctl reload NetworkManager 2>/dev/null \
+    || { command -v nmcli >/dev/null 2>&1 && nmcli general reload 2>/dev/null; } \
+    || die "could not reload NetworkManager after updating $conf"
+  if [ "$changed" = 1 ]; then
     ok "NetworkManager set to ignore $bridge + veth/tap/docker/virbr ($conf)"
   else
     ok "NetworkManager already ignoring $bridge + veth/tap/docker/virbr"

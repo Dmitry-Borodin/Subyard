@@ -111,18 +111,65 @@ power_intentionally_stopped() { # <project> <instance>
 
 # Validate the effective NetworkManager configuration, not merely our drop-in file: a later distro
 # file can override unmanaged-devices and recreate the route-hijack incident. No active NM is safe.
-power_nm_guard_effective() { # <bridge>
-  local bridge="$1" config unmanaged no_auto
-  if ! command -v systemctl >/dev/null 2>&1 \
-      || ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
-    return 0
+power_nm_active() {
+  local state
+  if ! command -v systemctl >/dev/null 2>&1; then
+    power_nm_binary >/dev/null 2>&1 || return 1
+    power_fail "cannot inspect NetworkManager service state"
+    return 2
   fi
-  command -v NetworkManager >/dev/null 2>&1 || {
-    power_fail "NetworkManager is active but its effective-config reader is unavailable"
-    return 1
-  }
-  config="$(NetworkManager --print-config 2>/dev/null)" || {
-    power_fail "cannot read NetworkManager's effective configuration"
+  state="$(systemctl is-active NetworkManager 2>/dev/null)" || true
+  case "$state" in
+    active | activating | reloading | deactivating) return 0 ;;
+    inactive | failed | unknown) return 1 ;;
+    *) power_fail "cannot inspect NetworkManager service state"; return 2 ;;
+  esac
+}
+
+power_nm_binary() {
+  local path
+  for path in /usr/sbin/NetworkManager /usr/bin/NetworkManager /sbin/NetworkManager; do
+    [ -x "$path" ] && { printf '%s\n' "$path"; return 0; }
+  done
+  return 1
+}
+
+power_nm_prepare_reader() {
+  local rc
+  if power_nm_active; then :; else
+    rc=$?; [ "$rc" -eq 1 ] && return 0
+    return "$rc"
+  fi
+  [ "$(id -u)" -ne 0 ] || return 0
+  command -v sudo >/dev/null 2>&1 \
+    || { power_fail "sudo is required to verify NetworkManager configuration"; return 1; }
+  sudo -v \
+    || { power_fail "could not authorize NetworkManager configuration check"; return 1; }
+}
+
+power_nm_print_config() {
+  local binary
+  binary="$(power_nm_binary)" || return 1
+  if [ "$(id -u)" -eq 0 ]; then
+    "$binary" --print-config
+  else
+    command -v sudo >/dev/null 2>&1 || return 1
+    sudo -n -- "$binary" --print-config
+  fi
+}
+
+power_nm_guard_effective() { # <bridge>
+  local bridge="$1" config unmanaged no_auto rc
+  if power_nm_active; then :; else
+    rc=$?; [ "$rc" -eq 1 ] && return 0
+    return "$rc"
+  fi
+  config="$(power_nm_print_config 2>/dev/null)" || {
+    if [ "$(id -u)" -eq 0 ]; then
+      power_fail "cannot read NetworkManager's effective configuration"
+    else
+      power_fail "cannot read NetworkManager's effective configuration as root — run 'sudo -v'"
+    fi
     return 1
   }
   unmanaged="$(printf '%s\n' "$config" | sed -n 's/^[[:space:]]*unmanaged-devices[[:space:]]*=[[:space:]]*//p' | tail -n1)"
@@ -192,8 +239,11 @@ power_start_guarded() { # <project> <instance> <bridge...>
   fi
   if ! power_host_safe "$@"; then
     err="$POWER_ERROR"
-    incus stop "$instance" --project "$project" --force >/dev/null 2>&1 || true
-    POWER_ERROR="$err; $project/$instance was stopped fail-closed"
+    if incus stop "$instance" --project "$project" --force >/dev/null 2>&1; then
+      POWER_ERROR="$err; $project/$instance was stopped fail-closed"
+    else
+      POWER_ERROR="$err; FAILED to stop unsafe $project/$instance"
+    fi
     return 1
   fi
 }
@@ -219,7 +269,10 @@ power_finalize_instance() { # <project> <instance> <yard-name> <bridge>
   power_import_instance "$project" "$instance" "$yard_name" "$bridge" || return 1
   desired="$(power_get "$project" "$instance" "$POWER_KEY_DESIRED")"
   case "$desired" in
-    running) power_start_guarded "$project" "$instance" "$bridge" || return 1 ;;
+    running)
+      power_nm_prepare_reader || return 1
+      power_start_guarded "$project" "$instance" "$bridge" || return 1
+      ;;
     stopped) power_stop_instance "$project" "$instance" || return 1 ;;
     *) power_fail "$project/$instance has invalid desired power '$desired'"; return 1 ;;
   esac

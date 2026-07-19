@@ -24,7 +24,7 @@ mapfile -t rows < <(power_managed_rows | sort)
 bridges=()
 declare -A seen_bridge=()
 for row in "${rows[@]}"; do
-  IFS=, read -r project instance state <<<"$row"
+  IFS=, read -r project instance _ <<<"$row"
   desired="$(power_get "$project" "$instance" "$POWER_KEY_DESIRED")"
   initialized="$(power_get "$project" "$instance" "$POWER_KEY_INITIALIZED")"
   autostart="$(power_get "$project" "$instance" boot.autostart)"
@@ -39,7 +39,7 @@ done
 # A desired-stopped yard must stay off even if this service is manually restarted after somebody
 # bypassed `yard start`. Stop these before route validation so they cannot retain a rogue route.
 for row in "${rows[@]}"; do
-  IFS=, read -r project instance state <<<"$row"
+  IFS=, read -r project instance _ <<<"$row"
   [ "$(power_get "$project" "$instance" "$POWER_KEY_DESIRED")" = stopped ] || continue
   if [ "$(power_state "$project" "$instance")" = RUNNING ]; then
     log "stopping $project/$instance (desired=stopped)"
@@ -47,10 +47,23 @@ for row in "${rows[@]}"; do
   fi
 done
 
-power_host_safe "${bridges[@]}" || fail "$POWER_ERROR"
+stop_running_fail_closed() {
+  local reason="$1" row project instance failed=''
+  for row in "${rows[@]}"; do
+    IFS=, read -r project instance _ <<<"$row"
+    [ "$(power_state "$project" "$instance")" = RUNNING ] || continue
+    incus stop "$instance" --project "$project" --force >/dev/null 2>&1 \
+      || failed="$failed $project/$instance"
+  done
+  [ -z "$failed" ] \
+    || fail "$reason; FAILED to stop unsafe:${failed}"
+  fail "$reason; running yards stopped fail-closed"
+}
+
+power_host_safe "${bridges[@]}" || stop_running_fail_closed "$POWER_ERROR"
 
 for row in "${rows[@]}"; do
-  IFS=, read -r project instance state <<<"$row"
+  IFS=, read -r project instance _ <<<"$row"
   # Re-read intent immediately before mutation so a concurrent operator stop wins.
   [ "$(power_get "$project" "$instance" "$POWER_KEY_DESIRED")" = running ] || continue
   [ "$(power_get "$project" "$instance" "$POWER_KEY_INITIALIZED")" = true ] \
@@ -58,10 +71,11 @@ for row in "${rows[@]}"; do
   bridge="$(power_get "$project" "$instance" "$POWER_KEY_BRIDGE")"
   if [ "$(power_state "$project" "$instance")" = RUNNING ]; then
     log "$project/$instance already running"
-    power_host_safe "${bridges[@]}" || fail "$POWER_ERROR"
+    power_host_safe "${bridges[@]}" || stop_running_fail_closed "$POWER_ERROR"
     continue
+  else
+    log "starting $project/$instance (desired=running)"
   fi
-  log "starting $project/$instance (desired=running)"
   power_start_guarded "$project" "$instance" "${bridges[@]}" || fail "$POWER_ERROR"
 done
 

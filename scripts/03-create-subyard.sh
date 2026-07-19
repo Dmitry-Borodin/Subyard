@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 03-create-subyard.sh — Phase 2: launch the yard instance, pass /dev/kvm, attach /srv volume.
+# 03-create-subyard.sh — Phase 2: create the yard instance, pass /dev/kvm, attach /srv volume.
 # Operator (incus-admin, no sudo). Idempotent.
 # Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
@@ -27,9 +27,10 @@ incus project show "$INCUS_PROJECT" >/dev/null 2>&1 \
   || die "project '$INCUS_PROJECT' missing — run scripts/02-create-project.sh first"
 
 announce_confirm "Subyard Phase 2 — create yard instance" \
-  "Launch Incus instance '$INSTANCE_NAME' ($INSTANCE_TYPE) from $BASE_IMAGE (fallback $BASE_IMAGE_FALLBACK)." \
+  "Create Incus instance '$INSTANCE_NAME' ($INSTANCE_TYPE) from $BASE_IMAGE (fallback $BASE_IMAGE_FALLBACK)." \
   "Pass /dev/kvm through (container) and attach a persistent '$SRV_VOLUME' volume at /srv." \
   "Reversible: 'incus delete -f $INSTANCE_NAME ${PROJ[*]}' removes it."
+power_nm_prepare_reader || die "$POWER_ERROR"
 
 # --- 1. create instance (idempotent) -----------------------------------------
 echo "Instance:"
@@ -46,10 +47,6 @@ fi
 [ -n "${LIMITS_CPU:-}" ]    && LAUNCH_FLAGS+=(-c "limits.cpu=$LIMITS_CPU")
 [ -n "${LIMITS_MEMORY:-}" ] && LAUNCH_FLAGS+=(-c "limits.memory=$LIMITS_MEMORY")
 
-# Starting an instance is host-network-sensitive. Refuse before Incus creates a veth unless the
-# effective NM policy and current default routes are safe; check again after every start below.
-power_host_safe "$BRIDGE" || die "$POWER_ERROR — run '$(yard_cmd_hint) init' to repair host guards"
-
 if incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; then
   ok "instance '$INSTANCE_NAME' exists"
   power_import_instance "$INCUS_PROJECT" "$INSTANCE_NAME" "$YARD_LABEL" "$BRIDGE" \
@@ -65,25 +62,22 @@ else
     -c "$POWER_KEY_DESIRED=$initial_desired"
     -c "$POWER_KEY_INITIALIZED=false"
   )
-  info "launching $INSTANCE_NAME from $BASE_IMAGE"
-  if err="$(incus launch "$BASE_IMAGE" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" 2>&1)"; then
-    ok "launched $INSTANCE_NAME"
+  info "creating $INSTANCE_NAME from $BASE_IMAGE"
+  if err="$(incus init "$BASE_IMAGE" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" 2>&1)"; then
+    ok "created $INSTANCE_NAME"
   elif incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; then
-    # The instance WAS created — the image is fine and only its FIRST START failed (e.g. host
-    # userns/idmap limits). A fallback-image retry would just hit "already exists" and mask the
-    # cause; surface it — the start step below retries with the actionable error.
-    warn "launch created '$INSTANCE_NAME' but its first start failed:"
+    warn "instance '$INSTANCE_NAME' was created with an initialization warning:"
     printf '%s\n' "$err" >&2
   elif printf '%s' "$err" | grep -qiE 'image|not found|no such|remote'; then
     # Only the base image looks missing — try the fallback. Other failures (e.g. a
     # missing root device) would just repeat, so surface them instead of retrying.
-    warn "launch from $BASE_IMAGE failed (image unavailable); trying fallback $BASE_IMAGE_FALLBACK"
-    incus launch "$BASE_IMAGE_FALLBACK" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" \
-      || die "instance launch failed (check image remotes and INSTANCE_TYPE)"
-    ok "launched $INSTANCE_NAME (fallback image)"
+    warn "create from $BASE_IMAGE failed (image unavailable); trying fallback $BASE_IMAGE_FALLBACK"
+    incus init "$BASE_IMAGE_FALLBACK" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" \
+      || die "instance creation failed (check image remotes and INSTANCE_TYPE)"
+    ok "created $INSTANCE_NAME (fallback image)"
   else
     printf '%s\n' "$err" >&2
-    die "instance launch failed"
+    die "instance creation failed"
   fi
 fi
 

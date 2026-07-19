@@ -25,7 +25,7 @@ repair_cmd="${SUBYARD_USAGE_REPAIR_HINT:-$(yard_cmd_hint) init}"
 repair="yard usage: /usr/local/bin/ccusage is missing or not executable; repair with: $repair_cmd"
 printf -v repair_q '%q' "$repair"
 run="if [ ! -f /usr/local/bin/ccusage ] || [ -L /usr/local/bin/ccusage ] || [ ! -x /usr/local/bin/ccusage ]; then
-       printf '%s\\n' $repair_q >&2; exit 127;
+       printf '%s\\n' $repair_q >&2; exit 1;
      fi
      exec /usr/local/bin/ccusage $args_q"
 

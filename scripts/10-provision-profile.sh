@@ -92,6 +92,7 @@ current_power="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
 if [ "$current_power" != RUNNING ]; then
   [ "$current_power" = STOPPED ] \
     || die "cannot provision while yard state is '${current_power:-unknown}'"
+  power_nm_prepare_reader || die "$POWER_ERROR"
   info "temporarily starting $INSTANCE_NAME for provision (desired=$desired_power)"
   power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
   [ "$desired_power" != stopped ] || temporary_start=1

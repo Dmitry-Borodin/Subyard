@@ -62,7 +62,12 @@ have_init()     { reachable && incus storage show "$STORAGE_POOL" >/dev/null 2>&
                             && incus network show "$INCUS_BRIDGE" >/dev/null 2>&1; }
 have_project()  { reachable && incus project show "$INCUS_PROJECT" >/dev/null 2>&1; }
 have_instance() { reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; }
-have_network()  { [ -n "$(reachable && incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]; }
+power_stopped() { have_instance && power_intentionally_stopped "$INCUS_PROJECT" "$INSTANCE_NAME"; }
+have_network()  {
+  reachable && power_host_safe "$INCUS_BRIDGE" || return 1
+  power_stopped && return 0
+  [ -n "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]
+}
 
 # Every device named in HOST_MOUNTS is attached → adding/removing a mount re-runs 05.
 have_mounts() {
@@ -95,6 +100,7 @@ agent_provision_commands() {
 # Presence check for Phase 3. Refresh agent template drift with `yard init --configs`.
 have_provision() {
   reachable || return 1
+  power_stopped && return 0
   local claude_req=0 codex_agents_req=0 agent_commands
   [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ] && claude_req=1
   [ -n "${HOST_CODEX_AGENTS_MD:-}" ] && [ -f "$HOST_CODEX_AGENTS_MD" ] && codex_agents_req=1
@@ -133,8 +139,31 @@ CHK
 }
 
 have_ssh()    { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
-have_gitid()  { reachable && incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }
+have_gitid()  { reachable && { power_stopped || incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }; }
 in_admin_db() { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
+
+all_power_imported() {
+  reachable || return 1
+  ! "$SCRIPT_DIR/power-state.sh" needs-import-any >/dev/null 2>&1
+}
+
+have_power_reconciler() {
+  local unit="${SUBYARD_POWER_UNIT_PATH:-/etc/systemd/system/subyard-power-reconcile.service}"
+  local reconciler="${SUBYARD_POWER_RECONCILER_PATH:-/usr/local/libexec/subyard/yard-boot-reconcile}"
+  local power_lib="${SUBYARD_POWER_LIB_PATH:-/usr/local/libexec/subyard/lib-power.sh}"
+  [ -x "$reconciler" ] && [ -r "$power_lib" ] && [ -r "$unit" ] \
+    && cmp -s "$SCRIPT_DIR/yard-boot-reconcile.sh" "$reconciler" \
+    && cmp -s "$SCRIPT_DIR/lib-power.sh" "$power_lib" \
+    && grep -qF "ExecStart=$reconciler" "$unit" \
+    && systemctl is-enabled --quiet "$(basename "$unit")" 2>/dev/null
+}
+
+have_power() {
+  have_instance \
+    && power_metadata_ready "$INCUS_PROJECT" "$INSTANCE_NAME" "$INCUS_BRIDGE" \
+    && all_power_imported \
+    && have_power_reconciler
+}
 
 # Any on-disk profile declares yard-level extras (YARD_*)? init enables ALL profiles; 09 unions them.
 any_yard_extras() {
@@ -150,14 +179,19 @@ no_yard_extras() { ! any_yard_extras; }
 
 # In-yard projects whose profile ships a provision.sh — drives the opt-in offer below.
 provisionable_profiles() {
-  command -v jq >/dev/null 2>&1 || return 0
-  local sd="$SUBYARD_CONFIG_HOME/projects" f prof
-  [ -d "$sd" ] || return 0
-  for f in "$sd"/*.json; do
-    [ -e "$f" ] || continue
-    prof="$(jq -r '.profile // ""' "$f" 2>/dev/null)"; [ -n "$prof" ] || continue
-    [ -r "$SCRIPT_DIR/../config/profiles/$prof/provision.sh" ] && printf '%s\n' "$prof"
-  done | sort -u || true
+  local sd="${SUBYARD_STATE_DIR:-$SUBYARD_CONFIG_HOME/projects}" f prof
+  {
+    for prof in ${YARD_PROFILES:-}; do
+      [ -r "$SCRIPT_DIR/../config/profiles/$prof/provision.sh" ] && printf '%s\n' "$prof"
+    done
+    if command -v jq >/dev/null 2>&1 && [ -d "$sd" ]; then
+      for f in "$sd"/*.json; do
+        [ -e "$f" ] || continue
+        prof="$(jq -r '.profile // ""' "$f" 2>/dev/null)"; [ -n "$prof" ] || continue
+        [ -r "$SCRIPT_DIR/../config/profiles/$prof/provision.sh" ] && printf '%s\n' "$prof"
+      done
+    fi
+  } | sort -u || true
   # `|| true`: the for-loop's status is its last iteration's `[ -r … ] && printf`, which is 1 when
   # the last project's profile ships no provision.sh; pipefail would then make this function return
   # 1 and abort its set -e caller (offer_provision, near init's final exit). The names are already
@@ -182,18 +216,18 @@ want_zabbly() {
 
 # Opt-in toolchain provisioning at the end of init — default N, never under -y / non-TTY (heavy).
 offer_provision() {
-  local profs; profs="$(provisionable_profiles | paste -sd' ' -)"
+  local profs hint; profs="$(provisionable_profiles | paste -sd' ' -)"; hint="$(yard_cmd_hint)"
   if [ -n "$profs" ] && [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
     local ans
     read -r -p "  Provision toolchains for [$profs] into the yard now? (heavy) [y/N] " ans
     case "$ans" in
       [yY] | [yY][eE][sS]) "$SCRIPT_DIR/10-provision-profile.sh" --yes ;;
-      *) info "skipped — run later:  yard provision" ;;
+      *) info "skipped — run later:  $hint provision" ;;
     esac
   elif [ -n "$profs" ]; then
-    printf '  yard provision    # install the in-yard toolchain for: %s (heavy, explicit)\n' "$profs"
+    printf '  %s provision    # install the in-yard toolchain for: %s (heavy, explicit)\n' "$hint" "$profs"
   else
-    printf '  yard provision -l # list profiles whose toolchain you can install into the yard\n'
+    printf '  %s provision -l # list profiles whose toolchain you can install into the yard\n' "$hint"
   fi
 }
 
@@ -246,6 +280,7 @@ print_plan() {
   step have_ssh       "Set up SSH access into the yard (proxy + your key)"
   step have_gitid     "Give the in-yard 'dev' user a git identity (from host/config)"
   step no_yard_extras "Apply yard extras requested by projects (mounts/caps/devices)"
+  step have_power     "Persist desired yard power + install guarded host boot reconciliation (needs root)"
   printf '\n'
 }
 
@@ -290,13 +325,17 @@ MSG
 run_steps() {
   incus_install_or_upgrade
   info "→ Incus project"; "$SCRIPT_DIR/02-create-project.sh" --yes
-  info "→ yard instance"; "$SCRIPT_DIR/03-create-subyard.sh" --yes
   info "→ host network";  "$SCRIPT_DIR/06-network.sh" --yes
+  # Import every registered existing local yard before any technical start. This one-time migration
+  # preserves its actual RUNNING/STOPPED state; remote contexts remain owned by their remote host.
+  info "→ desired-power migration"; "$SCRIPT_DIR/power-state.sh" import-all
+  info "→ yard instance"; "$SCRIPT_DIR/03-create-subyard.sh" --yes
   info "→ host mounts";   "$SCRIPT_DIR/05-mount-host-paths.sh" --yes
   info "→ provision";     "$SCRIPT_DIR/04-provision-subyard.sh" --yes
   info "→ ssh access";    "$SCRIPT_DIR/07-ssh-access.sh" --yes
   info "→ git identity";  "$SCRIPT_DIR/08-git-identity.sh" --yes
   if any_yard_extras; then info "→ yard extras"; "$SCRIPT_DIR/09-yard-extras.sh" --yes; fi
+  info "→ boot power reconciler"; "$SCRIPT_DIR/install-power-reconciler.sh" --yes
 }
 
 # ============================================================================
@@ -380,11 +419,19 @@ elif ! incus_present && distro_incus_too_old; then
   want_zabbly install && ZB=(--zabbly)
 fi
 
-# 5. Do it.
+# 5. Do it. Profile provisioning, when accepted interactively, runs while a fresh named yard is
+#    temporarily up. Finalization then restores its default desired=stopped state.
 run_steps
+offer_provision
+info "→ restore desired power"; "$SCRIPT_DIR/power-state.sh" finalize
 
 echo
-ok "Subyard is up."
+_desired="$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
+if [ "$_desired" = running ]; then
+  ok "Subyard is up (desired=running; restored after host reboot)."
+else
+  ok "Subyard is configured and stopped (desired=stopped; named yards are off by default)."
+fi
 # Context-aware next steps: the default yard shows plain `yard …`; a named yard carries -Y so
 # the copy-pasted commands target the same yard.
 _hint="$(yard_cmd_hint)"
@@ -392,7 +439,6 @@ cat <<MSG
 
 Next:
   $_hint status
-  $_hint sync .       # copy a code project into the yard (or: bind . to mount it)
+  $([ "$_desired" = stopped ] && printf '%s start        # explicitly enable this named yard\n  ' "$_hint")$_hint sync .       # copy a code project into the yard (or: bind . to mount it)
   $_hint code .       # open it in VS Code (Remote-SSH into the yard)
 MSG
-offer_provision

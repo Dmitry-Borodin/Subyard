@@ -80,6 +80,35 @@ incus_preflight
 incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
 
+# A named yard is stopped by default. Provision may start it technically, but that must not opt it
+# into boot restoration: preserve desired_power and stop it again on success or failure.
+BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
+YARD_LABEL="${YARD_NAME:-default}"
+power_import_instance "$INCUS_PROJECT" "$INSTANCE_NAME" "$YARD_LABEL" "$BRIDGE" \
+  || die "$POWER_ERROR"
+desired_power="$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
+temporary_start=0
+current_power="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
+if [ "$current_power" != RUNNING ]; then
+  [ "$current_power" = STOPPED ] \
+    || die "cannot provision while yard state is '${current_power:-unknown}'"
+  info "temporarily starting $INSTANCE_NAME for provision (desired=$desired_power)"
+  power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
+  [ "$desired_power" != stopped ] || temporary_start=1
+fi
+
+restore_temporary_power() {
+  local rc=$?
+  trap - EXIT
+  if [ "$temporary_start" = 1 ]; then
+    info "restoring $INSTANCE_NAME to desired=stopped"
+    power_stop_instance "$INCUS_PROJECT" "$INSTANCE_NAME" \
+      || { warn "$POWER_ERROR"; rc=1; }
+  fi
+  exit "$rc"
+}
+trap restore_temporary_power EXIT
+
 for prof in "${todo[@]}"; do
   pf="$PROFILES_DIR/$prof/profile.conf"
   prov="$PROFILES_DIR/$prof/provision.sh"
@@ -99,4 +128,10 @@ for prof in "${todo[@]}"; do
   ok "provisioned '$prof'"
 done
 
+if [ "$temporary_start" = 1 ]; then
+  info "restoring $INSTANCE_NAME to desired=stopped"
+  power_stop_instance "$INCUS_PROJECT" "$INSTANCE_NAME" || die "$POWER_ERROR"
+  temporary_start=0
+fi
+trap - EXIT
 ok "Phase 4 done — toolchain(s) installed into the yard."

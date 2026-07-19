@@ -168,6 +168,11 @@ if [ "$KEEP_DATA" = 0 ]; then
   fi
 fi
 
+# The unit is global across all local yards. Remove it only after this instance is gone and the
+# metadata scan proves no managed sibling remains; an unreachable daemon keeps it fail-closed.
+echo "Boot power reconciler:"
+"$SCRIPT_DIR/install-power-reconciler.sh" --remove-if-unused --yes
+
 # --- 4. host config (operator-owned; we are root here) -----------------------
 echo "Host config:"
 # ufw rules (reverse of 06-network.sh) — best-effort, only if ufw present. The rules are

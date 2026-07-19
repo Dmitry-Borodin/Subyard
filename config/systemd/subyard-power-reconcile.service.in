@@ -1,0 +1,16 @@
+[Unit]
+Description=Restore guarded Subyard desired power state
+Wants=network-online.target
+After=network-online.target NetworkManager.service incus.service incus.socket
+
+[Service]
+Type=oneshot
+ExecStart=@SUBYARD_POWER_RECONCILER@
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

@@ -84,6 +84,14 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
 
 state() { incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null; }
+BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
+YARD_LABEL="${YARD_NAME:-default}"
+
+prepare_power_marker() {
+  power_import_instance "$INCUS_PROJECT" "$INSTANCE_NAME" "$YARD_LABEL" "$BRIDGE" \
+    || die "$POWER_ERROR"
+  [ "$POWER_IMPORTED" = 0 ] || ok "imported existing power state before lifecycle change"
+}
 
 # Yard size on every status, instantly: a cached figure measured from INSIDE the yard.
 # There is no fast source (dir pool — Incus tracks no per-instance usage), so a plain
@@ -181,29 +189,38 @@ print_shared() {
 
 case "$action" in
   start | up)  # up: back-compat alias
-    if [ "$(state)" = RUNNING ]; then
-      ok "$INSTANCE_NAME already running"
-    else
-      info "starting $INSTANCE_NAME"
-      incus start "$INSTANCE_NAME" "${PROJ[@]}"
-      ok "$INSTANCE_NAME started"
-    fi
+    prepare_power_marker
+    [ "$(state)" = RUNNING ] && info "$INSTANCE_NAME already running; validating host route" \
+      || info "starting $INSTANCE_NAME"
+    power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
+    # Commit intent only after both the physical start and post-start host-route check succeeded.
+    power_set_desired "$INCUS_PROJECT" "$INSTANCE_NAME" running \
+      || die "yard started, but desired-power metadata could not be committed"
+    ok "$INSTANCE_NAME started (desired=running; restored after host reboot)"
     ;;
   stop | down)  # down: back-compat alias
+    prepare_power_marker
     cur="$(state)"
     if [ "$cur" = RUNNING ]; then
       info "stopping $INSTANCE_NAME"
-      incus stop "$INSTANCE_NAME" "${PROJ[@]}"
-      ok "$INSTANCE_NAME stopped"
+      power_stop_instance "$INCUS_PROJECT" "$INSTANCE_NAME" || die "could not stop $INSTANCE_NAME"
     else
-      ok "$INSTANCE_NAME already stopped (${cur:-unknown})"
+      info "$INSTANCE_NAME already stopped (${cur:-unknown})"
     fi
+    # Commit intent only after the stop succeeded (or the instance was already stopped).
+    power_set_desired "$INCUS_PROJECT" "$INSTANCE_NAME" stopped \
+      || die "yard stopped, but desired-power metadata could not be committed"
+    ok "$INSTANCE_NAME stopped (desired=stopped; remains off after host reboot)"
     ;;
   status)
     s="$(state)"
     # Header names the active yard: the default yard prints 'yard' (byte-identical to HEAD);
     # a named yard prints its own name so `status` and `status --all` are unambiguous.
     printf '%s%s%s  %s\n' "$C_HEAD" "${YARD_NAME:-yard}" "$C_OFF" "${s:-unknown}"
+    desired="$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
+    initialized="$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_INITIALIZED")"
+    printf '  desired  %s  (initialized=%s, incus-autostart=%s)\n' \
+      "${desired:-unmanaged}" "${initialized:-no}" "$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" boot.autostart)"
     if [ "$s" = RUNNING ]; then
       # eth0 only (the yard also has docker0 172.17.x once Docker is up).
       ip="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -c \

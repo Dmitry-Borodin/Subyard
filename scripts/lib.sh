@@ -196,6 +196,11 @@ count_json_files() {
   printf '%s' "$n"
 }
 
+# Pure desired-power + host-route predicates. This library reads no Subyard config itself and is
+# also copied into the root-owned boot reconciler, which must never execute the operator checkout.
+# shellcheck source=scripts/lib-power.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-power.sh"
+
 # state_dir_for_yard <name> — machine-local project state dir for ANY yard, derived like
 # SUBYARD_STATE_DIR: the default yard keeps the flat projects/ dir; a named yard lives under
 # yards/<name>/projects. Pure path helper — lives here so both lib-state.sh and yard-remote.sh
@@ -333,9 +338,12 @@ nm_unmanaged_guard() {
   # sets `unmanaged-devices=none` and, read last, would override ours. 'zz-' wins.
   # Belt-and-suspenders: independent [device] match (managed=0) + no-auto-default.
   local bridge="${1:-incusbr0}" conf=/etc/NetworkManager/conf.d/zz-subyard-unmanaged.conf want
-  if ! command -v nmcli >/dev/null 2>&1 || ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
+  if ! command -v systemctl >/dev/null 2>&1 || ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
     ok "NetworkManager not active — no route-hijack guard needed"; return 0
   fi
+  command -v NetworkManager >/dev/null 2>&1 \
+    || die "NetworkManager is active but 'NetworkManager --print-config' is unavailable — cannot verify the host route guard"
+  install -d -m 0755 /etc/NetworkManager/conf.d
   rm -f /etc/NetworkManager/conf.d/99-subyard-unmanaged.conf 2>/dev/null  # remove the old, overridden name
   # Match by type/driver AND name: an orphaned veth (e.g. left by a crashed instance)
   # can lose its 'veth*' name but is still type veth. Also cover docker/libvirt bridges
@@ -358,15 +366,11 @@ managed=0"
   else
     ok "NetworkManager already ignoring $bridge + veth/tap/docker/virbr"
   fi
-  # Verify the EFFECTIVE merged config — a later drop-in overriding ours is exactly the
-  # bug that bit us once (silent). Turn that failure mode into a visible warning.
-  if command -v NetworkManager >/dev/null 2>&1; then
-    if NetworkManager --print-config 2>/dev/null | grep -E '^[[:space:]]*unmanaged-devices' | grep -q 'veth'; then
-      ok "verified: NM effective config marks veth unmanaged"
-    else
-      warn "NM effective config does NOT mark veth unmanaged — another drop-in may override $conf (check: sudo NetworkManager --print-config)"
-    fi
-  fi
+  # Verify the EFFECTIVE merged config — a later drop-in overriding ours is exactly the bug that
+  # bit us once. This is a hard safety gate: no yard start may proceed with an ineffective guard.
+  power_nm_guard_effective "$bridge" \
+    || die "$POWER_ERROR (check: sudo NetworkManager --print-config)"
+  ok "verified: NM effective config protects $bridge and veth devices"
 }
 
 # zabbly_suite — echo the apt suite (distro codename) for the Zabbly repo, or fail (non-apt /

@@ -15,6 +15,8 @@ BASE_IMAGE_FALLBACK="${BASE_IMAGE_FALLBACK:-images:ubuntu/24.04}"
 SRV_POOL="${SRV_POOL:-default}"
 SRV_VOLUME="${SRV_VOLUME:-yard-srv}"
 DEV_USER="${DEV_USER:-dev}"
+BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
+YARD_LABEL="${YARD_NAME:-default}"
 
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
@@ -44,9 +46,25 @@ fi
 [ -n "${LIMITS_CPU:-}" ]    && LAUNCH_FLAGS+=(-c "limits.cpu=$LIMITS_CPU")
 [ -n "${LIMITS_MEMORY:-}" ] && LAUNCH_FLAGS+=(-c "limits.memory=$LIMITS_MEMORY")
 
+# Starting an instance is host-network-sensitive. Refuse before Incus creates a veth unless the
+# effective NM policy and current default routes are safe; check again after every start below.
+power_host_safe "$BRIDGE" || die "$POWER_ERROR — run '$(yard_cmd_hint) init' to repair host guards"
+
 if incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; then
   ok "instance '$INSTANCE_NAME' exists"
+  power_import_instance "$INCUS_PROJECT" "$INSTANCE_NAME" "$YARD_LABEL" "$BRIDGE" \
+    || die "$POWER_ERROR"
+  [ "$POWER_IMPORTED" = 0 ] || ok "imported existing power state as desired=$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
 else
+  initial_desired="$(power_initial_desired "$YARD_LABEL")"
+  LAUNCH_FLAGS+=(
+    -c boot.autostart=false
+    -c "$POWER_KEY_MANAGED=true"
+    -c "$POWER_KEY_NAME=$YARD_LABEL"
+    -c "$POWER_KEY_BRIDGE=$BRIDGE"
+    -c "$POWER_KEY_DESIRED=$initial_desired"
+    -c "$POWER_KEY_INITIALIZED=false"
+  )
   info "launching $INSTANCE_NAME from $BASE_IMAGE"
   if err="$(incus launch "$BASE_IMAGE" "$INSTANCE_NAME" "${PROJ[@]}" "${LAUNCH_FLAGS[@]}" 2>&1)"; then
     ok "launched $INSTANCE_NAME"
@@ -69,13 +87,12 @@ else
   fi
 fi
 
-# Ensure it's RUNNING — covers resume after a partial setup or a host reboot
-# (provision uses `incus exec`, which needs a running instance).
-state="$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -c s -f csv 2>/dev/null || true)"
-if [ "$state" != RUNNING ]; then
-  info "starting $INSTANCE_NAME (was: ${state:-unknown})"
-  incus start "$INSTANCE_NAME" "${PROJ[@]}"
-fi
+# Ensure it's RUNNING temporarily — provision uses `incus exec`. Final init reconciliation restores
+# the persisted desired state, so a fresh named yard is stopped again before `yard init` returns.
+state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
+[ "$state" = RUNNING ] || info "starting $INSTANCE_NAME temporarily (was: ${state:-unknown})"
+power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
+power_enforce_autostart_false "$INCUS_PROJECT" "$INSTANCE_NAME" || die "could not disable Incus boot.autostart"
 
 # --- 2. /dev/kvm passthrough (container only) --------------------------------
 echo "KVM:"

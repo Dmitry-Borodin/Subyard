@@ -28,6 +28,14 @@ SUBYARD_CONFIG_DIR="$ROOT/config"
 [ "$AGENT_opencode_CONFIG" = "$policy" ] || fail "OpenCode template is not wired"
 [ "$AGENT_opencode_CONFIG_DEST" = .config/opencode/opencode.jsonc ] \
   || fail "OpenCode config destination drifted"
+[ "$AGENT_opencode_PROVISION" = "$ROOT/config/agents/opencode/provision.sh" ] \
+  || fail "OpenCode provision hook is not wired"
+[ "$AGENT_opencode_COMMAND" = opencode ] || fail "OpenCode convergence command drifted"
+[ -x "$AGENT_opencode_PROVISION" ] || fail "OpenCode provision hook is not executable"
+grep -Fq '_provision_var="AGENT_' "$ROOT/scripts/04-provision-subyard.sh" \
+  || fail "Phase 3 does not discover agent provision hooks"
+grep -Fq 'AGENT_COMMANDS' "$ROOT/scripts/init.sh" \
+  || fail "Phase 3 convergence does not check provisioned agent commands"
 case "$AGENT_opencode_PERSIST" in
   *auth.json* | *'/log'* | *'/storage'*) fail "OpenCode secrets/logs/legacy storage are persisted" ;;
 esac

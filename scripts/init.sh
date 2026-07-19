@@ -76,19 +76,40 @@ have_mounts() {
   return 0
 }
 
+# Commands required by enabled agent bootstrap hooks.
+agent_provision_commands() {
+  local agent provision_var command_var provision command
+  for agent in ${AGENTS:-}; do
+    provision_var="AGENT_${agent}_PROVISION"
+    command_var="AGENT_${agent}_COMMAND"
+    provision="${!provision_var:-}"
+    [ -n "$provision" ] || continue
+    [ -r "$provision" ] || return 1
+    command="${!command_var:-}"
+    [ -n "$command" ] || return 1
+    case "$command" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+    printf '%s\n' "$command"
+  done
+}
+
 # Presence check for Phase 3. Refresh agent template drift with `yard init --configs`.
 have_provision() {
   reachable || return 1
-  local claude_req=0 codex_agents_req=0
+  local claude_req=0 codex_agents_req=0 agent_commands
   [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ] && claude_req=1
   [ -n "${HOST_CODEX_AGENTS_MD:-}" ] && [ -f "$HOST_CODEX_AGENTS_MD" ] && codex_agents_req=1
+  agent_commands="$(agent_provision_commands)" || return 1
   incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
     --env DEV_USER="${DEV_USER:-dev}" --env DEV_SUDO="${DEV_SUDO:-0}" \
     --env CLAUDE_REQ="$claude_req" --env CODEX_AGENTS_REQ="$codex_agents_req" \
-    --env HOST_LINKS="${HOST_LINKS:-}" \
+    --env HOST_LINKS="${HOST_LINKS:-}" --env AGENT_COMMANDS="$agent_commands" \
     -- sh -s >/dev/null 2>&1 <<'CHK'
 set -eu
 command -v docker >/dev/null
+for command in ${AGENT_COMMANDS:-}; do
+  command_path="$(command -v "$command")"
+  [ -x "$command_path" ]
+done
 id "$DEV_USER" >/dev/null
 home="$(getent passwd "$DEV_USER" | cut -d: -f6)"; home="${home:-/home/$DEV_USER}"
 if [ "${CLAUDE_REQ:-0}" = 1 ]; then [ -f "$home/.claude/CLAUDE.md" ]; fi

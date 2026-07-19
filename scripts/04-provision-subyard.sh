@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 04-provision-subyard.sh — Phase 3: provision the yard via `incus exec` (core pkgs,
 # Docker Stage 1, user 'dev', /srv layout, ssh/docker) + host-side kvm-gid fix. Idempotent.
-# Core only — toolchain is per-profile (Phase 4). Agents never get the Docker socket.
+# Core + agent bootstrap hooks; project toolchains stay in Phase 4. No agent gets the Docker socket.
 # Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +26,7 @@ announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
   "Inside the yard: apt-get install core packages (ssh, git, build tools, python…; Node is per-profile)." \
   "Inside the yard: install Docker Engine + Compose via the get.docker.com script (downloads & runs it)." \
   "Inside the yard: create user '$DEV_USER' + groups (yard/kvm/docker), lay out /srv, enable ssh & docker." \
+  "Inside the yard: bootstrap enabled agent CLIs when missing." \
   "On the host: set the /dev/kvm device GID to the in-yard 'kvm' group." \
   "On the host: copy global Claude/Codex instructions into the yard, if present." \
   "This pulls packages from the network and changes the yard's userspace (not the host system)."
@@ -144,7 +145,23 @@ systemctl enable --now ssh docker
 EOS
 ok "in-yard provisioning complete"
 
-# --- 2. fix /dev/kvm device GID to the in-yard 'kvm' group --------------------
+# --- 2. provision enabled agent CLIs ----------------------------------------
+# Hooks live under config/agents/<name> and run as root in the yard.
+echo "Agent CLIs:"
+for _agent in ${AGENTS:-}; do
+  _provision_var="AGENT_${_agent}_PROVISION"
+  _provision="${!_provision_var:-}"
+  [ -n "$_provision" ] || continue
+  [ -r "$_provision" ] || die "$_agent provision hook missing: $_provision"
+  info "provisioning $_agent CLI in $INSTANCE_NAME"
+  incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" \
+    -- bash -euo pipefail -s < "$_provision" \
+    || die "$_agent CLI provisioning failed"
+  ok "$_agent CLI ready"
+done
+unset _agent _provision_var _provision
+
+# --- 3. fix /dev/kvm device GID to the in-yard 'kvm' group --------------------
 echo "KVM gid:"
 if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx kvm; then
   KVM_GID="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- getent group kvm | cut -d: -f3)"
@@ -166,7 +183,7 @@ else
   ok "no kvm device attached (vm mode or /dev/kvm absent) — nothing to fix"
 fi
 
-# --- 3. refresh agent instructions and configs ------------------------------
+# --- 4. refresh agent instructions and configs ------------------------------
 # Kept in a standalone helper so an existing yard can re-apply these lightweight artifacts via
 # `yard init --configs`, without repeating package installation or rebuilding the instance.
 "$SCRIPT_DIR/agent-configs.sh" --yes
@@ -180,6 +197,7 @@ Verify:
   incus exec $INSTANCE_NAME "${PROJ[@]}" -- systemctl --no-pager status ssh docker
   incus exec $INSTANCE_NAME "${PROJ[@]}" -- docker compose version
   incus exec $INSTANCE_NAME "${PROJ[@]}" -- id $DEV_USER          # groups: yard kvm docker
+  incus exec $INSTANCE_NAME "${PROJ[@]}" -- opencode --version
   incus exec $INSTANCE_NAME "${PROJ[@]}" -- ls -la /srv
 
 Next:

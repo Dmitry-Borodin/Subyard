@@ -108,7 +108,7 @@ Trust and secrets: an account on the remote host means full trust of it (it sees
 
 ## Coding agents
 
-The yard is agent-agnostic — Pi, OpenCode, Claude Code, Codex, and friends all run side by side. `config/agents.env` is the per-agent layer: one stanza per agent declaring which default config to lay into the yard (`config/agents/<name>/`) and which session/state paths to persist on the host store so they survive a yard reset. The shipped defaults let an agent work freely *inside* the container (no approval prompt on every read-only command), which is the whole point of the isolation boundary.
+The yard is agent-agnostic — Pi, OpenCode, Claude Code, Codex, and friends run side by side. `config/agents.env` declares each agent's default config, persistent state, and optional CLI bootstrap. OpenCode is installed during full provision when missing; credentials remain yard-local.
 
 ## Repository layout
 
@@ -126,7 +126,7 @@ config/             Settings: subyard.env (instance), incus.project.env (project
                     agents.env (per-agent config + persistence)
 config/yards/       Named-yard reference + example.env template (registry lives elsewhere:
                     private/yards/ or ~/.config/subyard/yards/)
-config/agents/      Per-agent default configs laid into the yard (claude, codex, opencode, pi)
+config/agents/      Per-agent configs and optional CLI bootstrap hooks
 config/profiles/    Dependency profiles, one directory each (android, default, openclaw):
                     profile.conf (non-secret contract), provision.sh, and
                     resources/*.res (shared-resource descriptors). A gitignored

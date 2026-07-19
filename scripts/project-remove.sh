@@ -103,10 +103,9 @@ if [ "$soft" = 1 ]; then
 else
   # Fail BEFORE dropping state: once the state is gone the copy can no longer be
   # resolved by name, and it would be orphaned in the yard.
-  if ! running; then
-    if yard_is_remote; then
-      die "the remote yard is unreachable — $(remote_start_hint); or re-run with --soft to keep the copy"
-    fi
+  if yard_is_remote; then
+    require_remote_reachable
+  elif ! running; then
     die "yard is down — start it ('yard start') to delete the yard copy, or re-run with --soft to keep it"
   fi
   announce "yard remove — $name" \

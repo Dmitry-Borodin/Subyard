@@ -126,9 +126,9 @@ _yard() {
         status) _arguments '--all[status for every registered yard]' '--yes[skip prompt]' '--help[show help]' ;;
         remote)
           if (( CURRENT == 2 )); then
-            local -a sub; sub=( 'add:register a remote yard (probe + ssh alias + authorize key)' 'remove:unregister a remote yard' 'list:list registered remote yards' )
+            local -a sub; sub=( 'add:register and verify a remote yard' 'repair-key:verify and rotate one in-yard host key' 'remove:unregister a remote yard' 'list:list registered remote yards' )
             _describe -t subcommands 'remote subcommand' sub
-          elif [[ ${words[2]} == remove ]]; then
+          elif [[ ${words[2]} == remove || ${words[2]} == repair-key ]]; then
             local -a n; n=( ${(f)"$(_yard_yards)"} ); _describe -t yards 'remote yard' n
           elif [[ ${words[2]} == add ]]; then
             _arguments '--yard[target a named yard on the remote host]:remote yard:' '--yes[skip prompt]'

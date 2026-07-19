@@ -110,6 +110,24 @@ _yard_valid_name() {
   esac
 }
 
+# remote_hostkey_alias <context-name> — the stable OpenSSH host-key namespace for a remote
+# context. Keep this derived from the already-restricted context name only: owner-host aliases,
+# ports and other private/mutable values must never become part of the trust identity (or SSH
+# config syntax). Prints nothing and returns 1 for an invalid name.
+remote_hostkey_alias() {
+  local name="${1:-}"
+  _yard_valid_name "$name" || return 1
+  printf 'subyard-remote-%s' "$name"
+}
+
+# remote_add_hint <context-name> <dest> <remote-yard> — reproduce the exact mapping for an
+# idempotent refresh. The optional owner-host yard must not disappear from repair diagnostics.
+remote_add_hint() {
+  printf '%s remote add %s %s' "${PROG:-yard}" "$1" "$2"
+  [ -n "${3:-}" ] && printf ' --yard %s' "$3"
+  return 0
+}
+
 # _yard_apply_derivations <name> — after a yard's env file is sourced, fill the name-derived
 # defaults for anything it did NOT set (env-override-wins). Shared by load_config's context
 # step and read-only consumers (`yard yards`). Does not source the file and does not die.

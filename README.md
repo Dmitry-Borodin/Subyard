@@ -104,7 +104,7 @@ How commands are routed for a remote yard:
 
 On a successful `sync`/`clone` the yard also gets a small `.subyard-meta.json` next to the copy (local **and** remote yards). Project state is otherwise machine-local, so a second controller does not see what you synced — run `yard list --live` to read that meta over the wire: it marks which projects are actually in the yard and lists any that live only there (a `(yard)` marker). `yard remove`/`yard code` accept such yard-only projects, registering a minimal local record on demand.
 
-Trust and secrets: an account on the remote host means full trust of it (it sees everything you sync there). No private keys or secrets are copied over — host secrets and staging/qa environments live on the owner host and are filled in there. Agent-forwarding to a remote yard is **off by default** (the agent socket must never land on someone else's machine); enable it explicitly in the context env file if you need it. The registry file (`~/.config/subyard/yards/<name>.env`) and the generated ssh alias are machine-local and not committed.
+Trust and secrets: an account on the remote host means full trust of it (it sees everything you sync there). Remote contexts use separate SSH host-key identities; after a verified key rotation run `yard remote repair-key <name>`. No private keys or secrets are copied over — host secrets and staging/qa environments live on the owner host and are filled in there. Agent-forwarding to a remote yard is **off by default** (the agent socket must never land on someone else's machine); enable it explicitly in the context env file if you need it. The registry file (`~/.config/subyard/yards/<name>.env`) and the generated ssh alias are machine-local and not committed.
 
 ## Coding agents
 

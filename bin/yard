@@ -119,12 +119,15 @@ Named yards:
 
 Remote yards:
   Drive a yard on ANOTHER host as if it were local. '$PROG remote add <name> <user@host>'
-  probes it, registers a context, wires a ProxyJump ssh alias and authorizes your key.
+  probes it, registers a context, wires a collision-free ProxyJump ssh identity, authorizes
+  your key and verifies the complete data plane before reporting it ready.
   Then '$PROG -Y <name> <cmd>': lifecycle commands (start/stop/status/provision/logs/shell/…)
   forward over ssh to the owner host with their native prompts; data-plane commands
   (code/sync/export/clone/remove) go straight into the yard. 'bind' is host-local and
   disabled for remote yards. Keys and secrets stay on the owner host.
-  Subcommands:  remote add <name> <user@host> [--yard <remote-yard>] | remote remove <name> | remote list
+  A real in-yard host-key change stays blocked. Verify its fingerprint on the trusted owner
+  host, then use 'remote repair-key <name>' for an explicit, context-scoped rotation.
+  Subcommands:  remote add <name> <user@host> [--yard <remote-yard>] | remote repair-key <name> | remote remove <name> | remote list
 
 Options:
   -Y, --yard <name>  run the command against a named yard ('@<name>' first-token sugar)

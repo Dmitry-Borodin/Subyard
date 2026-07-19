@@ -138,9 +138,9 @@ _yard() {
     init|setup|check|list|logs|usage|start|stop|yards) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
     status) COMPREPLY=( $(compgen -W '--all --yes --help' -- "$cur") ) ;;
     remote)
-      # remote <add|remove|list>; `remove` takes a registered yard name; `add` a name then dest.
-      if [ "$cword" -eq "$((cmdidx + 1))" ]; then COMPREPLY=( $(compgen -W 'add remove list' -- "$cur") )
-      elif [ "${COMP_WORDS[cmdidx+1]}" = remove ]; then local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}")" -- "$cur") )
+      # remote <add|repair-key|remove|list>; repair/remove take a registered yard name.
+      if [ "$cword" -eq "$((cmdidx + 1))" ]; then COMPREPLY=( $(compgen -W 'add repair-key remove list' -- "$cur") )
+      elif [ "${COMP_WORDS[cmdidx+1]}" = remove ] || [ "${COMP_WORDS[cmdidx+1]}" = repair-key ]; then local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}")" -- "$cur") )
       elif [ "${COMP_WORDS[cmdidx+1]}" = add ]; then [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yard --yes' -- "$cur") )
       else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
       ;;

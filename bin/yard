@@ -86,7 +86,7 @@ Yard lifecycle:
          [--root] use root instead of dev; add \`-- <cmd>\` to run a command
   provision [prof] install a profile's toolchain INTO the yard (L1) so agents work
                   directly in the yard (P1 baseline); no arg = all in-yard profiles. Heavy/explicit.
-  stop            stop the yard
+  stop [--force]  stop the yard; refuses while SSH / VS Code Remote-SSH is active unless forced
   teardown        tear down the yard + free disk (--keep-data preserves /srv); keeps Incus
   yards           list all yards (name, type, instance, state, ssh, projects, size)
 

@@ -123,6 +123,7 @@ _yard() {
           ;;
         code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
         shell) _arguments '--root[run as root instead of dev]' '--yes[skip prompt]' '--help[show help]' '1:project:_yard_code_target' '*::command: _normal' ;;
+        stop) _arguments '--force[stop despite active SSH sessions]' '--yes[skip prompt]' '--help[show help]' ;;
         status) _arguments '--all[status for every registered yard]' '--yes[skip prompt]' '--help[show help]' ;;
         remote)
           if (( CURRENT == 2 )); then

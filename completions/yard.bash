@@ -135,7 +135,8 @@ _yard() {
       fi
       ;;
     teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
-    init|setup|check|list|logs|usage|start|stop|yards) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
+    stop) COMPREPLY=( $(compgen -W '--force --yes --help' -- "$cur") ) ;;
+    init|setup|check|list|logs|usage|start|yards) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
     status) COMPREPLY=( $(compgen -W '--all --yes --help' -- "$cur") ) ;;
     remote)
       # remote <add|repair-key|remove|list>; repair/remove take a registered yard name.

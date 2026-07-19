@@ -23,9 +23,10 @@ SSH_HOST="${SSH_HOST:-yard}"
 DEV_USER="${DEV_USER:-dev}"
 DEV_UID="${DEV_UID:-1000}"
 DEV_GID="${DEV_GID:-1000}"
-# Coding agents to recommend (П1 step 3) when the workspace opens — space-separated
-# marketplace IDs; override in config/subyard.env. Note: "Codex – OpenAI's coding agent"
-# ships as openai.chatgpt; opencode is sst-dev.opencode; Claude Code is anthropic.claude-code.
+# Coding agents to recommend when the workspace opens — space-separated marketplace IDs;
+# override in config/subyard.env. When a local copy is installed, `yard code` also advances an
+# older remote copy to that version before opening an idle yard. Note: "Codex – OpenAI's coding
+# agent" ships as openai.chatgpt; opencode is sst-dev.opencode; Claude Code is anthropic.claude-code.
 CODE_RECOMMENDED_EXTENSIONS="${CODE_RECOMMENDED_EXTENSIONS:-anthropic.claude-code openai.chatgpt sst-dev.opencode}"
 PROJ=(--project "$INCUS_PROJECT")
 
@@ -106,8 +107,27 @@ if command -v code >/dev/null 2>&1; then
   # silently no-ops (no SSH connection reaches the yard, no server installs). Block early
   # with the fix. Act only on a KNOWN-missing extension: if we can't enumerate (empty
   # list), proceed rather than false-alarm.
-  exts="$(code --list-extensions 2>/dev/null || true)"
-  if [ -n "$exts" ] && ! printf '%s\n' "$exts" | grep -qixF ms-vscode-remote.remote-ssh; then
+  exts="$(code --list-extensions --show-versions 2>/dev/null || true)"
+  local_extension_present() {
+    local wanted="${1,,}" line id
+    while IFS= read -r line; do
+      id="${line%%@*}"
+      [ "${id,,}" = "$wanted" ] && return 0
+    done <<< "$exts"
+    return 1
+  }
+  local_extension_version() {
+    local wanted="${1,,}" line id
+    while IFS= read -r line; do
+      id="${line%%@*}"
+      [ "${id,,}" = "$wanted" ] || continue
+      [ "$line" != "$id" ] || return 1
+      printf '%s\n' "${line#*@}"
+      return 0
+    done <<< "$exts"
+    return 1
+  }
+  if [ -n "$exts" ] && ! local_extension_present ms-vscode-remote.remote-ssh; then
     warn "VS Code lacks the Remote-SSH extension — required to open the yard over SSH."
     # Installing is a modifying action: ask first (auto-yes under -y/--yes). On 'no',
     # don't proceed to a doomed `code` launch — say plainly why it can't connect.
@@ -117,6 +137,54 @@ if command -v code >/dev/null 2>&1; then
       ok "Remote-SSH installed"
     else
       die "without Remote-SSH, VS Code can't connect to the yard — install it and re-run 'yard code'."
+    fi
+  fi
+
+  # Local and Remote-SSH extension registries are independent. Reconcile the extensions this
+  # workspace recommends while no remote window is active, using VS Code Server's own installer;
+  # this repairs an update interrupted by a prior container shutdown without deleting settings or
+  # extension state from ~/.vscode-server.
+  sync_specs=()
+  for _ext in $CODE_RECOMMENDED_EXTENSIONS; do
+    _version="$(local_extension_version "$_ext" 2>/dev/null || true)"
+    case "$_ext@$_version" in
+      *@ | *[!A-Za-z0-9._@+-]*) continue ;;
+    esac
+    sync_specs+=("$_ext@$_version")
+  done
+  if [ "${#sync_specs[@]}" -gt 0 ]; then
+    sync_result=''
+    if yard_is_remote; then
+      sync_ok=0
+      sync_result="$(ssh "$host" sh -s -- sync "${sync_specs[@]}" \
+        < "$SCRIPT_DIR/vscode-remote-maintenance.sh" 2>&1)" || sync_ok=$?
+    else
+      command -v flock >/dev/null 2>&1 || die "flock is required to coordinate VS Code extension maintenance"
+      install -d -m 700 "$SUBYARD_HOME"
+      exec 8>"$SUBYARD_HOME/vscode${YARD_NAME:+-$YARD_NAME}.lock"
+      if ! flock -n 8; then
+        info "waiting for yard lifecycle maintenance to finish"
+        flock 8 || die "could not acquire the VS Code lifecycle lock"
+      fi
+      sync_ok=0
+      sync_result="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
+        --user "$DEV_UID" --group "$DEV_GID" --env HOME="/home/$DEV_USER" -- \
+        sh -s -- sync "${sync_specs[@]}" \
+        < "$SCRIPT_DIR/vscode-remote-maintenance.sh" 2>&1)" || sync_ok=$?
+      flock -u 8
+      exec 8>&-
+    fi
+    sync_status="${sync_result##*$'\n'}"
+    if [ "$sync_ok" -ne 0 ]; then
+      warn "remote VS Code extension synchronization did not complete; opening with the versions currently installed"
+    else
+      case "$sync_status" in
+        current) ;;
+        unavailable) info "VS Code Server is not installed yet; extension versions will sync on the next '$(yard_cmd_hint) code'" ;;
+        busy) warn "remote extension versions differ, but another VS Code window is active; close all remote windows and rerun '$(yard_cmd_hint) code' to synchronize them" ;;
+        updated:*) ok "remote VS Code extensions matched local versions: ${sync_status#updated:}" ;;
+        *) warn "could not confirm remote VS Code extension versions; opening with the versions currently installed" ;;
+      esac
     fi
   fi
   info "opening '$name' ($host:$yardPath) in VS Code …"

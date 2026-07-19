@@ -81,7 +81,7 @@ Yard lifecycle:
   status          read-only overview (yard + ssh + mounts + services + projects) and the
                   yard's size (cached, refreshed in the background when >10 min old)
   logs            tail the yard's runtime logs (systemd journal + docker)
-  usage [args]    show the yard's coding-agent token usage (ccusage over the shared store)
+  usage [args]    show coding-agent token usage
   shell  [proj]   shell in the yard as dev, optionally in a project's directory
          [--root] use root instead of dev; add \`-- <cmd>\` to run a command
   provision [prof] install a profile's toolchain INTO the yard (L1) so agents work
@@ -230,9 +230,13 @@ soon() { printf "%s: '%s' is planned for %s — not implemented yet.\n" "$PROG" 
 # Two-level %q quoting so a token survives BOTH the remote login shell and the inner `bash -lc`.
 # exec: this process becomes ssh, so its exit status is the remote command's.
 remote_forward() {   # <cmd> <args…>
-  local rc='yard' a
+  local rc='yard' a repair_hint
   [ -n "$REMOTE_YARD" ] && rc="$rc -Y $(printf '%q' "$REMOTE_YARD")"
   for a in "$@"; do rc="$rc $(printf '%q' "$a")"; done
+  if [ "${1:-}" = usage ]; then
+    repair_hint="yard -Y $SUBYARD_YARD init"
+    rc="SUBYARD_USAGE_REPAIR_HINT=$(printf '%q' "$repair_hint") $rc"
+  fi
   exec ssh -t "$REMOTE_DEST" -- bash -lc "$(printf '%q' "$rc")"
 }
 if [ -n "$REMOTE_DEST" ]; then

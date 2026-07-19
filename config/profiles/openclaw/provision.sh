@@ -2,24 +2,17 @@
 # config/profiles/openclaw/provision.sh — install the OpenClaw toolchain into the yard (run as root
 # inside the yard by 10-provision-profile.sh; idempotent). Vars: NODE_VERSION, COREPACK_VERSION,
 # PNPM_VERSION, DEV_USER, OPTIONAL_FEATURES, and the cache contract forwarded from profile.conf
-# (PIP_CACHE_DIR, npm_config_cache, npm_config_store_dir, PLAYWRIGHT_BROWSERS_PATH). The shared
-# /srv/cache is wired into the DEV user's TOOL config (pnpm shim store-dir, ~dev/.npmrc cache,
-# ~dev pip.conf cache-dir) — NOT global env, so unrelated yard tools (e.g. `npx ccusage` behind
-# `yard usage`) aren't forced onto it and never see the (to npm) invalid `store-dir` key.
+# (PIP_CACHE_DIR, npm_config_cache, npm_config_store_dir, PLAYWRIGHT_BROWSERS_PATH). Cache paths use
+# DEV_USER tool configs to keep root writes out of the shared cache.
 set -euo pipefail
 
 NODE_VERSION="${NODE_VERSION:-24.15.0}"
 COREPACK_VERSION="${COREPACK_VERSION:-0.31.0}"
 PNPM_VERSION="${PNPM_VERSION:-11.2.2}"
-CCUSAGE_VERSION="${CCUSAGE_VERSION:-latest}"
 DEV_USER="${DEV_USER:-dev}"
 OPTIONAL_FEATURES="${OPTIONAL_FEATURES:-}"
 
-# Cache contract from profile.conf (forwarded as env). Capture the paths for the dev TOOL config
-# below, then UNSET them from THIS process: provision runs as ROOT, and a root npm/pip/pnpm pointed
-# at the dev-owned /srv/cache warns and drops ROOT-OWNED files there → later EACCES for dev agents
-# (exactly the `yard usage` breakage). The shared cache is wired per-DEV (tool config), so root never
-# touches it and no global env forces it on other tools.
+# Capture cache paths for the dev-owned tool config before root tool setup.
 CACHE_PIP="${PIP_CACHE_DIR:-}"
 CACHE_NPM="${npm_config_cache:-}"
 CACHE_PNPM_STORE="${npm_config_store_dir:-}"
@@ -92,27 +85,11 @@ SH
 } > /usr/local/bin/pnpm
 chmod +x /usr/local/bin/pnpm
 
-# 2b. ccusage — the coding-agent token-usage reporter behind `yard usage`. Pre-install it globally so
-#     `yard usage` resolves `command -v ccusage` instantly instead of an npx download on every call.
-#     Install-if-missing so a re-provision never re-fetches; an empty CCUSAGE_VERSION skips it (yard
-#     usage then falls back to npx/bunx). Root's default npm cache is used (the shared /srv/cache keys
-#     were unset above), exactly like the corepack install — so /srv/cache is never root-contaminated.
-if [ -n "${CCUSAGE_VERSION:-}" ]; then
-  command -v ccusage >/dev/null 2>&1 \
-    || /usr/local/bin/npm install -g "ccusage@${CCUSAGE_VERSION}" >/dev/null
-  # npm unpacks ccusage's optional native binary without +x; ccusage chmods it on first run, which
-  # EPERMs — the tree is root-owned and `yard usage` runs as dev. Set the bit here, as root. Outside
-  # the install guard on purpose: a re-provision must heal an already-broken install, not skip it.
-  find /usr/local/lib/node_modules/ccusage -type f -path '*/bin/*' ! -perm -u+x \
-    -exec chmod a+rx {} + 2>/dev/null || true
-fi
-
 # 3. Python dev venv.
 [ -x /opt/venv/bin/python ] || python3 -m venv /opt/venv
 /opt/venv/bin/pip install -q --upgrade pip setuptools wheel
 
-# 4. Shared caches: dev-owned dirs. chown -R heals any ROOT-OWNED files a past run may have dropped in
-#    (before the unset above existed) so dev agents don't hit EACCES (the `yard usage` breakage).
+# 4. Shared caches: heal ownership left by older provision runs.
 install -d -o "$DEV_USER" -g "$DEV_USER" /srv/cache/pnpm /srv/cache/pip /srv/cache/npm
 chown -R "$DEV_USER:$DEV_USER" /srv/cache/pnpm /srv/cache/pip /srv/cache/npm
 
@@ -179,13 +156,8 @@ esac
 SC
 chmod +x /usr/local/bin/sy-cache
 
-# 4b. Wire the shared cache into the DEV user's own TOOL config — read by the tools regardless of
-#     shell type (login or `yard shell -- cmd`), so no /etc/profile.d/pam_env plumbing is needed, and
-#     NO global env is forced on unrelated yard tools (that broke `yard usage`/npx). Per-dev (not
-#     /etc): root provision reads none of these, so it cannot re-contaminate /srv/cache.
-#       pnpm store → the shim (step 2, pnpm-only flag — no npm warning);
-#       npm cache  → ~dev/.npmrc `cache=` (valid npm key — `store-dir` would warn, so it is NOT here);
-#       pip cache  → ~dev/.config/pip/pip.conf `cache-dir=`.
+# 4b. Apply shared paths through dev tool configs so every shell agrees:
+#     pnpm → shim; npm → ~/.npmrc; pip → ~/.config/pip/pip.conf.
 if [ -n "$CACHE_NPM" ]; then
   npmrc="$DEV_HOME/.npmrc"; [ -f "$npmrc" ] || : > "$npmrc"
   sed -i '/^# >>> subyard-openclaw >>>$/,/^# <<< subyard-openclaw <<<$/d' "$npmrc" 2>/dev/null || true
@@ -325,7 +297,7 @@ override the store/cache dirs per checkout, or you fork the cache and re-downloa
 DOC
 chmod 0644 /etc/subyard/openclaw-l1.md
 
-echo "openclaw provision OK: node=$(/usr/local/bin/node --version) pnpm=$(/usr/local/bin/pnpm --version 2>/dev/null) venv=$([ -x /opt/venv/bin/python ] && echo yes) ccusage=$(command -v ccusage >/dev/null 2>&1 && echo yes || echo no)"
+echo "openclaw provision OK: node=$(/usr/local/bin/node --version) pnpm=$(/usr/local/bin/pnpm --version 2>/dev/null) venv=$([ -x /opt/venv/bin/python ] && echo yes)"
 # Operator recommendation (Slice 3.2): the self-serve how-to is at /etc/subyard/openclaw-l1.md and is
 # discoverable via $SUBYARD_OPENCLAW_DOCS. We do NOT edit the consumer's repo — hand this to them so an
 # agent given only a prompt finds the lane. Printed here because that is where the operator will see it.

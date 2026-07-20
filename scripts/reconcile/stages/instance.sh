@@ -19,7 +19,9 @@ stage_instance_check() {
   if [ "${INSTANCE_TYPE:-container}" = container ]; then
     [ "$(incus config get "$INSTANCE_NAME" security.nesting "${PROJ[@]}" 2>/dev/null || true)" = true ] \
       || return 1
-    [ ! -e /dev/kvm ] || case "$devices" in *' kvm '*) ;; *) return 1 ;; esac
+    if reconcile_host_has_kvm; then
+      case "$devices" in *' kvm '*) ;; *) return 1 ;; esac
+    fi
   fi
 }
 

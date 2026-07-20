@@ -23,6 +23,7 @@ MOCK_INSTANCE_DEVICES='srv'
 MOCK_SRV_SOURCE="$SRV_VOLUME"
 MOCK_NESTING=true
 MOCK_SSH_LISTEN="tcp:127.0.0.1:$SSH_PORT"
+MOCK_HOST_HAS_KVM=false
 incus() {
   case "${1:-} ${2:-} ${3:-}" in
     'project show '* | 'info yard '*) return 0 ;;
@@ -54,6 +55,7 @@ incus() {
     'config get yard') printf '%s\n' "$MOCK_NESTING" ;;
   esac
 }
+reconcile_host_has_kvm() { "$MOCK_HOST_HAS_KVM"; }
 
 stage_project_check || fail "matching project policy rejected"
 MOCK_RESTRICTED=false
@@ -64,6 +66,11 @@ MOCK_PROJECT_DEVICES=root
 MOCK_PROJECT_DEVICES='root eth0'
 
 stage_instance_check || fail "matching instance state rejected"
+MOCK_HOST_HAS_KVM=true
+! stage_instance_check || fail "missing KVM device accepted on a KVM host"
+MOCK_INSTANCE_DEVICES='srv kvm'
+stage_instance_check || fail "matching KVM instance state rejected"
+MOCK_HOST_HAS_KVM=false
 MOCK_INSTANCE_DEVICES=''
 ! stage_instance_check || fail "missing srv device accepted"
 MOCK_INSTANCE_DEVICES=srv

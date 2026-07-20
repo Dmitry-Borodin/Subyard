@@ -6,6 +6,8 @@ SUBYARD_RECONCILE_FACTS_SOURCED=1
 
 reconcile_incus_reachable() { command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; }
 
+reconcile_host_has_kvm() { [ -e /dev/kvm ]; }
+
 reconcile_instance_running() {
   [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]
 }

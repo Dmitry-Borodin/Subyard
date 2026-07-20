@@ -33,6 +33,8 @@ yard status
 ```
 
 Run `yard --help` or `yard <command> --help` for complete command usage.
+See the [control-plane architecture](docs/control-plane.md) for module ownership, stable extension
+contracts, test topology, and the real-host acceptance lane.
 
 ## Everyday commands
 

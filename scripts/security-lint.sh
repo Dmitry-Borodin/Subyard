@@ -3,8 +3,26 @@
 # Usage: yard security [--require-live] [--quiet]
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 
 quiet=0
 require_live=0
@@ -37,7 +55,7 @@ check_mount_entry() { # <kind> <name:path:ro:mode>
   esac
 }
 
-# lib.sh has already validated the loaded context; lint owns the remaining mount/security contract.
+# config/context modules already validated the loaded context; lint owns the remaining contract.
 while IFS= read -r entry; do
   [ -n "$entry" ] || continue
   check_mount_entry HOST_MOUNTS "$entry"

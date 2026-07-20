@@ -181,12 +181,12 @@ MOCK_NM_MODE=valid-then-invalid MOCK_INCUS_STOP_RC=1
 if power_start_guarded test-project test-yard incusbr0; then fail "failed fail-closed stop returned success"; fi
 case "$POWER_ERROR" in *"FAILED to stop unsafe"*) ;; *) fail "stop failure was reported as success" ;; esac
 
-# shellcheck disable=SC2034 # consumed by sourced lib.sh
+# shellcheck disable=SC2034 # consumed by sourced config module
 SUBYARD_CONFIG_LOADED=1
 DEV_UID="$(id -u)"
-# shellcheck source=scripts/lib.sh
-# shellcheck disable=SC1091
-. "$ROOT/scripts/lib.sh"
+CONTROL_PLANE_ROOT="$ROOT"
+# shellcheck source=tests/helpers/source-control-plane.sh
+. "$ROOT/tests/helpers/source-control-plane.sh"
 reset_case
 MOCK_UID=0
 guard_conf="$tmp/NetworkManager/conf.d/zz-subyard-unmanaged.conf"

@@ -17,34 +17,30 @@ mkdir -p "$HOME"
 # shellcheck source=scripts/init.sh
 . "$ROOT/scripts/init.sh"
 
-[ "${INIT_STEP_PROBES[9]}" = have_power ] \
+[ "$(reconcile_stage_prefix power)" = stage_power ] \
+  || fail "power stage is missing from the typed registry"
+declare -f stage_power_check | grep -Fq power_metadata_ready \
   || fail "power stage no longer detects unfinished desired-power metadata"
-[ "${INIT_STEP_VERIFY[9]}" = have_power_reconciler ] \
+declare -f stage_power_verify | grep -Fq stage_power_reconciler_check \
   || fail "power stage immediately requires final desired-power metadata"
 
 metadata_ready=0
 reconciler_ready=0
 apply_count=0
-have_power() { [ "$metadata_ready" = 1 ] && have_power_reconciler; }
-have_power_reconciler() { [ "$reconciler_ready" = 1 ]; }
-apply_power() { apply_count=$((apply_count + 1)); reconciler_ready=1; }
-incus_install_or_upgrade() { :; }
-
-INIT_STEP_IDS=(power)
-INIT_STEP_PROBES=(have_power)
-INIT_STEP_APPLY=(apply_power)
-INIT_STEP_VERIFY=(have_power_reconciler)
-INIT_STEP_LABELS=("fixture power convergence")
+stage_power_check() { [ "$metadata_ready" = 1 ] && stage_power_reconciler_check; }
+stage_power_reconciler_check() { [ "$reconciler_ready" = 1 ]; }
+stage_power_apply() { apply_count=$((apply_count + 1)); reconciler_ready=1; }
+RECONCILE_STAGES=('power|stage_power')
 
 # This is the state from a newly created yard: the reconciler install must verify successfully
 # while initialized=false remains pending for the post-profile finalization.
-run_steps
+reconcile_run_stages
 [ "$apply_count" -eq 1 ] || fail "fresh power stage was not applied exactly once"
 [ "$metadata_ready" -eq 0 ] || fail "power install unexpectedly finalized metadata"
 
 # Once finalization commits initialized=true, a resumed init must skip the stage.
 metadata_ready=1
-run_steps
+reconcile_run_stages
 [ "$apply_count" -eq 1 ] || fail "finalized power stage was reapplied"
 
 printf 'ok: fresh init defers final power convergence until finalization\n'

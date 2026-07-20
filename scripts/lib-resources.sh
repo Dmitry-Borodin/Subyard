@@ -7,13 +7,14 @@
 # a sourced KEY=VALUE file that tells the yard core how to DISCOVER, DISPATCH and PROBE the
 # resource WITHOUT the core knowing the resource itself:
 #   COMMAND   the `yard <COMMAND>` verb that drives it           (default: the descriptor <name>)
-#   HANDLER   the frontend script in scripts/ that owns ALL verbs (incl. the silent `is-up` probe)
+#   HANDLER   profile-relative executable that owns ALL verbs (incl. the silent `is-up` probe)
 #   TITLE     one-line description (status / help)
 #   VERBS     space-separated verbs the handler accepts          (completion / help)
 #   BRINGUP   the verb that brings it up, for the status hint     (default: up)
 #   SHUTDOWN  the verb that stops it, for the status hint          (default: down)
 #
-# The resource's MECHANICS live entirely in HANDLER — launch/bridge/lease/seed differ per kind and
+# The resource's MECHANICS live entirely under its profile-owned HANDLER directory —
+# launch/bridge/lease/seed differ per kind and
 # are deliberately NOT unified (see lib-service.sh). This registry is the ONLY thing the core
 # (bin/yard) and lib-service.sh consult, so adding a resource is "drop a .res + write a handler",
 # with no per-feature edits to the core. Sourced by bin/yard and scripts/lib-service.sh.
@@ -49,20 +50,51 @@ res_names_for_profile() {
   done
 }
 
-# Handler script for a resource by COMMAND, then by NAME (echo empty + return 1 if unknown).
+# Resolve one validated profile-relative handler without allowing a descriptor to escape its owner.
+res_handler_path() {
+  local profile="$1" handler="$2"
+  case "$profile" in '' | -* | *[!A-Za-z0-9_-]*) return 1 ;; esac
+  case "/$handler/" in
+    *'/../'* | *'/./'* | *'//'*) return 1 ;;
+  esac
+  case "$handler" in '' | /* | -* | *[!A-Za-z0-9_./-]*) return 1 ;; esac
+  printf '%s/%s/%s\n' "$_LIBRES_PROFILES" "$profile" "$handler"
+}
+
+# Absolute handler path for a resource by COMMAND, then by NAME (empty + non-zero if unknown).
 res_handler_for_command() {
-  local want="$1" p n c h found=''
-  while IFS=$'\t' read -r p n c h _; do [ "$c" = "$want" ] && found="$h"; done < <(res_rows)
-  [ -n "$found" ] || return 1
-  printf '%s' "$found"
+  local want="$1" p n c h found_profile='' found_handler=''
+  while IFS=$'\t' read -r p n c h _; do
+    [ "$c" = "$want" ] && { found_profile="$p"; found_handler="$h"; }
+  done < <(res_rows)
+  [ -n "$found_handler" ] || return 1
+  res_handler_path "$found_profile" "$found_handler"
 }
 res_handler_for_name() {
-  local want="$1" p n c h found=''
-  while IFS=$'\t' read -r p n c h _; do [ "$n" = "$want" ] && found="$h"; done < <(res_rows)
-  [ -n "$found" ] || return 1
-  printf '%s' "$found"
+  local want="$1" p n c h found_profile='' found_handler=''
+  while IFS=$'\t' read -r p n c h _; do
+    [ "$n" = "$want" ] && { found_profile="$p"; found_handler="$h"; }
+  done < <(res_rows)
+  [ -n "$found_handler" ] || return 1
+  res_handler_path "$found_profile" "$found_handler"
 }
 res_handler_for() { res_handler_for_command "$1" || res_handler_for_name "$1"; }
+
+res_registry_validate() {
+  local p n c h b s v t path seen_names=' ' seen_commands=' '
+  while IFS=$'\t' read -r p n c h b s v t; do
+    [ -n "$p" ] && [ -n "$n" ] && [ -n "$c" ] && [ -n "$h" ] && [ -n "$b" ] \
+      && [ -n "$s" ] && [ -n "$v" ] && [ -n "$t" ] || return 1
+    case "$n$c$b$s" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+    case " $seen_names " in *" $n "*) return 1 ;; esac
+    case " $seen_commands " in *" $c "*) return 1 ;; esac
+    seen_names+="$n "; seen_commands+="$c "
+    path="$(res_handler_path "$p" "$h")" && [ -x "$path" ] || return 1
+    case "$v" in *[!A-Za-z0-9_[:space:]-]*) return 1 ;; esac
+    case " $v " in *" $b "*) ;; *) return 1 ;; esac
+    case " $v " in *" $s "*) ;; *) return 1 ;; esac
+  done < <(res_rows)
+}
 
 # All resource COMMANDs (drives COMMANDS / --list / completion).
 res_commands() { local p n c; while IFS=$'\t' read -r p n c _; do printf '%s\n' "$c"; done < <(res_rows); }

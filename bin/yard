@@ -9,6 +9,12 @@ S="$REPO/scripts"
 export YARD_VERSION="0.1.0-dev"
 PROG="${0##*/}"
 
+# Core command metadata is data-driven: dispatch, aliases, remote execution plane, help/list and
+# completion provider all read the same registry.
+# shellcheck source=scripts/lib-command-registry.sh
+. "$S/lib-command-registry.sh"
+command_registry_validate || { printf '%s: invalid command registry\n' "$PROG" >&2; exit 2; }
+
 # Host paths live in config/host.env (the single source). Source it best-effort — it is
 # plain assignments with no deps, so `yard --help`/`--list` still work if it is missing.
 # shellcheck disable=SC1091
@@ -19,13 +25,14 @@ PROG="${0##*/}"
 # (config/profiles/*/resources/*.res) WITHOUT hardcoding any of them here.
 # shellcheck source=scripts/lib-resources.sh
 [ -r "$S/lib-resources.sh" ] && . "$S/lib-resources.sh" 2>/dev/null || true
-
-# Core command names (yard lifecycle / project workflow / project-env L2). Profile-resource
-# commands are appended from the registry below, so adding a resource needs no edit here. Drives
-# `yard --list` and both completions.
-COMMANDS=(check security init start status logs usage keys shell provision stop teardown sync bind clone list code export remove up down info yards remote)
-if command -v res_commands >/dev/null 2>&1; then
-  while IFS= read -r _rc; do [ -n "$_rc" ] && COMMANDS+=("$_rc"); done < <(res_commands 2>/dev/null)
+if command -v res_registry_validate >/dev/null 2>&1; then
+  res_registry_validate || { printf '%s: invalid profile resource registry\n' "$PROG" >&2; exit 2; }
+  while IFS= read -r resource_command; do
+    if command_registry_lookup "$resource_command"; then
+      printf '%s: profile resource command conflicts with core command: %s\n' "$PROG" "$resource_command" >&2
+      exit 2
+    fi
+  done < <(res_commands)
 fi
 
 # where=host|yard for the audit line: explicit SUBYARD_SIDE wins, else detect the yard's container.
@@ -64,7 +71,18 @@ audit() {
 
 version() { printf '%s %s\n' "$PROG" "$YARD_VERSION"; }
 
-list_commands() { printf '%s\n' "${COMMANDS[@]}"; }
+list_commands() {
+  command_registry_list
+  command -v res_commands >/dev/null 2>&1 && res_commands 2>/dev/null
+}
+
+usage_command_section() { # <registry-section>
+  local display summary
+  while IFS='|' read -r display summary; do
+    [ -n "$display" ] || continue
+    printf '  %-20s %s\n' "$display" "$summary"
+  done < <(command_registry_help_rows "$1")
+}
 
 usage() {
   cat <<U
@@ -73,40 +91,24 @@ $PROG $YARD_VERSION — a local yard for isolated project environments.
 Usage: $PROG [option] <command> [args]
 
 Yard lifecycle:
-  check           verify the host can run a yard (read-only preflight)
-  security        validate static + live Incus host-boundary invariants (read-only)
-  init            install everything: Incus -> project -> yard -> mounts -> provision
-                  (--configs: refresh agent instructions/configs only;
-                   --reset: teardown + fresh init; force-apply other config drift)
-  start           start the yard
-  status          read-only overview (yard + ssh + mounts + services + projects) and the
-                  yard's size (cached, refreshed in the background when >10 min old)
-  logs            tail the yard's runtime logs (systemd journal + docker)
-  usage [args]    show coding-agent token usage
-  keys [command]  manage the host-only encrypted/versioned credential ledger
-  shell  [proj]   shell in the yard as dev, optionally in a project's directory
-         [--root] use root instead of dev; add \`-- <cmd>\` to run a command
-  provision [prof] install a profile's toolchain INTO the yard (L1) so agents work
-                  directly in the yard (P1 baseline); no arg = all in-yard profiles. Heavy/explicit.
-  stop [--force]  stop the yard; refuses while SSH / VS Code Remote-SSH is active unless forced
-  teardown        tear down the yard + free disk (--keep-data preserves /srv); keeps Incus
-  yards           list all yards (name, type, instance, state, ssh, projects, size)
+U
+  usage_command_section lifecycle
+  cat <<U
 
 Project workflow (default path '.'):
-  sync   [path]   copy a project into the yard (host -> yard; --target yard|<profile>)
-  bind   [path]   explicitly mount any host project path into the yard (shared files;
-                  warns because this reduces encapsulation and permits direct host writes)
-  clone  <url>    clone a repo straight into the yard
-  list            list projects currently in the yard
-  code   [path|name] open a project in VS Code by path or \`yard list\` name (Remote-SSH)
-  export [path]   pull a diff/patch from the yard back to the host (sync projects)
-  remove [path]   take a project out of the yard, deleting its copy (--soft keeps it)
+U
+  usage_command_section projects
+  cat <<U
 
 Project-env (L2 box; for a project added with --target <profile>):
-  up     [path]   build/start the project's box (--rebuild to rebuild the image)
-  down   [path]   stop the box (keeps it)
-  info   [path]   show what the profile exposes inside the box (visibility manifest)
-                  (open a project shell with \`yard shell <project>\`; use \`yard code\` for VS Code)
+U
+  usage_command_section project_env
+  cat <<U
+
+Remote-yard registry:
+U
+  usage_command_section remote
+  cat <<U
 U
   usage_resources
   cat <<U
@@ -164,7 +166,7 @@ EOF
 
 # --- yard context selection (global, before the command) ---------------------
 # Pick a named yard: -Y/--yard <name>, --yard=<name>, or the sugar `@<name>` as the first token.
-# Only leading occurrences (before the command) are consumed. Exported so lib.sh (load_config)
+# Only leading occurrences (before the command) are consumed. Exported so config/context loading
 # sources that yard's env layer FIRST. No selection keeps the inherited SUBYARD_YARD (today's
 # path). SUBYARD_YARD_EXPLICIT marks a flag/@ selection (vs. a session env) for cross-yard resolution.
 SUBYARD_YARD="${SUBYARD_YARD:-}"
@@ -186,11 +188,11 @@ export SUBYARD_YARD
 # --- remote-context peek -----------------------------------------------------
 # A REMOTE yard's control-plane commands forward over ssh to the owner host instead of a
 # (non-existent) local instance. Targeted-parse the env file for three keys rather than source
-# lib.sh (no config layers, no incus). REMOTE_DEST stays empty for the default and LOCAL yards,
+# the full config modules (no config layers, no incus). REMOTE_DEST stays empty for default/local,
 # so the remote path below is inert unless a remote context is selected.
 REMOTE_DEST=''; REMOTE_YARD=''
 _yard_env_val() { # <file> <KEY> -> value (last `KEY=value` line wins, surrounding quotes stripped)
-  # Deliberate twin of scripts/lib.sh:yard_env_val, so this peek needs no lib.sh. Keep in sync.
+  # Deliberate twin of scripts/lib/env.sh:yard_env_val; this bootstrap peek needs no context load.
   sed -n "s/^[[:space:]]*$2=//p" "$1" 2>/dev/null | tail -n1 | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
 }
 _yard_remote_peek() {
@@ -212,6 +214,19 @@ case "${1:-}" in
   ''            ) usage; exit 0 ;;
   -h | --help   ) usage; exit 0 ;;
   -l | --list   ) list_commands; exit 0 ;;
+  --command-manifest) command_registry_manifest; exit 0 ;;
+  --command-completion)
+    [ $# -ge 2 ] || { printf '%s: --command-completion needs a command\n' "$PROG" >&2; exit 2; }
+    command_registry_completion "$2" || exit 2
+    exit 0 ;;
+  --command-options)
+    [ $# -ge 2 ] || { printf '%s: --command-options needs a command\n' "$PROG" >&2; exit 2; }
+    command_registry_options "$2" || exit 2
+    exit 0 ;;
+  --command-verbs)
+    [ $# -ge 2 ] || { printf '%s: --command-verbs needs a command\n' "$PROG" >&2; exit 2; }
+    command_registry_verbs "$2" || exit 2
+    exit 0 ;;
   --resources   ) command -v res_completion_rows >/dev/null 2>&1 && res_completion_rows 2>/dev/null; exit 0 ;;
   -V | --version) version; exit 0 ;;
   -*            ) printf "%s: unknown option '%s'\nTry '%s --help'.\n" "$PROG" "$1" "$PROG" >&2; exit 2 ;;
@@ -219,10 +234,11 @@ esac
 
 cmd="$1"; shift
 [ "$GLOBAL_YES" = 0 ] || set -- --yes "$@"
+command_registry_lookup "$cmd" || true
 # _info is a silent machine-readable probe (remote yards poll it) — keep it out of the audit log.
 case "$cmd" in _info) ;; *) audit "$cmd" "$@" ;; esac
 
-# Commands talk to incusd via the scripts, which call lib.sh's incus_preflight for an
+# Commands talk to incusd via handlers, which call host.sh's incus_preflight for an
 # accurate message if the daemon is unreachable (e.g. a session that predates the
 # incus-admin group → log back in). `yard init` self-continues across that group grant
 # during install (scripts/init.sh); we do NOT silently re-wrap every command under `sg`.
@@ -250,51 +266,33 @@ remote_forward() {   # <cmd> <args…>
   exec ssh -t "$REMOTE_DEST" -- bash -lc "$(printf '%q' "$rc")"
 }
 if [ -n "$REMOTE_DEST" ]; then
-  case "$cmd" in
-    bind) printf 'bind is host-local — use sync or clone\n' >&2; exit 1 ;;
-    code | sync | export | clone | remove | list | check | yards | remote | _info | help) ;; # local, fall through
-    *) remote_forward "$cmd" "$@" ;;   # forward lifecycle / project-env / resource commands
+  case "${COMMAND_REMOTE:-forward}" in
+    deny) printf '%s is host-local — use sync or clone\n' "$cmd" >&2; exit 1 ;;
+    local) ;;
+    forward) remote_forward "$cmd" "$@" ;;
   esac
 fi
 
-case "$cmd" in
-  init | setup) exec "$S/init.sh" "$@" ;;            # setup: back-compat alias
-  teardown | uninstall) exec "$S/99-teardown.sh" "$@" ;;  # uninstall: back-compat alias
-  check)     exec "$S/00-check-host.sh" "$@" ;;
-  security)  exec "$S/security-lint.sh" "$@" ;;
-  sync)      exec "$S/project-sync.sh" sync "$@" ;;
-  bind)      exec "$S/project-sync.sh" bind "$@" ;;
-  list)      exec "$S/project-list.sh" "$@" ;;
-  yards)     exec "$S/yard-yards.sh" "$@" ;;
-  remote)    exec "$S/yard-remote.sh" "$@" ;;                 # manage remote yards (add/remove/list)
-  _info)     exec "$S/yard-info.sh" "$@" ;;   # machine-readable probe (hidden; used by remote yards)
-  _authorize) exec "$S/yard-authorize.sh" "$@" ;;  # hidden: authorize a controller key IN the yard (remote add)
-  _project-state) exec "$S/project-state.sh" "$@" ;; # hidden: converge owner-host project registry
-  logs)      exec "$S/yard-logs.sh" "$@" ;;
-  usage)     exec "$S/yard-usage.sh" "$@" ;;
-  keys)      exec "$S/yard-keys.sh" "$@" ;;
-  _keys-exchange) exec "$S/yard-keys.sh" _exchange "$@" ;;
-  _keys-auto-sync) exec "$S/yard-keys.sh" _auto-worker "$@" ;;
-  start | stop | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;
-  code)      exec "$S/project-code.sh" "$@" ;;
-  remove)    exec "$S/project-remove.sh" "$@" ;;
-  export)    exec "$S/project-export.sh" "$@" ;;
-  up | down | info) exec "$S/project-env.sh" "$cmd" "$@" ;;   # L2 project-env box lifecycle
-  provision) exec "$S/10-provision-profile.sh" "$@" ;;
-  shell)     exec "$S/yard-shell.sh" "$@" ;;
-  clone)     exec "$S/project-clone.sh" "$@" ;;
-  help)      usage ;;
-  # Profile-resource dispatch (emu/staging/qa-pool/…): `yard svc <name|cmd> <verb>` is the generic
-  # entry; a bare resource command is also accepted. Both resolve via the registry, so no resource
-  # is named here.
-  svc | resource)
+# Core dispatch comes entirely from the command registry. Profile resources retain their separate
+# descriptor registry and are resolved only when no core command matches.
+if [ -n "${COMMAND_NAME:-}" ]; then
+  case "$COMMAND_HANDLER" in
+    @help) usage; exit 0 ;;
+    @resource)
     rn="${1:-}"; shift || true
     [ -n "$rn" ] || { printf "%s: 'svc' needs a resource name or command (see '%s --resources')\n" "$PROG" "$PROG" >&2; exit 2; }
     rh="$(command -v res_handler_for >/dev/null 2>&1 && res_handler_for "$rn" 2>/dev/null || true)"
-    [ -n "$rh" ] && [ -x "$S/$rh" ] || { printf "%s: unknown resource '%s' (see '%s --resources')\n" "$PROG" "$rn" "$PROG" >&2; exit 2; }
-    exec "$S/$rh" "$@" ;;
-  *)
-    rh="$(command -v res_handler_for_command >/dev/null 2>&1 && res_handler_for_command "$cmd" 2>/dev/null || true)"
-    if [ -n "$rh" ] && [ -x "$S/$rh" ]; then exec "$S/$rh" "$@"; fi
-    printf "%s: unknown command '%s'\nTry '%s --help'.\n" "$PROG" "$cmd" "$PROG" >&2; exit 2 ;;
-esac
+    [ -n "$rh" ] && [ -x "$rh" ] || { printf "%s: unknown resource '%s' (see '%s --resources')\n" "$PROG" "$rn" "$PROG" >&2; exit 2; }
+    exec "$rh" "$@" ;;
+    *)
+      [ -x "$S/$COMMAND_HANDLER" ] \
+        || { printf '%s: command handler is unavailable: %s\n' "$PROG" "$COMMAND_HANDLER" >&2; exit 2; }
+      if [ -n "$COMMAND_ARG0" ]; then exec "$S/$COMMAND_HANDLER" "$COMMAND_ARG0" "$@"; fi
+      exec "$S/$COMMAND_HANDLER" "$@" ;;
+  esac
+fi
+
+rh="$(command -v res_handler_for_command >/dev/null 2>&1 && res_handler_for_command "$cmd" 2>/dev/null || true)"
+if [ -n "$rh" ] && [ -x "$rh" ]; then exec "$rh" "$@"; fi
+printf "%s: unknown command '%s'\nTry '%s --help'.\n" "$PROG" "$cmd" "$PROG" >&2
+exit 2

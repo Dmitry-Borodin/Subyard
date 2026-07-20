@@ -12,10 +12,35 @@
 # Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
-# shellcheck source=scripts/lib-state.sh
-. "$SCRIPT_DIR/lib-state.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
+# shellcheck source=scripts/state/store.sh
+. "$SCRIPT_DIR/state/store.sh"
+# shellcheck source=scripts/state/resolver.sh
+. "$SCRIPT_DIR/state/resolver.sh"
+# shellcheck source=scripts/state/transport.sh
+. "$SCRIPT_DIR/state/transport.sh"
+# shellcheck source=scripts/state/metadata.sh
+. "$SCRIPT_DIR/state/metadata.sh"
+state_validate_all || die "project state validation failed"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -32,7 +57,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --target)   target="${2:?--target needs yard|<profile>}"; shift ;;
     --target=*) target="${1#*=}" ;;
-    -y | --yes) ;;  # handled by lib.sh (ASSUME_YES)
+    -y | --yes) ;;  # handled by ui.sh (ASSUME_YES)
     @?*)        at_yard="${1#@}" ;;  # trailing `@<yard>` — target yard (equivalent to -Y)
     -*)         die "unknown option '$1'" ;;
     *)          if [ -z "$url" ]; then url="$1"; elif [ -z "$name" ]; then name="$1"; else die "too many arguments"; fi ;;

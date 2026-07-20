@@ -8,12 +8,12 @@
 # differ (where it runs: L1 vs an L2 box; how agents reach it: an adb port-bridge vs the
 # gateway's bot channel vs a loopback HTTP lease; arbitration: free-share vs a lease vs a pool;
 # secrets: none vs staging creds + a prod-guard vs a host-seeded token pool). So a thin per-kind
-# frontend owns those specifics (scripts/yard-emu.sh, project-staging.sh, qa-pool.sh).
+# profile-owned frontend owns those specifics under config/profiles/<profile>/resources/.
 #
 # This lib carries ONLY what is genuinely common across kinds — the yard handle, the in-yard
 # exec wrapper, the running-check, and the profile's resource declaration. It deliberately does
-# NOT try to unify launch/bridge/arbitration; forcing those into one place would leak. Source
-# it AFTER lib.sh (it uses incus_preflight/die from there).
+# NOT try to unify launch/bridge/arbitration; forcing those into one place would leak. Source it
+# after the explicit control-plane modules (it uses incus_preflight/die from them).
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -30,7 +30,7 @@ _LIBSVC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shared by the service frontends; kind-specific interactive (-t) calls stay in each frontend.
 yexec() { incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- "$@"; }
 
-# The yard must exist and be RUNNING before any resource verb. Uses lib.sh (incus_preflight/die).
+# The yard must exist and be RUNNING before any resource verb. Uses host/ui adapters.
 svc_require_yard_running() {
   incus_preflight
   incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
@@ -51,8 +51,8 @@ svc_resources_for() { res_names_for_profile "$1"; }
 # is-up returns non-zero when the yard/resource is unreachable.
 svc_resource_up() {
   local h; h="$(res_handler_for_name "$1" 2>/dev/null || true)"
-  [ -n "$h" ] && [ -x "$_LIBSVC_DIR/$h" ] || return 1
-  "$_LIBSVC_DIR/$h" is-up >/dev/null 2>&1
+  [ -n "$h" ] && [ -x "$h" ] || return 1
+  "$h" is-up >/dev/null 2>&1
 }
 
 # svc_resource_hint <resource-name> — the operator command that brings this resource up, for a

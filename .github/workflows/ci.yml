@@ -16,14 +16,8 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
       - name: ShellCheck
-        run: >-
-          shellcheck -x -S warning
-          bin/yard
-          scripts/*.sh
-          config/profiles/*/*.sh
-          config/agents/*/*.sh
-          tests/helpers/*.sh
-          tests/*.sh
-          completions/yard.bash
+        run: |
+          mapfile -t shell_files < <(find scripts config/profiles config/agents tests -type f -name '*.sh' -print | sort)
+          shellcheck -x -S warning bin/yard completions/yard.bash "${shell_files[@]}"
       - name: Host-free regression suite
         run: ./tests/run.sh

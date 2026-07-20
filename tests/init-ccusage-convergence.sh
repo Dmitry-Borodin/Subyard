@@ -78,9 +78,9 @@ CCUSAGE_EXPECTED_OWNER="$(id -u):$(id -g)"
 # shellcheck disable=SC1091
 . "$ROOT/scripts/init.sh"
 
-reachable() { return 0; }
-power_stopped() { return 1; }
-agent_provision_commands() { return 0; }
+reconcile_incus_reachable() { return 0; }
+reconcile_power_stopped() { return 1; }
+stage_provision_agent_commands() { return 0; }
 incus() {
   case "${1:-}" in
     config)
@@ -105,10 +105,10 @@ incus() {
 MOCK_CCUSAGE_MARKER=1.2.3
 
 expect_pending() {
-  if have_provision; then fail "$1 was accepted as converged"; fi
+  if stage_provision_check; then fail "$1 was accepted as converged"; fi
 }
 expect_done() {
-  have_provision || fail "$1 was not accepted as converged"
+  stage_provision_check || fail "$1 was not accepted as converged"
 }
 
 rm -f "$CCUSAGE_INSTALL_PATH"
@@ -150,7 +150,7 @@ expect_pending "repository pin bump"
 CCUSAGE_VERSION=1.2.3
 expect_done "restored exact pin"
 
-power_stopped() { return 0; }
+reconcile_power_stopped() { return 0; }
 MOCK_CCUSAGE_MARKER=''
 expect_pending "unmarked stopped yard"
 MOCK_CCUSAGE_MARKER=1.2.3
@@ -158,7 +158,7 @@ expect_done "marked stopped yard"
 CCUSAGE_VERSION=1.2.4
 expect_pending "stopped yard pin bump"
 CCUSAGE_VERSION=1.2.3
-power_stopped() { return 1; }
+reconcile_power_stopped() { return 1; }
 
 # Assert core hook wiring and an empty OpenClaw ownership surface.
 grep -Fq 'CCUSAGE_PROVISION' "$ROOT/scripts/04-provision-subyard.sh" \

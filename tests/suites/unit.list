@@ -1,0 +1,5 @@
+# Pure or filesystem-local modules with no fake process boundary.
+credential-boundaries.sh
+lib-power-network.sh
+project-state-store.sh
+reconcile-resume.sh

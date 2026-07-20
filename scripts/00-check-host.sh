@@ -8,17 +8,35 @@ case "${1:-}" in
   -h | --help) awk 'NR==1{next} /^#/{sub(/^#[ ]?/,""); print; next} {exit}' "$0"; exit 0 ;;
 esac
 
-# Source lib.sh for the yard context + registry helpers used by the port-collision preflight.
+# Load the explicit yard context + registry helpers used by the port-collision preflight.
 # The local pass/warn/fail helpers are (re)defined AFTER this so the check counters keep working
-# (lib.sh's own warn() does not count).
+# (ui.sh's own warn() does not count).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 
 # --- remote context: probe the owner host, skip the local host checks ------------------------
 # `yard -Y <remote> check` runs HERE, but the checks below measure THIS controller — meaningless
 # for a yard on another machine. Short-circuit to a lightweight probe (reachability + _info parse
-# + CLI version drift) and exit. Uses lib.sh's info/ok/warn/die.
+# + CLI version drift) and exit. Uses ui.sh's info/ok/warn/die.
 if [ "${YARD_TYPE:-local}" = remote ]; then
   dest="${REMOTE_DEST:-}"; ryard="${REMOTE_YARD:-}"
   [ -n "$dest" ] || die "remote yard '${YARD_NAME:-?}' has no REMOTE_DEST — re-run 'yard remote add'"

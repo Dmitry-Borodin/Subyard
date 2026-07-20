@@ -4,10 +4,48 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # This command has structured subcommand help rather than only a script-header synopsis.
 case "${1:-}" in -h|--help) SUBYARD_CUSTOM_HELP=1 ;; esac
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
-# shellcheck source=scripts/lib-keys.sh
-. "$SCRIPT_DIR/lib-keys.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
+# shellcheck source=scripts/credentials/store.sh
+. "$SCRIPT_DIR/credentials/store.sh"
+# shellcheck source=scripts/credentials/crypto.sh
+. "$SCRIPT_DIR/credentials/crypto.sh"
+# shellcheck source=scripts/credentials/domain.sh
+. "$SCRIPT_DIR/credentials/domain.sh"
+# shellcheck source=scripts/credentials/revision-adapter.sh
+. "$SCRIPT_DIR/credentials/revision-adapter.sh"
+# shellcheck source=scripts/credentials/policy.sh
+. "$SCRIPT_DIR/credentials/policy.sh"
+# shellcheck source=scripts/credentials/sync-state.sh
+. "$SCRIPT_DIR/credentials/sync-state.sh"
+# shellcheck source=scripts/credentials/transport.sh
+. "$SCRIPT_DIR/credentials/transport.sh"
+# shellcheck source=scripts/credentials/materialize.sh
+. "$SCRIPT_DIR/credentials/materialize.sh"
+# shellcheck source=scripts/credentials/verification.sh
+. "$SCRIPT_DIR/credentials/verification.sh"
+# shellcheck source=scripts/credentials/peers.sh
+. "$SCRIPT_DIR/credentials/peers.sh"
+# shellcheck source=scripts/credentials/sync.sh
+. "$SCRIPT_DIR/credentials/sync.sh"
 
 trap keys_cleanup_secret_temps EXIT
 trap 'exit 129' HUP

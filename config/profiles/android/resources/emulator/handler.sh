@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# yard-emu.sh — host-facing bridge to the in-yard Android emulator (P1: one emulator).
+# handler.sh — Android profile's host-facing bridge to its in-yard emulator.
 #
 # The emulator boots headless inside the yard (config/profiles/android/emulator-run.sh)
 # and listens on the yard's loopback (adb :5555 for the first AVD). Agents in the yard
@@ -22,9 +22,29 @@
 #
 # Operator-owned; no root. Config: config/ports.env + config/incus.project.env + subyard.env.
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
+RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUBYARD_ROOT="$(cd "$RESOURCE_DIR/../../../../.." && pwd)"
+SCRIPT_DIR="$SUBYARD_ROOT/scripts"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 # shellcheck source=scripts/lib-service.sh
 . "$SCRIPT_DIR/lib-service.sh"   # profile shared-resource helpers: yexec, svc_require_yard_running
 

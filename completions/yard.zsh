@@ -21,7 +21,7 @@ _yard_profiles() {
 }
 
 # Registry yard names: 'default' plus every *.env basename under private/yards/ and
-# ~/.config/subyard/yards/ — read cheaply in the shell (NEVER invoke incus). Mirrors lib.sh's
+# ~/.config/subyard/yards/ — read cheaply in the shell (NEVER invoke incus). Mirrors registry.sh's
 # yard_registry_names so completion and the CLI agree on valid yard names.
 _yard_yards() {
   local repo home d f
@@ -77,7 +77,6 @@ _yard_code_target() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( check security init start status logs usage keys shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging qa-pool )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args
@@ -86,6 +85,7 @@ _yard() {
     '(-Y --yard)'{-Y,--yard}'[run the command against a named yard]:yard:_yard_yard_names' \
     '(-h --help)'{-h,--help}'[show help]' \
     '(-l --list)'{-l,--list}'[list command names]' \
+    '--resources[list profile resource commands and verbs]' \
     '(-V --version)'{-V,--version}'[show version]' \
     '(-y --yes)'{-y,--yes}'[skip confirmation prompt]' \
     '1: :->cmd' \
@@ -100,70 +100,65 @@ _yard() {
       _describe -t yards 'yard context (@name)' atnames
       ;;
     args)
-      case ${words[1]} in
-        up) _arguments '--rebuild[rebuild the env image]' '--yes[skip prompt]' '*:project:_yard_code_target' ;;
-        down|info) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
-        remove) _arguments '--soft[keep the yard copy]' '--yes[skip prompt]' '*:project:_files -/' ;;
-        sync|bind)
+      local provider="$(yard --command-completion "${words[1]}" 2>/dev/null)"
+      local command_options="$(yard --command-options "${words[1]}" 2>/dev/null)"
+      local command_verbs="$(yard --command-verbs "${words[1]}" 2>/dev/null)"
+      local -a registry_options; registry_options=( ${(z)command_options} )
+      case $provider in
+        project-env-up|project-env) _arguments ${registry_options[@]} '*:project:_yard_code_target' ;;
+        remove) _arguments ${registry_options[@]} '*:project:_yard_code_target' ;;
+        project-target)
           if [[ ${words[CURRENT-1]} == --target ]]; then
             local -a tg; tg=( yard ${(f)"$(_yard_profiles)"} )
             _describe -t targets 'target' tg
           else
-            _arguments '--target[where it runs: yard or a profile]:target:->tgt' '--yes[skip prompt]' '*:project:_files -/'
+            registry_options=( ${registry_options:#--target} )
+            _arguments '--target[where it runs: yard or a profile]:target:->tgt' ${registry_options[@]} '*:project:_files -/'
           fi
           ;;
-        export) _arguments '--yes[skip prompt]' '*:project:_files -/' ;;
-        emu)
-          if (( CURRENT == 2 )); then
-            local -a sub; sub=( 'up:boot the emulator in the yard' 'stop:stop the in-yard emulator' 'status:emulator + bridge state' 'adb:bridge emulator adb to host loopback' 'view:scrcpy the emulator screen' 'tunnel:ssh -L fallback bridge' 'down:remove the proxy device' )
-            _describe -t subcommands 'emu subcommand' sub
-          elif [[ ${words[2]} == view ]]; then
-            _arguments '--no-control[view-only (look but do not touch)]' '--view-only[alias of --no-control]' '--control[interactive (default)]' '--yes[skip prompt]'
-          else
-            _arguments '--yes[skip prompt]'
-          fi
+        path) _arguments ${registry_options[@]} '*:project:_files -/' ;;
+        profiles)
+          local -a profiles; profiles=( ${(f)"$(_yard_profiles)"} )
+          _arguments ${registry_options[@]} '*:profile:compadd -a profiles'
           ;;
-        code) _arguments '--yes[skip prompt]' '*:project:_yard_code_target' ;;
-        shell) _arguments '--root[run as root instead of dev]' '--yes[skip prompt]' '--help[show help]' '1:project:_yard_code_target' '*::command: _normal' ;;
-        stop) _arguments '--force[stop despite active SSH sessions]' '--yes[skip prompt]' '--help[show help]' ;;
-        status) _arguments '--all[status for every registered yard]' '--yes[skip prompt]' '--help[show help]' ;;
+        project) _arguments ${registry_options[@]} '*:project:_yard_code_target' ;;
+        project-shell) _arguments ${registry_options[@]} '1:project:_yard_code_target' '*::command: _normal' ;;
+        stop|status|simple|teardown) _arguments ${registry_options[@]} ;;
         remote)
           if (( CURRENT == 2 )); then
-            local -a sub; sub=( 'add:register and verify a remote yard' 'repair-key:verify and rotate one in-yard host key' 'remove:unregister a remote yard' 'list:list registered remote yards' )
+            local -a sub; sub=( ${=command_verbs} )
             _describe -t subcommands 'remote subcommand' sub
           elif [[ ${words[2]} == remove || ${words[2]} == repair-key ]]; then
             local -a n; n=( ${(f)"$(_yard_yards)"} ); _describe -t yards 'remote yard' n
           elif [[ ${words[2]} == add ]]; then
-            _arguments '--yard[target a named yard on the remote host]:remote yard:' '--yes[skip prompt]'
+            registry_options=( ${registry_options:#--yard} )
+            _arguments '--yard[target a named yard on the remote host]:remote yard:' ${registry_options[@]}
           else
-            _arguments '--yes[skip prompt]'
+            _arguments ${registry_options[@]}
           fi
           ;;
         keys)
           if (( CURRENT == 2 )); then
-            local -a sub; sub=( trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move )
+            local -a sub; sub=( ${=command_verbs} )
             _describe -t subcommands 'keys subcommand' sub
           elif [[ ${words[2]} == trust || ${words[2]} == untrust || ${words[2]} == sync || ${words[2]} == move ]]; then
             local -a kn; kn=( ${${(f)"$(_yard_yards)"}/#/@} ); _describe -t yards 'key peer' kn
           elif [[ ${words[2]} == import || ${words[CURRENT-1]} == --file ]]; then
             _files
           else
-            _arguments '--kind[credential kind]:kind:' '--zone[logical zone]:zone:' \
-              '--consumer[consumer mapping]:consumer:(none staging-env qa-secrets qa-pool)' \
-              '--file[protected input file]:file:_files' '--local-only[never export]' \
-              '--exclusive[single assigned yard]' '--dry-run[preview only]' '--manual-only[disable default auto-sync]' \
-              '--all[all peers/zones]' '--now[force immediate attempt]' '--yes[skip prompt]'
+            _arguments ${registry_options[@]}
           fi
           ;;
-        teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;
         clone)
           if [[ ${words[CURRENT-1]} == --target ]]; then
             local -a tg; tg=( yard ${(f)"$(_yard_profiles)"} )
             _describe -t targets 'target' tg
           else
-            _arguments '--target[where it runs: yard or a profile]:target:->tgt' '--yes[skip prompt]' '*: :_message "repository URL"'
+            registry_options=( ${registry_options:#--target} )
+            _arguments '--target[where it runs: yard or a profile]:target:->tgt' ${registry_options[@]} '*: :_message "repository URL"'
           fi
           ;;
+        none) ;;
         *)
           # Profile-resource command (emu handled above)? complete its verbs from the registry
           # (`yard --resources` => "<command>\t<verbs>"), so new resources need no edit here.

@@ -4,8 +4,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib-context.sh
-. "$ROOT/scripts/lib-context.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$ROOT/scripts/lib/context.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 tmp="$(mktemp -d)"

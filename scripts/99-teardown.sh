@@ -14,12 +14,30 @@
 # removed LAST — so teardown can never leave a veth for NetworkManager to hijack the host.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 
 # The operator (not root) owns ~/.ssh, ~/.subyard, ~/.config/subyard. Resolve the real
 # operator user for the cleanup below (chown/removal); $SUBYARD_HOME / $SUBYARD_CONFIG_HOME
-# are already under that operator via lib.sh's auto-load, even after the sudo re-exec.
+# are already under that operator via explicit context loading, even after the sudo re-exec.
 OPERATOR_USER="${SUBYARD_USER:-${SUDO_USER:-${USER:-root}}}"
 OPERATOR_HOME="$(getent passwd "$OPERATOR_USER" | cut -d: -f6)"
 [ -n "$OPERATOR_HOME" ] || OPERATOR_HOME="$HOME"
@@ -43,7 +61,7 @@ YARD_SPACE_CACHE="$SUBYARD_HOME/space${YARD_NAME:+-$YARD_NAME}.cache"
 
 KEEP_DATA=0
 # Reject unknown flags: a typo like `--keepdata` MUST NOT silently fall through to a FULL,
-# data-destroying teardown. `-y`/`--yes`/`-h`/`--help` are consumed by lib.sh (present in argv
+# data-destroying teardown. `-y`/`--yes`/`-h`/`--help` are consumed by ui.sh (present in argv
 # here), so tolerate them; anything else that looks like a flag is a fatal error.
 for a in "$@"; do
   case "$a" in

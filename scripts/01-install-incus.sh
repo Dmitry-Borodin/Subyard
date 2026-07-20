@@ -8,8 +8,26 @@
 # Flags survive the sudo re-exec via SUBYARD_SCRIPT_ARGV (sudo scrubs env, not argv).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 
 USE_ZABBLY=0; UPGRADE_ONLY=0
 for _a in "$@"; do
@@ -30,7 +48,7 @@ OPERATOR_HOME="$(getent passwd "$OPERATOR_USER" | cut -d: -f6)"
 [ -n "$OPERATOR_HOME" ] || die "cannot resolve home dir for user '$OPERATOR_USER'"
 OPERATOR_GROUP="$(id -gn "$OPERATOR_USER")"
 
-# $SUBYARD_HOME is already resolved under the real operator by lib.sh's auto-load (it reads
+# $SUBYARD_HOME is already resolved under the real operator by explicit context loading (it reads
 # the same SUDO_USER), so it points at the operator's home even though this script self-elevates.
 STORAGE_POOL="${STORAGE_POOL:-default}"
 INCUS_BRIDGE="${INCUS_BRIDGE:-incusbr0}"

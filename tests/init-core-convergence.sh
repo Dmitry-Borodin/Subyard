@@ -16,7 +16,7 @@ mkdir -p "$HOME"
 
 # shellcheck source=scripts/init.sh
 . "$ROOT/scripts/init.sh"
-reachable() { return 0; }
+reconcile_incus_reachable() { return 0; }
 MOCK_RESTRICTED=true
 MOCK_PROJECT_DEVICES='root eth0'
 MOCK_INSTANCE_DEVICES='srv'
@@ -55,23 +55,23 @@ incus() {
   esac
 }
 
-have_project || fail "matching project policy rejected"
+stage_project_check || fail "matching project policy rejected"
 MOCK_RESTRICTED=false
-! have_project || fail "project policy drift accepted"
+! stage_project_check || fail "project policy drift accepted"
 MOCK_RESTRICTED=true
 MOCK_PROJECT_DEVICES=root
-! have_project || fail "missing project NIC accepted"
+! stage_project_check || fail "missing project NIC accepted"
 MOCK_PROJECT_DEVICES='root eth0'
 
-have_instance || fail "matching instance state rejected"
+stage_instance_check || fail "matching instance state rejected"
 MOCK_INSTANCE_DEVICES=''
-! have_instance || fail "missing srv device accepted"
+! stage_instance_check || fail "missing srv device accepted"
 MOCK_INSTANCE_DEVICES=srv
 MOCK_SRV_SOURCE=wrong-volume
-! have_instance || fail "drifted srv device accepted"
+! stage_instance_check || fail "drifted srv device accepted"
 MOCK_SRV_SOURCE="$SRV_VOLUME"
 MOCK_NESTING=false
-! have_instance || fail "missing container nesting accepted"
+! stage_instance_check || fail "missing container nesting accepted"
 
 mkdir -p "$HOME/.ssh"
 printf 'Host %s\n    Port %s\n' "$SSH_HOST" "$SSH_PORT" > "$HOME/.ssh/subyard.config"
@@ -80,9 +80,9 @@ if [ "$FORWARD_SSH_AGENT" = 1 ]; then
 fi
 printf 'Include subyard.config\n' > "$HOME/.ssh/config"
 MOCK_INSTANCE_DEVICES='srv ssh'
-power_stopped() { return 0; }
-have_ssh || fail "matching SSH state rejected"
+reconcile_power_stopped() { return 0; }
+stage_ssh_check || fail "matching SSH state rejected"
 MOCK_SSH_LISTEN=tcp:127.0.0.1:2299
-! have_ssh || fail "drifted SSH proxy accepted"
+! stage_ssh_check || fail "drifted SSH proxy accepted"
 
 printf 'ok: init project, instance and SSH probes detect reconcilable drift\n'

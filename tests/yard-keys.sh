@@ -98,8 +98,9 @@ bootstrap_keys() {
     set -euo pipefail
     root="$1"
     SCRIPT_DIR="$root/scripts"
-    . "$root/scripts/lib.sh"
-    . "$root/scripts/lib-keys.sh"
+    CONTROL_PLANE_ROOT="$root"
+    . "$root/tests/helpers/source-control-plane.sh"
+    . "$root/tests/helpers/source-credentials.sh"
     keys_init_store
   ' _ "$ROOT"
 }
@@ -111,7 +112,7 @@ ASSUME_YES=1 "$ROOT/scripts/install-keys-auto-sync.sh" >/dev/null
 [ -r "$SUBYARD_KEYS_ROOT/one/identity/age.txt" ] || fail 'yard one age identity missing'
 [ "$(stat -c '%a' "$SUBYARD_KEYS_ROOT/one/identity/age.txt")" = 600 ] || fail 'age identity mode is not 0600'
 [ "$(jq -r '.actorId' "$SUBYARD_KEYS_ROOT/one/identity.json")" = \
-  "$(SUBYARD_YARD=one_alt bash -c 'source "$1/scripts/lib.sh"; source "$1/scripts/lib-keys.sh"; keys_actor_id' _ "$ROOT")" ] \
+  "$(SUBYARD_YARD=one_alt bash -c 'CONTROL_PLANE_ROOT="$1"; source "$1/tests/helpers/source-control-plane.sh"; source "$1/tests/helpers/source-credentials.sh"; keys_actor_id' _ "$ROOT")" ] \
   || fail 'second local yard did not reuse the host identity'
 [ ! -e "$SUBYARD_KEYS_ROOT/one/one_alt" ] || fail 'host ledger created a per-yard child store'
 if yard_one_alt keys trust @one --yes >"$TMP/same-host-trust.out" 2>&1; then

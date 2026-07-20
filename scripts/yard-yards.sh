@@ -12,8 +12,26 @@
 # Read-only; operator-owned; no root. Works with or without incus on PATH; remote probes need ssh.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 
 for a in "$@"; do case "$a" in -y | --yes) ;; -*) die "unknown option '$a'" ;; *) die "yards takes no arguments" ;; esac; done
 
@@ -32,7 +50,7 @@ yard_record() {
       f="$(yard_env_file "$name")" || return 0
       # shellcheck disable=SC1090
       . "$f"
-      _yard_apply_derivations "$name"
+      yard_apply_derivations "$name"
       declared_port="${SSH_PORT:-}"   # a local named yard must declare it; '' => show '-'
     fi
     # shellcheck disable=SC1091
@@ -75,7 +93,7 @@ cache_size() {
 # All probes run in PARALLEL below and are awaited together, so N unreachable hosts cost ~2s total,
 # not 2s each. The last good answer is cached in $SUBYARD_HOME/remote-<name>.cache (line 1 = epoch,
 # line 2 = _info JSON); an unreachable host shows that cached state with 'seen <age> ago', else '?'.
-# json_str/json_num, age_human and count_json_files live in lib.sh.
+# json_str/json_num, age_human and count_json_files live in lib/env.sh.
 
 remote_probe() { # <dest> <ryard> -> _info JSON on stdout (empty on failure)
   local dest="$1" ryard="$2" rc='yard _info'

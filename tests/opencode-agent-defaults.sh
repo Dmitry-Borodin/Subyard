@@ -34,7 +34,7 @@ SUBYARD_CONFIG_DIR="$ROOT/config"
 [ -x "$AGENT_opencode_PROVISION" ] || fail "OpenCode provision hook is not executable"
 grep -Fq '_provision_var="AGENT_' "$ROOT/scripts/04-provision-subyard.sh" \
   || fail "Phase 3 does not discover agent provision hooks"
-grep -Fq 'AGENT_COMMANDS' "$ROOT/scripts/init.sh" \
+grep -Fq 'AGENT_COMMANDS' "$ROOT/scripts/reconcile/stages/provision.sh" \
   || fail "Phase 3 convergence does not check provisioned agent commands"
 case "$AGENT_opencode_PERSIST" in
   *auth.json* | *'/log'* | *'/storage'*) fail "OpenCode secrets/logs/legacy storage are persisted" ;;

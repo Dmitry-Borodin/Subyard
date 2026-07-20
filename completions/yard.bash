@@ -22,7 +22,7 @@ _yard_profiles() {
 
 # Registry yard names: 'default' plus the basename of every *.env under private/yards/ and
 # ~/.config/subyard/yards/ — read cheaply in the shell (NEVER invoke incus). $2, if set, is a
-# prefix emitted before each name (e.g. '@' for the first-token sugar). Mirrors lib.sh's
+# prefix emitted before each name (e.g. '@' for the first-token sugar). Mirrors registry.sh's
 # yard_registry_names so completion and the CLI agree on what a valid yard name is.
 _yard_yards() {
   local repo pfx="${2:-}" d f n home
@@ -69,7 +69,7 @@ _yard() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   cword=$COMP_CWORD
 
-  local globals='-Y --yard -h --help -l --list -V --version -y --yes'
+  local globals='-Y --yard -h --help -l --list --resources -V --version -y --yes'
 
   # A named-yard context may precede the command: -Y <name> / --yard <name> / --yard=<name>
   # / @<name>. Complete its VALUE with registry yard names, and skip it when locating the
@@ -93,7 +93,6 @@ _yard() {
   if [ "$cword" -eq "$cmdidx" ]; then
     local cmds
     cmds="$("${COMP_WORDS[0]}" --list 2>/dev/null)"
-    [ -n "$cmds" ] || cmds='check security init start status logs usage keys shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging'
     case "$cur" in
       -*) COMPREPLY=( $(compgen -W "$globals" -- "$cur") ) ;;
       *)  COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ) ;;
@@ -102,68 +101,74 @@ _yard() {
   fi
 
   cmd="${COMP_WORDS[cmdidx]}"
+  local provider command_options command_verbs
+  provider="$("${COMP_WORDS[0]}" --command-completion "$cmd" 2>/dev/null || true)"
+  command_options="$("${COMP_WORDS[0]}" --command-options "$cmd" 2>/dev/null || true)"
+  command_verbs="$("${COMP_WORDS[0]}" --command-verbs "$cmd" 2>/dev/null || true)"
 
-  case "$cmd" in
-    up)
+  case "$provider" in
+    project-env-up)
       # up [path|name] [--rebuild]
-      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--rebuild --yes' -- "$cur") ) \
+      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W "$command_options" -- "$cur") ) \
         || { local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") ); COMPREPLY+=( $(compgen -d -- "$cur") ); }
       ;;
-    down|info)
-      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) \
+    project-env)
+      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W "$command_options" -- "$cur") ) \
         || { local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") ); COMPREPLY+=( $(compgen -d -- "$cur") ); }
       ;;
-    remove) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--soft --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
-    emu)
-      # emu <up|stop|status|adb|view|tunnel|down>; `view` also takes --control/--no-control.
-      if [ "$cword" -eq 2 ]; then COMPREPLY=( $(compgen -W 'up stop status adb view tunnel down' -- "$cur") )
-      elif [ "${COMP_WORDS[2]}" = view ]; then COMPREPLY=( $(compgen -W '--no-control --view-only --control --yes' -- "$cur") )
-      else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
+    remove)
+      if [[ "$cur" == -* ]]; then COMPREPLY=( $(compgen -W "$command_options" -- "$cur") )
+      else
+        local IFS=$'\n'
+        COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") )
+        COMPREPLY+=( $(compgen -d -- "$cur") )
+      fi
       ;;
-    sync|bind)
+    project-target)
       if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
       if [[ "$cur" == -* ]]; then
-        COMPREPLY=( $(compgen -W "--target --yes" -- "$cur") )
+        COMPREPLY=( $(compgen -W "$command_options" -- "$cur") )
       else COMPREPLY=( $(compgen -d -- "$cur") ); fi
       ;;
-    export) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
-    code|shell)
+    path) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W "$command_options" -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
+    profiles)
+      if [[ "$cur" == -* ]]; then COMPREPLY=( $(compgen -W "$command_options" -- "$cur") )
+      else COMPREPLY=( $(compgen -W "$(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); fi
+      ;;
+    project|project-shell)
       # `yard code` and `yard shell` take a project NAME (from `yard list`) or a directory path.
       if [[ "$cur" == -* ]]; then
-        if [ "$cmd" = shell ]; then COMPREPLY=( $(compgen -W '--root --yes --help' -- "$cur") )
-        else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
+        COMPREPLY=( $(compgen -W "$command_options" -- "$cur") )
       else
         local IFS=$'\n'  # keep project names with spaces intact
         COMPREPLY=( $(compgen -W "$(_yard_projects "${COMP_WORDS[0]}")" -- "$cur") )
         COMPREPLY+=( $(compgen -d -- "$cur") )
       fi
       ;;
-    teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
-    stop) COMPREPLY=( $(compgen -W '--force --yes --help' -- "$cur") ) ;;
-    init|setup|check|security|list|logs|usage|start|yards) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
-    status) COMPREPLY=( $(compgen -W '--all --yes --help' -- "$cur") ) ;;
+    teardown|stop|simple|status) COMPREPLY=( $(compgen -W "$command_options" -- "$cur") ) ;;
     remote)
       # remote <add|repair-key|remove|list>; repair/remove take a registered yard name.
-      if [ "$cword" -eq "$((cmdidx + 1))" ]; then COMPREPLY=( $(compgen -W 'add repair-key remove list' -- "$cur") )
+      if [ "$cword" -eq "$((cmdidx + 1))" ]; then COMPREPLY=( $(compgen -W "$command_verbs" -- "$cur") )
       elif [ "${COMP_WORDS[cmdidx+1]}" = remove ] || [ "${COMP_WORDS[cmdidx+1]}" = repair-key ]; then local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}")" -- "$cur") )
-      elif [ "${COMP_WORDS[cmdidx+1]}" = add ]; then [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yard --yes' -- "$cur") )
-      else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
+      elif [ "${COMP_WORDS[cmdidx+1]}" = add ]; then [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W "$command_options" -- "$cur") )
+      else COMPREPLY=( $(compgen -W "$command_options" -- "$cur") ); fi
       ;;
     keys)
       if [ "$cword" -eq "$((cmdidx + 1))" ]; then
-        COMPREPLY=( $(compgen -W 'trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move' -- "$cur") )
+        COMPREPLY=( $(compgen -W "$command_verbs" -- "$cur") )
       elif [ "${COMP_WORDS[cmdidx+1]}" = trust ] || [ "${COMP_WORDS[cmdidx+1]}" = untrust ] \
         || [ "${COMP_WORDS[cmdidx+1]}" = sync ] || [ "${COMP_WORDS[cmdidx+1]}" = move ]; then
         local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}" @)" -- "$cur") )
       elif [ "${COMP_WORDS[cmdidx+1]}" = import ] || [ "$prev" = --file ]; then
         COMPREPLY=( $(compgen -f -- "$cur") )
       else
-        COMPREPLY=( $(compgen -W '--kind --zone --consumer --file --local-only --exclusive --dry-run --manual-only --all --now --yes' -- "$cur") )
+        COMPREPLY=( $(compgen -W "$command_options" -- "$cur") )
       fi
       ;;
     clone)
       if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
-      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--target --yes' -- "$cur") ) ;;
+      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W "$command_options" -- "$cur") ) ;;
+    none) ;;
     *)
       # Profile-resource command (emu handled above for its bridge flags)? complete its verbs from
       # the registry (`yard --resources` => "<command>\t<verbs>"), so new resources need no edit here.
@@ -172,7 +177,7 @@ _yard() {
         < <("${COMP_WORDS[0]}" --resources 2>/dev/null)
       if [ -n "$_verbs" ]; then
         if [ "$cword" -eq 2 ]; then COMPREPLY=( $(compgen -W "$_verbs" -- "$cur") )
-        else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
+        else COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ); fi
       fi
       ;;  # otherwise: leave to default
   esac

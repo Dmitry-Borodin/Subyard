@@ -16,7 +16,7 @@ mkdir -p "$HOME"
 
 # shellcheck source=scripts/init.sh
 . "$ROOT/scripts/init.sh"
-reachable() { return 0; }
+reconcile_incus_reachable() { return 0; }
 HOST_MOUNTS='host-cache:/mnt/host/cache:rw:0755'
 MOCK_DEVICES=host-cache
 MOCK_SOURCE="$HOST_BASE/host-cache"
@@ -34,16 +34,16 @@ incus() {
   esac
 }
 
-have_mounts || fail "matching desired/live mount rejected"
+stage_mounts_check || fail "matching desired/live mount rejected"
 MOCK_DEVICES='host-cache host-old'
-! have_mounts || fail "stale host-* mount accepted"
+! stage_mounts_check || fail "stale host-* mount accepted"
 MOCK_DEVICES=''
-! have_mounts || fail "missing desired mount accepted"
+! stage_mounts_check || fail "missing desired mount accepted"
 MOCK_DEVICES=host-cache
 MOCK_SOURCE="$HOST_BASE/other"
-! have_mounts || fail "drifted mount source accepted"
+! stage_mounts_check || fail "drifted mount source accepted"
 MOCK_SOURCE="$HOST_BASE/host-cache"
 MOCK_READONLY=true
-! have_mounts || fail "drifted readonly flag accepted"
+! stage_mounts_check || fail "drifted readonly flag accepted"
 
 printf 'ok: init mount convergence is bidirectional and property-aware\n'

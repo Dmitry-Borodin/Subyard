@@ -6,10 +6,35 @@
 # Usage: yard provision [<profile>]   (no arg → all provisionable profiles; -l lists them)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
-# shellcheck source=scripts/lib-state.sh
-. "$SCRIPT_DIR/lib-state.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
+# shellcheck source=scripts/state/store.sh
+. "$SCRIPT_DIR/state/store.sh"
+# shellcheck source=scripts/state/resolver.sh
+. "$SCRIPT_DIR/state/resolver.sh"
+# shellcheck source=scripts/state/transport.sh
+. "$SCRIPT_DIR/state/transport.sh"
+# shellcheck source=scripts/state/metadata.sh
+. "$SCRIPT_DIR/state/metadata.sh"
+state_validate_all || die "project state validation failed"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -23,7 +48,7 @@ disk_profiles() {
   for d in "$PROFILES_DIR"/*/; do [ -r "${d}provision.sh" ] && basename "$d"; done
 }
 
-# -l/--list: print provisionable profiles and exit. (lib.sh consumed -y/-h; first non-flag arg = profile.)
+# -l/--list: print provisionable profiles and exit. (ui.sh consumed -y/-h; first non-flag arg = profile.)
 want=""
 for a in "$@"; do
   case "$a" in
@@ -33,7 +58,7 @@ for a in "$@"; do
         printf 'Provisionable profiles (ship a provision.sh):\n'; printf '  • %s\n' "${_all[@]}"
       else printf 'No provisionable profile under %s\n' "$PROFILES_DIR"; fi
       exit 0 ;;
-    -y | --yes | -h | --help) ;;   # consumed by lib.sh; tolerate here
+    -y | --yes | -h | --help) ;;   # consumed by ui.sh; tolerate here
     -*) die "unknown option '$a'" ;;   # a typo'd flag must error, not be silently ignored
     *)  want="$a"; break ;;
   esac

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lib-power.sh — pure helpers for persisted yard power intent and host-network safety.
 # Source it from host lifecycle scripts or from the installed boot reconciler. It deliberately
-# does not source lib.sh or operator config: the root boot service trusts only Incus metadata.
+# does not source operator config: the root boot service trusts only Incus metadata.
 
 [ -n "${SUBYARD_LIBPOWER_SOURCED:-}" ] && return 0
 SUBYARD_LIBPOWER_SOURCED=1

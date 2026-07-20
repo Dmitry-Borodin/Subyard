@@ -12,11 +12,29 @@
 # Trust: an account on the remote host = full trust of it. Registration copies no credentials;
 # only a later `yard keys trust` permits encrypted credential exchange between owner hosts.
 # Host materialization remains on the owner host. Agent-forwarding is OFF by default.
-# Config: config/host.env (SUBYARD_HOME/SUBYARD_CONFIG_HOME) + the registry helpers in lib.sh.
+# Config: config/host.env (SUBYARD_HOME/SUBYARD_CONFIG_HOME) + scripts/lib/registry.sh.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 
 PROG="${PROG:-yard}"                             # the dispatcher does not export it; user-facing name
 REG_DIR="${SUBYARD_CONFIG_HOME:-$SUBYARD_OPERATOR_HOME/.config/subyard}/yards"
@@ -25,7 +43,7 @@ CM_DIR="$SUBYARD_HOME/ssh"                       # ControlPath sockets + known_h
 CONNECT_TIMEOUT="${SUBYARD_REMOTE_TIMEOUT:-10}"  # add-time probe budget (yards/status use 2s)
 
 # JSON scrapers (json_str/json_num), the env-file reader (yard_env_val) and age_human live in
-# lib.sh — used below unqualified.
+# source-only control-plane modules — used below unqualified.
 
 # ssh options shared by every control-plane call. accept-new records an unknown host key on
 # first contact (and refuses a CHANGED one) without an interactive prompt.
@@ -128,7 +146,7 @@ resolve_pubkey() {
 }
 
 snip_path()  { printf '%s/subyard-%s.config' "$SSH_DIR" "$1"; }   # per-yard ssh alias snippet
-# last-good _info JSON + epoch cache lives at remote_cache_path (lib.sh)
+# last-good _info JSON + epoch cache lives at remote_cache_path (lib/cache.sh)
 
 # Render the per-remote-yard ssh alias to a caller-provided SAME-DIRECTORY temporary file. The
 # transaction below atomically renames it into place only after all rendering succeeds.
@@ -394,7 +412,7 @@ cmd_repair_key() {
     esac
   done
   [ -n "$name" ] || die "usage: $PROG remote repair-key <name>"
-  _yard_valid_name "$name" || die "invalid remote context name '$name'"
+  yard_valid_name "$name" || die "invalid remote context name '$name'"
 
   local env_file dest ryard port json current_port state alias known old_keys new_keys old_material new_material
   env_file="$(yard_env_file "$name" 2>/dev/null)" || die "no such yard '$name' — see '$PROG yards'"
@@ -480,16 +498,16 @@ cmd_add() {
     case "$1" in
       --yard) [ $# -ge 2 ] || die "remote add: --yard needs a name"; ryard="$2"; shift 2 ;;
       --yard=*) ryard="${1#--yard=}"; shift ;;
-      -y|--yes) shift ;;                       # consumed by lib.sh; ignore positionally
+      -y|--yes) shift ;;                       # consumed by ui.sh; ignore positionally
       -*) die "remote add: unknown option '$1'" ;;
       *) if [ -z "$name" ]; then name="$1"; elif [ -z "$dest" ]; then dest="$1";
          else die "remote add: unexpected argument '$1'"; fi; shift ;;
     esac
   done
   [ -n "$name" ] && [ -n "$dest" ] || die "usage: $PROG remote add <name> <user@host|ssh-alias> [--yard <remote-yard>]"
-  _yard_valid_name "$name" \
+  yard_valid_name "$name" \
     || die "invalid yard name '$name' (allowed: lowercase letters, digits, '-', '_'; must start with a letter or digit)"
-  [ -n "$ryard" ] && { _yard_valid_name "$ryard" || die "invalid --yard name '$ryard'"; }
+  [ -n "$ryard" ] && { yard_valid_name "$ryard" || die "invalid --yard name '$ryard'"; }
   valid_remote_dest "$dest" \
     || die "invalid ssh destination '$dest' (use a single user@host or ssh alias, without whitespace or shell/config syntax)"
 
@@ -596,7 +614,7 @@ cmd_remove() {
     esac
   done
   [ -n "$name" ] || die "usage: $PROG remote remove <name>"
-  _yard_valid_name "$name" || die "invalid remote context name '$name'"
+  yard_valid_name "$name" || die "invalid remote context name '$name'"
   local env_file; env_file="$(yard_env_file "$name" 2>/dev/null)" \
     || die "no such yard '$name' — see '$PROG yards'"
   # Only registry files that are actually remote may be removed here (guard local yards).

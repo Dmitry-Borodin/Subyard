@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# project-staging.sh — SHARED staging zone(s) for a live gateway (OpenClaw), inside the yard,
+# handler.sh — OpenClaw profile's shared staging gateway zones inside the yard,
 # isolated from production. A staging zone is identified by a ZONE NAME (default `canonical`),
 # NOT by a dev project — it is a shared service: dev-agents work in their own L2 boxes
 # (project-env.sh) and USE the zone; they do not each run their own gateway with the one test
@@ -37,9 +37,29 @@
 # GATEWAY_CMD, BOT_LEASE_KEY, LEASE_TTL). See config/staging/canonical.conf.example.
 # Operator-owned; no root. Docker here is the yard's nested daemon, never the host's.
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib.sh
-. "$SCRIPT_DIR/lib.sh"
+RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUBYARD_ROOT="$(cd "$RESOURCE_DIR/../../../../.." && pwd)"
+SCRIPT_DIR="$SUBYARD_ROOT/scripts"
+# Explicit control-plane module composition (config/context loads exactly once).
+# shellcheck source=scripts/lib/runtime.sh
+. "$SCRIPT_DIR/lib/runtime.sh"
+# shellcheck source=scripts/lib/env.sh
+. "$SCRIPT_DIR/lib/env.sh"
+# shellcheck source=scripts/lib/registry.sh
+. "$SCRIPT_DIR/lib/registry.sh"
+# shellcheck source=scripts/lib/context.sh
+. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/ui.sh
+. "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/config.sh
+. "$SCRIPT_DIR/lib/config.sh"
+subyard_context_load
+# shellcheck source=scripts/lib/cache.sh
+. "$SCRIPT_DIR/lib/cache.sh"
+# shellcheck source=scripts/lib-power.sh
+. "$SCRIPT_DIR/lib-power.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 # shellcheck source=scripts/lib-service.sh
 . "$SCRIPT_DIR/lib-service.sh"   # profile shared-resource helpers: yexec, svc_require_yard_running
 
@@ -102,7 +122,7 @@ while [ $# -gt 0 ]; do
     --source)  src_override="${2:-}"; [ -n "$src_override" ] || die "--source needs a yard path"; shift ;;
     --purge)   purge=1 ;;
     -f|--follow) follow=1 ;;
-    -y|--yes)  ;;  # handled by lib.sh
+    -y|--yes)  ;;  # handled by ui.sh
     -*)        die "unknown option '$1'" ;;
     *)         [ "$zone_set" = 1 ] && die "unexpected extra argument '$1'"; zone="$1"; zone_set=1 ;;
   esac
@@ -488,7 +508,7 @@ GUARD
     yexec rm -rf "$(dirname "$ysecret")" 2>/dev/null || true
     # `if`, not `[ … ] && …`: this is the destroy) arm's last command and the case is the script's
     # final action, so under set -e a false guard (the default, no --purge) would exit 1 despite a
-    # successful destroy. Mirrors the sibling qa-pool.sh cmd_destroy.
+    # successful destroy. Mirrors the sibling qa-bot-broker handler's cmd_destroy.
     if [ "$purge" = 1 ]; then yexec rm -rf "$dataRoot" 2>/dev/null && ok "staging data root wiped"; fi
     ;;
 

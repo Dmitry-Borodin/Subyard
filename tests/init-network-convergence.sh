@@ -23,27 +23,28 @@ RULES
 
 # shellcheck source=scripts/init.sh
 . "$ROOT/scripts/init.sh"
-reachable() { return 0; }
+reconcile_incus_reachable() { return 0; }
 power_host_safe() { return 0; }
-have_instance() { return 1; }
-power_stopped() { return 0; }
+stage_instance_check() { return 1; }
+reconcile_power_stopped() { return 0; }
 ufw() { :; }
 systemctl() { return 0; }
 
-have_network || fail "matching active-UFW rules were not converged"
-verify_network || fail "active UFW rejected a converged post-apply state"
-[ "${INIT_STEP_VERIFY[1]}" = verify_network ] || fail "network registry does not use post-apply verification"
+stage_network_check || fail "matching active-UFW rules were not converged"
+stage_network_verify || fail "active UFW rejected a converged post-apply state"
+[ "$(reconcile_stage_prefix network)" = stage_network ] \
+  || fail "network registry does not own its full stage contract"
 
 sed -i '/out_incusbr0/d' "$SUBYARD_UFW_RULES_FILE"
-! have_network || fail "missing UFW route-out rule was accepted"
-! verify_network || fail "post-apply verification ignored missing UFW rule"
+! stage_network_check || fail "missing UFW route-out rule was accepted"
+! stage_network_verify || fail "post-apply verification ignored missing UFW rule"
 printf '%s\n' '### tuple ### route:allow any any 0.0.0.0/0 any 0.0.0.0/0 out_incusbr0' \
   >> "$SUBYARD_UFW_RULES_FILE"
 
 # The guard is applied before a fresh yard instance exists, so post-apply verification must not
 # require a guest lease that the instance stage has not created yet.
-power_stopped() { return 1; }
-verify_network || fail "fresh-host network verify required a not-yet-created instance"
+reconcile_power_stopped() { return 1; }
+stage_network_verify || fail "fresh-host network verify required a not-yet-created instance"
 
 access_log="$TMP/access.log"
 getent() { [ "${1:-}" = group ] && [ "${2:-}" = incus-admin ]; }

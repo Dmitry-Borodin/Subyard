@@ -23,7 +23,7 @@ PROG="${0##*/}"
 # Core command names (yard lifecycle / project workflow / project-env L2). Profile-resource
 # commands are appended from the registry below, so adding a resource needs no edit here. Drives
 # `yard --list` and both completions.
-COMMANDS=(check security init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote)
+COMMANDS=(check security init start status logs usage keys shell provision stop teardown sync bind clone list code export remove up down info yards remote)
 if command -v res_commands >/dev/null 2>&1; then
   while IFS= read -r _rc; do [ -n "$_rc" ] && COMMANDS+=("$_rc"); done < <(res_commands 2>/dev/null)
 fi
@@ -83,6 +83,7 @@ Yard lifecycle:
                   yard's size (cached, refreshed in the background when >10 min old)
   logs            tail the yard's runtime logs (systemd journal + docker)
   usage [args]    show coding-agent token usage
+  keys [command]  manage the host-only encrypted/versioned credential ledger
   shell  [proj]   shell in the yard as dev, optionally in a project's directory
          [--root] use root instead of dev; add \`-- <cmd>\` to run a command
   provision [prof] install a profile's toolchain INTO the yard (L1) so agents work
@@ -126,7 +127,8 @@ Remote yards:
   Then '$PROG -Y <name> <cmd>': lifecycle commands (start/stop/status/provision/logs/shell/…)
   forward over ssh to the owner host with their native prompts; data-plane commands
   (code/sync/export/clone/remove) go straight into the yard. 'bind' is host-local and
-  disabled for remote yards. Keys and secrets stay on the owner host.
+  disabled for remote yards. 'remote add' never copies secrets; only a separate confirmed
+  'keys trust' permits authorized encrypted ledger records to sync between owner hosts.
   A real in-yard host-key change stays blocked. Verify its fingerprint on the trusted owner
   host, then use 'remote repair-key <name>' for an explicit, context-scoped rotation.
   Subcommands:  remote add <name> <user@host> [--yard <remote-yard>] | remote repair-key <name> | remote remove <name> | remote list
@@ -270,6 +272,9 @@ case "$cmd" in
   _project-state) exec "$S/project-state.sh" "$@" ;; # hidden: converge owner-host project registry
   logs)      exec "$S/yard-logs.sh" "$@" ;;
   usage)     exec "$S/yard-usage.sh" "$@" ;;
+  keys)      exec "$S/yard-keys.sh" "$@" ;;
+  _keys-exchange) exec "$S/yard-keys.sh" _exchange "$@" ;;
+  _keys-auto-sync) exec "$S/yard-keys.sh" _auto-worker "$@" ;;
   start | stop | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;
   code)      exec "$S/project-code.sh" "$@" ;;
   remove)    exec "$S/project-remove.sh" "$@" ;;

@@ -62,14 +62,14 @@ if [ "$KEEP_DATA" = 1 ]; then
     "Delete the '$INSTANCE_NAME' instance (project '$INCUS_PROJECT')." \
     "KEEP the storage pool, the '$SRV_VOLUME' volume and all /srv data, the project, and the '$BRIDGE' bridge." \
     "Remove this yard's client config: ssh snippet (~/.ssh/$YARD_SNIP), project state ($YARD_STATE_DIR); ufw bridge rules stay (bridge kept)." \
-    "Keep the NetworkManager guard (the bridge stays), the 'incus' package, and the yard CLI."
+    "Keep the host-only encrypted credential ledger/identities, NetworkManager guard, 'incus' package, and yard CLI."
 else
   announce "Subyard teardown — FULL (frees disk)" \
     "Delete the '$INSTANCE_NAME' instance and the '$INCUS_PROJECT' project (with its '$SRV_VOLUME' volume)." \
     "Delete the '$BRIDGE' bridge and the '$STORAGE_POOL' storage pool (only if no other Incus instances use them)." \
     "DELETE ALL DATA under $STORAGE_PATH (the yard rootfs + /srv) — frees the disk, IRREVERSIBLE (only if no other yard shares the pool)." \
     "Remove this yard's config: ssh snippet (~/.ssh/$YARD_SNIP), project state ($YARD_STATE_DIR); ufw bridge rules + the NetworkManager guard only when the shared bridge goes (last yard)." \
-    "Keep the 'incus' package, the 'incus-admin' group, and the yard CLI (so '$(yard_cmd_hint) init' can rebuild)."
+    "Keep the host-only encrypted credential ledger/identities, 'incus' package, 'incus-admin' group, and yard CLI."
 fi
 proceed_or_die
 require_root "removing the NetworkManager guard, ufw rules, and the Incus storage data needs root"

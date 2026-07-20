@@ -74,6 +74,29 @@ else
     || die "SSH access not set up — run 'yard init' (or scripts/07-ssh-access.sh)"
 fi
 
+# Opportunistic owner-host key catch-up before opening the real Remote-SSH session. The six-hour
+# timer remains authoritative; this bounded hook only reduces staleness during active use.
+if yard_is_remote; then
+  _key_rc='yard'
+  [ -z "${REMOTE_YARD:-}" ] || _key_rc="$_key_rc -Y $(printf '%q' "$REMOTE_YARD")"
+  _key_rc="$_key_rc _keys-auto-sync --if-due"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${SUBYARD_KEYS_CONNECT_TIMEOUT:-8}" ssh -o BatchMode=yes -o ConnectTimeout=5 \
+      "$REMOTE_DEST" -- bash -lc "$(printf '%q' "$_key_rc")" >/dev/null 2>&1 || true
+  else
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_DEST" -- bash -lc "$(printf '%q' "$_key_rc")" >/dev/null 2>&1 || true
+  fi
+else
+  _keys_identity="${SUBYARD_KEYS_ROOT:-$SUBYARD_CONFIG_HOME/keys}/identity.json"
+  if [ -r "$_keys_identity" ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "${SUBYARD_KEYS_CONNECT_TIMEOUT:-8}" "$SCRIPT_DIR/yard-keys.sh" _auto-worker --if-due >/dev/null 2>&1 || true
+    else
+      "$SCRIPT_DIR/yard-keys.sh" _auto-worker --if-due >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
 # VS Code labels a window by its leaf folder — for us that's the useless "src". Write a
 # tiny .code-workspace that names the (absolute) src path with the project, so the title
 # and Explorer read e.g. "Subyard", and recommends the in-yard coding agents. It lives in

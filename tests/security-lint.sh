@@ -18,6 +18,27 @@ mkdir -p "$TMP/home" "$TMP/profiles/safe" "$TMP/profiles/bad"
 
 bash "$ROOT/scripts/security-lint.sh" --quiet
 
+# Host-side credential control plane must stay outside every managed mount root and keep private modes.
+export SUBYARD_KEYS_ROOT="$TMP/key-ledgers"
+mkdir -p "$SUBYARD_KEYS_ROOT/identity"
+chmod 0700 "$SUBYARD_KEYS_ROOT"
+: > "$SUBYARD_KEYS_ROOT/identity/age.txt"
+: > "$SUBYARD_KEYS_ROOT/identity/signing_ed25519"
+chmod 0600 "$SUBYARD_KEYS_ROOT/identity/age.txt" "$SUBYARD_KEYS_ROOT/identity/signing_ed25519"
+bash "$ROOT/scripts/security-lint.sh" --quiet
+chmod 0644 "$SUBYARD_KEYS_ROOT/identity/age.txt"
+if bash "$ROOT/scripts/security-lint.sh" --quiet >"$TMP/key-mode.out" 2>&1; then
+  fail "world-readable key identity passed security lint"
+fi
+grep -Fq 'key identity must have mode 0600' "$TMP/key-mode.out" || fail "key identity failure is unclear"
+chmod 0600 "$SUBYARD_KEYS_ROOT/identity/age.txt"
+export SUBYARD_KEYS_ROOT="$HOST_BASE/key-ledgers"
+if bash "$ROOT/scripts/security-lint.sh" --quiet >"$TMP/key-mount.out" 2>&1; then
+  fail "credential ledger beneath HOST_BASE passed security lint"
+fi
+grep -Fq 'could become a yard mount' "$TMP/key-mount.out" || fail "key mount-root failure is unclear"
+export SUBYARD_KEYS_ROOT="$TMP/key-ledgers"
+
 printf '%s\n' 'ENV_MOUNTS="/var/run/docker.sock:/var/run/docker.sock"' \
   > "$TMP/profiles/bad/profile.conf"
 if bash "$ROOT/scripts/security-lint.sh" --quiet >"$TMP/bad.out" 2>&1; then

@@ -17,6 +17,15 @@ mkdir -p "$HOME"
 # shellcheck source=scripts/init.sh
 . "$ROOT/scripts/init.sh"
 init_registry_check
+keys_stage=-1
+for i in "${!INIT_STEP_IDS[@]}"; do
+  [ "${INIT_STEP_IDS[$i]}" = keys ] && keys_stage="$i"
+done
+[ "$keys_stage" -ge 0 ] || { printf 'FAIL: yard init has no credential-ledger stage\n' >&2; exit 1; }
+[ "${INIT_STEP_APPLY[$keys_stage]}" = apply_keys ] \
+  || { printf 'FAIL: yard init credential-ledger stage uses the wrong reconciler\n' >&2; exit 1; }
+declare -f apply_keys | grep -Fq keys_init_store \
+  || { printf 'FAIL: yard init does not create the credential ledger\n' >&2; exit 1; }
 
 probe_fixture() { [ -f "$TMP/converged" ]; }
 apply_fixture() { printf 'applied\n' >> "$TMP/log"; : > "$TMP/converged"; }

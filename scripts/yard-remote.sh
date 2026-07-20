@@ -9,8 +9,9 @@
 #   remote repair-key <name> verify and rotate one remote context's pinned in-yard host key.
 #   remote remove <name>    drop the context + ssh alias + its in-yard trust pin.
 #   remote list             one row per remote yard: name, dest, remote yard, port, last seen.
-# Trust: an account on the remote host = full trust of it. No secrets/keys are copied there;
-# host secrets and staging/qa env live on the owner host. Agent-forwarding is OFF by default.
+# Trust: an account on the remote host = full trust of it. Registration copies no credentials;
+# only a later `yard keys trust` permits encrypted credential exchange between owner hosts.
+# Host materialization remains on the owner host. Agent-forwarding is OFF by default.
 # Config: config/host.env (SUBYARD_HOME/SUBYARD_CONFIG_HOME) + the registry helpers in lib.sh.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

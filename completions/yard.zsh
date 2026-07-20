@@ -77,7 +77,7 @@ _yard_code_target() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( check security init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging qa-pool )
+  [[ -n $cmds ]] || cmds=( check security init start status logs usage keys shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging qa-pool )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args
@@ -137,6 +137,22 @@ _yard() {
             _arguments '--yard[target a named yard on the remote host]:remote yard:' '--yes[skip prompt]'
           else
             _arguments '--yes[skip prompt]'
+          fi
+          ;;
+        keys)
+          if (( CURRENT == 2 )); then
+            local -a sub; sub=( trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move )
+            _describe -t subcommands 'keys subcommand' sub
+          elif [[ ${words[2]} == trust || ${words[2]} == untrust || ${words[2]} == sync || ${words[2]} == move ]]; then
+            local -a kn; kn=( ${${(f)"$(_yard_yards)"}/#/@} ); _describe -t yards 'key peer' kn
+          elif [[ ${words[2]} == import || ${words[CURRENT-1]} == --file ]]; then
+            _files
+          else
+            _arguments '--kind[credential kind]:kind:' '--zone[logical zone]:zone:' \
+              '--consumer[consumer mapping]:consumer:(none staging-env qa-secrets qa-pool)' \
+              '--file[protected input file]:file:_files' '--local-only[never export]' \
+              '--exclusive[single assigned yard]' '--dry-run[preview only]' '--manual-only[disable default auto-sync]' \
+              '--all[all peers/zones]' '--now[force immediate attempt]' '--yes[skip prompt]'
           fi
           ;;
         teardown|uninstall) _arguments '--keep-data[preserve /srv]' '--yes[skip prompt]' ;;

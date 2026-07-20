@@ -67,3 +67,22 @@ Every lifecycle command takes the context: `yard -Y <name> {init,start,stop,stat
 logs,teardown,…}`. `yard -Y <name> teardown` removes only that yard's instance, project,
 volume, ssh snippet and state — never another yard's. Shared host objects (the storage pool,
 bridge, NetworkManager guard) are only removed when the last yard goes away.
+
+## Encrypted credential exchange
+
+Yard registration and project sync are credential-free. To share selected static credentials,
+initialize the ledger normally on each physical owner host and explicitly enroll the peer:
+
+```bash
+yard -Y openclaw init
+yard -Y srv1 init
+yard -Y openclaw keys trust @srv1
+```
+
+Trust displays the age recipient and signing fingerprints and asks for confirmation. One command
+installs reciprocal cryptographic trust. The side with the known route becomes the automatic `active`
+initiator; the other side is `passive`/respond-only until it separately learns a reverse route.
+Enrolled peers exchange only signed, recipient-authorized ciphertext. All local yard contexts share
+one host identity/store; yard names remain consumer and exclusive-assignment targets. The store survives
+yard teardown. See
+[the credential-ledger contract](../../docs/keys.md).

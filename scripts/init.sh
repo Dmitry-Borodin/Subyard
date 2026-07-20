@@ -21,6 +21,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_ARGS=("$@")   # preserved so we can re-exec ourselves under a fresh group session
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/lib.sh"
+# shellcheck source=scripts/lib-keys.sh
+. "$SCRIPT_DIR/lib-keys.sh"
 
 # ============================================================================
 # Configuration — the names the probes and steps below reference.
@@ -278,6 +280,12 @@ have_security() {
   "$SCRIPT_DIR/security-lint.sh" --quiet --require-live >/dev/null 2>&1
 }
 
+have_keys() {
+  keys_initialized \
+    && "$SCRIPT_DIR/install-key-tools.sh" --check >/dev/null 2>&1 \
+    && "$SCRIPT_DIR/install-keys-auto-sync.sh" --check >/dev/null 2>&1
+}
+
 # The extras reconciler owns both desired-state interpretation and its read-only probe.
 have_extras() { "$SCRIPT_DIR/09-yard-extras.sh" --check >/dev/null 2>&1; }
 
@@ -373,17 +381,22 @@ apply_ssh()           { "$SCRIPT_DIR/07-ssh-access.sh" --yes; }
 apply_gitid()         { "$SCRIPT_DIR/08-git-identity.sh" --yes; }
 apply_extras()        { "$SCRIPT_DIR/09-yard-extras.sh" --yes; }
 apply_power()         { "$SCRIPT_DIR/install-power-reconciler.sh" --yes; }
+apply_keys()          {
+  "$SCRIPT_DIR/install-key-tools.sh" --yes
+  keys_init_store
+  "$SCRIPT_DIR/install-keys-auto-sync.sh" --yes
+}
 apply_security()      { "$SCRIPT_DIR/security-lint.sh" --require-live; }
 
 # One ordered source of truth: id | convergence probe | apply function | verify function | label.
 # A stage is re-probed immediately before apply and verified immediately after it.
-INIT_STEP_IDS=(project network power-import instance mounts provision ssh git-identity extras power security)
-INIT_STEP_PROBES=(have_project have_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power have_security)
-INIT_STEP_APPLY=(apply_project apply_network apply_power_import apply_instance apply_mounts apply_provision apply_ssh apply_gitid apply_extras apply_power apply_security)
+INIT_STEP_IDS=(project network power-import instance mounts provision ssh git-identity extras power keys security)
+INIT_STEP_PROBES=(have_project have_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power have_keys have_security)
+INIT_STEP_APPLY=(apply_project apply_network apply_power_import apply_instance apply_mounts apply_provision apply_ssh apply_gitid apply_extras apply_power apply_keys apply_security)
 # A fresh instance deliberately keeps initialized=false until profile provisioning has been offered
 # and the final desired power can be restored below. The power stage installs only the host
 # reconciler, so its immediate verifier must not require that later transaction commit.
-INIT_STEP_VERIFY=(have_project verify_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power_reconciler have_security)
+INIT_STEP_VERIFY=(have_project verify_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power_reconciler have_keys have_security)
 INIT_STEP_LABELS=(
   "Create the Incus project '$INCUS_PROJECT'"
   "Open host DHCP/DNS for the yard bridge (ufw; needs root)"
@@ -395,6 +408,7 @@ INIT_STEP_LABELS=(
   "Reconcile in-yard git config and bind-worktree trust"
   "Apply yard extras requested by projects (mounts/caps/devices)"
   "Persist desired yard power + install guarded host boot reconciliation (needs root)"
+  "Initialize the host-side encrypted credential ledger + its persistent 6-hour sync timer"
   "Validate static and live host-boundary security invariants"
 )
 

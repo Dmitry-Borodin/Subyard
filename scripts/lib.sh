@@ -269,7 +269,7 @@ for _arg in "$@"; do
   case "$_arg" in
     --)           break ;;
     -y | --yes)  ASSUME_YES=1 ;;
-    -h | --help) _yard_help_and_exit ;;
+    -h | --help) [ "${SUBYARD_CUSTOM_HELP:-0}" = 1 ] || _yard_help_and_exit ;;
   esac
 done
 unset _arg

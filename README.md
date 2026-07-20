@@ -45,6 +45,7 @@ yard shell | code [project]        Open a project session
 yard export | remove [project]     Copy out or remove a project
 yard provision [profile]           Apply a project profile
 yard up | down | info [project]    Manage an L2 project environment
+yard keys <command>                Manage the host-side encrypted credential ledger
 ```
 
 ## Multiple and remote yards
@@ -61,8 +62,9 @@ yard -Y srv1 sync .
 yard -Y srv1 code .
 ```
 
-Remote yards support `sync` and `clone`; `bind` is local-only. Yard definitions
-live in `config/yards/`. See [yard configuration](config/yards/README.md).
+Remote yards support `sync` and `clone`; `bind` is local-only. Yard definitions live in
+`config/yards/`. See
+[yard configuration](config/yards/README.md) and the [credential ledger](docs/keys.md).
 
 ## Security boundary
 

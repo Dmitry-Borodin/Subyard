@@ -327,6 +327,10 @@ MSG
     require_box
     if gateway_running; then ok "gateway already running for zone '$zone'"; exit 0; fi
 
+    # A synced exclusive credential (for example one Telegram bot identity) carries a signed
+    # authority assignment. Refuse a second/stale owner before touching the existing consumer.
+    "$SCRIPT_DIR/yard-keys.sh" check-exclusive "$zone"
+
     # --- prod-fingerprint GUARD (deny-by-default) ----------------------------
     prod_fps=""
     [ -r "$PROD_FP_FILE" ] && prod_fps="$(grep -vE '^\s*(#|$)' "$PROD_FP_FILE" 2>/dev/null | tr -s '[:space:]' '\n' || true)"

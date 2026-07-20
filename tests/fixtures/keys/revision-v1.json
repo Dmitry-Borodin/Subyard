@@ -1,0 +1,23 @@
+{
+  "actorCounter": 1,
+  "actorId": "host-example-0123456789abcdef",
+  "assignedYard": "",
+  "assignmentEpoch": 0,
+  "authorityHost": "",
+  "consumer": "staging-env",
+  "credentialId": "cred-0123456789abcdef0123456789abcdef",
+  "exclusive": false,
+  "kind": "file",
+  "label": "dummy staging fixture",
+  "parents": [],
+  "payload": "ENC[ZHVtbXktbm90LWEtc2VjcmV0]",
+  "recipientActors": ["host-example-0123456789abcdef"],
+  "revisionId": "host-example-0123456789abcdef-000000000001-deadbeef",
+  "schemaVersion": 1,
+  "scope": "staging",
+  "sops": {"age": [{"enc": "dummy-envelope", "recipient": "age1dummyfixture"}], "mac": "dummy-mac"},
+  "state": "active",
+  "syncable": true,
+  "timestamp": "2026-01-01T00:00:00Z",
+  "zone": "canonical"
+}

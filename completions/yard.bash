@@ -92,7 +92,7 @@ _yard() {
   if [ "$cword" -eq "$cmdidx" ]; then
     local cmds
     cmds="$("${COMP_WORDS[0]}" --list 2>/dev/null)"
-    [ -n "$cmds" ] || cmds='check security init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging'
+    [ -n "$cmds" ] || cmds='check security init start status logs usage keys shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging'
     case "$cur" in
       -*) COMPREPLY=( $(compgen -W "$globals" -- "$cur") ) ;;
       *)  COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ) ;;
@@ -147,6 +147,18 @@ _yard() {
       elif [ "${COMP_WORDS[cmdidx+1]}" = remove ] || [ "${COMP_WORDS[cmdidx+1]}" = repair-key ]; then local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}")" -- "$cur") )
       elif [ "${COMP_WORDS[cmdidx+1]}" = add ]; then [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yard --yes' -- "$cur") )
       else COMPREPLY=( $(compgen -W '--yes' -- "$cur") ); fi
+      ;;
+    keys)
+      if [ "$cword" -eq "$((cmdidx + 1))" ]; then
+        COMPREPLY=( $(compgen -W 'trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move' -- "$cur") )
+      elif [ "${COMP_WORDS[cmdidx+1]}" = trust ] || [ "${COMP_WORDS[cmdidx+1]}" = untrust ] \
+        || [ "${COMP_WORDS[cmdidx+1]}" = sync ] || [ "${COMP_WORDS[cmdidx+1]}" = move ]; then
+        local IFS=$'\n'; COMPREPLY=( $(compgen -W "$(_yard_yards "${COMP_WORDS[0]}" @)" -- "$cur") )
+      elif [ "${COMP_WORDS[cmdidx+1]}" = import ] || [ "$prev" = --file ]; then
+        COMPREPLY=( $(compgen -f -- "$cur") )
+      else
+        COMPREPLY=( $(compgen -W '--kind --zone --consumer --file --local-only --exclusive --dry-run --manual-only --all --now --yes' -- "$cur") )
+      fi
       ;;
     clone)
       if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi

@@ -47,6 +47,19 @@ incus_preflight
 [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
   || die "yard is not running — start it: $(yard_cmd_hint) start"
 
+# A real connection is a useful catch-up trigger in addition to the persistent timer. Keep it
+# bounded and best-effort: opening a shell must not hang just because an enrolled peer is offline.
+keys_identity="${SUBYARD_KEYS_ROOT:-$SUBYARD_CONFIG_HOME/keys}/identity.json"
+if [ -r "$keys_identity" ]; then
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${SUBYARD_KEYS_CONNECT_TIMEOUT:-8}" "$SCRIPT_DIR/yard-keys.sh" _auto-worker --if-due >/dev/null 2>&1 \
+      || warn "opportunistic encrypted-credential sync did not complete; the periodic timer will retry"
+  else
+    "$SCRIPT_DIR/yard-keys.sh" _auto-worker --if-due >/dev/null 2>&1 \
+      || warn "opportunistic encrypted-credential sync did not complete; the periodic timer will retry"
+  fi
+fi
+
 user_args=(--user "$DEV_UID" --group "$DEV_GID" --env "HOME=/home/$DEV_USER")
 if [ "$root" = 1 ]; then
   user_args=(--user 0 --group 0 --env HOME=/root)

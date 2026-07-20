@@ -67,6 +67,28 @@ done
 [ "${FORWARD_SSH_AGENT:-0}" = 0 ] \
   || security_warn "SSH agent forwarding is enabled; this is operator opt-in, not a credential boundary"
 
+# The encrypted ledger is host control-plane state. It must not sit in either Git checkout or
+# beneath HOST_BASE (managed mounts source their data there), and private identities stay 0600.
+keys_root="$(realpath -m "${SUBYARD_KEYS_ROOT:-$SUBYARD_CONFIG_HOME/keys}")"
+repo_root="$(realpath -m "$SCRIPT_DIR/..")"
+host_base_real="$(realpath -m "$HOST_BASE")"
+if path_is_within "$keys_root" "$repo_root"; then
+  security_fail "SUBYARD_KEYS_ROOT is inside the public/private checkout: $keys_root"
+fi
+if path_is_within "$keys_root" "$host_base_real"; then
+  security_fail "SUBYARD_KEYS_ROOT is beneath HOST_BASE and could become a yard mount: $keys_root"
+fi
+if [ -d "$keys_root" ]; then
+  mode="$(stat -c '%a' "$keys_root" 2>/dev/null || true)"
+  case "$mode" in 700) ;; *) security_fail "credential ledger root must have mode 0700: $keys_root (mode ${mode:-?})" ;; esac
+  for identity in "$keys_root"/identity/age.txt "$keys_root"/identity/signing_ed25519; do
+    [ -e "$identity" ] || continue
+    [ ! -L "$identity" ] || { security_fail "key identity must not be a symlink: $identity"; continue; }
+    [ "$(stat -c '%a' "$identity" 2>/dev/null || true)" = 600 ] \
+      || security_fail "key identity must have mode 0600: $identity"
+  done
+fi
+
 # Live checks are conditional for host-free CI, mandatory after `yard init`.
 live=0
 if [ "${SUBYARD_SECURITY_SKIP_LIVE:-0}" != 1 ] \

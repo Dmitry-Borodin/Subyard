@@ -380,7 +380,10 @@ apply_security()      { "$SCRIPT_DIR/security-lint.sh" --require-live; }
 INIT_STEP_IDS=(project network power-import instance mounts provision ssh git-identity extras power security)
 INIT_STEP_PROBES=(have_project have_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power have_security)
 INIT_STEP_APPLY=(apply_project apply_network apply_power_import apply_instance apply_mounts apply_provision apply_ssh apply_gitid apply_extras apply_power apply_security)
-INIT_STEP_VERIFY=(have_project verify_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power have_security)
+# A fresh instance deliberately keeps initialized=false until profile provisioning has been offered
+# and the final desired power can be restored below. The power stage installs only the host
+# reconciler, so its immediate verifier must not require that later transaction commit.
+INIT_STEP_VERIFY=(have_project verify_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power_reconciler have_security)
 INIT_STEP_LABELS=(
   "Create the Incus project '$INCUS_PROJECT'"
   "Open host DHCP/DNS for the yard bridge (ufw; needs root)"

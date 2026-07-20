@@ -76,7 +76,9 @@ require_box() { box_exists || die "no QA broker in the yard — run: ${PROG:-yar
 require_secrets() {
   [ -r "$SECRETS" ] || die "missing $SECRETS — copy config/qa-pool/secrets.env.example and fill it in"
   local m c
+  # shellcheck disable=SC1090 # operator-selected host secret file
   m="$( . "$SECRETS" >/dev/null 2>&1; printf '%s' "${OPENCLAW_QA_CONVEX_SECRET_MAINTAINER:-}")"
+  # shellcheck disable=SC1090 # operator-selected host secret file
   c="$( . "$SECRETS" >/dev/null 2>&1; printf '%s' "${OPENCLAW_QA_CONVEX_SECRET_CI:-}")"
   [ -n "$m" ] || die "OPENCLAW_QA_CONVEX_SECRET_MAINTAINER is empty in $SECRETS (e.g. openssl rand -hex 32)"
   [ -n "$c" ] || die "OPENCLAW_QA_CONVEX_SECRET_CI is empty in $SECRETS"
@@ -152,6 +154,7 @@ cmd_up() {
 
   # 1) instance secret — host override > persisted-in-yard > generate (and persist 0600).
   local host_instance
+  # shellcheck disable=SC1090 # operator-selected host secret file
   host_instance="$( . "$SECRETS" >/dev/null 2>&1; printf '%s' "${CONVEX_INSTANCE_SECRET:-}")"
   if [ -n "$host_instance" ]; then
     printf '%s' "$host_instance" | yexec sh -c 'umask 077; cat > "$1"' _ "$YINSTANCE"

@@ -5,6 +5,7 @@
 [ -n "${SUBYARD_CONTEXT_LIB_SOURCED:-}" ] && return 0
 SUBYARD_CONTEXT_LIB_SOURCED=1
 
+# shellcheck disable=SC2034 # out-parameter read by scripts/tests that source this library
 CONTEXT_ERROR=""
 context_fail() { CONTEXT_ERROR="$*"; return 1; }
 
@@ -31,6 +32,7 @@ context_normalize() {
 }
 
 context_validate() {
+  # shellcheck disable=SC2034 # reset the sourced-library out-parameter for this validation
   CONTEXT_ERROR=""
   context_normalize
   case "${YARD_TYPE:-local}" in local | remote) ;; *) context_fail "YARD_TYPE must be local or remote"; return ;; esac

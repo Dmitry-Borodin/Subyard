@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034,SC2207 # completion API requires dynamic word splitting/global names
 # yard.bash — bash completion for the `yard` (and `sy`) CLI.
 # Self-contained: no bash-completion package required. Top-level commands come
 # from `yard --list` so they stay in sync with bin/yard; profile names are read

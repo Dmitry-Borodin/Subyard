@@ -89,6 +89,7 @@ power_import_instance() { # <project> <instance> <yard-name> <bridge>
   power_set "$project" "$instance" "$POWER_KEY_BRIDGE" "$bridge" || return 1
   power_set "$project" "$instance" "$POWER_KEY_DESIRED" "$desired" || return 1
   power_set "$project" "$instance" "$POWER_KEY_INITIALIZED" true || return 1
+  # shellcheck disable=SC2034 # out-parameter read by the init orchestrator after import
   POWER_IMPORTED=1
 }
 

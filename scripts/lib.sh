@@ -346,6 +346,7 @@ announce() {
 #   proceed_or_die y     default Yes (Y/n) — transient, reversible lifecycle actions:
 #                                     bring a shared resource up/down, start/stop a
 #                                     service. A bare Enter proceeds.
+# shellcheck disable=SC2120 # optional default-answer argument is used by lifecycle callers
 proceed_or_die() {
   [ "${SUBYARD_ELEVATED:-0}" = 1 ] && return 0
   confirm "Proceed?" "${1:-n}" || die "aborted by user (pass --yes to skip this prompt)"

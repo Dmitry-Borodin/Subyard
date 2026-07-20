@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Pure context validation and bind-path policy checks.
+# shellcheck disable=SC2034,SC2209 # assignments are consumed by sourced context helpers
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

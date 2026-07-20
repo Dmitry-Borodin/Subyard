@@ -54,7 +54,7 @@ if yard_is_remote; then
 else
   incus_preflight
   [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
-    || die "yard is not running — start it: ${PROG:-yard} up"
+    || die "yard is not running — start it: ${PROG:-yard} start"
   incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -d "$yardPath" \
     || die "yard copy missing at $yardPath — re-run: ${PROG:-yard} sync $arg"
 fi

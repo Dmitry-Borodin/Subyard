@@ -395,6 +395,14 @@ case "$action" in
     # Shared resources profiles expose (emulator / staging gateway). Probe live state only when
     # the yard is up; otherwise just list what is declared (state '?').
     if [ "$s" = RUNNING ]; then print_shared 1; else print_shared 0; fi
+    # Compact security signal on every status; details stay behind the explicit read-only command.
+    if "$SCRIPT_DIR/security-lint.sh" --quiet --require-live >/dev/null 2>&1; then
+      printf '  security ok (live)\n'
+    elif "$SCRIPT_DIR/security-lint.sh" --quiet >/dev/null 2>&1; then
+      printf '  security static-only\n'
+    else
+      printf '  security FAIL  (inspect: %s security)\n' "$(yard_cmd_hint)"
+    fi
     # Yard size, always, as the last line: instant from the cache, background-refreshed
     # from inside the yard when stale.
     if [ "$s" = RUNNING ]; then print_space_cached 1; else print_space_cached 0; fi

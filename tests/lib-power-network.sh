@@ -7,6 +7,9 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$tmp"
 mkdir -p "$tmp/bin"
 export MOCK_SYSTEMCTL_LOG="$tmp/systemctl.log"
 export MOCK_SUDO_LOG="$tmp/sudo.log"
@@ -180,6 +183,7 @@ case "$POWER_ERROR" in *"FAILED to stop unsafe"*) ;; *) fail "stop failure was r
 
 # shellcheck disable=SC2034 # consumed by sourced lib.sh
 SUBYARD_CONFIG_LOADED=1
+DEV_UID="$(id -u)"
 # shellcheck source=scripts/lib.sh
 # shellcheck disable=SC1091
 . "$ROOT/scripts/lib.sh"

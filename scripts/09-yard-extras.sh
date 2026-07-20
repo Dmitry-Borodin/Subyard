@@ -9,6 +9,8 @@
 # restart are SET now; the operator is told to restart via the GUARDED path (yard stop/start)
 # so the host's network guard runs — the host itself is never touched. Idempotent.
 # Config: config/incus.project.env + config/subyard.env + config/profiles/*/profile.conf.
+# Usage: scripts/09-yard-extras.sh [--check] [--yes]
+#   --check  read-only: exit 0 only when live extras match the profile union exactly.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
@@ -20,8 +22,20 @@ INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 SHIFT_MODE="${SHIFT_MODE:-shift}"
 DEV_UID="${DEV_UID:-1000}"
-PROFILES_DIR="$SCRIPT_DIR/../config/profiles"
+PROFILES_DIR="${SUBYARD_PROFILES_DIR:-$SCRIPT_DIR/../config/profiles}"
 PROJ=(--project "$INCUS_PROJECT")
+
+check_only=0
+for arg in "$@"; do
+  case "$arg" in
+    --check) check_only=1 ;;
+    -y | --yes) ;;
+    -h | --help)
+      printf 'Usage: %s [--check] [--yes]\n' "${PROG:-yard extras}"
+      exit 0 ;;
+    *) die "unknown option '$arg'" ;;
+  esac
+done
 
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
 dev_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2>/dev/null || true; }
@@ -51,9 +65,109 @@ mapfile -t u_mounts < <(printf '%s\n' ${u_mounts[@]+"${u_mounts[@]}"} | sed '/^$
 mapfile -t u_caps   < <(printf '%s\n' ${u_caps[@]+"${u_caps[@]}"}     | sed '/^$/d' | sort -u)
 mapfile -t u_devs   < <(printf '%s\n' ${u_devs[@]+"${u_devs[@]}"}     | sed '/^$/d' | sort -u)
 
-if [ "${#u_mounts[@]}" -eq 0 ] && [ "${#u_caps[@]}" -eq 0 ] && [ "${#u_devs[@]}" -eq 0 ]; then
-  ok "No project requests yard extras — nothing to do."
-  exit 0
+# Resolve the desired device/capability set once. Both --check and reconcile consume this state,
+# so profile interpretation has a single owner and cannot drift from init's convergence probe.
+need_fuse=0
+need_rootless=0
+want_devices=""
+want_device() { case " $want_devices " in *" $1 "*) ;; *) want_devices+=" $1" ;; esac; }
+for entry in ${u_mounts[@]+"${u_mounts[@]}"}; do
+  IFS=: read -r mn mp _access _mode <<<"$entry"
+  [ -n "$mn" ] && [ -n "$mp" ] && want_device "yx-$mn"
+done
+for c in ${u_caps[@]+"${u_caps[@]}"}; do
+  case "$c" in
+    nesting | rootless-docker) need_rootless=1; need_fuse=1 ;;
+    fuse) need_fuse=1 ;;
+  esac
+done
+for d in ${u_devs[@]+"${u_devs[@]}"}; do
+  case "$d" in
+    kvm) [ ! -e /dev/kvm ] || want_device yx-dev-kvm ;;
+    fuse) need_fuse=1 ;;
+    gpu)
+      for node in /dev/dri/renderD*; do
+        [ -e "$node" ] && want_device "yx-dev-dri-${node##*/}"
+      done ;;
+  esac
+done
+[ "$need_fuse" = 0 ] || [ ! -e /dev/fuse ] || want_device yx-dev-fuse
+
+unix_char_matches() { # <device-name> <host-source>
+  [ "$(dev_get "$1" type)" = unix-char ] \
+    && [ "$(dev_get "$1" source)" = "$2" ] \
+    && [ "$(dev_get "$1" path)" = "$2" ]
+}
+
+extras_converged() {
+  command -v incus >/dev/null 2>&1 \
+    && incus info >/dev/null 2>&1 \
+    && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
+    || return 1
+
+  local listed devices entry name path access _mode dev readonly want_readonly shift want_shift node
+  listed="$(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null)" || return 1
+  devices=" $(printf '%s\n' "$listed" | tr '\n' ' ') "
+
+  for entry in ${u_mounts[@]+"${u_mounts[@]}"}; do
+    IFS=: read -r name path access _mode <<<"$entry"
+    [ -n "$name" ] && [ -n "$path" ] || continue
+    dev="yx-$name"
+    case "$devices" in *" $dev "*) ;; *) return 1 ;; esac
+    [ "$(dev_get "$dev" type)" = disk ] \
+      && [ "$(dev_get "$dev" source)" = "$HOST_BASE/$name" ] \
+      && [ "$(dev_get "$dev" path)" = "$path" ] \
+      || return 1
+    readonly="$(dev_get "$dev" readonly)"; [ "$readonly" = true ] || readonly=false
+    want_readonly=false; [ "$access" = ro ] && want_readonly=true
+    [ "$readonly" = "$want_readonly" ] || return 1
+    shift="$(dev_get "$dev" shift)"; [ "$shift" = true ] || shift=false
+    want_shift=false; [ "$SHIFT_MODE" = shift ] && want_shift=true
+    [ "$shift" = "$want_shift" ] || return 1
+  done
+
+  if [ "$need_fuse" = 1 ] && [ -e /dev/fuse ]; then
+    case "$devices" in *' yx-dev-fuse '*) ;; *) return 1 ;; esac
+    unix_char_matches yx-dev-fuse /dev/fuse || return 1
+  fi
+  for d in ${u_devs[@]+"${u_devs[@]}"}; do
+    case "$d" in
+      kvm)
+        [ ! -e /dev/kvm ] && continue
+        case "$devices" in *' yx-dev-kvm '*) ;; *) return 1 ;; esac
+        unix_char_matches yx-dev-kvm /dev/kvm || return 1 ;;
+      gpu)
+        for node in /dev/dri/renderD*; do
+          [ -e "$node" ] || continue
+          dev="yx-dev-dri-${node##*/}"
+          case "$devices" in *" $dev "*) ;; *) return 1 ;; esac
+          unix_char_matches "$dev" "$node" || return 1
+        done ;;
+    esac
+  done
+
+  if [ "$need_rootless" = 1 ]; then
+    [ "$(cfg_get security.idmap.size)" = 1000000 ] \
+      && [ "$(cfg_get security.syscalls.intercept.mknod)" = true ] \
+      && [ "$(cfg_get security.syscalls.intercept.setxattr)" = true ] \
+      || return 1
+  else
+    [ -z "$(cfg_get security.idmap.size)" ] \
+      && [ -z "$(cfg_get security.syscalls.intercept.mknod)" ] \
+      && [ -z "$(cfg_get security.syscalls.intercept.setxattr)" ] \
+      || return 1
+  fi
+
+  while IFS= read -r dev; do
+    case "$dev" in yx-*) ;; *) continue ;; esac
+    case " $want_devices " in *" $dev "*) ;; *) return 1 ;; esac
+  done <<<"$listed"
+  return 0
+}
+
+if [ "$check_only" = 1 ]; then
+  extras_converged
+  exit
 fi
 
 # --- announce → confirm ------------------------------------------------------
@@ -61,10 +175,11 @@ summary=()
 [ "${#u_mounts[@]}" -gt 0 ] && summary+=("Mounts onto the yard: ${u_mounts[*]}")
 [ "${#u_caps[@]}"   -gt 0 ] && summary+=("Capabilities: ${u_caps[*]} (may need a yard restart)")
 [ "${#u_devs[@]}"   -gt 0 ] && summary+=("Devices: ${u_devs[*]}")
+[ "${#summary[@]}" -gt 0 ] || summary+=("No extras requested; remove stale extras owned by Subyard.")
 announce "Subyard Phase 2b — yard extras requested by projects ($INSTANCE_NAME)" \
-  "Apply the UNION of YARD_* across in-yard projects to the shared yard." \
+  "Reconcile the UNION of YARD_* across in-yard projects to the shared yard." \
   "${summary[@]}" \
-  "Detach yx-* mounts no longer requested. The yard is shared and rebuildable; the host is untouched."
+  "Detach stale yx-* devices and clear capabilities no longer requested. The host is untouched."
 proceed_or_die
 
 incus_preflight
@@ -72,19 +187,24 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "instance '$INSTANCE_NAME' missing — run '$(yard_cmd_hint) init' first"
 
 # --- 1. mounts (yx-* devices, host dirs under HOST_BASE) ---------------------
-want_mounts=""
 if [ "${#u_mounts[@]}" -gt 0 ]; then
   echo "Yard extra mounts:"
 fi
 for entry in ${u_mounts[@]+"${u_mounts[@]}"}; do
   IFS=: read -r mn mp mro mmode <<<"$entry"
   [ -n "$mn" ] && [ -n "$mp" ] || { warn "bad YARD_MOUNTS entry '$entry' — skipping"; continue; }
-  dev="yx-$mn"; src="$HOST_BASE/$mn"; want_mounts="$want_mounts $dev"
+  dev="yx-$mn"; src="$HOST_BASE/$mn"
   sudo install -d -m "${mmode:-0755}" -o "$DEV_UID" -g "$DEV_UID" "$src"
   want_ro=0; [ "$mro" = ro ] && want_ro=1
+  want_shift=false; [ "$SHIFT_MODE" = shift ] && want_shift=true
   if device_exists "$dev"; then
     cur_ro=0; [ "$(dev_get "$dev" readonly)" = true ] && cur_ro=1
-    if [ "$(dev_get "$dev" source)" = "$src" ] && [ "$(dev_get "$dev" path)" = "$mp" ] && [ "$cur_ro" = "$want_ro" ]; then
+    cur_shift=false; [ "$(dev_get "$dev" shift)" = true ] && cur_shift=true
+    if [ "$(dev_get "$dev" type)" = disk ] \
+      && [ "$(dev_get "$dev" source)" = "$src" ] \
+      && [ "$(dev_get "$dev" path)" = "$mp" ] \
+      && [ "$cur_ro" = "$want_ro" ] \
+      && [ "$cur_shift" = "$want_shift" ]; then
       ok "$dev → $mp (${mro:-rw}) unchanged"; continue
     fi
     warn "$dev drifted — re-attaching"
@@ -96,13 +216,6 @@ for entry in ${u_mounts[@]+"${u_mounts[@]}"}; do
   incus config device add "$INSTANCE_NAME" "$dev" disk "${PROJ[@]}" "${opts[@]}" >/dev/null
   ok "$dev → $mp (${mro:-rw})"
 done
-# detach yx-* mounts no project requests anymore
-while IFS= read -r d; do
-  case "$d" in yx-*) ;; *) continue ;; esac
-  case " $want_mounts " in *" $d "*) continue ;; esac
-  warn "detaching '$d' — no project requests it"
-  incus config device remove "$INSTANCE_NAME" "$d" "${PROJ[@]}" >/dev/null
-done < <(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null)
 
 # --- 2. capabilities (instance config; some need a restart) ------------------
 restart_needed=0
@@ -112,25 +225,44 @@ set_cfg() {  # <key> <value> — set if it differs; flag restart
   incus config set "$INSTANCE_NAME" "$k" "$v" "${PROJ[@]}"
   ok "set $k=$v"; restart_needed=1
 }
-need_fuse=0
+unset_cfg() { # <key> — clear an extras-owned key if it is still present
+  local k="$1"
+  [ -n "$(cfg_get "$k")" ] || { ok "$k already unset"; return; }
+  incus config unset "$INSTANCE_NAME" "$k" "${PROJ[@]}"
+  ok "unset $k"; restart_needed=1
+}
 for c in ${u_caps[@]+"${u_caps[@]}"}; do
   case "$c" in
-    nesting|rootless-docker)
-      set_cfg security.nesting true
-      set_cfg security.idmap.size 1000000
-      set_cfg security.syscalls.intercept.mknod true
-      set_cfg security.syscalls.intercept.setxattr true
-      need_fuse=1 ;;
-    fuse) need_fuse=1 ;;
+    nesting | rootless-docker | fuse) ;;
     *) warn "unknown YARD_CAP '$c' — skipping" ;;
   esac
 done
+if [ "$need_rootless" = 1 ]; then
+  # security.nesting is a core container invariant owned by 03-create-subyard.sh. Extras only own
+  # the additional rootless-container keys below, so removing the last cap cannot undo core setup.
+  set_cfg security.idmap.size 1000000
+  set_cfg security.syscalls.intercept.mknod true
+  set_cfg security.syscalls.intercept.setxattr true
+else
+  unset_cfg security.idmap.size
+  unset_cfg security.syscalls.intercept.mknod
+  unset_cfg security.syscalls.intercept.setxattr
+fi
 
 # --- 3. devices (/dev passthrough as unix-char) ------------------------------
 ensure_unix_char() {  # <device-name> <host-source>
   local name="$1" source="$2" err
-  device_exists "$name" && { ok "$name present"; return; }
   [ -e "$source" ] || { warn "$source absent on host — skipping $name"; return; }
+  if device_exists "$name"; then
+    if [ "$(dev_get "$name" type)" = unix-char ] \
+      && [ "$(dev_get "$name" source)" = "$source" ] \
+      && [ "$(dev_get "$name" path)" = "$source" ]; then
+      ok "$name → $source unchanged"
+      return
+    fi
+    warn "$name drifted — re-attaching"
+    incus config device remove "$INSTANCE_NAME" "$name" "${PROJ[@]}" >/dev/null
+  fi
   # Nested hosts reject the mode property on unix-char devices — retry without it
   # (in-yard perms then follow the source node; consumers may need the device group).
   if ! err="$(incus config device add "$INSTANCE_NAME" "$name" unix-char "${PROJ[@]}" \
@@ -161,10 +293,20 @@ ensure_gpu() {
 for d in ${u_devs[@]+"${u_devs[@]}"}; do
   case "$d" in
     kvm)  ensure_unix_char yx-dev-kvm  /dev/kvm ;;
-    fuse) ensure_unix_char yx-dev-fuse /dev/fuse ;;
+    fuse) : ;; # already covered by need_fuse
     gpu)  ensure_gpu ;;
     *)    warn "unknown YARD_DEVICE '$d' — skipping" ;;
   esac
+done
+
+# One cleanup pass for every extras-owned device. Doing this after mounts and passthrough devices
+# are reconciled avoids detaching valid yx-dev-* entries just to add them again.
+mapfile -t attached_devices < <(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null)
+for d in "${attached_devices[@]}"; do
+  case "$d" in yx-*) ;; *) continue ;; esac
+  case " $want_devices " in *" $d "*) continue ;; esac
+  warn "detaching '$d' — no project requests it"
+  incus config device remove "$INSTANCE_NAME" "$d" "${PROJ[@]}" >/dev/null
 done
 
 # --- summary -----------------------------------------------------------------

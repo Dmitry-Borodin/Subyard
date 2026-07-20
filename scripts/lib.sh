@@ -242,6 +242,9 @@ count_json_files() {
 # also copied into the root-owned boot reconciler, which must never execute the operator checkout.
 # shellcheck source=scripts/lib-power.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-power.sh"
+# Pure context/path policy is shared by config loading, bind and security-lint.
+# shellcheck source=scripts/lib-context.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-context.sh"
 
 # state_dir_for_yard <name> — machine-local project state dir for ANY yard, derived like
 # SUBYARD_STATE_DIR: the default yard keeps the flat projects/ dir; a named yard lives under
@@ -264,6 +267,7 @@ _yard_help_and_exit() {
 ASSUME_YES="${ASSUME_YES:-0}"
 for _arg in "$@"; do
   case "$_arg" in
+    --)           break ;;
     -y | --yes)  ASSUME_YES=1 ;;
     -h | --help) _yard_help_and_exit ;;
   esac
@@ -479,3 +483,4 @@ Signed-By: $key"
 # because the yard-context step (_load_yard_context) may die on a bad -Y name/missing port.
 # -h already exited above (help needs no config).
 load_config
+context_validate || die "invalid Subyard context: $CONTEXT_ERROR"

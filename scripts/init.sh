@@ -60,24 +60,87 @@ distro_incus_too_old() {
 # reachability test would wrongly skip re-init and 02 would fail (no incusbr0).
 have_init()     { reachable && incus storage show "$STORAGE_POOL" >/dev/null 2>&1 \
                             && incus network show "$INCUS_BRIDGE" >/dev/null 2>&1; }
-have_project()  { reachable && incus project show "$INCUS_PROJECT" >/dev/null 2>&1; }
-have_instance() { reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; }
+have_project() {
+  reachable && incus project show "$INCUS_PROJECT" >/dev/null 2>&1 || return 1
+  [ "$(incus project get "$INCUS_PROJECT" restricted 2>/dev/null || true)" = true ] \
+    && [ "$(incus project get "$INCUS_PROJECT" restricted.containers.nesting 2>/dev/null || true)" = allow ] \
+    && [ "$(incus project get "$INCUS_PROJECT" restricted.containers.privilege 2>/dev/null || true)" = unprivileged ] \
+    && [ "$(incus project get "$INCUS_PROJECT" restricted.devices.disk 2>/dev/null || true)" = allow ] \
+    && [ -z "$(incus project get "$INCUS_PROJECT" restricted.devices.disk.paths 2>/dev/null || true)" ] \
+    && [ "$(incus project get "$INCUS_PROJECT" restricted.devices.unix-char 2>/dev/null || true)" = allow ] \
+    && [ "$(incus project get "$INCUS_PROJECT" restricted.devices.proxy 2>/dev/null || true)" = allow ] \
+    || return 1
+  local devices
+  devices=" $(incus profile device list default --project "$INCUS_PROJECT" 2>/dev/null | tr '\n' ' ') "
+  case "$devices" in *' root '*) ;; *) return 1 ;; esac
+  case "$devices" in *' eth0 '*) ;; *) return 1 ;; esac
+}
+
+have_instance() {
+  reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 || return 1
+  incus storage volume show "${SRV_POOL:-default}" "${SRV_VOLUME:-yard-srv}" "${PROJ[@]}" >/dev/null 2>&1 \
+    || return 1
+  local devices source path pool
+  devices=" $(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | tr '\n' ' ') "
+  case "$devices" in *' srv '*) ;; *) return 1 ;; esac
+  source="$(incus config device get "$INSTANCE_NAME" srv source "${PROJ[@]}" 2>/dev/null || true)"
+  path="$(incus config device get "$INSTANCE_NAME" srv path "${PROJ[@]}" 2>/dev/null || true)"
+  pool="$(incus config device get "$INSTANCE_NAME" srv pool "${PROJ[@]}" 2>/dev/null || true)"
+  [ "$source" = "${SRV_VOLUME:-yard-srv}" ] && [ "$path" = /srv ] && [ "$pool" = "${SRV_POOL:-default}" ] \
+    || return 1
+  if [ "${INSTANCE_TYPE:-container}" = container ]; then
+    [ "$(incus config get "$INSTANCE_NAME" security.nesting "${PROJ[@]}" 2>/dev/null || true)" = true ] \
+      || return 1
+    [ ! -e /dev/kvm ] || case "$devices" in *' kvm '*) ;; *) return 1 ;; esac
+  fi
+}
 power_stopped() { have_instance && power_intentionally_stopped "$INCUS_PROJECT" "$INSTANCE_NAME"; }
+instance_running() { [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; }
 have_network()  {
   reachable && power_host_safe "$INCUS_BRIDGE" || return 1
+  # Parsing ufw's localized/status output into a complete rule proof is less reliable than simply
+  # re-running 06's idempotent, interface-scoped rules. Keep this stage pending whenever ufw is active.
+  if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then return 1; fi
   power_stopped && return 0
   [ -n "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]
 }
 
-# Every device named in HOST_MOUNTS is attached → adding/removing a mount re-runs 05.
+# Network apply deliberately remains pending while ufw is active: re-applying 06's scoped rules is
+# safer than trying to prove localized ufw output. Post-apply verification only checks the resulting
+# host guard and yard reachability, so an active firewall does not make a successful apply look failed.
+verify_network() {
+  reachable && power_host_safe "$INCUS_BRIDGE" || return 1
+  # Network guard runs before first instance creation. At that point there is no guest lease to
+  # verify yet; later stages verify the instance itself. Existing running yards still prove an IP.
+  have_instance || return 0
+  power_stopped && return 0
+  [ -n "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]
+}
+
+# HOST_MOUNTS and live host-* devices match in both directions, including key properties.
+# The executor now trusts this probe, so a one-sided "all desired names exist" check would make
+# removal or drift invisible and incorrectly skip 05's reconciler.
 have_mounts() {
   reachable || return 1
-  local attached name
+  local attached desired="" name path access _mode source readonly want_readonly device
   attached=" $(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | tr '\n' ' ') "
-  while IFS=: read -r name _; do
+  while IFS=: read -r name path access _mode; do
     [ -n "$name" ] || continue
+    desired+=" $name"
     case "$attached" in *" $name "*) ;; *) return 1 ;; esac
+    source="$(incus config device get "$INSTANCE_NAME" "$name" source "${PROJ[@]}" 2>/dev/null || true)"
+    [ "$source" = "$HOST_BASE/$name" ] || return 1
+    [ "$(incus config device get "$INSTANCE_NAME" "$name" path "${PROJ[@]}" 2>/dev/null || true)" = "$path" ] \
+      || return 1
+    readonly="$(incus config device get "$INSTANCE_NAME" "$name" readonly "${PROJ[@]}" 2>/dev/null || true)"
+    want_readonly=false; [ "$access" = ro ] && want_readonly=true
+    case "$readonly" in '' | false) readonly=false ;; esac
+    [ "$readonly" = "$want_readonly" ] || return 1
   done < <(printf '%s\n' "${HOST_MOUNTS:-}" | sed 's/[[:space:]]//g')
+  while IFS= read -r device; do
+    case "$device" in host-*) ;; *) continue ;; esac
+    case " $desired " in *" $device "*) ;; *) return 1 ;; esac
+  done < <(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null)
   return 0
 }
 
@@ -156,8 +219,36 @@ CHK
     = "${CCUSAGE_VERSION:-}" ]
 }
 
-have_ssh()    { reachable && incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh; }
-have_gitid()  { reachable && { power_stopped || incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1; }; }
+have_ssh() {
+  reachable || return 1
+  incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx ssh || return 1
+  [ "$(incus config device get "$INSTANCE_NAME" ssh type "${PROJ[@]}" 2>/dev/null || true)" = proxy ] \
+    && [ "$(incus config device get "$INSTANCE_NAME" ssh listen "${PROJ[@]}" 2>/dev/null || true)" = "tcp:127.0.0.1:$SSH_PORT" ] \
+    && [ "$(incus config device get "$INSTANCE_NAME" ssh connect "${PROJ[@]}" 2>/dev/null || true)" = tcp:127.0.0.1:22 ] \
+    || return 1
+  local snip="$HOME/.ssh/subyard${YARD_NAME:+-$YARD_NAME}.config" cfg="$HOME/.ssh/config"
+  [ -r "$snip" ] && grep -qx "Host $SSH_HOST" "$snip" && grep -qx "    Port $SSH_PORT" "$snip" \
+    || return 1
+  [ -r "$cfg" ] && grep -qxF "Include $(basename "$snip")" "$cfg" || return 1
+  if [ "${FORWARD_SSH_AGENT:-0}" = 1 ]; then
+    grep -qx '    ForwardAgent yes' "$snip" || return 1
+  else
+    ! grep -q '^[[:space:]]*ForwardAgent[[:space:]]\+yes' "$snip" || return 1
+  fi
+  if instance_running; then
+    incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.ssh/authorized_keys" >/dev/null 2>&1
+  else
+    power_stopped
+  fi
+}
+have_gitid() {
+  reachable || return 1
+  if instance_running; then
+    incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.gitconfig" >/dev/null 2>&1
+  else
+    power_stopped
+  fi
+}
 in_admin_db() { id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx incus-admin; }
 
 all_power_imported() {
@@ -183,17 +274,12 @@ have_power() {
     && have_power_reconciler
 }
 
-# Any on-disk profile declares yard-level extras (YARD_*)? init enables ALL profiles; 09 unions them.
-any_yard_extras() {
-  local pf
-  for pf in "$SCRIPT_DIR/../config/profiles"/*/profile.conf; do
-    [ -r "$pf" ] || continue
-    # shellcheck disable=SC1090
-    ( . "$pf"; [ -n "${YARD_MOUNTS:-}${YARD_CAPS:-}${YARD_DEVICES:-}" ] ) && return 0
-  done
-  return 1
+have_security() {
+  "$SCRIPT_DIR/security-lint.sh" --quiet --require-live >/dev/null 2>&1
 }
-no_yard_extras() { ! any_yard_extras; }
+
+# The extras reconciler owns both desired-state interpretation and its read-only probe.
+have_extras() { "$SCRIPT_DIR/09-yard-extras.sh" --check >/dev/null 2>&1; }
 
 # In-yard projects whose profile ships a provision.sh — drives the opt-in offer below.
 provisionable_profiles() {
@@ -252,9 +338,8 @@ offer_provision() {
 # ============================================================================
 # Group-session re-exec.
 # ============================================================================
-# Installing Incus adds you to 'incus-admin', but the group only applies in a fresh
-# session, so the daemon stays unreachable in THIS shell. Re-exec the whole init under
-# a fresh group session ('sg') so one run completes. Guarded against looping; returns
+# Installing Incus adds you to 'incus-admin', but the group only applies in a fresh session.
+# Re-exec the whole init under a fresh group session ('sg') so one run completes. Guarded against looping; returns
 # non-zero so callers fall back to the manual hint if 'sg' is missing or still can't
 # connect. $1=1 → assume-yes in the child (the plan was already confirmed up top); the
 # parent's Zabbly answer is carried in SUBYARD_ZABBLY so the unattended child honors an
@@ -273,11 +358,49 @@ reexec_under_group() {
 }
 
 # ============================================================================
-# Plan — the read-only summary of what this run will do.
+# Plan — the read-only summary of what this run will do. The same registry drives execution.
 # ============================================================================
 plan_do()   { printf '  %s[do]%s   %s\n' "$C_OK"   "$C_OFF" "$1"; pending=1; }
 plan_skip() { printf '  %s[skip]%s %s\n' "$C_WARN" "$C_OFF" "$1"; }
-step()      { if "$1"; then plan_skip "$2"; else plan_do "$2"; fi; }   # <done-test> <label>
+
+apply_project()       { "$SCRIPT_DIR/02-create-project.sh" --yes; }
+apply_network()       { "$SCRIPT_DIR/06-network.sh" --yes; }
+apply_power_import()  { "$SCRIPT_DIR/power-state.sh" import-all; }
+apply_instance()      { "$SCRIPT_DIR/03-create-subyard.sh" --yes; }
+apply_mounts()        { "$SCRIPT_DIR/05-mount-host-paths.sh" --yes; }
+apply_provision()     { "$SCRIPT_DIR/04-provision-subyard.sh" --yes; }
+apply_ssh()           { "$SCRIPT_DIR/07-ssh-access.sh" --yes; }
+apply_gitid()         { "$SCRIPT_DIR/08-git-identity.sh" --yes; }
+apply_extras()        { "$SCRIPT_DIR/09-yard-extras.sh" --yes; }
+apply_power()         { "$SCRIPT_DIR/install-power-reconciler.sh" --yes; }
+apply_security()      { "$SCRIPT_DIR/security-lint.sh" --require-live; }
+
+# One ordered source of truth: id | convergence probe | apply function | verify function | label.
+# A stage is re-probed immediately before apply and verified immediately after it.
+INIT_STEP_IDS=(project network power-import instance mounts provision ssh git-identity extras power security)
+INIT_STEP_PROBES=(have_project have_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power have_security)
+INIT_STEP_APPLY=(apply_project apply_network apply_power_import apply_instance apply_mounts apply_provision apply_ssh apply_gitid apply_extras apply_power apply_security)
+INIT_STEP_VERIFY=(have_project verify_network all_power_imported have_instance have_mounts have_provision have_ssh have_gitid have_extras have_power have_security)
+INIT_STEP_LABELS=(
+  "Create the Incus project '$INCUS_PROJECT'"
+  "Open host DHCP/DNS for the yard bridge (ufw; needs root)"
+  "Import desired-power state for registered local yards"
+  "Create the yard instance (+ /dev/kvm, /srv volume)"
+  "Create host dirs under $HOST_BASE and mount them (needs root)"
+  "Provision the yard (packages, Docker, user, services)"
+  "Set up SSH access into the yard (proxy + your key)"
+  "Reconcile in-yard git config and bind-worktree trust"
+  "Apply yard extras requested by projects (mounts/caps/devices)"
+  "Persist desired yard power + install guarded host boot reconciliation (needs root)"
+  "Validate static and live host-boundary security invariants"
+)
+
+init_registry_check() {
+  local n="${#INIT_STEP_IDS[@]}"
+  [ "${#INIT_STEP_PROBES[@]}" -eq "$n" ] && [ "${#INIT_STEP_APPLY[@]}" -eq "$n" ] \
+    && [ "${#INIT_STEP_VERIFY[@]}" -eq "$n" ] && [ "${#INIT_STEP_LABELS[@]}" -eq "$n" ] \
+    || die "internal: init stage registry columns have different lengths"
+}
 
 print_plan() {
   pending=0
@@ -290,15 +413,12 @@ print_plan() {
   else
     plan_skip "Incus installed, initialized, and >= $MIN_INCUS_VER"
   fi
-  step have_project   "Create the Incus project '$INCUS_PROJECT'"
-  step have_instance  "Create the yard instance (+ /dev/kvm, /srv volume)"
-  step have_network   "Open host DHCP/DNS for the yard bridge (ufw; needs root)"
-  step have_mounts    "Create host dirs under $HOST_BASE and mount them (needs root)"
-  step have_provision "Provision the yard (packages, Docker, user, services)"
-  step have_ssh       "Set up SSH access into the yard (proxy + your key)"
-  step have_gitid     "Give the in-yard 'dev' user a git identity (from host/config)"
-  step no_yard_extras "Apply yard extras requested by projects (mounts/caps/devices)"
-  step have_power     "Persist desired yard power + install guarded host boot reconciliation (needs root)"
+  init_registry_check
+  local i probe
+  for i in "${!INIT_STEP_IDS[@]}"; do
+    probe="${INIT_STEP_PROBES[$i]}"
+    if "$probe"; then plan_skip "${INIT_STEP_LABELS[$i]}"; else plan_do "${INIT_STEP_LABELS[$i]}"; fi
+  done
   printf '\n'
 }
 
@@ -342,18 +462,19 @@ MSG
 
 run_steps() {
   incus_install_or_upgrade
-  info "→ Incus project"; "$SCRIPT_DIR/02-create-project.sh" --yes
-  info "→ host network";  "$SCRIPT_DIR/06-network.sh" --yes
-  # Import every registered existing local yard before any technical start. This one-time migration
-  # preserves its actual RUNNING/STOPPED state; remote contexts remain owned by their remote host.
-  info "→ desired-power migration"; "$SCRIPT_DIR/power-state.sh" import-all
-  info "→ yard instance"; "$SCRIPT_DIR/03-create-subyard.sh" --yes
-  info "→ host mounts";   "$SCRIPT_DIR/05-mount-host-paths.sh" --yes
-  info "→ provision";     "$SCRIPT_DIR/04-provision-subyard.sh" --yes
-  info "→ ssh access";    "$SCRIPT_DIR/07-ssh-access.sh" --yes
-  info "→ git identity";  "$SCRIPT_DIR/08-git-identity.sh" --yes
-  if any_yard_extras; then info "→ yard extras"; "$SCRIPT_DIR/09-yard-extras.sh" --yes; fi
-  info "→ boot power reconciler"; "$SCRIPT_DIR/install-power-reconciler.sh" --yes
+  init_registry_check
+  local i id probe apply verify
+  for i in "${!INIT_STEP_IDS[@]}"; do
+    id="${INIT_STEP_IDS[$i]}"; probe="${INIT_STEP_PROBES[$i]}"
+    apply="${INIT_STEP_APPLY[$i]}"; verify="${INIT_STEP_VERIFY[$i]}"
+    if "$probe"; then
+      info "→ $id (already converged)"
+      continue
+    fi
+    info "→ $id"
+    "$apply"
+    "$verify" || die "init stage '$id' completed but did not converge: ${INIT_STEP_LABELS[$i]}"
+  done
 }
 
 # ============================================================================

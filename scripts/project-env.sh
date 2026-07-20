@@ -190,6 +190,8 @@ case "$sub" in
     # keeps its own creds). Sessions are allowed — only creds are blocked.
     for m in ${ENV_MOUNTS:-}; do
       case "${m,,}" in
+        */docker.sock*|*/incus.sock*|*/lxd.sock*)
+          die "ENV_MOUNTS '$m' would expose a host-control socket; Docker/Incus sockets are never mounted into a project-env" ;;
         *.claude/*|*.claude:*|*.codex/*|*.codex:*|*.pi/agent/*|*.pi/agent:*|*credentials*|*auth.json*)
           die "ENV_MOUNTS '$m' would share coding-agent credentials into the box; each project-env keeps its own credential store (sessions may be shared, creds never)" ;;
       esac

@@ -72,15 +72,14 @@ exit 0
 MOCK
 chmod 755 "$TMP/bin/ssh"
 
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$TMP"
 export PATH="$TMP/bin:$PATH"
 export HOME="$TMP/home"
-export SUBYARD_OPERATOR_HOME="$HOME"
-export SUBYARD_HOME="$TMP/subyard"
-export SUBYARD_CONFIG_HOME="$TMP/config"
 export SUBYARD_CONFIG_DIR="$TMP/shipped"
 export SUBYARD_NO_AUDIT=1
 export REMOTE_TEST_STATE="$TMP/state"
-export SSH_PORT=2222
 
 # `_info` ignores empty owner-host state and counts unique live yard metadata. A successful empty
 # scan is zero; a failed scan is unknown (null), never a made-up zero.

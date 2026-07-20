@@ -49,9 +49,11 @@ yards that do not set their own; it can never collapse every named yard onto one
 
 ## Personal-data isolation
 
-Each yard has its own `HOST_BASE` (`/srv/subyard-<name>`), and its Incus project restricts disk
-devices to that prefix — so yard A can never mount yard B's secrets/sessions/memory, even by
-mistake. This is the whole point of a separate yard versus a container inside one.
+Each yard has its own managed `HOST_BASE` (`/srv/subyard-<name>`). Incus cannot combine its
+disk-source allowlist with Subyard's idmapped mounts, so the CLI verifies managed `host-*`/`yx-*`
+sources under that root and `yard security` audits the expanded live device set. An explicit
+`yard bind <path>` may come from anywhere on the host: it warns that encapsulation is reduced, but
+does not impose a project-root allowlist.
 
 ## Per-yard profiles
 

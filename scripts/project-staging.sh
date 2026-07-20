@@ -207,7 +207,7 @@ case "$sub" in
       ydocker start "$cname" >/dev/null
       # keep the in-yard CLI fresh (zone.env/run-args were written on first up)
       incus file push "$SCRIPT_DIR/sy-stage.sh" "$INSTANCE_NAME/usr/local/bin/sy-stage" "${PROJ[@]}" --mode 0755 --uid 0 --gid 0 >/dev/null 2>&1 || true
-      ok "staging-runner zone '$zone' already exists — started (gateway down; '${PROG:-yard} staging start $zone' or in-yard 'sy-stage restart $zone')"
+      ok "staging-runner zone '$zone' already exists — started (gateway down; '${PROG:-yard} staging start $zone' or in-yard 'sy-stage restart --zone $zone')"
       exit 0
     fi
 
@@ -300,7 +300,7 @@ ZENV
     [ -r "$PROD_FP_FILE" ] && incus file push "$PROD_FP_FILE" "$INSTANCE_NAME$dataRoot/prod-fingerprints" "${PROJ[@]}" --mode 0644 >/dev/null 2>&1 || true
     # install the in-yard CLI on the agent's PATH.
     if incus file push "$SCRIPT_DIR/sy-stage.sh" "$INSTANCE_NAME/usr/local/bin/sy-stage" "${PROJ[@]}" --mode 0755 --uid 0 --gid 0 >/dev/null 2>&1; then
-      ok "in-yard self-serve ready: in the yard the agent runs 'sy-stage restart $zone' (reserve/restart/rebind/stop/status/logs)"
+      ok "in-yard self-serve ready: in the yard the agent runs 'sy-stage restart --zone $zone' (reserve/restart/rebind/stop/status/logs)"
     else
       warn "could not install sy-stage into the yard — in-yard self-serve unavailable (operator-only via 'yard staging')"
     fi

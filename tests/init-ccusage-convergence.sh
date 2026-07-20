@@ -63,11 +63,12 @@ export MOCK_DEV_USER="subyard-ccusage-test-$$"
 original_path="$PATH"
 
 # Load the probe functions in isolation.
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$tmp" test-project test-yard
 SUBYARD_CONFIG_LOADED=1
-INCUS_PROJECT=test-project
-INSTANCE_NAME=test-yard
+DEV_UID="$(id -u)"
 DEV_USER="$MOCK_DEV_USER"
-DEV_SUDO=0
 HOST_LINKS=''
 AGENTS=''
 CCUSAGE_VERSION=1.2.3

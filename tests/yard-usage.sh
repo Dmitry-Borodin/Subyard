@@ -9,13 +9,13 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/public-config" "$tmp/config-home/yards" "$tmp/home"
 
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$tmp" test-project test-yard
 export SUBYARD_CONFIG_DIR="$tmp/public-config"
 export SUBYARD_CONFIG_HOME="$tmp/config-home"
 export SUBYARD_HOME="$tmp/subyard-home"
 export SUBYARD_NO_AUDIT=1
-export INCUS_PROJECT=test-project
-export INSTANCE_NAME=test-yard
-export DEV_USER=dev
 export INCUS_LOG="$tmp/incus.log"
 export MOCK_ARGS_LOG="$tmp/args.log"
 export MOCK_CCUSAGE_BIN="$tmp/mock-ccusage"

@@ -15,7 +15,8 @@ _yard_profiles() {
   local repo; repo="$(_yard_repo "$1")" || return 0
   local d="$repo/config/profiles"
   [ -d "$d" ] || return 0
-  ( cd "$d" && ls -1 ./*.conf 2>/dev/null | sed 's,^\./,,;s,\.conf$,,' )
+  local f
+  for f in "$d"/*/profile.conf; do [ -r "$f" ] && basename "$(dirname "$f")"; done
 }
 
 # Registry yard names: 'default' plus the basename of every *.env under private/yards/ and
@@ -91,7 +92,7 @@ _yard() {
   if [ "$cword" -eq "$cmdidx" ]; then
     local cmds
     cmds="$("${COMP_WORDS[0]}" --list 2>/dev/null)"
-    [ -n "$cmds" ] || cmds='check init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging'
+    [ -n "$cmds" ] || cmds='check security init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging'
     case "$cur" in
       -*) COMPREPLY=( $(compgen -W "$globals" -- "$cur") ) ;;
       *)  COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ) ;;
@@ -120,7 +121,9 @@ _yard() {
       ;;
     sync|bind)
       if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
-      [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--target --yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") )
+      if [[ "$cur" == -* ]]; then
+        COMPREPLY=( $(compgen -W "--target --yes" -- "$cur") )
+      else COMPREPLY=( $(compgen -d -- "$cur") ); fi
       ;;
     export) [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W '--yes' -- "$cur") ) || COMPREPLY=( $(compgen -d -- "$cur") ) ;;
     code|shell)
@@ -136,7 +139,7 @@ _yard() {
       ;;
     teardown|uninstall) COMPREPLY=( $(compgen -W '--keep-data --yes' -- "$cur") ) ;;
     stop) COMPREPLY=( $(compgen -W '--force --yes --help' -- "$cur") ) ;;
-    init|setup|check|list|logs|usage|start|yards) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
+    init|setup|check|security|list|logs|usage|start|yards) COMPREPLY=( $(compgen -W '--yes --help' -- "$cur") ) ;;
     status) COMPREPLY=( $(compgen -W '--all --yes --help' -- "$cur") ) ;;
     remote)
       # remote <add|repair-key|remove|list>; repair/remove take a registered yard name.

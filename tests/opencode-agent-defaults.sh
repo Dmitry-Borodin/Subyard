@@ -60,13 +60,19 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 # Refresh configs twice against a mocked yard.
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$tmp"
+export HOME="$tmp/home"
+export SUBYARD_CONFIG_HOME="$tmp/state"
+export SUBYARD_HOME="$tmp/data"
+export SUBYARD_CONFIG_DIR="$tmp/config"
 mkdir -p "$tmp/config" "$tmp/yard"
 cp "$ROOT/config/agents.env" "$tmp/config/agents.env"
 cp -R "$ROOT/config/agents" "$tmp/config/agents"
 refresh() {
   PATH="$ROOT/tests/fixtures/agent-configs-bin:$PATH" \
   MOCK_YARD_ROOT="$tmp/yard" \
-  SUBYARD_CONFIG_DIR="$tmp/config" \
   ASSUME_YES=1 \
     bash "$ROOT/scripts/agent-configs.sh" --yes >/dev/null
 }

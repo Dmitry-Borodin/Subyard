@@ -35,9 +35,8 @@ fi
 
 if [ ! -r "$dropin" ] && [ -z "${name:-}" ] && [ -z "${email:-}" ]; then
   warn "no git identity found (no $dropin, no GIT_USER_* set, no host global git config)."
-  info "commits made in the yard would be unattributed. Set GIT_USER_NAME/GIT_USER_EMAIL"
-  info "in config/subyard.env (or git config --global … on the host), then re-run."
-  exit 0
+  info "commits remain unattributed; safe.directory will still be reconciled."
+  src="no identity; bind-worktree trust only"
 fi
 
 announce "yard git identity ($DEV_USER@$INSTANCE_NAME)" \
@@ -51,7 +50,7 @@ if [ -r "$dropin" ]; then
     "${PROJ[@]}" --uid 0 --gid 0 --mode 0644 >/dev/null
   incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- chown "$DEV_USER:$DEV_USER" "/home/$DEV_USER/.gitconfig"
   ok "installed $DEV_USER's ~/.gitconfig from $dropin"
-else
+elif [ -n "${name:-}" ] || [ -n "${email:-}" ]; then
   incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
     --env DEV_USER="$DEV_USER" --env GN="${name:-}" --env GE="${email:-}" -- sh -eu -c '
       home="$(getent passwd "$DEV_USER" | cut -d: -f6)"
@@ -71,7 +70,7 @@ incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- \
   || warn "could not set git safe.directory for $DEV_USER"
 
 echo
-ok "git identity ready."
+ok "git config ready."
 cat <<MSG
 
 Verify:

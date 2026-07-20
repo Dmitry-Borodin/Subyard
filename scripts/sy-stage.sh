@@ -201,7 +201,7 @@ GUARD
   if [ -n "${BUILD_CMD:-}" ]; then
     info "rebuilding from the live tree: $BUILD_CMD (output -> $YLOG)"
     docker exec "$CNAME" sh -c 'cd /workspace || exit 1; mkdir -p "$(dirname "$2")"; { echo "=== build $(date) ==="; sh -c "$1"; } >>"$2" 2>&1' \
-      _ "$BUILD_CMD" "$YLOG" || { lease_release || true; die "build failed (BUILD_CMD) — sy-stage logs $zone"; }
+      _ "$BUILD_CMD" "$YLOG" || { lease_release || true; die "build failed (BUILD_CMD) — sy-stage logs --zone $zone"; }
     ok "build ok"
   fi
 
@@ -213,7 +213,7 @@ GUARD
     echo $! >"$3"
   ' _ "$GATEWAY_CMD" "$YLOG" "$GW_PID"
   sleep 1
-  gateway_running || { lease_release || true; die "gateway exited immediately — sy-stage logs $zone"; }
+  gateway_running || { lease_release || true; die "gateway exited immediately — sy-stage logs --zone $zone"; }
   # heartbeat sidecar — renews the lease while the gateway pid lives, then releases (inside the box)
   docker exec -d "$CNAME" sh -c '
     lease="$1/$2.json"; lock="$1/$2.lock"; me="$3"; ttl="$4"; gwpid="$5"; hbpid="$6"
@@ -232,7 +232,7 @@ GUARD
     ) 2>/dev/null || true
     rm -f "$hbpid"
   ' _ "$LEASE_DIR" "$BOT_LEASE_KEY" "$zone" "$LEASE_TTL" "$GW_PID" "$HB_PID"
-  ok "gateway running for zone '$zone' (pid $(docker exec "$CNAME" cat "$GW_PID" 2>/dev/null)) — follow: sy-stage logs $zone -f"
+  ok "gateway running for zone '$zone' (pid $(docker exec "$CNAME" cat "$GW_PID" 2>/dev/null)) — follow: sy-stage logs --zone $zone -f"
 }
 
 stop_gateway() {
@@ -323,7 +323,7 @@ case "$sub" in
     tmp="$zenv.tmp.$$"
     grep -v '^SOURCE_BIND=' "$zenv" > "$tmp" 2>/dev/null || true
     printf "SOURCE_BIND='%s'\n" "$local_newsrc" >> "$tmp"; mv "$tmp" "$zenv"
-    ok "zone '$zone' rebound to $local_newsrc — now: sy-stage restart $zone"
+    ok "zone '$zone' rebound to $local_newsrc — now: sy-stage restart --zone $zone"
     ;;
 
   *) die "unknown subcommand '$sub' (reserve|restart|rebind|stop|release|status|logs|test|help)" ;;

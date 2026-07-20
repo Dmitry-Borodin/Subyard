@@ -46,9 +46,12 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -d "$path" ] || die "not a directory: $path"
-
 # --- resolve identity --------------------------------------------------------
 hostPath="$(realpath -- "$path")"
+if [ "$mode" = bind ]; then
+  warn "explicit bind exposes the host path directly to the yard: $hostPath"
+  warn "encapsulation is reduced; yard processes can read and modify everything permitted by that mount"
+fi
 id="$(project_id "$hostPath")"
 yardPath="$(yard_path_for "$id")"
 name="$(basename -- "$hostPath")"
@@ -109,7 +112,8 @@ if [ "$mode" = bind ]; then
     "Yard target : $yardPath (mode bind — host disk-mount, shared files)" \
     "Run target  : $target_note" \
     "Attach an Incus disk device (shift=true) so the yard sees this folder owned by 'dev'." \
-    "Isolation is REDUCED: work in the yard writes straight to the host folder." \
+    "Encapsulation is REDUCED: the selected host path is directly readable/writable from the yard." \
+    "This is explicit operator authority, not a Subyard-managed HOST_BASE mount." \
     "Record machine-local state in $(state_file "$id")."
   proceed_or_die
   incus config device add "$INSTANCE_NAME" "$dev" disk "${PROJ[@]}" \

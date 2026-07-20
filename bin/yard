@@ -23,7 +23,7 @@ PROG="${0##*/}"
 # Core command names (yard lifecycle / project workflow / project-env L2). Profile-resource
 # commands are appended from the registry below, so adding a resource needs no edit here. Drives
 # `yard --list` and both completions.
-COMMANDS=(check init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote)
+COMMANDS=(check security init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote)
 if command -v res_commands >/dev/null 2>&1; then
   while IFS= read -r _rc; do [ -n "$_rc" ] && COMMANDS+=("$_rc"); done < <(res_commands 2>/dev/null)
 fi
@@ -74,6 +74,7 @@ Usage: $PROG [option] <command> [args]
 
 Yard lifecycle:
   check           verify the host can run a yard (read-only preflight)
+  security        validate static + live Incus host-boundary invariants (read-only)
   init            install everything: Incus -> project -> yard -> mounts -> provision
                   (--configs: refresh agent instructions/configs only;
                    --reset: teardown + fresh init; force-apply other config drift)
@@ -92,7 +93,8 @@ Yard lifecycle:
 
 Project workflow (default path '.'):
   sync   [path]   copy a project into the yard (host -> yard; --target yard|<profile>)
-  bind   [path]   mount a project from the host into the yard (shared files)
+  bind   [path]   explicitly mount any host project path into the yard (shared files;
+                  warns because this reduces encapsulation and permits direct host writes)
   clone  <url>    clone a repo straight into the yard
   list            list projects currently in the yard
   code   [path|name] open a project in VS Code by path or \`yard list\` name (Remote-SSH)
@@ -164,6 +166,7 @@ EOF
 # sources that yard's env layer FIRST. No selection keeps the inherited SUBYARD_YARD (today's
 # path). SUBYARD_YARD_EXPLICIT marks a flag/@ selection (vs. a session env) for cross-yard resolution.
 SUBYARD_YARD="${SUBYARD_YARD:-}"
+GLOBAL_YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -Y | --yard)
@@ -171,6 +174,7 @@ while [ $# -gt 0 ]; do
       else printf "%s: unknown option '%s'\nTry '%s --help'.\n" "$PROG" "$1" "$PROG" >&2; exit 2; fi ;;
     --yard=*) SUBYARD_YARD="${1#--yard=}"; SUBYARD_YARD_EXPLICIT=1; shift ;;
     @?*)      SUBYARD_YARD="${1#@}";       SUBYARD_YARD_EXPLICIT=1; shift ;;
+    -y | --yes) GLOBAL_YES=1; shift ;;
     *) break ;;
   esac
 done
@@ -212,6 +216,7 @@ case "${1:-}" in
 esac
 
 cmd="$1"; shift
+[ "$GLOBAL_YES" = 0 ] || set -- --yes "$@"
 # _info is a silent machine-readable probe (remote yards poll it) — keep it out of the audit log.
 case "$cmd" in _info) ;; *) audit "$cmd" "$@" ;; esac
 
@@ -254,6 +259,7 @@ case "$cmd" in
   init | setup) exec "$S/init.sh" "$@" ;;            # setup: back-compat alias
   teardown | uninstall) exec "$S/99-teardown.sh" "$@" ;;  # uninstall: back-compat alias
   check)     exec "$S/00-check-host.sh" "$@" ;;
+  security)  exec "$S/security-lint.sh" "$@" ;;
   sync)      exec "$S/project-sync.sh" sync "$@" ;;
   bind)      exec "$S/project-sync.sh" bind "$@" ;;
   list)      exec "$S/project-list.sh" "$@" ;;

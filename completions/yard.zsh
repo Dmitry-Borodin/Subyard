@@ -15,7 +15,9 @@ _yard_profiles() {
   repo="$(_yard_repo)" || return 0
   d="$repo/config/profiles"
   [[ -d $d ]] || return 0
-  print -r -- ${(@)$(cd "$d" && print -r -- *.conf(N:r))}
+  local -a profiles
+  profiles=( $d/*/profile.conf(N:h:t) )
+  print -r -- $profiles
 }
 
 # Registry yard names: 'default' plus every *.env basename under private/yards/ and
@@ -75,7 +77,7 @@ _yard_code_target() {
 _yard() {
   local -a cmds
   cmds=( ${(f)"$(yard --list 2>/dev/null)"} )
-  [[ -n $cmds ]] || cmds=( check init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging qa-pool )
+  [[ -n $cmds ]] || cmds=( check security init start status logs usage shell provision stop teardown sync bind clone list code export remove up down info yards remote emu staging qa-pool )
 
   local curcontext="$curcontext" state line
   typeset -A opt_args

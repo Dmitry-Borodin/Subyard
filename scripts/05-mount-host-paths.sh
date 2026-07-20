@@ -51,7 +51,7 @@ case "$SHIFT_MODE" in
   *)     die "invalid SHIFT_MODE='$SHIFT_MODE' (expected: shift|acl)" ;;
 esac
 if [ "$INSTANCE_TYPE" = vm ]; then
-  warn "vm mode uses virtiofs — 'shift' is not applicable (see a1-sensitive-deltas); review before use"
+  warn "vm mode uses virtiofs — 'shift' is not applicable; review host-file ownership and permissions before use"
 fi
 
 # --- 1. create the narrow host area ------------------------------------------

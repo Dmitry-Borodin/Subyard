@@ -21,6 +21,7 @@ SSH_PORT="${SSH_PORT:-2222}"
 FORWARD_SSH_AGENT="${FORWARD_SSH_AGENT:-0}"
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
+dev_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2>/dev/null || true; }
 
 # --- preconditions -----------------------------------------------------------
 incus_preflight
@@ -63,8 +64,16 @@ ok "public key: $PUBKEY_FILE"
 # --- 2. proxy device (idempotent) --------------------------------------------
 echo "SSH proxy:"
 if device_exists ssh; then
-  ok "proxy device 'ssh' already attached"
-else
+  if [ "$(dev_get ssh type)" = proxy ] \
+    && [ "$(dev_get ssh listen)" = "tcp:127.0.0.1:$SSH_PORT" ] \
+    && [ "$(dev_get ssh connect)" = tcp:127.0.0.1:22 ]; then
+    ok "proxy device 'ssh' already attached"
+  else
+    warn "proxy device 'ssh' drifted — re-attaching on 127.0.0.1:$SSH_PORT"
+    incus config device remove "$INSTANCE_NAME" ssh "${PROJ[@]}" >/dev/null
+  fi
+fi
+if ! device_exists ssh; then
   incus config device add "$INSTANCE_NAME" ssh proxy "${PROJ[@]}" \
     listen="tcp:127.0.0.1:$SSH_PORT" connect=tcp:127.0.0.1:22 bind=host >/dev/null
   ok "added proxy 127.0.0.1:$SSH_PORT -> yard:22"

@@ -68,13 +68,11 @@ esac
 SH
 chmod +x "$TMP/bin/incus"
 export PATH="$TMP/bin:$PATH"
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$TMP" test-project test-yard
 export SUBYARD_CONFIG_LOADED=1
 export SUBYARD_NO_AUDIT=1
-export SUBYARD_HOME="$TMP/subyard"
-export SUBYARD_CONFIG_HOME="$TMP/config"
-export INCUS_PROJECT=test-project
-export INSTANCE_NAME=test-yard
-export DEV_USER=dev
 export SSH_HOST=yard-test
 export PROG=yard
 

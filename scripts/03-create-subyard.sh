@@ -49,6 +49,11 @@ fi
 
 if incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; then
   ok "instance '$INSTANCE_NAME' exists"
+  if [ "$INSTANCE_TYPE" = container ] \
+    && [ "$(incus config get "$INSTANCE_NAME" security.nesting "${PROJ[@]}" 2>/dev/null || true)" != true ]; then
+    incus config set "$INSTANCE_NAME" security.nesting true "${PROJ[@]}"
+    ok "reconciled security.nesting=true"
+  fi
   power_import_instance "$INCUS_PROJECT" "$INSTANCE_NAME" "$YARD_LABEL" "$BRIDGE" \
     || die "$POWER_ERROR"
   [ "$POWER_IMPORTED" = 0 ] || ok "imported existing power state as desired=$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
@@ -120,9 +125,20 @@ else
   incus storage volume create "$SRV_POOL" "$SRV_VOLUME" "${PROJ[@]}" >/dev/null
   ok "created volume '$SRV_VOLUME' on pool '$SRV_POOL'"
 fi
+srv_drifted=0
 if device_exists srv; then
-  ok "srv device already attached"
-else
+  [ "$(incus config device get "$INSTANCE_NAME" srv pool "${PROJ[@]}" 2>/dev/null || true)" = "$SRV_POOL" ] \
+    && [ "$(incus config device get "$INSTANCE_NAME" srv source "${PROJ[@]}" 2>/dev/null || true)" = "$SRV_VOLUME" ] \
+    && [ "$(incus config device get "$INSTANCE_NAME" srv path "${PROJ[@]}" 2>/dev/null || true)" = /srv ] \
+    || srv_drifted=1
+  if [ "$srv_drifted" = 0 ]; then
+    ok "srv device already attached"
+  else
+    warn "srv device drifted — re-attaching to '$SRV_VOLUME' at /srv"
+    incus config device remove "$INSTANCE_NAME" srv "${PROJ[@]}" >/dev/null
+  fi
+fi
+if ! device_exists srv; then
   incus config device add "$INSTANCE_NAME" srv disk "${PROJ[@]}" \
     pool="$SRV_POOL" source="$SRV_VOLUME" path=/srv >/dev/null
   ok "attached '$SRV_VOLUME' at /srv"

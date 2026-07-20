@@ -108,11 +108,11 @@ exit 0
 MOCK
 chmod 755 "$TMP/bin/ssh"
 
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$TMP"
 export PATH="$TMP/bin:$PATH"
 export HOME="$TMP/home"
-export SUBYARD_OPERATOR_HOME="$HOME"
-export SUBYARD_HOME="$TMP/subyard"
-export SUBYARD_CONFIG_HOME="$TMP/config"
 export SUBYARD_CONFIG_DIR="$TMP/config-shipped"
 export SUBYARD_SSH_PUBKEY="$TMP/state/controller.pub"
 export SUBYARD_NO_AUDIT=1

@@ -96,20 +96,20 @@ have_instance() {
 }
 power_stopped() { have_instance && power_intentionally_stopped "$INCUS_PROJECT" "$INSTANCE_NAME"; }
 instance_running() { [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; }
-have_network()  {
+network_host_converged() {
   reachable && power_host_safe "$INCUS_BRIDGE" || return 1
-  # Parsing ufw's localized/status output into a complete rule proof is less reliable than simply
-  # re-running 06's idempotent, interface-scoped rules. Keep this stage pending whenever ufw is active.
-  if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then return 1; fi
+  if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
+    ufw_yard_rules_present "$INCUS_BRIDGE" || return 1
+  fi
+}
+have_network()  {
+  network_host_converged || return 1
   power_stopped && return 0
   [ -n "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -c4 -fcsv 2>/dev/null)" ]
 }
 
-# Network apply deliberately remains pending while ufw is active: re-applying 06's scoped rules is
-# safer than trying to prove localized ufw output. Post-apply verification only checks the resulting
-# host guard and yard reachability, so an active firewall does not make a successful apply look failed.
 verify_network() {
-  reachable && power_host_safe "$INCUS_BRIDGE" || return 1
+  network_host_converged || return 1
   # Network guard runs before first instance creation. At that point there is no guest lease to
   # verify yet; later stages verify the instance itself. Existing running yards still prove an IP.
   have_instance || return 0
@@ -122,7 +122,7 @@ verify_network() {
 # removal or drift invisible and incorrectly skip 05's reconciler.
 have_mounts() {
   reachable || return 1
-  local attached desired="" name path access _mode source readonly want_readonly device
+  local attached desired="" name path access _mode source actual_readonly want_readonly device
   attached=" $(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | tr '\n' ' ') "
   while IFS=: read -r name path access _mode; do
     [ -n "$name" ] || continue
@@ -132,10 +132,10 @@ have_mounts() {
     [ "$source" = "$HOST_BASE/$name" ] || return 1
     [ "$(incus config device get "$INSTANCE_NAME" "$name" path "${PROJ[@]}" 2>/dev/null || true)" = "$path" ] \
       || return 1
-    readonly="$(incus config device get "$INSTANCE_NAME" "$name" readonly "${PROJ[@]}" 2>/dev/null || true)"
+    actual_readonly="$(incus config device get "$INSTANCE_NAME" "$name" readonly "${PROJ[@]}" 2>/dev/null || true)"
     want_readonly=false; [ "$access" = ro ] && want_readonly=true
-    case "$readonly" in '' | false) readonly=false ;; esac
-    [ "$readonly" = "$want_readonly" ] || return 1
+    case "$actual_readonly" in '' | false) actual_readonly=false ;; esac
+    [ "$actual_readonly" = "$want_readonly" ] || return 1
   done < <(printf '%s\n' "${HOST_MOUNTS:-}" | sed 's/[[:space:]]//g')
   while IFS= read -r device; do
     case "$device" in host-*) ;; *) continue ;; esac
@@ -431,7 +431,7 @@ print_plan() {
 # must not create a second yard on a port another yard already claims); a plain `yard check`
 # leaves that check advisory (warn only).
 host_preflight() {
-  STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME}" SUBYARD_PREFLIGHT_STRICT=1 "$SCRIPT_DIR/00-check-host.sh" \
+  SUBYARD_PREFLIGHT_STRICT=1 "$SCRIPT_DIR/00-check-host.sh" \
     || die "host preflight failed — fix the items above, then re-run '$(yard_cmd_hint) init'"
 }
 

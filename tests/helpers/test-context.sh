@@ -6,6 +6,7 @@ setup_test_context() { # <temp-root> [incus-project] [instance-name]
   export SUBYARD_OPERATOR_HOME="$root/home"
   export SUBYARD_CONFIG_HOME="$root/config"
   export SUBYARD_HOME="$root/subyard"
+  export STORAGE_PATH="$SUBYARD_HOME/incus/storage"
   export HOST_BASE="$root/host-data"
   export RESTRICTED_DISK_PATHS="$HOST_BASE"
   export INSTANCE_TYPE=container

@@ -14,6 +14,7 @@ mkdir -p "$tmp/home" "$tmp/host-data"
 SUBYARD_OPERATOR_HOME="$tmp/home"
 SUBYARD_CONFIG_HOME="$tmp/config"
 SUBYARD_HOME="$tmp/data"
+STORAGE_PATH="$SUBYARD_HOME/incus/storage"
 HOST_BASE="$tmp/host-data"
 RESTRICTED_DISK_PATHS="$HOST_BASE"
 YARD_TYPE=local

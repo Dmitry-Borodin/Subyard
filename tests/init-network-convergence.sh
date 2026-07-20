@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Active ufw keeps the conservative network probe pending but must not fail post-apply verification.
+# Active UFW converges only when its persisted bridge rules and the NetworkManager guard match.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,7 +12,14 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 setup_test_context "$TMP"
 export HOME="$TMP/home"
 export SUBYARD_NO_AUDIT=1
+export SUBYARD_UFW_RULES_FILE="$TMP/user.rules"
 mkdir -p "$HOME"
+cat > "$SUBYARD_UFW_RULES_FILE" <<'RULES'
+### tuple ### allow udp 67 0.0.0.0/0 any 0.0.0.0/0 in_incusbr0
+### tuple ### allow any 53 0.0.0.0/0 any 0.0.0.0/0 in_incusbr0
+### tuple ### route:allow any any 0.0.0.0/0 any 0.0.0.0/0 in_incusbr0
+### tuple ### route:allow any any 0.0.0.0/0 any 0.0.0.0/0 out_incusbr0
+RULES
 
 # shellcheck source=scripts/init.sh
 . "$ROOT/scripts/init.sh"
@@ -23,13 +30,30 @@ power_stopped() { return 0; }
 ufw() { :; }
 systemctl() { return 0; }
 
-! have_network || fail "active ufw should keep the conservative probe pending"
-verify_network || fail "active ufw rejected a converged post-apply state"
-[ "${INIT_STEP_VERIFY[1]}" = verify_network ] || fail "network registry uses the conservative probe as verify"
+have_network || fail "matching active-UFW rules were not converged"
+verify_network || fail "active UFW rejected a converged post-apply state"
+[ "${INIT_STEP_VERIFY[1]}" = verify_network ] || fail "network registry does not use post-apply verification"
+
+sed -i '/out_incusbr0/d' "$SUBYARD_UFW_RULES_FILE"
+! have_network || fail "missing UFW route-out rule was accepted"
+! verify_network || fail "post-apply verification ignored missing UFW rule"
+printf '%s\n' '### tuple ### route:allow any any 0.0.0.0/0 any 0.0.0.0/0 out_incusbr0' \
+  >> "$SUBYARD_UFW_RULES_FILE"
 
 # The guard is applied before a fresh yard instance exists, so post-apply verification must not
 # require a guest lease that the instance stage has not created yet.
 power_stopped() { return 1; }
 verify_network || fail "fresh-host network verify required a not-yet-created instance"
 
-printf 'ok: network apply verification is independent of the active-ufw probe\n'
+access_log="$TMP/access.log"
+getent() { [ "${1:-}" = group ] && [ "${2:-}" = incus-admin ]; }
+chgrp() { printf 'chgrp %s %s\n' "$1" "$2" >>"$access_log"; }
+chmod() { printf 'chmod %s %s\n' "$1" "$2" >>"$access_log"; }
+ufw_rules_set_probe_access enable || fail "could not enable UFW probe access"
+ufw_rules_set_probe_access disable || fail "could not restore root-only UFW access"
+grep -Fqx "chgrp incus-admin $SUBYARD_UFW_RULES_FILE" "$access_log" \
+  || fail "UFW probe access did not use incus-admin"
+grep -Fqx "chgrp root $SUBYARD_UFW_RULES_FILE" "$access_log" \
+  || fail "UFW teardown access did not restore root ownership"
+
+printf 'ok: network probe verifies persisted active-UFW policy\n'

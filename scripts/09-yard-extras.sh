@@ -105,7 +105,7 @@ extras_converged() {
     && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
     || return 1
 
-  local listed devices entry name path access _mode dev readonly want_readonly shift want_shift node
+  local listed devices entry name path access _mode dev actual_readonly want_readonly shift want_shift node
   listed="$(incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null)" || return 1
   devices=" $(printf '%s\n' "$listed" | tr '\n' ' ') "
 
@@ -118,9 +118,9 @@ extras_converged() {
       && [ "$(dev_get "$dev" source)" = "$HOST_BASE/$name" ] \
       && [ "$(dev_get "$dev" path)" = "$path" ] \
       || return 1
-    readonly="$(dev_get "$dev" readonly)"; [ "$readonly" = true ] || readonly=false
+    actual_readonly="$(dev_get "$dev" readonly)"; [ "$actual_readonly" = true ] || actual_readonly=false
     want_readonly=false; [ "$access" = ro ] && want_readonly=true
-    [ "$readonly" = "$want_readonly" ] || return 1
+    [ "$actual_readonly" = "$want_readonly" ] || return 1
     shift="$(dev_get "$dev" shift)"; [ "$shift" = true ] || shift=false
     want_shift=false; [ "$SHIFT_MODE" = shift ] && want_shift=true
     [ "$shift" = "$want_shift" ] || return 1

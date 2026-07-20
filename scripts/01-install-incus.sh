@@ -33,7 +33,6 @@ OPERATOR_GROUP="$(id -gn "$OPERATOR_USER")"
 # $SUBYARD_HOME is already resolved under the real operator by lib.sh's auto-load (it reads
 # the same SUDO_USER), so it points at the operator's home even though this script self-elevates.
 STORAGE_POOL="${STORAGE_POOL:-default}"
-STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/incus/storage}"
 INCUS_BRIDGE="${INCUS_BRIDGE:-incusbr0}"
 
 if [ "$UPGRADE_ONLY" = 1 ]; then

@@ -24,7 +24,7 @@ path_is_broad_host_root() { # managed HOST_BASE must never collapse to a broad h
 
 context_normalize() {
   local key value
-  for key in SUBYARD_OPERATOR_HOME SUBYARD_CONFIG_HOME SUBYARD_HOME HOST_BASE RESTRICTED_DISK_PATHS; do
+  for key in SUBYARD_OPERATOR_HOME SUBYARD_CONFIG_HOME SUBYARD_HOME STORAGE_PATH HOST_BASE RESTRICTED_DISK_PATHS; do
     value="${!key:-}"
     case "$value" in /*) printf -v "$key" '%s' "$(realpath -m -- "$value")" ;; esac
   done
@@ -41,7 +41,7 @@ context_validate() {
   [[ "${DEV_UID:-}" =~ ^[0-9]+$ ]] || { context_fail "DEV_UID must be numeric"; return; }
 
   local key value
-  for key in SUBYARD_OPERATOR_HOME SUBYARD_CONFIG_HOME SUBYARD_HOME HOST_BASE RESTRICTED_DISK_PATHS; do
+  for key in SUBYARD_OPERATOR_HOME SUBYARD_CONFIG_HOME SUBYARD_HOME STORAGE_PATH HOST_BASE RESTRICTED_DISK_PATHS; do
     value="${!key:-}"
     case "$value" in /*) ;; *) context_fail "$key must be an absolute path"; return ;; esac
   done

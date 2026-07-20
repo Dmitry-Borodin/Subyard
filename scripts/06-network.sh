@@ -40,6 +40,14 @@ if [ "$ufw_active" = 1 ]; then
   ufw allow in on "$BRIDGE" to any port 53
   ufw route allow in on "$BRIDGE"
   ufw route allow out on "$BRIDGE"
+  # UFW is root-only and its rule files default to 0640 root:root. incus-admin is already
+  # root-equivalent; grant it read-only access so future init plans can prove convergence
+  # without prompting for sudo or trusting a separate "done" marker.
+  ufw_rules_set_probe_access enable \
+    || die "could not make UFW rule state readable by incus-admin"
+  ufw_yard_rules_present "$BRIDGE" \
+    || die "UFW rules for '$BRIDGE' did not match the required DHCP/DNS/route policy after apply"
+  ok "verified persisted UFW rules for $BRIDGE"
 else
   ok "ufw inactive — Incus manages the bridge firewall; skipped ufw rules"
 fi

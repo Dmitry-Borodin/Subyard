@@ -428,6 +428,38 @@ managed=0"
   ok "verified: NM effective config protects $bridge and veth devices"
 }
 
+# ufw_yard_rules_present <bridge> — prove the persisted UFW rules without sudo. UFW itself is
+# root-only and stores its rules as 0640 root:root, so 06-network.sh grants the already
+# root-equivalent incus-admin group read access after applying them. Parse UFW's stable tuple
+# records rather than localized `ufw status` output.
+ufw_yard_rules_present() {
+  local bridge="${1:?ufw_yard_rules_present needs a bridge}"
+  local rules="${SUBYARD_UFW_RULES_FILE:-/etc/ufw/user.rules}"
+  [ -r "$rules" ] || return 1
+  awk -v bridge="$bridge" '
+    $1 == "###" && $2 == "tuple" && $3 == "###" {
+      action = $4; dport = $6; iface = $10
+      if (action == "allow" && dport == "67" && iface == "in_" bridge) dhcp = 1
+      if (action == "allow" && dport == "53" && iface == "in_" bridge) dns = 1
+      if (action == "route:allow" && iface == "in_" bridge) route_in = 1
+      if (action == "route:allow" && iface == "out_" bridge) route_out = 1
+    }
+    END { exit !(dhcp && dns && route_in && route_out) }
+  ' "$rules"
+}
+
+ufw_rules_set_probe_access() { # <enable|disable>
+  local mode="${1:?ufw_rules_set_probe_access needs enable or disable}"
+  local rules="${SUBYARD_UFW_RULES_FILE:-/etc/ufw/user.rules}" group
+  [ -e "$rules" ] || return 1
+  case "$mode" in
+    enable) group=incus-admin; getent group "$group" >/dev/null 2>&1 || return 1 ;;
+    disable) group=root ;;
+    *) return 2 ;;
+  esac
+  chgrp "$group" "$rules" && chmod 0640 "$rules"
+}
+
 # zabbly_suite — echo the apt suite (distro codename) for the Zabbly repo, or fail (non-apt /
 # no codename). Ubuntu derivatives (e.g. Linux Mint) MUST use UBUNTU_CODENAME — Zabbly has no
 # Mint suites, only the upstream Ubuntu/Debian ones.

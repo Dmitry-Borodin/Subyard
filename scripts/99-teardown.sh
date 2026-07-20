@@ -30,7 +30,6 @@ SRV_POOL="${SRV_POOL:-default}"
 SRV_VOLUME="${SRV_VOLUME:-yard-srv}"
 STORAGE_POOL="${STORAGE_POOL:-default}"
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
-STORAGE_PATH="${STORAGE_PATH:-$SUBYARD_HOME/incus/storage}"
 
 # Per-yard, context-scoped artifacts this teardown removes — and ONLY these, never a sibling
 # yard's. All derive from the loaded context: instance/project/volume (already carry -<name>),
@@ -183,6 +182,8 @@ if command -v ufw >/dev/null 2>&1 && [ "$bridge_gone" = 1 ]; then
   ufw delete allow in on "$BRIDGE" to any port 53 >/dev/null 2>&1 || true
   ufw route delete allow in on "$BRIDGE" >/dev/null 2>&1 || true
   ufw route delete allow out on "$BRIDGE" >/dev/null 2>&1 || true
+  ufw_rules_set_probe_access disable \
+    || warn "could not restore root-only ownership on /etc/ufw/user.rules"
   ok "removed Subyard ufw rules for '$BRIDGE' (if any)"
 elif command -v ufw >/dev/null 2>&1; then
   ok "kept ufw rules for '$BRIDGE' (bridge still exists — shared with other yards)"

@@ -13,6 +13,7 @@ export SUBYARD_STATE_DIR="$TMP/config/projects"
 export SUBYARD_NO_AUDIT=1
 export MOCK_INCUS_LOG="$TMP/incus.log"
 export MOCK_CODE_LOG="$TMP/code.log"
+unset SUBYARD_YARD SUBYARD_YARD_EXPLICIT
 mkdir -p "$SUBYARD_STATE_DIR" "$TMP/bin"
 cat > "$TMP/bin/incus" <<'SH'
 #!/usr/bin/env bash
@@ -67,4 +68,20 @@ grep -Fxq -- '--file-uri vscode-remote://ssh-remote+yard/home/dev/.subyard/works
 grep -Fq 'remote VS Code extensions matched local versions' "$TMP/out" \
   || fail "successful synchronization was not reported"
 
-printf 'ok: yard code synchronizes remote extension versions before opening\n'
+# The all-yards list prints qualified selectors when needed. Cross-yard resolution re-execs the
+# command in the owning context, where that same selector must still resolve instead of being
+# mistaken for the literal project name `strato/Subyard`.
+unset SUBYARD_STATE_DIR
+mkdir -p "$SUBYARD_CONFIG_HOME/yards/strato/projects"
+cat > "$SUBYARD_CONFIG_HOME/yards/strato.env" <<'ENV'
+SSH_PORT=2223
+ENV
+cat > "$SUBYARD_CONFIG_HOME/yards/strato/projects/subyard-id.json" <<'JSON'
+{"schema":1,"projectId":"subyard-id","name":"Subyard","hostPath":"/host/Subyard","yardPath":"/srv/workspaces/subyard-id/src","mode":"sync","sshHost":"yard-strato","target":"yard"}
+JSON
+
+"$ROOT/bin/yard" code strato/Subyard > "$TMP/qualified.out" 2>&1
+grep -Fxq -- '--file-uri vscode-remote://ssh-remote+yard-strato/home/dev/.subyard/workspaces/Subyard.code-workspace' "$MOCK_CODE_LOG" \
+  || fail "qualified cross-yard selector did not open the project through the owning yard"
+
+printf 'ok: yard code synchronizes extensions and opens qualified cross-yard selectors\n'

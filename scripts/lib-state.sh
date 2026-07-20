@@ -67,6 +67,23 @@ state_ids() {
   for f in "$STATE_DIR"/*.json; do [ -e "$f" ] && basename "$f" .json; done
 }
 
+# project_arg_in_context <arg> — once cross-yard resolution has selected and re-execed in a
+# yard, turn its copy-pasteable `<yard>/<name-or-id>` selector back into the in-context part.
+# Existing paths keep precedence: a real relative path such as `yard/project` is still a path,
+# not a qualified selector. This also makes an explicit `yard -Y x code x/project` harmless.
+project_arg_in_context() {
+  local arg="${1:-.}" here="${YARD_NAME:-default}" pfx rest
+  if [ ! -e "$arg" ]; then
+    case "$arg" in
+      */*)
+        pfx="${arg%%/*}"; rest="${arg#*/}"
+        [ "$pfx" = "$here" ] && [ -n "$rest" ] && { printf '%s\n' "$rest"; return 0; }
+        ;;
+    esac
+  fi
+  printf '%s\n' "$arg"
+}
+
 # resolve_project_id <arg> — map a CLI argument to a known project id, so commands
 # can take a project by NAME from `yard list` (no need to be in its folder). Accepts:
 # a registered path (incl. the default '.'), an exact id, or a project name
@@ -224,6 +241,7 @@ resolve_project_ctx() {
   # RESOLVED_ID is the out-parameter (read by the caller); shellcheck can't see that use.
   # shellcheck disable=SC2034
   if [ -n "${SUBYARD_YARD_EXPLICIT:-}" ]; then
+    arg="$(project_arg_in_context "$arg")"
     RESOLVED_ID="$(resolve_project_id "$arg")"
     return 0
   fi
@@ -499,6 +517,7 @@ resolve_project_id_soft() {
 maybe_reconcile() {
   [ -n "${SUBYARD_YARD_EXPLICIT:-}" ] || return 0
   local arg="${1:-.}" yid ynm ymode
+  arg="$(project_arg_in_context "$arg")"
   resolve_project_id_soft "$arg" >/dev/null 2>&1 && return 0   # already known locally
   while IFS=$'\t' read -r yid ynm ymode; do
     [ -n "$yid" ] || continue

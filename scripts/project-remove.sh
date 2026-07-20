@@ -52,16 +52,6 @@ running() {
     [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; fi
 }
 
-# Run a non-interactive yard command on the owner host in the context mapped by this remote yard.
-# Token-by-token quoting preserves the validated project id through ssh + the remote login shell.
-remote_owner_yard_cmd() {
-  local rc='yard' a
-  [ -n "${REMOTE_YARD:-}" ] && rc="$rc -Y $(printf '%q' "$REMOTE_YARD")"
-  for a in "$@"; do rc="$rc $(printf '%q' "$a")"; done
-  ssh -o BatchMode=yes -o ConnectTimeout="${SUBYARD_REMOTE_TIMEOUT:-10}" \
-      -o StrictHostKeyChecking=accept-new "$REMOTE_DEST" -- bash -lc "$(printf '%q' "$rc")"
-}
-
 # Remove the project's L2 project-env box (if any) and its staged secrets/manifest. L1 projects
 # have no L2 resources and return silently. For a remote L2 project this is a hard prerequisite:
 # any owner-side failure stops removal before either the workspace or controller state is deleted.
@@ -159,5 +149,9 @@ if [ "$soft" = 0 ]; then
   esac
 fi
 
+if yard_is_remote; then
+  remote_owner_project_unregister "$id" \
+    || die "yard removal completed, but the owner-host registry was not updated; controller state was kept — re-run the same remove command"
+fi
 state_remove "$id"
 [ "$soft" = 1 ] && ok "removed '$name' from the yard (yard copy kept)" || ok "removed '$name' from the yard (yard copy deleted)"

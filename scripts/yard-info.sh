@@ -37,9 +37,9 @@ fi
 sshPort="${SSH_PORT:-0}"
 case "$sshPort" in ''|*[!0-9]*) sshPort=0 ;; esac
 
-# Only a successful read of the running yard can establish its inventory. Owner-host state is
-# controller-local bookkeeping and may legitimately be empty even while another controller's
-# projects are present in the yard.
+# Only a successful read of the running yard can establish its inventory. Keep using portable
+# yard metadata here: owner-host registry convergence is synchronous for new remote operations,
+# but older clients or interrupted cross-host calls may still leave it temporarily incomplete.
 projects=null
 if [ "$state" = RUNNING ]; then
   projects="$(yard_live_project_count_local)" || projects=null

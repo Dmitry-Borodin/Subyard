@@ -102,7 +102,7 @@ if [ "$mode" = bind ]; then
   if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$dev"; then
     state_write "$id" "$name" "$hostPath" "$yardPath" bind "$SSH_HOST"
     state_set "$id" target "$target"
-    write_yard_meta "$id" "$name" bind   # so `list --live` shows it (bind is local-only)
+    write_yard_meta "$id" "$name" bind "$target"   # so `list --live` shows it (bind is local-only)
     ok "bind already attached: $hostPath → $INSTANCE_NAME:$yardPath (target $target)"
     info "id: $id"
     exit 0
@@ -123,7 +123,7 @@ if [ "$mode" = bind ]; then
   state_set "$id" target "$target"
   # Yard-side meta (best-effort) — bind exits before the sync path's write_yard_meta, so without
   # this a bind project shows `missing` under `yard list --live`. Bind is local-only.
-  write_yard_meta "$id" "$name" bind
+  write_yard_meta "$id" "$name" bind "$target"
   ok "bind done: $hostPath ↔ $INSTANCE_NAME:$yardPath (target $target)"
   info "id: $id"
   exit 0
@@ -173,9 +173,15 @@ else
     || die "copy failed"
 fi
 
+# Write portable yard metadata first. For a remote yard, then make owner-host registration part
+# of the successful operation; only after that publish this controller's local record. This order
+# leaves a failed owner update safely rerunnable instead of claiming a fully completed sync.
+write_yard_meta "$id" "$name" sync "$target"
+if yard_is_remote; then
+  remote_owner_project_upsert "$id" "$name" sync "$target" \
+    || die "project copied, but the owner-host registry was not updated; re-run the same sync command"
+fi
 state_write "$id" "$name" "$hostPath" "$yardPath" sync "$SSH_HOST"
 state_set "$id" target "$target"
-# Yard-side meta (best-effort; local AND remote) — lets another controller discover this copy.
-write_yard_meta "$id" "$name" sync
 ok "sync done: $name → $yardPath (target $target)"
 info "id: $id"

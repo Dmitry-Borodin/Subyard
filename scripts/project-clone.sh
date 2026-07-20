@@ -96,10 +96,15 @@ else
     || die "git clone failed (private repo? enable ssh-agent forwarding at setup, or use an https token url)"
 fi
 
+# As with remote sync, owner-host registration is part of completion and happens before this
+# controller publishes its local record, keeping an interrupted operation safely rerunnable.
+write_yard_meta "$id" "$name" git "$target"
+if yard_is_remote; then
+  remote_owner_project_upsert "$id" "$name" git "$target" \
+    || die "project cloned, but the owner-host registry was not updated; re-run the same clone command"
+fi
 state_write "$id" "$name" "$url" "$yardPath" git "$SSH_HOST"
 state_set "$id" target "$target"
-# Yard-side meta (best-effort; local AND remote).
-write_yard_meta "$id" "$name" git
 ok "cloned $name → $yardPath (target $target)"
 info "id: $id"
 cat <<MSG

@@ -267,6 +267,7 @@ case "$cmd" in
   remote)    exec "$S/yard-remote.sh" "$@" ;;                 # manage remote yards (add/remove/list)
   _info)     exec "$S/yard-info.sh" "$@" ;;   # machine-readable probe (hidden; used by remote yards)
   _authorize) exec "$S/yard-authorize.sh" "$@" ;;  # hidden: authorize a controller key IN the yard (remote add)
+  _project-state) exec "$S/project-state.sh" "$@" ;; # hidden: converge owner-host project registry
   logs)      exec "$S/yard-logs.sh" "$@" ;;
   usage)     exec "$S/yard-usage.sh" "$@" ;;
   start | stop | status) exec "$S/yard-ctl.sh" "$cmd" "$@" ;;

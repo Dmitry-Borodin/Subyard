@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # project-list.sh — Phase 7b (slice): list projects currently in the yard.
-# Reads machine-local state ($SUBYARD_CONFIG_HOME/projects/*.json) — works even
-# when the yard is down. If incus is reachable, also reports whether each yard
-# copy is present. Read-only; operator-owned; no root.
+# Reads machine-local state ($SUBYARD_CONFIG_HOME/projects/*.json) — works even when the yard is
+# down. If incus is reachable, also reports whether each yard copy is present. Default mode is
+# read-only; explicit --live converges the operator-owned registry cache. No root.
 #
 # Multi-yard: with no explicit -Y/@ context and named yards defined, list every yard's projects
 # with a YARD column, qualifying a NAME as `<yard>/<name>` when shared across yards (the form
@@ -10,9 +10,8 @@
 # table as before; default-only output is unchanged.
 #
 # --live (opt-in): also read the yard's own .subyard-meta.json files (over ssh for a remote yard,
-# ssh/incus for a local one) to mark presence and surface projects that live only in the yard
-# (synced from another machine, absent from local state) with a '(yard)' marker. Off by default
-# so the common listing stays fast and its output byte-for-byte unchanged.
+# ssh/incus for a local one), backfill/update synthetic machine-local records for projects learned
+# from another controller, and mark live presence. Off by default so the common listing stays fast.
 # Config: config/incus.project.env + config/subyard.env + config/host.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,7 +33,7 @@ for _a in "$@"; do case "$_a" in --live) LIVE=1 ;; esac; done
 list_single() {
   mapfile -t ids < <(state_ids)
 
-  # --live: the projects the yard itself reports (id\tname\tmode), keyed by id. Best-effort;
+  # --live: the projects the yard itself reports (id\tname\tmode\ttarget), keyed by id. Best-effort;
   # an unreachable yard yields none. Used to mark presence and surface yard-only projects.
   local -a live_rows=()
   local -A live_present=()
@@ -44,10 +43,24 @@ list_single() {
     # Did we actually reach the yard? Rows imply yes; otherwise probe once, so an unreachable
     # yard shows presence as '?' (unknown) rather than falsely marking everything 'missing'.
     { [ "${#live_rows[@]}" -gt 0 ] || yard_reachable; } && live_ok=1
-    local _l _lid
+    # An explicit live scan is also the legacy/interrupted-operation repair path. Converge the
+    # active context's registry from portable metadata; preserve any real local hostPath. Old
+    # metadata may lack target, in which case an existing target is kept and a new record defaults
+    # to L1 through the normal reader fallback.
+    local _l _lid _lnm _lmd _ltg; local -a valid_live_rows=()
     for _l in ${live_rows[@]+"${live_rows[@]}"}; do
-      _lid="${_l%%$'\t'*}"; [ -n "$_lid" ] && live_present["$_lid"]=1
+      IFS=$'\t' read -r _lid _lnm _lmd _ltg <<<"$_l"
+      [ -n "$_lid" ] || continue
+      if ! state_yard_record_valid "$_lid" "$_lmd" "$_ltg"; then
+        warn "ignored invalid yard project metadata"
+        continue
+      fi
+      valid_live_rows+=("$_l")
+      live_present["$_lid"]=1
+      state_upsert_yard "$_lid" "$_lnm" "$_lmd" "$_ltg" "${SSH_HOST:-yard}"
     done
+    live_rows=("${valid_live_rows[@]}")
+    mapfile -t ids < <(state_ids)
   fi
 
   if [ "${#ids[@]}" -eq 0 ] && [ "${#live_rows[@]}" -eq 0 ]; then
@@ -62,14 +75,15 @@ list_single() {
      && [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ]; then
     yard_up=1
   fi
-  # Read all fields up front: one jq per project (not one per field) — @tsv keeps
-  # the values on a single line. Project records have no tabs in these fields. `target`
+  # Read all fields up front: one jq per project (not one per field). Substitute `(yard)` before
+  # @tsv for a foreign record's deliberately empty hostPath: tab is IFS whitespace, so an empty
+  # middle field would collapse and shift yardPath/target into the wrong display columns. `target`
   # (the run tier: `yard` = L1, a profile name = L2) may be absent in old records — default yard.
   local -a names=() modes=() hostPaths=() yardPaths=() targets=()
   local id name mode hostPath yardPath target
   for id in "${ids[@]}"; do
     IFS=$'\t' read -r name mode hostPath yardPath target \
-      < <(jq -r '[.name,.mode,.hostPath,.yardPath,(.target // "yard")]|@tsv' "$(state_file "$id")")
+      < <(jq -r '[.name,.mode,(if (.hostPath // "") == "" then "(yard)" else .hostPath end),.yardPath,(.target // "yard")]|@tsv' "$(state_file "$id")")
     names+=("$name"); modes+=("$mode"); hostPaths+=("$hostPath"); yardPaths+=("$yardPath")
     targets+=("${target:-yard}")
   done
@@ -129,18 +143,6 @@ list_single() {
       "${names[$i]}" "${modes[$i]}" "${targets[$i]}" "$yard" "$(box_for "$i")" "${hostPaths[$i]}"
   done
 
-  # --live: append projects present in the yard but absent from local state, marked '(yard)'.
-  # These reconcile on demand for `yard remove`/`yard code` (register-on-demand from the meta).
-  if [ "$LIVE" = 1 ] && [ "${#live_rows[@]}" -gt 0 ]; then
-    local -A haveid=(); local _row lid lnm lmd
-    for i in ${ids[@]+"${ids[@]}"}; do haveid["$i"]=1; done
-    for _row in "${live_rows[@]}"; do
-      IFS=$'\t' read -r lid lnm lmd <<<"$_row"
-      [ -n "$lid" ] || continue
-      [ -n "${haveid[$lid]:-}" ] && continue
-      printf '%-22s %-6s %-10s %-8s %-5s %s\n' "$lnm" "$lmd" - present - '(yard)'
-    done
-  fi
 }
 
 # --- mode: single (explicit/named context, or default-only) vs multi (all yards) ----
@@ -164,7 +166,7 @@ for y in "${yards[@]}"; do
   [ -d "$d" ] || continue
   for f in "$d"/*.json; do
     [ -e "$f" ] || continue
-    IFS=$'\t' read -r nm md tg hp < <(jq -r '[.name,.mode,(.target // "yard"),.hostPath]|@tsv' "$f")
+    IFS=$'\t' read -r nm md tg hp < <(jq -r '[.name,.mode,(.target // "yard"),(if (.hostPath // "") == "" then "(yard)" else .hostPath end)]|@tsv' "$f")
     id="$(basename "$f" .json)"
     rows+=("$y"$'\t'"$id"$'\t'"$nm"$'\t'"$md"$'\t'"${tg:-yard}"$'\t'"$hp")
     case " ${yards_per_name[${nm,,}]:-} " in
@@ -185,10 +187,11 @@ if [ "$LIVE" = 1 ]; then
     if [ -d "$d" ]; then
       for f in "$d"/*.json; do [ -e "$f" ] && have["$(basename "$f" .json)"]=1; done
     fi
-    while IFS=$'\t' read -r lid lnm lmd; do
+    while IFS=$'\t' read -r lid lnm lmd ltg; do
       [ -n "$lid" ] || continue
+      state_yard_record_valid "$lid" "$lmd" "$ltg" || continue
       [ -n "${have[$lid]:-}" ] && continue
-      extra+=("$y"$'\t'"$lnm"$'\t'"$lmd")
+      extra+=("$y"$'\t'"$lnm"$'\t'"$lmd"$'\t'"$ltg")
     done < <(yard_live_projects_for "$y")
     unset have
   done
@@ -211,6 +214,6 @@ for r in ${rows[@]+"${rows[@]}"}; do
 done
 # Yard-only projects (present in the yard, no local record).
 for r in ${extra[@]+"${extra[@]}"}; do
-  IFS=$'\t' read -r y lnm lmd <<<"$r"
-  printf '%-12s %-24s %-6s %-10s %s\n' "$y" "$lnm" "$lmd" - '(yard)'
+  IFS=$'\t' read -r y lnm lmd ltg <<<"$r"
+  printf '%-12s %-24s %-6s %-10s %s\n' "$y" "$lnm" "$lmd" "${ltg:--}" '(yard)'
 done

@@ -60,6 +60,45 @@ state_set() {
   local f; f="$(state_file "$1")"; [ -f "$f" ] || return 1
   jq --arg k "$2" --arg v "$3" '.[$k]=$v' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"
 }
+
+# Yard metadata is dev-owned and therefore untrusted at the host boundary. These validators guard
+# every metadata-driven state write: projectId becomes a filename, and target later selects a
+# profile path. Never let either carry path syntax back onto the owner/controller host.
+state_project_id_valid() {
+  case "${1:-}" in '' | -* | *[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
+}
+
+state_project_mode_valid() { case "${1:-}" in sync | git | bind) return 0 ;; *) return 1 ;; esac; }
+
+state_project_target_valid() {
+  [ -z "${1:-}" ] || [ "$1" = yard ] || _yard_valid_name "$1"
+}
+
+state_yard_record_valid() {
+  state_project_id_valid "$1" && state_project_mode_valid "$2" && state_project_target_valid "$3"
+}
+
+# state_upsert_yard <id> <name> <mode> <target-or-empty> <ssh-host> — converge facts learned
+# from the yard while preserving controller-specific state. In particular, never import another
+# controller's hostPath and never erase a real owner-local one. Existing timestamps stay stable;
+# a new synthetic record is explicitly marked so its empty path renders as `(yard)`.
+state_upsert_yard() {
+  local id="$1" name="$2" mode="$3" target="$4" ssh_host="$5" f
+  state_yard_record_valid "$id" "$mode" "$target" || return 1
+  f="$(state_file "$id")"
+  if [ ! -f "$f" ]; then
+    state_write "$id" "$name" "" "$(yard_path_for "$id")" "$mode" "$ssh_host"
+    [ -z "$target" ] || state_set "$id" target "$target"
+    state_set "$id" registrySource yard
+    return 0
+  fi
+  jq --arg name "$name" --arg mode "$mode" --arg target "$target" \
+     --arg yardPath "$(yard_path_for "$id")" --arg sshHost "$ssh_host" '
+      .name=$name | .mode=$mode | .yardPath=$yardPath | .sshHost=$sshHost |
+      if $target != "" then .target=$target else . end |
+      if (.hostPath // "") == "" then .registrySource="yard" else del(.registrySource) end
+    ' "$f" >"$f.tmp" && mv -f "$f.tmp" "$f"
+}
 # List ids of all known projects (empty output if none).
 state_ids() {
   [ -d "$STATE_DIR" ] || return 0
@@ -308,6 +347,28 @@ remote_start_hint() {
   fi
 }
 
+# remote_owner_yard_cmd — run one non-interactive yard command in the remote yard's owner-host
+# context. Arguments are quoted token-by-token across ssh + the remote login shell. This is the
+# control-plane companion to the direct yard data plane and carries no project source path.
+remote_owner_yard_cmd() {
+  local dest="${REMOTE_DEST:-}" ryard="${REMOTE_YARD:-}" rc='yard' a
+  [ -n "$dest" ] || return 1
+  [ -n "$ryard" ] && rc="$rc -Y $(printf '%q' "$ryard")"
+  for a in "$@"; do rc="$rc $(printf '%q' "$a")"; done
+  ssh -o BatchMode=yes -o ConnectTimeout="${SUBYARD_REMOTE_TIMEOUT:-10}" \
+      -o StrictHostKeyChecking=accept-new "$dest" -- bash -lc "$(printf '%q' "$rc")"
+}
+
+# Remote project data is copied straight into the yard, bypassing its owner host. Complete the
+# operation by converging the owner's machine-local registry through the hidden validated endpoint.
+remote_owner_project_upsert() { # <id> <name> <mode> <target>
+  remote_owner_yard_cmd _project-state upsert "$1" "$2" "$3" "$4"
+}
+
+remote_owner_project_unregister() { # <id>
+  remote_owner_yard_cmd _project-state unregister "$1"
+}
+
 # remote_alias_configured — distinguish a missing/legacy snippet from a network failure. `ssh -G`
 # resolves Includes without opening a connection; the managed alias must expose this context's
 # stable HostKeyAlias. A legacy snippet therefore gets the useful "re-run remote add" diagnosis.
@@ -391,21 +452,21 @@ require_remote_reachable() {
 # (a second laptop) can discover what the yard holds even without local state. Best-effort:
 # a meta failure only WARNs, it never fails the sync/clone.
 
-# yard_meta_json <id> <name> <mode> — the schema-1 meta body; origin is this controller's host.
+# yard_meta_json <id> <name> <mode> <target> — schema-1 meta; origin is this controller's host.
 yard_meta_json() {
-  jq -cn --argjson schema 1 --arg projectId "$1" --arg name "$2" --arg mode "$3" \
+  jq -cn --argjson schema 1 --arg projectId "$1" --arg name "$2" --arg mode "$3" --arg target "$4" \
     --arg importedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg origin "$(hostname 2>/dev/null || uname -n 2>/dev/null || printf unknown)" \
-    '{schema:$schema,projectId:$projectId,name:$name,mode:$mode,importedAt:$importedAt,origin:$origin}'
+    '{schema:$schema,projectId:$projectId,name:$name,mode:$mode,target:$target,importedAt:$importedAt,origin:$origin}'
 }
 
-# write_yard_meta <id> <name> <mode> — write the meta over the SAME transport the copy used:
+# write_yard_meta <id> <name> <mode> <target> — write meta over the SAME transport the copy used:
 # ssh when the alias is up (works for local and remote), else incus exec for a LOCAL yard.
 # Always returns 0 — on any failure it warns and moves on (never breaks sync/clone).
 write_yard_meta() {
-  local id="$1" name="$2" mode="$3" json dir dst
+  local id="$1" name="$2" mode="$3" target="$4" json dir dst
   dir="/srv/workspaces/$id"; dst="$dir/.subyard-meta.json"
-  json="$(yard_meta_json "$id" "$name" "$mode" 2>/dev/null)" \
+  json="$(yard_meta_json "$id" "$name" "$mode" "$target" 2>/dev/null)" \
     || { warn "could not build yard meta for '$name' (skipped; non-fatal)"; return 0; }
   # Attempt the ssh write directly (BatchMode + short timeout is its own reachability probe) —
   # saves a round-trip vs probe-then-write. On failure fall back to incus for a LOCAL yard, with
@@ -441,12 +502,12 @@ _yard_meta_stream() {
   fi
 }
 
-# _yard_meta_parse — stdin: concatenated meta JSON → one `id\tname\tmode` line per object.
+# _yard_meta_parse — stdin: concatenated meta JSON → `id\tname\tmode\ttarget` per object.
 _yard_meta_parse() {
-  jq -r 'select(type=="object") | [.projectId,(.name//""),(.mode//"")] | @tsv' 2>/dev/null || true
+  jq -r 'select(type=="object") | [.projectId,(.name//""),(.mode//""),(.target//"")] | @tsv' 2>/dev/null || true
 }
 
-# yard_live_projects — meta rows (id\tname\tmode) for the ACTIVE context's yard.
+# yard_live_projects — meta rows (id\tname\tmode\ttarget) for the ACTIVE context's yard.
 yard_live_projects() {
   local remote=0; yard_is_remote && remote=1
   _yard_meta_stream "${SSH_HOST:-yard}" "$remote" "${INSTANCE_NAME:-yard}" "${INCUS_PROJECT:-subyard}" \
@@ -516,13 +577,14 @@ resolve_project_id_soft() {
 # subsequent resolve_project_ctx then finds it. Does nothing without an explicit context.
 maybe_reconcile() {
   [ -n "${SUBYARD_YARD_EXPLICIT:-}" ] || return 0
-  local arg="${1:-.}" yid ynm ymode
+  local arg="${1:-.}" yid ynm ymode ytarget
   arg="$(project_arg_in_context "$arg")"
   resolve_project_id_soft "$arg" >/dev/null 2>&1 && return 0   # already known locally
-  while IFS=$'\t' read -r yid ynm ymode; do
+  while IFS=$'\t' read -r yid ynm ymode ytarget; do
     [ -n "$yid" ] || continue
+    state_yard_record_valid "$yid" "$ymode" "$ytarget" || continue
     if [ "$arg" = "$yid" ] || [ "${arg,,}" = "${ynm,,}" ]; then
-      state_write "$yid" "$ynm" "" "$(yard_path_for "$yid")" "$ymode" "${SSH_HOST:-yard}"
+      state_upsert_yard "$yid" "$ynm" "$ymode" "$ytarget" "${SSH_HOST:-yard}"
       warn "registered '$ynm' from the yard on demand (no host path recorded; export/sync from this machine need one — re-add with '$(yard_cmd_hint) sync <path>')"
       return 0
     fi

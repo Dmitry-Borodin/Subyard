@@ -28,7 +28,14 @@ case "${1:-}" in
     [ "${RESOURCE_TEST_UP:-1}" = 1 ] || exit 1
     case " $* " in
       *' ss -Hltn '*) [ "${RESOURCE_TEST_LISTENING:-1}" = 1 ] ;;
-      *' pgrep -u dev -f -- '*) [ "${RESOURCE_TEST_EMULATOR_PROC:-1}" = 1 ] ;;
+      *' test -x /tmp/subyard-android/emulator-control.sh '*) [ "${RESOURCE_TEST_CONTROL_AVAILABLE:-1}" = 1 ] ;;
+      *'emulator-control.sh is-running '*) [ "${RESOURCE_TEST_EMULATOR_PROC:-1}" = 1 ] ;;
+      *'emulator-control.sh stop '*) printf 'stopped\n' ;;
+      *' pgrep -u dev -f -- '*)
+        [ ! -e "$RESOURCE_TEST_LEGACY_STOPPED_FILE" ] \
+          && [ "${RESOURCE_TEST_EMULATOR_PROC:-1}" = 1 ] ;;
+      *' pkill -TERM -u dev -f -- '* | *' pkill -KILL -u dev -f -- '*)
+        : > "$RESOURCE_TEST_LEGACY_STOPPED_FILE" ;;
       *' docker inspect -f '*) printf 'true\n' ;;
     esac ;;
   file) : ;;
@@ -36,6 +43,7 @@ esac
 MOCK
 chmod 755 "$TMP/bin/incus"
 export RESOURCE_TEST_LOG="$TMP/incus.log"
+export RESOURCE_TEST_LEGACY_STOPPED_FILE="$TMP/legacy-stopped"
 
 # shellcheck source=scripts/lib-resources.sh
 . "$ROOT/scripts/lib-resources.sh"
@@ -71,27 +79,39 @@ done
 RESOURCE_TEST_UP=1
 export RESOURCE_TEST_UP
 
-# The Android handler must pass the exact identity pattern through to the in-yard probe.
+# Controller-owned resources use their state probe and never scan the shared process table.
 RESOURCE_TEST_LISTENING=0 RESOURCE_TEST_EMULATOR_PROC=1 \
   "$ROOT/bin/yard" emu status >"$TMP/emu-status.out"
 grep -Fq 'still booting' "$TMP/emu-status.out" \
   || fail 'emulator status did not use its process probe while adb was down'
-grep -Fq 'pgrep -u dev -f -- ^(' "$RESOURCE_TEST_LOG" \
-  || fail 'emulator process probe was not user-scoped and argv-anchored'
+grep -Fq 'emulator-control.sh is-running' "$RESOURCE_TEST_LOG" \
+  || fail 'emulator status did not use controller-owned state'
+if grep -Fq 'pgrep -u dev -f --' "$RESOURCE_TEST_LOG"; then
+  fail 'controller-owned status scanned the shared process table'
+fi
 
 # Representative reverse lifecycle paths execute through the generic dispatcher and fake Incus.
-"$ROOT/bin/yard" emu down --yes >/dev/null
+if ! "$ROOT/bin/yard" emu down --yes >"$TMP/emu-down.out" 2>&1; then
+  tail -n 20 "$RESOURCE_TEST_LOG" >&2
+  fail 'controller-owned emulator down failed'
+fi
 "$ROOT/bin/yard" staging stop --yes >/dev/null
 "$ROOT/bin/yard" qa-pool down --yes >/dev/null
 grep -Fq 'config device remove' "$RESOURCE_TEST_LOG" || fail 'emulator down did not remove its bridge'
-grep -Fq 'pkill -TERM -u dev -f -- ^(' "$RESOURCE_TEST_LOG" \
-  || fail 'emulator stop was not user-scoped and argv-anchored'
-if grep -Fq 'pkill -f emulator-run.sh' "$RESOURCE_TEST_LOG"; then
-  fail 'emulator stop retained the broad path-substring kill'
+grep -Fq 'emulator-control.sh stop' "$RESOURCE_TEST_LOG" \
+  || fail 'emulator stop did not target its owned process group'
+if grep -Fq 'pkill -TERM -u dev -f --' "$RESOURCE_TEST_LOG"; then
+  fail 'controller-owned stop used the legacy process-table fallback'
 fi
 grep -Fq 'docker exec subyard-staging-canonical' "$RESOURCE_TEST_LOG" \
   || fail 'staging stop did not reach its profile mechanic'
 grep -Fq 'docker stop subyard-qa-broker' "$RESOURCE_TEST_LOG" \
   || fail 'qa-pool down did not reach its profile mechanic'
+
+# Before the controller's first launch, an already-running pre-upgrade emulator remains manageable.
+: > "$RESOURCE_TEST_LOG"
+RESOURCE_TEST_CONTROL_AVAILABLE=0 "$ROOT/bin/yard" emu down --yes >/dev/null
+grep -Fq 'pkill -TERM -u dev -f -- ^(' "$RESOURCE_TEST_LOG" \
+  || fail 'legacy emulator stop did not use the strict migration identity'
 
 printf 'ok: profile-owned resources dispatch and reverse lifecycle paths remain generic\n'

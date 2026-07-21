@@ -15,7 +15,7 @@ JDK_HOME="/opt/jdk-${JDK_VERSION}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl unzip
+apt-get install -y -qq curl unzip util-linux
 # Headless HW GLES for -gpu host: Mesa + a tiny wlroots compositor (cage) + Xwayland. The emulator's
 # GLES uses GLX (needs an X display); the passed-through render node only does HW GL via EGL → the
 # launcher bridges with a headless wlroots compositor on the render node → Xwayland → HW GLX.

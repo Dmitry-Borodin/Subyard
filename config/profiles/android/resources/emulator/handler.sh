@@ -65,6 +65,7 @@ ADB_CONSOLE_DEVICE=adb-emu-console
 EMU_DIR=/tmp/subyard-android
 EMU_LOG=/tmp/subyard-android-emu.log
 PROFILE_SRC="$SCRIPT_DIR/../config/profiles/android"
+EMU_CONTROL="$EMU_DIR/emulator-control.sh"
 
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
 
@@ -73,11 +74,39 @@ emulator_listening() {
   yexec sh -c "command -v ss >/dev/null 2>&1 && ss -Hltn 'sport = :$ADB_EMULATOR_PORT' 2>/dev/null | grep -q ." 2>/dev/null
 }
 
-# Is the emulator process tree alive in the yard? Covers the whole boot: the launcher
-# (bash, pre-`exec cage`), the cage wrapper, the emulator binary, and the qemu VM it
-# spawns. The shared pattern is anchored at argv[0], so tools that only mention one of
-# those paths cannot impersonate the emulator. The emulator always runs as DEV_USER.
-emulator_proc() { yexec pgrep -u "$DEV_USER" -f -- "$EMU_PROCESS_PATTERN" >/dev/null 2>&1; }
+# Execute the staged controller through the dev login shell while preserving argument boundaries.
+emu_control() {
+  local command=
+  printf -v command '%q ' "$EMU_CONTROL" "$@"
+  yexec su - "$DEV_USER" -c "$command"
+}
+
+emulator_control_available() { yexec test -x "$EMU_CONTROL" >/dev/null 2>&1; }
+
+# New launches have an owned process-group state. The exact argv matcher is an upgrade bridge for
+# an emulator that was already running before the controller was staged; it disappears naturally
+# after that legacy process is stopped and the first controller-owned launch is made.
+legacy_emulator_proc() { yexec pgrep -u "$DEV_USER" -f -- "$EMU_PROCESS_PATTERN" >/dev/null 2>&1; }
+emulator_proc() {
+  if emulator_control_available; then emu_control is-running >/dev/null 2>&1
+  else legacy_emulator_proc
+  fi
+}
+
+stop_legacy_emulator() {
+  local _i
+  yexec pkill -TERM -u "$DEV_USER" -f -- "$EMU_PROCESS_PATTERN" >/dev/null 2>&1 || true
+  for _i in $(seq 1 20); do
+    legacy_emulator_proc || return 0
+    sleep 0.1
+  done
+  yexec pkill -KILL -u "$DEV_USER" -f -- "$EMU_PROCESS_PATTERN" >/dev/null 2>&1 || true
+  for _i in $(seq 1 20); do
+    legacy_emulator_proc || return 0
+    sleep 0.05
+  done
+  return 1
+}
 
 # Yard must be reachable and running before we can touch its devices or reach the emulator.
 # Shared across profile resources (lib-service.sh): incus reachable + instance RUNNING.
@@ -196,9 +225,12 @@ remove_bridge() {
 # not mounted in the yard, so push the two files the launcher needs side by side.
 stage_launcher() {
   [ -r "$PROFILE_SRC/emulator-run.sh" ] || die "launcher missing: $PROFILE_SRC/emulator-run.sh"
+  [ -r "$PROFILE_SRC/emulator-control.sh" ] || die "controller missing: $PROFILE_SRC/emulator-control.sh"
   [ -r "$PROFILE_SRC/profile.conf" ]    || die "profile.conf missing: $PROFILE_SRC/profile.conf"
   incus file push "$PROFILE_SRC/emulator-run.sh" "$INSTANCE_NAME$EMU_DIR/emulator-run.sh" \
     "${PROJ[@]}" --create-dirs --mode 0755 >/dev/null
+  incus file push "$PROFILE_SRC/emulator-control.sh" "$INSTANCE_NAME$EMU_CONTROL" \
+    "${PROJ[@]}" --mode 0755 >/dev/null
   incus file push "$PROFILE_SRC/profile.conf" "$INSTANCE_NAME$EMU_DIR/profile.conf" \
     "${PROJ[@]}" --mode 0644 >/dev/null
 }
@@ -231,10 +263,14 @@ cmd_up() {
     ok "launcher staged at $EMU_DIR (in the yard)"
     # Detached: setsid + redirect + </dev/null so it outlives this incus exec session. A
     # login shell (su -) sources /etc/profile.d/subyard-android.sh for ANDROID_HOME/PATH.
-    yexec su - "$DEV_USER" -c \
-      "setsid sh -c 'exec bash $EMU_DIR/emulator-run.sh ${fwd[*]:-} >$EMU_LOG 2>&1 </dev/null' & echo started" >/dev/null \
+    local start_result
+    start_result="$(emu_control start "$EMU_DIR/emulator-run.sh" "$EMU_LOG" "${fwd[@]}")" \
       || die "could not launch the emulator (see $EMU_LOG in the yard: yard shell -- tail -n40 $EMU_LOG)"
-    info "emulator launching — waiting for adb 127.0.0.1:$ADB_EMULATOR_PORT in the yard (up to ~180s)…"
+    case "$start_result" in
+      started) info "emulator launching — waiting for adb 127.0.0.1:$ADB_EMULATOR_PORT in the yard (up to ~180s)…" ;;
+      already-running) info "another request started the emulator first — waiting for its adb port…" ;;
+      *) die "emulator controller returned an unexpected result: ${start_result:-<empty>}" ;;
+    esac
   fi
 
   # Poll for the adb port; bail early only if the whole process tree is gone (real failure).
@@ -280,9 +316,21 @@ cmd_down() {
       "This DISRUPTS any in-yard agent currently using the emulator for tests." \
       "Remove the host proxy device(s)."
     proceed_or_die y   # transient stop (shut the shared emulator down) — default Yes
+    local controlled=0
+    emulator_control_available && emu_control is-running >/dev/null 2>&1 && controlled=1
     # Clean shutdown via the console if reachable, then make sure the processes are gone.
     yexec su - "$DEV_USER" -c 'adb -s emulator-'"$ADB_CONSOLE_EMULATOR_PORT"' emu kill 2>/dev/null; true' >/dev/null 2>&1 || true
-    yexec pkill -TERM -u "$DEV_USER" -f -- "$EMU_PROCESS_PATTERN" >/dev/null 2>&1 || true
+    if [ "$controlled" = 1 ]; then
+      local stop_result
+      stop_result="$(emu_control stop)" || die "emulator controller could not stop its process group"
+      case "$stop_result" in
+        stopped | not-running) ;;
+        *) die "emulator controller returned an unexpected stop result: ${stop_result:-<empty>}" ;;
+      esac
+    else
+      # Non-disruptive upgrade path for an emulator launched by the previous handler.
+      stop_legacy_emulator || die "legacy emulator process group did not stop"
+    fi
     ok "emulator stopped"
   else
     ok "no emulator running in the yard"

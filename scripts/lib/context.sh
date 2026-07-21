@@ -35,6 +35,26 @@ context_validate() {
   case "${SHIFT_MODE:-shift}" in shift | acl) ;; *) context_fail "SHIFT_MODE must be shift or acl"; return ;; esac
   case "${FORWARD_SSH_AGENT:-0}" in 0 | 1) ;; *) context_fail "FORWARD_SSH_AGENT must be 0 or 1"; return ;; esac
   case "${DEV_SUDO:-0}" in 0 | 1) ;; *) context_fail "DEV_SUDO must be 0 or 1"; return ;; esac
+  case "${NESTED_E2E_VMS:-0}" in 0 | 1) ;; *) context_fail "NESTED_E2E_VMS must be 0 or 1"; return ;; esac
+  if [ "${NESTED_E2E_VMS:-0}" = 1 ] && [ "${INSTANCE_TYPE:-container}" != container ]; then
+    context_fail "NESTED_E2E_VMS currently requires INSTANCE_TYPE=container"
+    return
+  fi
+  [[ "${E2E_VM_CPU:-2}" =~ ^[1-9][0-9]*$ ]] \
+    || { context_fail "E2E_VM_CPU must be a positive integer"; return; }
+  [[ "${E2E_VM_MEMORY:-4GiB}" =~ ^[1-9][0-9]*(MiB|GiB)$ ]] \
+    || { context_fail "E2E_VM_MEMORY must use a positive MiB or GiB value"; return; }
+  [[ "${E2E_VM_TTL_MINUTES:-240}" =~ ^[0-9]+$ ]] \
+    && [ "${E2E_VM_TTL_MINUTES:-240}" -ge 15 ] \
+    && [ "${E2E_VM_TTL_MINUTES:-240}" -le 1440 ] \
+    || { context_fail "E2E_VM_TTL_MINUTES must be an integer from 15 to 1440"; return; }
+  case "${E2E_VM_IMAGE:-images:debian/13/cloud}" in
+    '' | -* | *[!A-Za-z0-9._:/@+-]*) context_fail "E2E_VM_IMAGE contains unsafe characters"; return ;;
+  esac
+  [[ "${E2E_VM_BOOT_TIMEOUT:-300}" =~ ^[0-9]+$ ]] \
+    && [ "${E2E_VM_BOOT_TIMEOUT:-300}" -ge 30 ] \
+    && [ "${E2E_VM_BOOT_TIMEOUT:-300}" -le 1800 ] \
+    || { context_fail "E2E_VM_BOOT_TIMEOUT must be an integer from 30 to 1800"; return; }
   [[ "${DEV_UID:-}" =~ ^[0-9]+$ ]] || { context_fail "DEV_UID must be numeric"; return; }
 
   local key value
@@ -62,6 +82,7 @@ context_capture() {
     [yardName]="${YARD_NAME:-default}"
     [yardType]="${YARD_TYPE:-local}"
     [instanceType]="${INSTANCE_TYPE:-container}"
+    [nestedE2EVMs]="${NESTED_E2E_VMS:-0}"
     [instanceName]="${INSTANCE_NAME:-yard}"
     [incusProject]="${INCUS_PROJECT:-subyard}"
     [sshHost]="${SSH_HOST:-yard}"

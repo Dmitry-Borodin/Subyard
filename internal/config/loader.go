@@ -102,7 +102,9 @@ func resetInheritedContext(values environment) {
 	for _, name := range []string{
 		"YARD_NAME", "YARD_TYPE", "YARD_PROFILES", "INSTANCE_TYPE", "INSTANCE_NAME", "INCUS_PROJECT",
 		"INCUS_BRIDGE", "SSH_HOST", "SSH_PORT", "REMOTE_DEST", "REMOTE_YARD", "SHIFT_MODE",
-		"FORWARD_SSH_AGENT", "DEV_SUDO", "DEV_UID", "SUBYARD_STATE_DIR", "RESTRICTED_DISK_PATHS",
+		"FORWARD_SSH_AGENT", "DEV_SUDO", "DEV_UID", "DEV_USER", "NESTED_E2E_VMS",
+		"E2E_VM_IMAGE", "E2E_VM_CPU", "E2E_VM_MEMORY", "E2E_VM_TTL_MINUTES", "E2E_VM_BOOT_TIMEOUT",
+		"SUBYARD_STATE_DIR", "RESTRICTED_DISK_PATHS",
 		"HOST_BASE", "SRV_VOLUME",
 	} {
 		delete(values, name)
@@ -182,6 +184,8 @@ func contextFrom(root, yardName string, values environment) (domain.Context, err
 	setDefault(values, "INCUS_PROJECT", "subyard")
 	setDefault(values, "INCUS_BRIDGE", "incusbr0")
 	setDefault(values, "SSH_HOST", "yard")
+	setDefault(values, "DEV_USER", "dev")
+	setDefault(values, "NESTED_E2E_VMS", "0")
 	configHome := values["SUBYARD_CONFIG_HOME"]
 	dataHome := values["SUBYARD_HOME"]
 	hostBase := filepath.Clean(values["HOST_BASE"])
@@ -209,6 +213,10 @@ func contextFrom(root, yardName string, values environment) (domain.Context, err
 	if err != nil {
 		return domain.Context{}, err
 	}
+	nestedE2EVMs, err := zeroOne(values["NESTED_E2E_VMS"], "NESTED_E2E_VMS")
+	if err != nil {
+		return domain.Context{}, err
+	}
 	ctx := domain.Context{
 		YardName:        yardName,
 		YardType:        domain.YardType(values["YARD_TYPE"]),
@@ -217,12 +225,14 @@ func contextFrom(root, yardName string, values environment) (domain.Context, err
 		IncusProject:    values["INCUS_PROJECT"],
 		IncusBridge:     values["INCUS_BRIDGE"],
 		SSHHost:         values["SSH_HOST"],
+		DevUser:         values["DEV_USER"],
 		SSHPort:         sshPort,
 		RemoteDest:      values["REMOTE_DEST"],
 		RemoteYard:      values["REMOTE_YARD"],
 		ShiftMode:       values["SHIFT_MODE"],
 		ForwardSSHAgent: forwardAgent,
 		DevSudo:         devSudo,
+		NestedE2EVMs:    nestedE2EVMs,
 		DevUID:          devUID,
 		Paths: domain.RuntimePaths{
 			RepositoryRoot: root,

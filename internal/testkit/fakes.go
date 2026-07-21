@@ -198,6 +198,19 @@ type Incus struct {
 	EventsOut  chan domain.OperationEvent
 	ErrorsOut  chan error
 	Err        error
+	ExecSteps  []IncusExecStep
+	ExecCalls  []IncusExecCall
+}
+
+type IncusExecStep struct {
+	Result ports.InstanceExecResult
+	Err    error
+}
+
+type IncusExecCall struct {
+	Project string
+	Name    string
+	Request ports.InstanceExecRequest
 }
 
 func (fake *Incus) Server(context.Context) (ports.ServerInfo, error) {
@@ -225,6 +238,21 @@ func (fake *Incus) Events(context.Context, []string) (<-chan domain.OperationEve
 		close(fake.ErrorsOut)
 	}
 	return fake.EventsOut, fake.ErrorsOut
+}
+
+func (fake *Incus) Exec(
+	_ context.Context,
+	project string,
+	name string,
+	request ports.InstanceExecRequest,
+) (ports.InstanceExecResult, error) {
+	fake.ExecCalls = append(fake.ExecCalls, IncusExecCall{Project: project, Name: name, Request: request})
+	if len(fake.ExecSteps) == 0 {
+		return ports.InstanceExecResult{}, errors.New("testkit Incus exec steps exhausted")
+	}
+	step := fake.ExecSteps[0]
+	fake.ExecSteps = fake.ExecSteps[1:]
+	return step.Result, step.Err
 }
 
 type Audit struct {
@@ -335,6 +363,37 @@ type Peer struct {
 	Received []domain.CredentialMetadata
 	Reply    []domain.CredentialMetadata
 	Err      error
+}
+
+type RemoteStep struct {
+	Response []byte
+	Err      error
+}
+
+type RemoteCall struct {
+	Target  string
+	Request []byte
+}
+
+type ScriptedRemote struct {
+	mu    sync.Mutex
+	Steps []RemoteStep
+	Calls []RemoteCall
+}
+
+func (remote *ScriptedRemote) Call(ctx context.Context, target string, request []byte) ([]byte, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	remote.mu.Lock()
+	defer remote.mu.Unlock()
+	remote.Calls = append(remote.Calls, RemoteCall{Target: target, Request: bytes.Clone(request)})
+	if len(remote.Steps) == 0 {
+		return nil, errors.New("testkit remote steps exhausted")
+	}
+	step := remote.Steps[0]
+	remote.Steps = remote.Steps[1:]
+	return bytes.Clone(step.Response), step.Err
 }
 
 func (peer *Peer) Exchange(_ context.Context, _ string, metadata []domain.CredentialMetadata) ([]domain.CredentialMetadata, error) {

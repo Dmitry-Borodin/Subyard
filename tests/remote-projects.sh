@@ -75,6 +75,7 @@ chmod 755 "$TMP/bin/ssh"
 # shellcheck source=tests/helpers/test-context.sh
 . "$ROOT/tests/helpers/test-context.sh"
 setup_test_context "$TMP"
+chmod 0700 "$TMP/config/yards/remote/projects"
 export PATH="$TMP/bin:$PATH"
 export HOME="$TMP/home"
 export SUBYARD_CONFIG_DIR="$TMP/shipped"
@@ -120,6 +121,7 @@ write_state() {
     yardPath:"/srv/workspaces/demo-12345678/src", mode:"sync", sshHost:"yard-remote",
     importedAt:"test", target:$target
   }' > "$state_file"
+  chmod 0600 "$state_file"
 }
 run_remove() {
   SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 \

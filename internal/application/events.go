@@ -25,6 +25,9 @@ func (tracker *EventTracker) Accept(event domain.OperationEvent) error {
 	if event.Sequence == 0 {
 		return errors.New("event sequence must be positive")
 	}
+	if tracker.sequence == 0 && event.Sequence != 1 {
+		return fmt.Errorf("%w: first event is %d, expected 1", ErrEventGap, event.Sequence)
+	}
 	if tracker.sequence != 0 {
 		if event.Sequence <= tracker.sequence {
 			return fmt.Errorf("%w: got %d after %d", ErrEventReordered, event.Sequence, tracker.sequence)

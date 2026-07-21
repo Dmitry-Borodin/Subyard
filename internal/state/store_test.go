@@ -9,8 +9,15 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Dmitry-Borodin/Subyard/internal/contracttest"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
 )
+
+func TestProjectStoreConformance(t *testing.T) {
+	t.Run("file", func(t *testing.T) { contracttest.ProjectStore(t, newTestStore(t)) })
+	t.Run("memory", func(t *testing.T) { contracttest.ProjectStore(t, testkit.NewMemoryState()) })
+}
 
 func TestFileStoreAtomicConcurrentWrites(t *testing.T) {
 	store := newTestStore(t)

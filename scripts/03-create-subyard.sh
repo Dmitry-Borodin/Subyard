@@ -38,6 +38,8 @@ YARD_LABEL="${YARD_NAME:-default}"
 
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
+device_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2>/dev/null || true; }
+instance_get() { incus config get "$INSTANCE_NAME" "$1" "${PROJ[@]}" 2>/dev/null || true; }
 
 # --- preconditions -----------------------------------------------------------
 incus_preflight
@@ -61,6 +63,12 @@ if [ "$INSTANCE_TYPE" = vm ]; then
   fi
 else
   LAUNCH_FLAGS+=(-c security.nesting=true)
+  if [ "${NESTED_E2E_VMS:-0}" = 1 ]; then
+    LAUNCH_FLAGS+=(
+      -c security.syscalls.intercept.bpf=true
+      -c security.syscalls.intercept.bpf.devices=true
+    )
+  fi
 fi
 [ -n "${LIMITS_CPU:-}" ]    && LAUNCH_FLAGS+=(-c "limits.cpu=$LIMITS_CPU")
 [ -n "${LIMITS_MEMORY:-}" ] && LAUNCH_FLAGS+=(-c "limits.memory=$LIMITS_MEMORY")
@@ -104,6 +112,84 @@ else
   fi
 fi
 
+# --- 2. trusted nested-VM capability (container only, opt-in) ----------------
+# These settings belong to the L0/L1 boundary and must be present before the
+# container starts. Existing running yards are stopped through the normal
+# VS Code/SSH safety guard before a non-live setting is changed.
+ensure_char_device() { # <name> <source>
+  local name="$1" source="$2" err
+  [ -c "$source" ] || die "NESTED_E2E_VMS=1 requires character device $source on the L0 host"
+  if device_exists "$name"; then
+    if [ "$(device_get "$name" type)" = unix-char ] \
+      && [ "$(device_get "$name" source)" = "$source" ] \
+      && [ "$(device_get "$name" path)" = "$source" ]; then
+      ok "$name → $source unchanged"
+      return
+    fi
+    incus config device remove "$INSTANCE_NAME" "$name" "${PROJ[@]}" >/dev/null
+  fi
+  if ! err="$(incus config device add "$INSTANCE_NAME" "$name" unix-char "${PROJ[@]}" \
+        source="$source" path="$source" mode=0660 2>&1 >/dev/null)"; then
+    case "$err" in
+      *"nested container"*)
+        incus config device add "$INSTANCE_NAME" "$name" unix-char "${PROJ[@]}" \
+          source="$source" path="$source" >/dev/null
+        warn "nested host: $name attached without an explicit mode" ;;
+      *) printf '%s\n' "$err" >&2; die "could not attach $source for nested E2E VMs" ;;
+    esac
+  fi
+  ok "$name → $source"
+}
+
+nested_drift=0
+if [ "${NESTED_E2E_VMS:-0}" = 1 ]; then
+  [ "$(instance_get security.syscalls.intercept.bpf)" = true ] || nested_drift=1
+  [ "$(instance_get security.syscalls.intercept.bpf.devices)" = true ] || nested_drift=1
+  for pair in 'kvm:/dev/kvm' 'e2e-vsock:/dev/vsock' 'e2e-vhost-vsock:/dev/vhost-vsock' 'e2e-tun:/dev/net/tun'; do
+    name="${pair%%:*}"; source="${pair#*:}"
+    device_exists "$name" \
+      && [ "$(device_get "$name" type)" = unix-char ] \
+      && [ "$(device_get "$name" source)" = "$source" ] \
+      && [ "$(device_get "$name" path)" = "$source" ] \
+      || nested_drift=1
+  done
+else
+  [ -z "$(instance_get security.syscalls.intercept.bpf)" ] || nested_drift=1
+  [ -z "$(instance_get security.syscalls.intercept.bpf.devices)" ] || nested_drift=1
+  device_exists e2e-vsock && nested_drift=1
+  device_exists e2e-vhost-vsock && nested_drift=1
+  device_exists e2e-tun && nested_drift=1
+fi
+
+if [ "$nested_drift" = 1 ] \
+  && [ "$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")" = RUNNING ]; then
+  prior_desired="$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
+  warn "nested E2E VM boundary changed — a guarded yard restart is required"
+  "$SCRIPT_DIR/yard-ctl.sh" stop --yes \
+    || die "could not safely stop the yard; close active SSH/VS Code sessions and re-run '$(yard_cmd_hint) init'"
+  case "$prior_desired" in running | stopped)
+    power_set_desired "$INCUS_PROJECT" "$INSTANCE_NAME" "$prior_desired" \
+      || die "could not restore desired power after capability restart" ;;
+  esac
+fi
+
+if [ "${NESTED_E2E_VMS:-0}" = 1 ]; then
+  incus config set "$INSTANCE_NAME" security.syscalls.intercept.bpf true "${PROJ[@]}"
+  incus config set "$INSTANCE_NAME" security.syscalls.intercept.bpf.devices true "${PROJ[@]}"
+  ensure_char_device kvm /dev/kvm
+  ensure_char_device e2e-vsock /dev/vsock
+  ensure_char_device e2e-vhost-vsock /dev/vhost-vsock
+  ensure_char_device e2e-tun /dev/net/tun
+else
+  incus config unset "$INSTANCE_NAME" security.syscalls.intercept.bpf "${PROJ[@]}" 2>/dev/null || true
+  incus config unset "$INSTANCE_NAME" security.syscalls.intercept.bpf.devices "${PROJ[@]}" 2>/dev/null || true
+  for name in e2e-vsock e2e-vhost-vsock e2e-tun; do
+    device_exists "$name" || continue
+    incus config device remove "$INSTANCE_NAME" "$name" "${PROJ[@]}" >/dev/null
+    ok "removed disabled nested-VM device '$name'"
+  done
+fi
+
 # Ensure it's RUNNING temporarily — provision uses `incus exec`. Final init reconciliation restores
 # the persisted desired state, so a fresh named yard is stopped again before `yard init` returns.
 state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
@@ -111,7 +197,7 @@ state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
 power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
 power_enforce_autostart_false "$INCUS_PROJECT" "$INSTANCE_NAME" || die "could not disable Incus boot.autostart"
 
-# --- 2. /dev/kvm passthrough (container only) --------------------------------
+# --- 3. /dev/kvm passthrough (container only) --------------------------------
 echo "KVM:"
 if [ "$INSTANCE_TYPE" = vm ]; then
   ok "vm mode uses nested virtualization — no unix-char passthrough"
@@ -135,7 +221,7 @@ else
   warn "/dev/kvm absent on host — emulator won't be hardware-accelerated; skipping passthrough"
 fi
 
-# --- 3. persistent /srv volume (idempotent) ----------------------------------
+# --- 4. persistent /srv volume (idempotent) ----------------------------------
 echo "Storage (/srv):"
 if incus storage volume show "$SRV_POOL" "$SRV_VOLUME" "${PROJ[@]}" >/dev/null 2>&1; then
   ok "volume '$SRV_VOLUME' exists"

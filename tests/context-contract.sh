@@ -27,6 +27,15 @@ DEV_UID=1000
 SSH_PORT=2222
 
 context_validate || fail "$CONTEXT_ERROR"
+
+NESTED_E2E_VMS=wat
+! context_validate || fail "invalid nested VM opt-in accepted"
+NESTED_E2E_VMS=1
+INSTANCE_TYPE=vm
+! context_validate || fail "nested E2E VMs accepted on an unsupported yard type"
+INSTANCE_TYPE=container
+context_validate || fail "valid nested E2E VM context rejected: $CONTEXT_ERROR"
+NESTED_E2E_VMS=0
 path_is_broad_host_root / || fail "root was not classified broad"
 path_is_broad_host_root "$SUBYARD_OPERATOR_HOME" || fail "operator home was not classified broad"
 

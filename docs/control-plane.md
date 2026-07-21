@@ -13,25 +13,28 @@ bin/yard                                source-tree Go-engine launcher only
 cmd/yard                                native CLI/RPC entrypoint
 internal/
   ├── command, config, domain           manifest and immutable context
-  ├── application, credential           planner/events and metadata policy
-  ├── state, rpc                         atomic state and framed sessions
-  └── adapters/                          Incus, shell and local/SSH transports
+  ├── application, credential           routing/events and credential DAG policy
+  ├── state, migration, rpc              atomic state, schema checks and framed sessions
+  └── adapters/                          Incus, metadata, shell and local/SSH transports
 scripts/
   ├── lib/                              compatibility UI/cache/host adapters
-  ├── state/                            project store, resolver, transport, yard metadata
+  ├── state/                            thin native-state calls plus transport/yard metadata
   ├── reconcile/
   │     └── stages/                     one check/plan/apply/verify contract per init stage
-  └── credentials/                      DAG policy and explicit crypto/store/peer adapters
+  └── credentials/                      protected crypto/store/peer/materialization adapters
 config/profiles/<profile>/
   ├── provision.sh                      optional in-yard toolchain
   └── resources/<resource>/             profile-owned lifecycle mechanics
 ```
 
-The Go engine owns global yard selection, validated config, audit, remote-plane selection, registry
-dispatch and the versioned stdio RPC. `bin/yard` only rebuilds a stale contributor binary; installed
+The Go engine owns global yard selection, validated config, operation identity/audit, remote-plane
+selection, project state/resolution, read-only status/inventory, credential DAG decisions, official
+Incus calls and the versioned stdio RPC. `bin/yard` only rebuilds a stale contributor binary; installed
 commands link directly to the native `bin/yard-engine` artifact. The engine does not own command-specific or
-profile-specific system mutations. `scripts/init.sh` composes the ordered stage planner and owns the
-one top-level confirmation plus the separate desired-power finalization transaction.
+profile-specific system mutations. `scripts/init.sh` remains the structured host-reconciliation adapter:
+it composes the ordered stage planner, owns the one top-level confirmation and keeps the separate
+desired-power finalization transaction. Profile process identity and platform facts remain in their
+owning Bash adapter; host-free tests inject facts and fake binaries.
 
 ## Recorded P0 baseline
 
@@ -80,11 +83,19 @@ commands and mechanics.
 followed by at most 1 MiB of JSON. A session must call `rpc.negotiate` first; responses and ordered
 events carry protocol version, request/operation ID and typed errors. A `cancel` frame targets an
 active operation ID, and a bounded writer queue closes a client that cannot keep up.
+Negotiation also returns the engine build version, supported protocol range and capabilities so a
+rolling controller/owner-host mismatch is explicit. Calls may carry an RFC 3339 deadline; expiry and
+explicit cancellation produce different typed errors.
+The outer event `sequence` and `revision` are one monotonic per-session stream; adapter-local Incus
+revisions remain typed event data and cannot make the RPC revision move backwards after a snapshot.
 
-The first switched surface exposes `command.list`, `context.get`, `system.snapshot` and
-`system.ping`. State, Incus and credential calls are added only when their CLI slice switches to the
-same Go implementation; human CLI output is never parsed as a fallback API. Secret-like fields are
-rejected recursively from RPC parameters, and stdout contains frames only.
+The switched surface exposes `command.list`, `context.get`, `operation.route`, `project.list`,
+`yard.status`, `credential.list`, `credential.status`, `incus.events`, `system.snapshot` and
+`system.ping`. The full
+snapshot contains one revision over context, public commands, project inventory, yard status and
+redacted credential metadata; `snapshot.ready` and Incus events use the same ordered event channel.
+Human CLI output is never parsed as a fallback API. Secret-like fields are rejected recursively from
+RPC parameters, Incus event metadata is allowlisted, and stdout contains frames only.
 
 ### Config and context
 
@@ -106,18 +117,19 @@ Source-only domain modules do not load configuration themselves.
 
 ### Project state and routing
 
-Project state is one owner-only JSON file per project ID. Schema 1 requires typed identity, name,
+The native `internal/state` store is the only project-state implementation. Project state is one
+owner-only JSON file per project ID. Schema 1 requires typed identity, name,
 host/yard paths, mode, and SSH host; target/profile and yard-origin markers are optional compatible
 fields. Reads reject corrupt JSON, filename/identity mismatch, invalid targets, and unknown schema
 versions. Writes use a mode-0600 candidate in the same directory, validate it, then atomically
 rename it over the prior record.
 
-The modules are intentionally separate:
+The remaining shell modules are intentionally narrow:
 
-- `state/store.sh`: schema, atomic records, owner-local path preservation;
-- `state/resolver.sh`: in-yard and qualified cross-yard selection;
+- `state/store.sh`: compatibility function names that call the native state endpoint;
+- `state/resolver.sh`: compatibility calls into native local/qualified cross-yard resolution;
 - `state/transport.sh`: remote owner control plane and direct yard data-plane probes;
-- `state/metadata.sh`: yard discovery, synthetic backfill, and owner convergence;
+- `state/metadata.sh`: yard discovery input and owner convergence through native state;
 - `lib/cache.sh`: last-good remote `_info` cache.
 
 Owner upsert/unregister, second-controller discovery, qualified selectors, and synthetic `--live`
@@ -143,10 +155,14 @@ The host-scoped ledger is physically outside the checkout and every managed yard
 Git store contains signed SOPS/age ciphertext; local-only records and identity keys never enter that
 store.
 
-`credentials/domain.sh` accepts explicit repository/credential/JSON inputs and calls injected record,
-decrypt, and publish ports. It contains no concrete SOPS, Git, SSH, or `KEYS_*` config dependency.
-Production adapters separately own protected store I/O, crypto/signatures, revision publication,
-consumer materialization, peer transport/trust, retry state, verification/quarantine, and sync.
+Native credential policy validates the revision graph and owns heads, terminal precedence, metadata
+compatibility, recipient intersection/rekey, peer trust merging, assignment epochs and freshness,
+and retry scheduling. Its RPC view
+projects only allowlisted metadata and never decodes encrypted payload or SOPS fields.
+`credentials/domain.sh` is the protected adapter coordinator: it consumes the native redacted merge
+decision and performs only signature/decrypt/payload-equality/publication observations. Production
+adapters separately own protected store I/O, crypto/signature observations, revision publication,
+consumer materialization, peer transport, retry-state persistence, verification/quarantine and sync.
 Secret payload enters only through protected stdin or a mode-0400/0600 file and is never placed in
 command arguments, environment metadata, audit output, or a revision's unencrypted fields.
 
@@ -182,7 +198,10 @@ nested shell file; validates that each top-level test belongs to exactly one sui
 - `tests/suites/integration.list`: process tests with temporary roots and fake external commands.
 
 CI selects Go from `go.mod`, runs the same suite and recursively ShellChecks all Bash entrypoints,
-modules, profile handlers and tests. Synthetic credential fixtures contain no real secret.
+modules, profile handlers and tests. The fake Incus Unix server implements official-client REST,
+async-operation WebSockets, errors, cancellation and event disconnects. Synthetic credential fixtures
+contain no real secret. The opt-in real-host subset is documented in
+[`real-host-acceptance.md`](real-host-acceptance.md).
 
 ## Real-host acceptance lane
 

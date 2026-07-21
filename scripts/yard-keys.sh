@@ -543,7 +543,7 @@ keys_refresh_assignment() { # <host-actor/yard-context>
 
 cmd_move() {
   local cred="${1:-}" target="${2:-}" repo heads head actor identity='' target_actor target_context target_file
-  local target_assignment trusted_file='' target_peer='' current zone payload parents recipients epoch
+  local target_assignment trusted_file='' target_peer='' current zone payload parents recipients epoch moved
   [ -n "$cred" ] && [[ "$target" = @* ]] || die "usage: keys move <credential-id> @peer"
   target="${target#@}"; keys_require_initialized; keys_find_credential_repo "$cred"; repo="$KEYS_FOUND_REPO"
   [ "$repo" = "$KEYS_SHARED" ] || die "local-only credentials cannot move to a peer"
@@ -593,9 +593,13 @@ cmd_move() {
     return 0
   fi
   zone="$(printf '%s' "$head" | "$KEYS_JQ" -r '.zone')"
+  moved="$(printf '%s' "$head" | credential_policy move "$actor" "$target_assignment" \
+    "$(printf '%s' "$head" | "$KEYS_JQ" -r '.assignmentEpoch')")" \
+    || die "exclusive assignment changed while planning the handoff"
+  epoch="$(printf '%s' "$moved" | "$KEYS_JQ" -r '.assignmentEpoch')"
   announce "Move exclusive credential '$cred' to '$target'" \
     "Stop and verify the old staging consumer for zone '$zone'." \
-    "Publish authority assignment epoch $(( $(printf '%s' "$head" | "$KEYS_JQ" -r '.assignmentEpoch') + 1 )) for $target_assignment." \
+    "Publish authority assignment epoch $epoch for $target_assignment." \
     "Sync and materialize on the target before it may start. No force handoff is available."
   proceed_or_die; keys_lock_acquire
   keys_stop_assigned_consumer "$current" "$zone" || die "old assigned yard is unreachable or could not confirm stop; handoff aborted"
@@ -603,7 +607,6 @@ cmd_move() {
   keys_decrypt_payload "$(keys_record_path "$repo" "$cred" "$(printf '%s' "$head" | "$KEYS_JQ" -r '.revisionId')")" "$payload" \
     || die "current credential payload cannot be decrypted"
   parents="[$(printf '%s' "$head" | "$KEYS_JQ" -c '.revisionId')]"; recipients="$(printf '%s' "$head" | "$KEYS_JQ" -c '.recipientActors')"
-  epoch=$(( $(printf '%s' "$head" | "$KEYS_JQ" -r '.assignmentEpoch') + 1 ))
   keys_publish_from_head "$repo" "$cred" "$head" active "$payload" "$parents" "$recipients" "$target_assignment" "$epoch"
   rm -f "$payload"; keys_materialize_credential "$repo" "$cred" 1
   flock -u 9
@@ -619,7 +622,7 @@ cmd_move() {
 }
 
 cmd_check_exclusive() { # <zone>, hidden start guard
-  local zone="${1:-}" cred heads head actor yard_id authority assigned state_file peer now last matches
+  local zone="${1:-}" cred heads head actor yard_id authority state_file peer now last matches trusted decision reason
   keys_initialized || return 0
   keys_require_initialized
   actor="$(keys_actor_id)"; yard_id="$(keys_current_yard_id)"; now="$(date +%s)"
@@ -629,14 +632,25 @@ cmd_check_exclusive() { # <zone>, hidden start guard
     [ "$matches" -gt 0 ] || continue
     [ "$(printf '%s' "$heads" | "$KEYS_JQ" 'length')" = 1 ] || die "exclusive credential '$cred' has unresolved heads"
     head="$(printf '%s' "$heads" | "$KEYS_JQ" '.[0]')"
-    assigned="$(printf '%s' "$head" | "$KEYS_JQ" -r '.assignedYard')"; [ "$assigned" = "$yard_id" ] || die "exclusive credential '$cred' is assigned to another yard"
     authority="$(printf '%s' "$head" | "$KEYS_JQ" -r '.authorityHost')"
+    trusted=false; last=0
     if [ "$authority" != "$actor" ]; then
-      peer="$(keys_peer_by_actor "$authority")" || die "exclusive authority for '$cred' is not trusted"
-      peer="$(basename "$peer" .json)"; state_file="$(keys_sync_state_file "$peer")"; [ -r "$state_file" ] || die "no fresh authority sync for '$cred'"
-      last="$("$KEYS_JQ" -r '.lastSuccess // 0' "$state_file")"; [ $((now - last)) -le "${SUBYARD_KEYS_AUTHORITY_MAX_AGE:-3600}" ] \
-        || die "authority grant for '$cred' is stale; sync keys before start"
+      peer="$(keys_peer_by_actor "$authority" || true)"
+      if [ -n "$peer" ]; then
+        trusted=true; peer="$(basename "$peer" .json)"; state_file="$(keys_sync_state_file "$peer")"
+        [ ! -r "$state_file" ] || last="$("$KEYS_JQ" -r '.lastSuccess // 0' "$state_file")"
+      fi
     fi
+    decision="$(keys_exclusive_access_decision "$head" "$actor" "$yard_id" "$trusted" "$last" "$now")" \
+      || die "exclusive credential '$cred' has invalid access metadata"
+    reason="$(printf '%s' "$decision" | "$KEYS_JQ" -r '.reason')"
+    case "$reason" in
+      authority-local|authority-fresh) ;;
+      not-assigned) die "exclusive credential '$cred' is assigned to another yard" ;;
+      authority-untrusted) die "exclusive authority for '$cred' is not trusted" ;;
+      authority-stale) die "authority grant for '$cred' is stale; sync keys before start" ;;
+      *) die "exclusive credential '$cred' has an invalid access decision" ;;
+    esac
   done < <(keys_repo_credentials "$KEYS_SHARED")
 }
 

@@ -123,6 +123,10 @@ else
     || security_fail "Incus project '$INCUS_PROJECT' is not restricted"
   [ "$(incus project get "$INCUS_PROJECT" restricted.containers.privilege 2>/dev/null || true)" = unprivileged ] \
     || security_fail "Incus project '$INCUS_PROJECT' does not require unprivileged containers"
+  want_interception=block
+  [ "${NESTED_E2E_VMS:-0}" = 0 ] || want_interception=allow
+  [ "$(incus project get "$INCUS_PROJECT" restricted.containers.interception 2>/dev/null || true)" = "$want_interception" ] \
+    || security_fail "Incus project '$INCUS_PROJECT' syscall interception policy does not match NESTED_E2E_VMS"
 
   if incus info "$INSTANCE_NAME" --project "$INCUS_PROJECT" >/dev/null 2>&1; then
     [ "$(incus config get "$INSTANCE_NAME" security.privileged --project "$INCUS_PROJECT" 2>/dev/null || true)" != true ] \
@@ -149,6 +153,9 @@ else
       if [ "$type" = unix-char ]; then
         case "$source" in
           /dev/kvm | /dev/fuse | /dev/dri/renderD[0-9]*) ;;
+          /dev/vsock | /dev/vhost-vsock | /dev/net/tun)
+            [ "${NESTED_E2E_VMS:-0}" = 1 ] \
+              || security_fail "nested VM device '$device' is attached while NESTED_E2E_VMS is disabled" ;;
           *) security_fail "unix-char device '$device' is outside the supported device allowlist: ${source:-unset}" ;;
         esac
       fi
@@ -159,6 +166,14 @@ else
         esac
       fi
     done < <(incus config device list "$INSTANCE_NAME" --expanded --project "$INCUS_PROJECT" 2>/dev/null)
+    bpf="$(incus config get "$INSTANCE_NAME" security.syscalls.intercept.bpf --project "$INCUS_PROJECT" 2>/dev/null || true)"
+    bpf_devices="$(incus config get "$INSTANCE_NAME" security.syscalls.intercept.bpf.devices --project "$INCUS_PROJECT" 2>/dev/null || true)"
+    if [ "${NESTED_E2E_VMS:-0}" = 1 ]; then
+      [ "$bpf" = true ] && [ "$bpf_devices" = true ] \
+        || security_fail "nested E2E VMs require both device-cgroup BPF interception flags"
+    elif [ -n "$bpf" ] || [ -n "$bpf_devices" ]; then
+      security_fail "device-cgroup BPF interception is enabled while NESTED_E2E_VMS is disabled"
+    fi
   else
     [ "$require_live" = 0 ] || security_fail "instance '$INSTANCE_NAME' is missing from project '$INCUS_PROJECT'"
     security_warn "instance '$INSTANCE_NAME' is absent; project policy checked only"

@@ -6,9 +6,12 @@ SUBYARD_STAGE_PROJECT_SOURCED=1
 
 stage_project_check() {
   reconcile_incus_reachable && incus project show "$INCUS_PROJECT" >/dev/null 2>&1 || return 1
+  local want_interception=block
+  [ "${NESTED_E2E_VMS:-0}" = 0 ] || want_interception=allow
   [ "$(incus project get "$INCUS_PROJECT" restricted 2>/dev/null || true)" = true ] \
     && [ "$(incus project get "$INCUS_PROJECT" restricted.containers.nesting 2>/dev/null || true)" = allow ] \
     && [ "$(incus project get "$INCUS_PROJECT" restricted.containers.privilege 2>/dev/null || true)" = unprivileged ] \
+    && [ "$(incus project get "$INCUS_PROJECT" restricted.containers.interception 2>/dev/null || true)" = "$want_interception" ] \
     && [ "$(incus project get "$INCUS_PROJECT" restricted.devices.disk 2>/dev/null || true)" = allow ] \
     && [ -z "$(incus project get "$INCUS_PROJECT" restricted.devices.disk.paths 2>/dev/null || true)" ] \
     && [ "$(incus project get "$INCUS_PROJECT" restricted.devices.unix-char 2>/dev/null || true)" = allow ] \

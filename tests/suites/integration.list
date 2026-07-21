@@ -2,6 +2,7 @@
 ccusage-provision.sh
 check-host-storage.sh
 emulator-process-control.sh
+engine-release.sh
 key-tools-install.sh
 opencode-agent-provision.sh
 profile-resource-lifecycle.sh

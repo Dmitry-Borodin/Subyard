@@ -35,18 +35,9 @@ func (orchestrator *Orchestrator) Plan(ctx context.Context, yard domain.Context,
 		policy.RemotePolicy != domain.RemoteDenied {
 		return domain.OperationPlan{}, errors.New("invalid remote command policy")
 	}
-	target := domain.TargetLocalOwner
-	if yard.YardType == domain.YardRemote {
-		switch policy.RemotePolicy {
-		case domain.RemoteOnController:
-			target = domain.TargetLocalController
-		case domain.RemoteOnOwner:
-			target = domain.TargetRemoteOwner
-		case domain.RemoteDenied:
-			return domain.OperationPlan{}, fmt.Errorf("command %q is host-local and denied for a remote yard", policy.Name)
-		default:
-			return domain.OperationPlan{}, errors.New("invalid remote command policy")
-		}
+	target, err := Route(yard, policy.RemotePolicy)
+	if err != nil {
+		return domain.OperationPlan{}, fmt.Errorf("command %q: %w", policy.Name, err)
 	}
 	confirmed := policy.Effect == domain.CommandRead || assumeYes
 	if !confirmed {
@@ -66,6 +57,25 @@ func (orchestrator *Orchestrator) Plan(ctx context.Context, yard domain.Context,
 		OperationID: orchestrator.IDs.NewID(), Command: policy.Name, Target: target,
 		Confirmed: confirmed, CreatedAt: orchestrator.Clock.Now().UTC(),
 	}, nil
+}
+
+func Route(yard domain.Context, policy domain.RemotePolicy) (domain.ExecutionTarget, error) {
+	if policy != domain.RemoteOnController && policy != domain.RemoteOnOwner && policy != domain.RemoteDenied {
+		return "", errors.New("invalid remote command policy")
+	}
+	if yard.YardType != domain.YardRemote {
+		return domain.TargetLocalOwner, nil
+	}
+	switch policy {
+	case domain.RemoteOnController:
+		return domain.TargetLocalController, nil
+	case domain.RemoteOnOwner:
+		return domain.TargetRemoteOwner, nil
+	case domain.RemoteDenied:
+		return "", errors.New("host-local command is denied for a remote yard")
+	default:
+		return "", errors.New("invalid remote command policy")
+	}
 }
 
 func (orchestrator *Orchestrator) RunAdapter(

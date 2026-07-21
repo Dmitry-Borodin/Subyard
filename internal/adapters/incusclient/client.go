@@ -1,11 +1,13 @@
 package incusclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"sync/atomic"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
@@ -32,10 +34,8 @@ func (client *Client) Server(ctx context.Context) (ports.ServerInfo, error) {
 	if err != nil {
 		return ports.ServerInfo{}, normalizeError("get server", err)
 	}
-	for _, extension := range client.requiredExtensions {
-		if !slices.Contains(info.APIExtensions, extension) {
-			return ports.ServerInfo{}, fmt.Errorf("Incus API extension %q is required", extension)
-		}
+	if err := client.validateExtensions(info); err != nil {
+		return ports.ServerInfo{}, err
 	}
 	return ports.ServerInfo{
 		Environment:   info.Environment.Server,
@@ -47,6 +47,9 @@ func (client *Client) Server(ctx context.Context) (ports.ServerInfo, error) {
 func (client *Client) Instance(ctx context.Context, project, name string) (ports.InstanceInfo, error) {
 	server, err := client.connect(ctx, true)
 	if err != nil {
+		return ports.InstanceInfo{}, err
+	}
+	if err := client.validateServerExtensions(server); err != nil {
 		return ports.InstanceInfo{}, err
 	}
 	instance, _, err := server.UseProject(project).GetInstance(name)
@@ -67,11 +70,73 @@ func (client *Client) Instance(ctx context.Context, project, name string) (ports
 	}, nil
 }
 
+func (client *Client) Exec(
+	ctx context.Context,
+	project string,
+	name string,
+	request ports.InstanceExecRequest,
+) (ports.InstanceExecResult, error) {
+	if len(request.Command) == 0 {
+		return ports.InstanceExecResult{}, errors.New("instance exec command is required")
+	}
+	server, err := client.connect(ctx, true)
+	if err != nil {
+		return ports.InstanceExecResult{}, err
+	}
+	if err := client.validateServerExtensions(server); err != nil {
+		return ports.InstanceExecResult{}, err
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	dataDone := make(chan bool)
+	operation, err := server.UseProject(project).ExecInstance(name, api.InstanceExecPost{
+		Command: request.Command, Environment: cloneMap(request.Environment),
+		WaitForWS: true, Interactive: false, User: request.User, Group: request.Group,
+	}, &incus.InstanceExecArgs{
+		Stdin: bytes.NewReader(request.Stdin), Stdout: &stdout, Stderr: &stderr,
+		DataDone: dataDone,
+	})
+	if err != nil {
+		return ports.InstanceExecResult{}, normalizeError("start instance command", err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- operation.Wait() }()
+	select {
+	case <-ctx.Done():
+		_ = operation.Cancel()
+		<-wait
+		return ports.InstanceExecResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()},
+			fmt.Errorf("wait for instance command: %w", context.Cause(ctx))
+	case err := <-wait:
+		<-dataDone
+		exitCode := 0
+		if value, ok := operation.Get().Metadata["return"].(float64); ok {
+			exitCode = int(value)
+		}
+		result := ports.InstanceExecResult{
+			Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: exitCode,
+		}
+		if err != nil {
+			return result, normalizeError("wait for instance command", err)
+		}
+		if exitCode != 0 {
+			return result, fmt.Errorf("instance command exited with status %d", exitCode)
+		}
+		return result, nil
+	}
+}
+
 func (client *Client) Events(ctx context.Context, types []string) (<-chan domain.OperationEvent, <-chan error) {
 	events := make(chan domain.OperationEvent, 64)
 	errorsOut := make(chan error, 1)
 	server, err := client.connect(ctx, false)
 	if err != nil {
+		close(events)
+		errorsOut <- err
+		close(errorsOut)
+		return events, errorsOut
+	}
+	if err := client.validateServerExtensions(server); err != nil {
 		close(events)
 		errorsOut <- err
 		close(errorsOut)
@@ -85,11 +150,29 @@ func (client *Client) Events(ctx context.Context, types []string) (<-chan domain
 		return events, errorsOut
 	}
 	var sequence atomic.Uint64
+	var callbacksMu sync.Mutex
+	callbacksDone := sync.NewCond(&callbacksMu)
+	callbacksActive := 0
+	callbacksStopping := false
 	_, err = listener.AddHandler(types, func(event api.Event) {
+		callbacksMu.Lock()
+		if callbacksStopping {
+			callbacksMu.Unlock()
+			return
+		}
+		callbacksActive++
+		callbacksMu.Unlock()
+		defer func() {
+			callbacksMu.Lock()
+			callbacksActive--
+			callbacksDone.Broadcast()
+			callbacksMu.Unlock()
+		}()
 		data := make(map[string]any)
 		if len(event.Metadata) != 0 {
 			_ = json.Unmarshal(event.Metadata, &data)
 		}
+		data = publicEventData(data)
 		current := sequence.Add(1)
 		operationID, _ := data["id"].(string)
 		normalized := domain.OperationEvent{
@@ -118,8 +201,6 @@ func (client *Client) Events(ctx context.Context, types []string) (<-chan domain
 		return events, errorsOut
 	}
 	go func() {
-		defer close(events)
-		defer close(errorsOut)
 		stopped := make(chan struct{})
 		go func() {
 			select {
@@ -130,14 +211,32 @@ func (client *Client) Events(ctx context.Context, types []string) (<-chan domain
 		}()
 		err := listener.Wait()
 		close(stopped)
+		callbacksMu.Lock()
+		callbacksStopping = true
+		for callbacksActive != 0 {
+			callbacksDone.Wait()
+		}
+		callbacksMu.Unlock()
 		if err != nil && ctx.Err() == nil {
 			select {
 			case errorsOut <- normalizeError("event stream", err):
 			default:
 			}
 		}
+		close(events)
+		close(errorsOut)
 	}()
 	return events, errorsOut
+}
+
+func publicEventData(source map[string]any) map[string]any {
+	result := make(map[string]any)
+	for _, key := range []string{"id", "action", "source", "project", "location", "requestor"} {
+		if value, ok := source[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func (client *Client) connect(ctx context.Context, skipEvents bool) (incus.InstanceServer, error) {
@@ -150,6 +249,26 @@ func (client *Client) connect(ctx context.Context, skipEvents bool) (incus.Insta
 		return nil, normalizeError("connect to Incus", err)
 	}
 	return server, nil
+}
+
+func (client *Client) validateServerExtensions(server incus.InstanceServer) error {
+	if len(client.requiredExtensions) == 0 {
+		return nil
+	}
+	info, _, err := server.GetServer()
+	if err != nil {
+		return normalizeError("get server extensions", err)
+	}
+	return client.validateExtensions(info)
+}
+
+func (client *Client) validateExtensions(info *api.Server) error {
+	for _, extension := range client.requiredExtensions {
+		if !slices.Contains(info.APIExtensions, extension) {
+			return fmt.Errorf("Incus API extension %q is required", extension)
+		}
+	}
+	return nil
 }
 
 func normalizeError(operation string, err error) error {

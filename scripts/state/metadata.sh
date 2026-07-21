@@ -104,18 +104,7 @@ yard_live_projects_for() {
 # resolve_project_id_soft <arg> — like resolve_project_id but returns 1 instead of dying when
 # nothing matches (so callers can try a yard-side reconcile before giving up).
 resolve_project_id_soft() {
-  local arg="${1:-.}" id nm
-  if [ -e "$arg" ]; then
-    id="$(project_id "$arg" 2>/dev/null || true)"
-    [ -n "$id" ] && state_exists "$id" && { printf '%s\n' "$id"; return 0; }
-  fi
-  state_exists "$arg" && { printf '%s\n' "$arg"; return 0; }
-  while IFS= read -r id; do
-    [ -n "$id" ] || continue
-    nm="$(state_get "$id" name)"
-    [ "${nm,,}" = "${arg,,}" ] && { printf '%s\n' "$id"; return 0; }
-  done < <(state_ids)
-  return 1
+  state_engine resolve-local-soft "${1:-.}"
 }
 
 # maybe_reconcile <arg> — register-on-demand: under an EXPLICIT context, if <arg> is not in

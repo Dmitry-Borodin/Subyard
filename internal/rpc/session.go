@@ -11,12 +11,15 @@ import (
 )
 
 type Call struct {
-	ID     string
-	Method string
-	Params json.RawMessage
+	ID          string
+	OperationID string
+	Method      string
+	Params      json.RawMessage
 }
 
-type Emit func(event string, revision uint64, data any) error
+// Emit publishes one event on the session-wide ordered stream and returns its
+// monotonic revision. Adapter-local revisions remain in typed event data.
+type Emit func(event string, data any) (uint64, error)
 
 type Handler interface {
 	Handle(context.Context, Call, Emit) (any, error)
@@ -29,9 +32,14 @@ func (function HandlerFunc) Handle(ctx context.Context, call Call, emit Emit) (a
 }
 
 type Session struct {
-	Handler      Handler
-	Capabilities []string
-	Buffer       int
+	Handler       Handler
+	Capabilities  []string
+	EngineVersion string
+	Buffer        int
+	// DrainOnEOF treats input EOF as a stdio half-close: already accepted calls
+	// finish and their responses are flushed before output is closed. Socket-like
+	// sessions keep the default false behavior, where EOF cancels active work.
+	DrainOnEOF bool
 }
 
 func (session Session) Serve(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -39,7 +47,23 @@ func (session Session) Serve(ctx context.Context, input io.Reader, output io.Wri
 		return errors.New("RPC handler is required")
 	}
 	ctx, stop := context.WithCancel(ctx)
-	defer stop()
+	var shutdownOnce sync.Once
+	closeStreams := func() {
+		shutdownOnce.Do(func() {
+			if closer, ok := input.(io.Closer); ok {
+				_ = closer.Close()
+			}
+			if closer, ok := output.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		})
+	}
+	stopClosing := context.AfterFunc(ctx, closeStreams)
+	defer func() {
+		stop()
+		_ = stopClosing()
+		closeStreams()
+	}()
 	codec := NewCodec(input, output)
 	buffer := session.Buffer
 	if buffer <= 0 {
@@ -85,7 +109,8 @@ func (session Session) Serve(ctx context.Context, input io.Reader, output io.Wri
 			break
 		}
 		if err := validateRequest(request); err != nil {
-			_ = enqueue(Response{Version: ProtocolVersion, Type: "response", ID: request.ID, Error: asFault(err)})
+			_ = enqueue(Response{Version: ProtocolVersion, Type: "response", ID: request.ID,
+				OperationID: request.OperationID, Error: asFault(err)})
 			continue
 		}
 		if request.Type == "cancel" {
@@ -94,58 +119,78 @@ func (session Session) Serve(ctx context.Context, input io.Reader, output io.Wri
 			operationsMu.Unlock()
 			if cancel == nil {
 				_ = enqueue(Response{Version: ProtocolVersion, Type: "response", ID: request.ID,
-					Error: &Error{Code: "operation_not_found", Message: "operation is not active"}})
+					OperationID: request.OperationID,
+					Error:       &Error{Code: "operation_not_found", Message: "operation is not active"}})
 			} else {
 				cancel(contextCanceled)
 				_ = enqueue(Response{Version: ProtocolVersion, Type: "response", ID: request.ID,
-					Result: map[string]any{"cancelled": request.OperationID}})
+					OperationID: request.OperationID,
+					Result:      map[string]any{"cancelled": request.OperationID}})
 			}
 			continue
 		}
 		if request.Method == "rpc.negotiate" {
 			negotiated.Store(true)
 			_ = enqueue(Response{Version: ProtocolVersion, Type: "response", ID: request.ID, Result: map[string]any{
-				"version": ProtocolVersion, "capabilities": session.Capabilities,
+				"version": ProtocolVersion, "protocolMin": ProtocolVersion, "protocolMax": ProtocolVersion,
+				"engineVersion": session.EngineVersion, "capabilities": session.Capabilities,
 			}})
 			continue
 		}
 		if !negotiated.Load() {
 			_ = enqueue(Response{Version: ProtocolVersion, Type: "response", ID: request.ID,
-				Error: &Error{Code: "negotiation_required", Message: "rpc.negotiate must be called first"}})
+				OperationID: request.OperationID,
+				Error:       &Error{Code: "negotiation_required", Message: "rpc.negotiate must be called first"}})
 			continue
 		}
-		operationContext, cancel := context.WithCancelCause(ctx)
+		operationID := request.OperationID
+		if operationID == "" {
+			operationID = request.ID
+		}
+		operationParent := ctx
+		deadlineCancel := func() {}
+		if request.Deadline != nil {
+			operationParent, deadlineCancel = context.WithDeadline(ctx, *request.Deadline)
+		}
+		operationContext, cancel := context.WithCancelCause(operationParent)
 		operationsMu.Lock()
-		if _, duplicate := operations[request.ID]; duplicate {
+		if _, duplicate := operations[operationID]; duplicate {
 			operationsMu.Unlock()
 			cancel(nil)
+			deadlineCancel()
 			_ = enqueue(Response{Version: ProtocolVersion, Type: "response", ID: request.ID,
-				Error: &Error{Code: "duplicate_operation", Message: "request ID is already active"}})
+				OperationID: operationID,
+				Error:       &Error{Code: "duplicate_operation", Message: "operation ID is already active"}})
 			continue
 		}
-		operations[request.ID] = cancel
+		operations[operationID] = cancel
 		operationsMu.Unlock()
 		workers.Add(1)
-		go func(request Request) {
+		go func(request Request, operationID string) {
 			defer workers.Done()
 			defer func() {
 				operationsMu.Lock()
-				delete(operations, request.ID)
+				delete(operations, operationID)
 				operationsMu.Unlock()
 				cancel(nil)
+				deadlineCancel()
 			}()
-			emit := func(event string, revision uint64, data any) error {
+			emit := func(event string, data any) (uint64, error) {
 				encoded, err := json.Marshal(data)
 				if err != nil {
-					return fmt.Errorf("encode RPC event: %w", err)
+					return 0, fmt.Errorf("encode RPC event: %w", err)
 				}
-				return enqueue(Response{Version: ProtocolVersion, Type: "event", ID: request.ID,
-					Sequence: sequence.Add(1), Revision: revision, Event: event, Data: encoded})
+				revision := sequence.Add(1)
+				err = enqueue(Response{Version: ProtocolVersion, Type: "event", ID: request.ID,
+					OperationID: operationID,
+					Sequence:    revision, Revision: revision, Event: event, Data: encoded})
+				return revision, err
 			}
 			result, err := session.Handler.Handle(operationContext, Call{
-				ID: request.ID, Method: request.Method, Params: request.Params,
+				ID: request.ID, OperationID: operationID, Method: request.Method, Params: request.Params,
 			}, emit)
-			response := Response{Version: ProtocolVersion, Type: "response", ID: request.ID, Result: result}
+			response := Response{Version: ProtocolVersion, Type: "response", ID: request.ID,
+				OperationID: operationID, Result: result}
 			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(context.Cause(operationContext), contextCanceled) {
 					err = contextCanceled
@@ -154,14 +199,18 @@ func (session Session) Serve(ctx context.Context, input io.Reader, output io.Wri
 				response.Error = asFault(err)
 			}
 			_ = enqueue(response)
-		}(request)
+		}(request, operationID)
 	}
-	stop()
-	operationsMu.Lock()
-	for _, cancel := range operations {
-		cancel(context.Canceled)
+	if readErr != nil || !session.DrainOnEOF {
+		stop()
 	}
-	operationsMu.Unlock()
+	if ctx.Err() != nil {
+		operationsMu.Lock()
+		for _, cancel := range operations {
+			cancel(context.Canceled)
+		}
+		operationsMu.Unlock()
+	}
 	workers.Wait()
 	close(outgoing)
 	writerErr := <-writerDone

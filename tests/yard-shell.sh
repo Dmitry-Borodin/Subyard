@@ -12,6 +12,7 @@ export SUBYARD_STATE_DIR="$TMP/config/projects"
 export SUBYARD_NO_AUDIT=1
 export INCUS_LOG="$TMP/incus.log"
 mkdir -p "$SUBYARD_STATE_DIR" "$TMP/bin"
+chmod 0700 "$SUBYARD_STATE_DIR"
 cat >"$TMP/bin/incus" <<'SH'
 #!/usr/bin/env bash
 case "$1" in
@@ -26,6 +27,7 @@ export PATH="$TMP/bin:$PATH"
 cat >"$SUBYARD_STATE_DIR/subyard-id.json" <<'JSON'
 {"schema":1,"projectId":"subyard-id","name":"Subyard","hostPath":"/host/Subyard","yardPath":"/srv/workspaces/subyard-id/src","mode":"sync","sshHost":"yard","target":"yard"}
 JSON
+chmod 0600 "$SUBYARD_STATE_DIR/subyard-id.json"
 
 "$ROOT/bin/yard" shell -- true
 grep -Fq -- '--user 1000 --group 1000 --env HOME=/home/dev --cwd /home/dev -- true' "$INCUS_LOG"

@@ -37,7 +37,9 @@ lock="$(dirname "$OUTPUT")/.build.lock"
   engine_stale || exit 0
   tmp="$(mktemp "$(dirname "$OUTPUT")/.yard.tmp.XXXXXX")"
   trap 'rm -f "$tmp"' EXIT
-  CGO_ENABLED=0 go build -mod=readonly -trimpath \
+  # Build metadata must not depend on the caller's HOME-level git safe.directory list. Tests and
+  # packaged builds deliberately use isolated homes, and the explicit VERSION is authoritative.
+  CGO_ENABLED=0 go build -buildvcs=false -mod=readonly -trimpath \
     -ldflags "-s -w -X github.com/Dmitry-Borodin/Subyard/internal/cli.Version=$VERSION" \
     -o "$tmp" "$REPO/cmd/yard"
   chmod 0755 "$tmp"

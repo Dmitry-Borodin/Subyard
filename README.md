@@ -46,6 +46,7 @@ yard list                          List projects
 yard shell | code [project]        Open a project session
 yard export | remove [project]     Copy out or remove a project
 yard provision [profile]           Apply a project profile
+yard test-vms <command>            Manage two disposable nested test VMs (opt-in)
 yard up | down | info [project]    Manage an L2 project environment
 yard keys <command>                Manage the host-side encrypted credential ledger
 ```
@@ -74,6 +75,10 @@ The yard is an unprivileged container by default. Managed host mounts must stay
 under that yard's `HOST_BASE`, while an explicit `yard bind` grants the selected
 host path to the yard. Host Docker and Incus control sockets are rejected by
 managed configuration. Run `yard security` to audit the effective setup.
+
+A trusted test yard can opt in to two disposable nested VMs without receiving the
+L0 Incus socket. See [Disposable nested test VMs](docs/test-vms.md) for the widened
+device/syscall boundary, lifecycle and cleanup contract.
 
 Subyard protects the host boundary. It does not isolate credentials between
 agents operating inside the same yard.

@@ -69,7 +69,8 @@ assert_contains "$output" 'openclaw'
 assert_contains "$output" '(yard)'
 
 # A later foreign upsert may refresh mode/target, but must not erase a real owner-host source path.
-jq '.hostPath="/owner/Demo"' "$owner_state" > "$owner_state.tmp" && mv "$owner_state.tmp" "$owner_state"
+jq '.hostPath="/owner/Demo"' "$owner_state" > "$owner_state.tmp" \
+  && chmod 600 "$owner_state.tmp" && mv "$owner_state.tmp" "$owner_state"
 "$ROOT/bin/yard" _project-state upsert "$owner_id" Demo git yard
 assert_json "$owner_state" \
   '.hostPath == "/owner/Demo" and .mode == "git" and .target == "yard" and
@@ -78,7 +79,8 @@ assert_json "$owner_state" \
 [ -e "$owner_state" ] || fail 'foreign unregister removed a full owner-local record'
 
 # Synthetic records are removed symmetrically, and validation cannot escape the state directory.
-jq '.hostPath="" | .registrySource="yard"' "$owner_state" > "$owner_state.tmp" && mv "$owner_state.tmp" "$owner_state"
+jq '.hostPath="" | .registrySource="yard"' "$owner_state" > "$owner_state.tmp" \
+  && chmod 600 "$owner_state.tmp" && mv "$owner_state.tmp" "$owner_state"
 "$ROOT/bin/yard" _project-state unregister "$owner_id"
 [ ! -e "$owner_state" ] || fail 'foreign unregister kept its synthetic owner record'
 if "$ROOT/bin/yard" _project-state upsert ../escape Bad sync yard >/dev/null 2>&1; then

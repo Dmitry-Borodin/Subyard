@@ -113,6 +113,17 @@ else
   warn "/dev/kvm missing — needed for VM mode and the Android emulator"
 fi
 
+if [ "${NESTED_E2E_VMS:-0}" = 1 ]; then
+  echo "Nested E2E VM devices:"
+  for node in /dev/kvm /dev/vsock /dev/vhost-vsock /dev/net/tun; do
+    if [ -c "$node" ]; then
+      pass "$node present"
+    else
+      fail "$node missing — NESTED_E2E_VMS=1 cannot work; load kvm/vhost_vsock on L0 or disable the capability"
+    fi
+  done
+fi
+
 echo "Resources:"
 if command -v nproc >/dev/null 2>&1; then
   pass "$(nproc) CPU(s)"

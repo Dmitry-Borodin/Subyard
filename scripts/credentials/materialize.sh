@@ -15,7 +15,7 @@ keys_consumer_path() { # <consumer> <zone>
 }
 keys_materialize_credential() { # <repo> <credential> [automatic:0|1]
   local repo="$1" cred="$2" automatic="${3:-0}" head heads count state recipient actor consumer zone dest payload tmp
-  local exclusive assigned authority peer state_file last now
+  local exclusive authority peer state_file last now trusted decision reason
   heads="$(keys_heads_json "$repo" "$cred")"; count="$(printf '%s' "$heads" | "$KEYS_JQ" 'length')"
   [ "$count" = 1 ] || { [ "$automatic" = 1 ] || warn "$cred has $count heads; resolve before materializing"; return 2; }
   head="$(printf '%s' "$heads" | "$KEYS_JQ" '.[0]')"; state="$(printf '%s' "$head" | "$KEYS_JQ" -r '.state')"
@@ -33,19 +33,25 @@ keys_materialize_credential() { # <repo> <credential> [automatic:0|1]
   [ -n "$recipient" ] || return 0
   exclusive="$(printf '%s' "$head" | "$KEYS_JQ" -r '.exclusive')"
   if [ "$exclusive" = true ]; then
-    assigned="$(printf '%s' "$head" | "$KEYS_JQ" -r '.assignedYard')"
-    if [ "$assigned" != "$(keys_current_yard_id)" ]; then
-      [ ! -e "$dest" ] || rm -f -- "$dest"
-      return 0
-    fi
     authority="$(printf '%s' "$head" | "$KEYS_JQ" -r '.authorityHost')"
+    trusted=false; last=0; now="$(date +%s)"
     if [ "$authority" != "$actor" ]; then
-      peer="$(keys_peer_by_actor "$authority")" || { [ "$automatic" = 1 ] || warn "$cred has no trusted authority"; return 1; }
-      state_file="$(keys_sync_state_file "$(basename "$peer" .json)")"; last=0; now="$(date +%s)"
-      [ -r "$state_file" ] && last="$("$KEYS_JQ" -r '.lastSuccess // 0' "$state_file")"
-      [ "$last" -gt 0 ] && [ $((now - last)) -le "${SUBYARD_KEYS_AUTHORITY_MAX_AGE:-3600}" ] \
-        || { [ "$automatic" = 1 ] || warn "$cred has no fresh authority exchange"; return 1; }
+      peer="$(keys_peer_by_actor "$authority" || true)"
+      if [ -n "$peer" ]; then
+        trusted=true; state_file="$(keys_sync_state_file "$(basename "$peer" .json)")"
+        [ ! -r "$state_file" ] || last="$("$KEYS_JQ" -r '.lastSuccess // 0' "$state_file")"
+      fi
     fi
+    decision="$(keys_exclusive_access_decision "$head" "$actor" "$(keys_current_yard_id)" "$trusted" "$last" "$now")" \
+      || { [ "$automatic" = 1 ] || warn "$cred has invalid exclusive access metadata"; return 1; }
+    reason="$(printf '%s' "$decision" | "$KEYS_JQ" -r '.reason')"
+    case "$reason" in
+      authority-local|authority-fresh) ;;
+      not-assigned) [ ! -e "$dest" ] || rm -f -- "$dest"; return 0 ;;
+      authority-untrusted) [ "$automatic" = 1 ] || warn "$cred has no trusted authority"; return 1 ;;
+      authority-stale) [ "$automatic" = 1 ] || warn "$cred has no fresh authority exchange"; return 1 ;;
+      *) [ "$automatic" = 1 ] || warn "$cred has an invalid exclusive access decision"; return 1 ;;
+    esac
   fi
   payload="$(keys_record_path "$repo" "$cred" "$(printf '%s' "$head" | "$KEYS_JQ" -r '.revisionId')")"
   install -d -m 700 "$(dirname "$dest")"

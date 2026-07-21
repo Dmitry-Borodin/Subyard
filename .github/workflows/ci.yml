@@ -19,10 +19,25 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - name: Install system test tools
-        run: sudo apt-get update -qq && sudo apt-get install -y gcc jq shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc jq openssh-server shellcheck
       - name: ShellCheck
         run: |
           mapfile -t shell_files < <(find scripts config/profiles config/agents tests -type f -name '*.sh' -print | sort)
           shellcheck -x -S warning bin/yard completions/yard.bash "${shell_files[@]}"
       - name: Yard-safe verification gate
         run: ./tests/run.sh
+      - name: Real local crypto and OpenSSH adapter contracts
+        run: |
+          adapter_root="$RUNNER_TEMP/subyard-real-adapters"
+          mkdir -p "$adapter_root/home" "$adapter_root/config" "$adapter_root/data"
+          SUBYARD_OPERATOR_HOME="$adapter_root/home" \
+            SUBYARD_CONFIG_HOME="$adapter_root/config" \
+            SUBYARD_HOME="$adapter_root/data" \
+            SUBYARD_KEYS_TOOLS_DIR="$adapter_root/tools" \
+            ASSUME_YES=1 \
+            bash scripts/install-key-tools.sh --yes
+          SUBYARD_REAL_KEYS_TOOLS_DIR="$adapter_root/tools" \
+            bash tests/real-host/credential-tools.sh
+          bash tests/real-host/ssh-rpc.sh
+          SUBYARD_REAL_KEYS_TOOLS_DIR="$adapter_root/tools" \
+            bash tests/real-host/ssh-credential-peer.sh

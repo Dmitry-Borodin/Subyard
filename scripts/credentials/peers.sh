@@ -6,7 +6,7 @@ SUBYARD_CREDENTIAL_PEERS_SOURCED=1
 
 keys_store_peer() { # name identity-json transport dest remote-yard manual-only
   local name="$1" identity="$2" transport="$3" dest="$4" remote_yard="$5" manual="$6"
-  local file requested_file actor_file='' existing_file='' actor age_recipient signing_public existing existing_transport
+  local file requested_file actor_file='' existing_file='' actor age_recipient signing_public existing existing_json='null' input merged
   actor="$(printf '%s' "$identity" | "$KEYS_JQ" -er --argjson schema "$KEYS_SCHEMA_VERSION" \
     'select(.schemaVersion==$schema and .identityScope=="host") | .actorId')" \
     || die "peer identity has an unsupported schema or scope"
@@ -24,30 +24,20 @@ keys_store_peer() { # name identity-json transport dest remote-yard manual-only
     [ -z "$actor_file" ] || existing_file="$actor_file"
   fi
   if [ -n "$existing_file" ]; then
-    # A reciprocal inbound handshake proves cryptographic trust, but carries no return route.
-    # Never let it erase a local/SSH route (or its operator-selected sync policy) that this side
-    # already knows. Match by actor, not the remote-provided name: the local registry may use a
-    # different alias for the same host. An explicit outbound enrollment owns the local name.
-    existing_transport="$("$KEYS_JQ" -r '.transport // ""' "$existing_file")"
-    if [ "$transport" = inbound ]; then
-      file="$existing_file"
-      name="$("$KEYS_JQ" -r '.name' "$existing_file")"
-      case "$existing_transport" in
-        local|ssh)
-          transport="$existing_transport"
-          dest="$("$KEYS_JQ" -r '.dest // ""' "$existing_file")"
-          remote_yard="$("$KEYS_JQ" -r '.remoteYard // ""' "$existing_file")"
-          manual="$("$KEYS_JQ" -r '.manualOnly // false' "$existing_file")" ;;
-      esac
-    fi
+    existing_json="$("$KEYS_JQ" -c . "$existing_file")"
   fi
-  "$KEYS_JQ" -n -S --argjson schemaVersion "$KEYS_SCHEMA_VERSION" --arg name "$name" \
+  input="$("$KEYS_JQ" -n --argjson schemaVersion "$KEYS_SCHEMA_VERSION" --arg name "$name" \
     --arg actorId "$actor" --arg ageRecipient "$age_recipient" --arg signingPublic "$signing_public" \
     --arg transport "$transport" --arg dest "$dest" --arg remoteYard "$remote_yard" \
-    --argjson manualOnly "$manual" \
-    '{schemaVersion:$schemaVersion,name:$name,actorId:$actorId,ageRecipient:$ageRecipient,
+    --argjson manualOnly "$manual" --argjson existing "$existing_json" \
+    '{incoming:{schemaVersion:$schemaVersion,name:$name,actorId:$actorId,ageRecipient:$ageRecipient,
       signingPublic:$signingPublic,transport:$transport,dest:$dest,remoteYard:$remoteYard,
-      manualOnly:$manualOnly,trusted:true}' > "$file.tmp"
+      manualOnly:$manualOnly,trusted:true},existing:$existing}')"
+  merged="$(printf '%s' "$input" | credential_policy peer-merge)" \
+    || die "peer '$name' trust metadata was rejected"
+  name="$(printf '%s' "$merged" | "$KEYS_JQ" -r '.name')"
+  file="$(keys_peer_file "$name")"
+  printf '%s\n' "$merged" | "$KEYS_JQ" -S . > "$file.tmp"
   chmod 0600 "$file.tmp"; mv -f "$file.tmp" "$file"
   [ -z "$existing_file" ] || [ "$existing_file" = "$file" ] || rm -f -- "$existing_file"
   keys_allowed_signer_add "$actor" "$signing_public"

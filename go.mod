@@ -4,7 +4,10 @@ go 1.25.6
 
 toolchain go1.26.5
 
-require github.com/lxc/incus/v6 v6.23.0
+require (
+	github.com/gorilla/websocket v1.5.3
+	github.com/lxc/incus/v6 v6.23.0
+)
 
 require (
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6 // indirect
@@ -21,7 +24,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/kr/fs v0.1.0 // indirect

@@ -14,6 +14,7 @@ opencode-agent-defaults.sh
 project-bind-warning.sh
 prompt-contract.sh
 security-lint.sh
+test-vms.sh
 yard-extras-convergence.sh
 yard-status-resources.sh
 yard-usage.sh

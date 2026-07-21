@@ -145,6 +145,16 @@ grep -q "^$actor_two " "$SUBYARD_KEYS_ROOT/one/allowed_signers" \
   || fail 'initiator did not trust the reciprocal signing identity'
 grep -q "^$actor_one " "$SUBYARD_KEYS_ROOT/two/allowed_signers" \
   || fail 'passive side did not trust the initiator signing identity'
+cp "$SUBYARD_KEYS_ROOT/two/identity.json" "$TMP/two-identity.json"
+jq '.signingPublic="ssh-ed25519 AAAAchanged"' "$TMP/two-identity.json" \
+  > "$SUBYARD_KEYS_ROOT/two/identity.json"
+chmod 0600 "$SUBYARD_KEYS_ROOT/two/identity.json"
+if yard_one keys trust @two --yes >"$TMP/identity-rotation.out" 2>&1; then
+  fail 'known peer silently rotated its signing identity'
+fi
+grep -Fq 'trust metadata was rejected' "$TMP/identity-rotation.out" \
+  || fail 'peer identity rotation rejection was unclear'
+install -m 0600 "$TMP/two-identity.json" "$SUBYARD_KEYS_ROOT/two/identity.json"
 yard_one keys status > "$TMP/active-status.out"
 yard_two keys status > "$TMP/passive-status.out"
 grep -Eq 'peer +two +role=active +policy=automatic' "$TMP/active-status.out" \
@@ -295,6 +305,14 @@ yard_one keys move "$exclusive_id" @two --yes >/dev/null
 [ "$(cat "$TMP/consumer-two/config/staging/exclusive.env")" = exclusive-bot-token ] || fail 'handoff did not materialize the target'
 if yard_one keys check-exclusive exclusive >"$TMP/old-grant.out" 2>&1; then fail 'old exclusive owner passed the start guard'; fi
 yard_two keys check-exclusive exclusive >/dev/null || fail 'new exclusive owner failed a fresh authority grant'
+cp "$SUBYARD_KEYS_ROOT/two/state/one.json" "$TMP/two-state-one.json"
+jq '.lastSuccess=1' "$TMP/two-state-one.json" > "$SUBYARD_KEYS_ROOT/two/state/one.json"
+chmod 0600 "$SUBYARD_KEYS_ROOT/two/state/one.json"
+if yard_two keys check-exclusive exclusive >"$TMP/stale-grant.out" 2>&1; then
+  fail 'stale exclusive authority grant passed the start guard'
+fi
+grep -Fq 'authority grant' "$TMP/stale-grant.out" || fail 'stale authority rejection was unclear'
+install -m 0600 "$TMP/two-state-one.json" "$SUBYARD_KEYS_ROOT/two/state/one.json"
 
 # Two yard contexts on one physical host share crypto identity and history but keep distinct
 # assignment/materialization targets; no self-trust record is needed.

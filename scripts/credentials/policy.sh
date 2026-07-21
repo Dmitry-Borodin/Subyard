@@ -12,11 +12,7 @@ keys_rekey_shared_for_actor() { # <actor> add|remove
     [ "$count" = 1 ] || continue
     head="$(printf '%s' "$heads" | "$KEYS_JQ" '.[0]')"
     recipients="$(printf '%s' "$head" | "$KEYS_JQ" -c '.recipientActors')"
-    if [ "$mode" = add ]; then
-      recipients="$(printf '%s' "$recipients" | "$KEYS_JQ" -c --arg actor "$actor" '. + [$actor] | unique | sort')"
-    else
-      recipients="$(printf '%s' "$recipients" | "$KEYS_JQ" -c --arg actor "$actor" 'map(select(. != $actor)) | unique | sort')"
-    fi
+    recipients="$(printf '%s' "$recipients" | credential_policy rekey "$actor" "$mode")" || continue
     [ "$(printf '%s' "$recipients" | "$KEYS_JQ" 'length')" -gt 0 ] || continue
     [ "$recipients" != "$(printf '%s' "$head" | "$KEYS_JQ" -c '.recipientActors | unique | sort')" ] || continue
     parents="[$(printf '%s' "$head" | "$KEYS_JQ" -c '.revisionId')]"

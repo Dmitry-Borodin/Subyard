@@ -14,6 +14,12 @@ setup_test_context() { # <temp-root> [incus-project] [instance-name]
   export FORWARD_SSH_AGENT=0
   export DEV_SUDO=0
   export DEV_UID=1000
+  export NESTED_E2E_VMS=0
+  export E2E_VM_IMAGE=images:debian/13/cloud
+  export E2E_VM_CPU=2
+  export E2E_VM_MEMORY=4GiB
+  export E2E_VM_TTL_MINUTES=240
+  export E2E_VM_BOOT_TIMEOUT=300
   export INCUS_PROJECT="${2:-subyard}"
   export INSTANCE_NAME="${3:-yard}"
   export DEV_USER=dev

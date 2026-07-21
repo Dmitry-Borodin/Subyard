@@ -15,6 +15,7 @@ export MOCK_INCUS_LOG="$TMP/incus.log"
 export MOCK_CODE_LOG="$TMP/code.log"
 unset SUBYARD_YARD SUBYARD_YARD_EXPLICIT
 mkdir -p "$SUBYARD_STATE_DIR" "$TMP/bin"
+chmod 0700 "$SUBYARD_STATE_DIR"
 cat > "$TMP/bin/incus" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -57,6 +58,7 @@ export PATH="$TMP/bin:$PATH"
 cat > "$SUBYARD_STATE_DIR/project-id.json" <<'JSON'
 {"schema":1,"projectId":"project-id","name":"Project","hostPath":"/host/Project","yardPath":"/srv/workspaces/project-id/src","mode":"sync","sshHost":"yard","target":"yard"}
 JSON
+chmod 0600 "$SUBYARD_STATE_DIR/project-id.json"
 
 "$ROOT/bin/yard" code Project > "$TMP/out" 2>&1
 grep -Fq 'sh -s -- sync anthropic.claude-code@2.1.209 openai.chatgpt@26.707.91948 sst-dev.opencode@0.0.13' "$MOCK_INCUS_LOG" \
@@ -73,12 +75,14 @@ grep -Fq 'remote VS Code extensions matched local versions' "$TMP/out" \
 # mistaken for the literal project name `strato/Subyard`.
 unset SUBYARD_STATE_DIR
 mkdir -p "$SUBYARD_CONFIG_HOME/yards/strato/projects"
+chmod 0700 "$SUBYARD_CONFIG_HOME/yards/strato/projects"
 cat > "$SUBYARD_CONFIG_HOME/yards/strato.env" <<'ENV'
 SSH_PORT=2223
 ENV
 cat > "$SUBYARD_CONFIG_HOME/yards/strato/projects/subyard-id.json" <<'JSON'
 {"schema":1,"projectId":"subyard-id","name":"Subyard","hostPath":"/host/Subyard","yardPath":"/srv/workspaces/subyard-id/src","mode":"sync","sshHost":"yard-strato","target":"yard"}
 JSON
+chmod 0600 "$SUBYARD_CONFIG_HOME/yards/strato/projects/subyard-id.json"
 
 "$ROOT/bin/yard" code strato/Subyard > "$TMP/qualified.out" 2>&1
 grep -Fxq -- '--file-uri vscode-remote://ssh-remote+yard-strato/home/dev/.subyard/workspaces/Subyard.code-workspace' "$MOCK_CODE_LOG" \

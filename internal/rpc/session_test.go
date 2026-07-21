@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -13,15 +14,42 @@ import (
 	"time"
 )
 
+func TestDrainOnEOFFlushesAcceptedResponses(t *testing.T) {
+	var input bytes.Buffer
+	requestCodec := NewCodec(strings.NewReader(""), &input)
+	writeRequest(t, requestCodec, Request{
+		Version: 1, Type: "request", ID: "n", Method: "rpc.negotiate",
+	})
+	writeRequest(t, requestCodec, Request{
+		Version: 1, Type: "request", ID: "ping", Method: "system.ping",
+	})
+	var output bytes.Buffer
+	handler := HandlerFunc(func(_ context.Context, call Call, _ Emit) (any, error) {
+		return map[string]any{"method": call.Method}, nil
+	})
+	if err := (Session{Handler: handler, DrainOnEOF: true}).Serve(
+		context.Background(), &input, &output,
+	); err != nil {
+		t.Fatal(err)
+	}
+	responseCodec := NewCodec(&output, io.Discard)
+	if response := readResponse(t, responseCodec); response.ID != "n" || response.Error != nil {
+		t.Fatalf("negotiation response was not flushed: %#v", response)
+	}
+	if response := readResponse(t, responseCodec); response.ID != "ping" || response.Error != nil {
+		t.Fatalf("accepted call response was not flushed: %#v", response)
+	}
+}
+
 func TestSessionNegotiationEventsAndCancellation(t *testing.T) {
 	started := make(chan struct{})
 	handler := HandlerFunc(func(ctx context.Context, call Call, emit Emit) (any, error) {
 		switch call.Method {
 		case "events":
-			if err := emit("started", 7, map[string]any{"ok": true}); err != nil {
+			if _, err := emit("started", map[string]any{"ok": true}); err != nil {
 				return nil, err
 			}
-			if err := emit("finished", 8, nil); err != nil {
+			if _, err := emit("finished", nil); err != nil {
 				return nil, err
 			}
 			return map[string]any{"done": true}, nil
@@ -43,21 +71,28 @@ func TestSessionNegotiationEventsAndCancellation(t *testing.T) {
 	if response := readResponse(t, codec); response.Error != nil {
 		t.Fatal(response.Error)
 	}
-	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "e", Method: "events"})
+	writeRequest(t, codec, Request{
+		Version: 1, Type: "request", ID: "e", OperationID: "operation-events", Method: "events",
+	})
 	first := readResponse(t, codec)
 	second := readResponse(t, codec)
 	third := readResponse(t, codec)
 	if first.Type != "event" || second.Type != "event" || third.Type != "response" ||
-		first.Sequence+1 != second.Sequence {
+		first.Sequence != first.Revision || second.Sequence != second.Revision ||
+		first.Sequence+1 != second.Sequence || first.OperationID != "operation-events" ||
+		second.OperationID != "operation-events" || third.OperationID != "operation-events" {
 		t.Fatalf("unexpected event flow: %#v %#v %#v", first, second, third)
 	}
-	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "slow", Method: "slow"})
+	writeRequest(t, codec, Request{
+		Version: 1, Type: "request", ID: "slow", OperationID: "operation-slow", Method: "slow",
+	})
 	<-started
-	writeRequest(t, codec, Request{Version: 1, Type: "cancel", ID: "cancel", OperationID: "slow"})
+	writeRequest(t, codec, Request{Version: 1, Type: "cancel", ID: "cancel", OperationID: "operation-slow"})
 	responses := []Response{readResponse(t, codec), readResponse(t, codec)}
 	var cancelled bool
 	for _, response := range responses {
-		if response.ID == "slow" && response.Error != nil && response.Error.Code == "cancelled" {
+		if response.ID == "slow" && response.OperationID == "operation-slow" &&
+			response.Error != nil && response.Error.Code == "cancelled" {
 			cancelled = true
 		}
 	}
@@ -99,6 +134,31 @@ func TestSessionRejectsUnnegotiatedVersionAndSecrets(t *testing.T) {
 	_ = client.Close()
 }
 
+func TestSessionAppliesRequestDeadline(t *testing.T) {
+	handler := HandlerFunc(func(ctx context.Context, _ Call, _ Emit) (any, error) {
+		<-ctx.Done()
+		return nil, context.Cause(ctx)
+	})
+	client, server := net.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- (Session{Handler: handler}).Serve(context.Background(), server, server) }()
+	codec := NewCodec(client, client)
+	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "n", Method: "rpc.negotiate"})
+	_ = readResponse(t, codec)
+	expired := time.Unix(1, 0).UTC()
+	writeRequest(t, codec, Request{
+		Version: 1, Type: "request", ID: "expired", Method: "slow", Deadline: &expired,
+	})
+	response := readResponse(t, codec)
+	if response.Error == nil || response.Error.Code != "deadline_exceeded" {
+		t.Fatalf("expired deadline was not enforced: %#v", response)
+	}
+	_ = client.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCodecHandlesPartialIOAndOversize(t *testing.T) {
 	writer := &oneByteWriter{}
 	codec := NewCodec(strings.NewReader(""), writer)
@@ -138,6 +198,114 @@ func TestDisconnectCancelsOperation(t *testing.T) {
 		t.Fatal("disconnect did not cancel operation")
 	}
 	if err := <-done; err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatal(err)
+	}
+}
+
+func TestBackpressureDisconnectsSlowClient(t *testing.T) {
+	handler := HandlerFunc(func(_ context.Context, _ Call, emit Emit) (any, error) {
+		for index := 0; index < 100; index++ {
+			if _, err := emit("progress", map[string]any{"index": index}); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	client, server := net.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- (Session{Handler: handler, Buffer: 1}).Serve(context.Background(), server, server) }()
+	codec := NewCodec(client, client)
+	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "n", Method: "rpc.negotiate"})
+	_ = readResponse(t, codec)
+	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "flood", Method: "events"})
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		_ = client.Close()
+		t.Fatal("slow RPC client blocked session shutdown")
+	}
+	_ = client.Close()
+}
+
+func TestContextCancellationInterruptsBlockedRead(t *testing.T) {
+	client, server := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- (Session{Handler: HandlerFunc(func(context.Context, Call, Emit) (any, error) {
+			return nil, nil
+		})}).Serve(ctx, server, server)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		_ = client.Close()
+		t.Fatal("context cancellation did not interrupt RPC read")
+	}
+	_ = client.Close()
+}
+
+func TestSessionsGiveSecondClientIndependentOrderedStream(t *testing.T) {
+	handler := HandlerFunc(func(_ context.Context, call Call, emit Emit) (any, error) {
+		revision, err := emit("snapshot.ready", map[string]any{"client": call.ID})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"revision": revision}, nil
+	})
+	for _, clientID := range []string{"first", "second"} {
+		client, server := net.Pipe()
+		done := make(chan error, 1)
+		go func() { done <- (Session{Handler: handler}).Serve(context.Background(), server, server) }()
+		codec := NewCodec(client, client)
+		writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "n", Method: "rpc.negotiate"})
+		_ = readResponse(t, codec)
+		writeRequest(t, codec, Request{Version: 1, Type: "request", ID: clientID, Method: "system.snapshot"})
+		event := readResponse(t, codec)
+		response := readResponse(t, codec)
+		if event.Type != "event" || event.Sequence != 1 || event.Revision != 1 ||
+			response.Type != "response" || response.ID != clientID {
+			t.Fatalf("client %s inherited session state: %#v %#v", clientID, event, response)
+		}
+		_ = client.Close()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSnapshotAndFollowingEventsShareMonotonicSessionRevision(t *testing.T) {
+	handler := HandlerFunc(func(_ context.Context, call Call, emit Emit) (any, error) {
+		switch call.Method {
+		case "snapshot":
+			revision, err := emit("snapshot.ready", map[string]any{"complete": true})
+			return map[string]any{"revision": revision}, err
+		case "events":
+			_, err := emit("incus.lifecycle", map[string]any{"action": "started"})
+			return map[string]any{"closed": true}, err
+		default:
+			return nil, &Error{Code: "method_not_found", Message: call.Method}
+		}
+	})
+	client, server := net.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- (Session{Handler: handler}).Serve(context.Background(), server, server) }()
+	codec := NewCodec(client, client)
+	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "n", Method: "rpc.negotiate"})
+	_ = readResponse(t, codec)
+	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "s", Method: "snapshot"})
+	snapshotEvent := readResponse(t, codec)
+	_ = readResponse(t, codec)
+	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "e", Method: "events"})
+	lifecycleEvent := readResponse(t, codec)
+	_ = readResponse(t, codec)
+	if snapshotEvent.Sequence != 1 || snapshotEvent.Revision != 1 || lifecycleEvent.Sequence != 2 ||
+		lifecycleEvent.Revision != 2 {
+		t.Fatalf("snapshot/event revision regressed: snapshot=%#v event=%#v", snapshotEvent, lifecycleEvent)
+	}
+	_ = client.Close()
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 }

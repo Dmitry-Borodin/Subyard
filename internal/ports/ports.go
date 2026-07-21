@@ -29,11 +29,37 @@ type Incus interface {
 	Events(context.Context, []string) (<-chan domain.OperationEvent, <-chan error)
 }
 
+type InstanceExecRequest struct {
+	Command     []string
+	Environment map[string]string
+	Stdin       []byte
+	User        uint32
+	Group       uint32
+}
+
+type InstanceExecResult struct {
+	Stdout   []byte `json:"stdout,omitempty"`
+	Stderr   []byte `json:"stderr,omitempty"`
+	ExitCode int    `json:"exitCode"`
+}
+
+type InstanceExecutor interface {
+	Exec(context.Context, string, string, InstanceExecRequest) (InstanceExecResult, error)
+}
+
 type ProjectStore interface {
 	List(context.Context) ([]domain.ProjectRecord, error)
 	Get(context.Context, string) (domain.ProjectRecord, error)
 	Put(context.Context, domain.ProjectRecord) error
 	Delete(context.Context, string) error
+}
+
+type ProjectObserver interface {
+	Observe(context.Context, domain.Context, []domain.ProjectRecord, bool) (domain.ProjectObservation, error)
+}
+
+type StatusFactsReader interface {
+	ReadStatusFacts(context.Context, domain.Context, bool) (domain.StatusFacts, error)
 }
 
 type FileSystem interface {
@@ -46,6 +72,14 @@ type CredentialStore interface {
 	ListMetadata(context.Context) ([]domain.CredentialMetadata, error)
 	Heads(context.Context, string) ([]domain.CredentialMetadata, error)
 	Publish(context.Context, domain.CredentialMetadata, io.Reader) error
+}
+
+type CredentialMetadataReader interface {
+	ListMetadata(context.Context) ([]domain.CredentialMetadata, error)
+}
+
+type CredentialStatusReader interface {
+	ReadCredentialStatus(context.Context) (domain.CredentialStatus, error)
 }
 
 type CredentialCrypto interface {

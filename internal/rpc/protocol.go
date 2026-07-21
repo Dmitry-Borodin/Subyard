@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 const (
@@ -21,19 +22,21 @@ type Request struct {
 	ID          string          `json:"id"`
 	Method      string          `json:"method,omitempty"`
 	OperationID string          `json:"operationId,omitempty"`
+	Deadline    *time.Time      `json:"deadline,omitempty"`
 	Params      json.RawMessage `json:"params,omitempty"`
 }
 
 type Response struct {
-	Version  int             `json:"version"`
-	Type     string          `json:"type"`
-	ID       string          `json:"id,omitempty"`
-	Sequence uint64          `json:"sequence,omitempty"`
-	Revision uint64          `json:"revision,omitempty"`
-	Event    string          `json:"event,omitempty"`
-	Result   any             `json:"result,omitempty"`
-	Error    *Error          `json:"error,omitempty"`
-	Data     json.RawMessage `json:"data,omitempty"`
+	Version     int             `json:"version"`
+	Type        string          `json:"type"`
+	ID          string          `json:"id,omitempty"`
+	OperationID string          `json:"operationId,omitempty"`
+	Sequence    uint64          `json:"sequence,omitempty"`
+	Revision    uint64          `json:"revision,omitempty"`
+	Event       string          `json:"event,omitempty"`
+	Result      any             `json:"result,omitempty"`
+	Error       *Error          `json:"error,omitempty"`
+	Data        json.RawMessage `json:"data,omitempty"`
 }
 
 type Error struct {
@@ -129,8 +132,11 @@ func validateRequest(request Request) error {
 	if request.Version != ProtocolVersion {
 		return &Error{Code: "incompatible_version", Message: fmt.Sprintf("protocol version %d is not supported", request.Version)}
 	}
-	if request.ID == "" {
-		return &Error{Code: "invalid_request", Message: "request ID is required"}
+	if !validRPCIdentity(request.ID) {
+		return &Error{Code: "invalid_request", Message: "request ID is invalid"}
+	}
+	if request.OperationID != "" && !validRPCIdentity(request.OperationID) {
+		return &Error{Code: "invalid_request", Message: "operation ID is invalid"}
 	}
 	if len(request.Params) != 0 && !json.Valid(request.Params) {
 		return &Error{Code: "invalid_request", Message: "params must be valid JSON"}
@@ -144,6 +150,9 @@ func validateRequest(request Request) error {
 		if request.OperationID == "" {
 			return &Error{Code: "invalid_request", Message: "operation ID is required"}
 		}
+		if request.Deadline != nil {
+			return &Error{Code: "invalid_request", Message: "cancel frame must not carry a deadline"}
+		}
 	default:
 		return &Error{Code: "invalid_request", Message: fmt.Sprintf("unknown frame type %q", request.Type)}
 	}
@@ -151,6 +160,18 @@ func validateRequest(request Request) error {
 		return &Error{Code: "secret_forbidden", Message: "secret-bearing fields are not accepted by RPC"}
 	}
 	return nil
+}
+
+func validRPCIdentity(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x21 || value[index] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func containsSensitiveJSON(raw json.RawMessage) bool {

@@ -16,16 +16,17 @@ const defaultMaximum = int64(1024 * 1024)
 var credentialURL = regexp.MustCompile(`(://[^/:@[:space:]]+:)[^/@[:space:]]+@|(://)[^/:@[:space:]]+@`)
 
 type Invocation struct {
-	Home       string
-	Command    string
-	Arguments  []string
-	WorkingDir string
-	Yard       string
-	Remote     string
-	Side       string
-	Maximum    int64
-	Now        time.Time
-	PID        int
+	Home        string
+	Command     string
+	Arguments   []string
+	WorkingDir  string
+	Yard        string
+	Remote      string
+	OperationID string
+	Side        string
+	Maximum     int64
+	Now         time.Time
+	PID         int
 }
 
 func WriteInvocation(invocation Invocation) error {
@@ -81,6 +82,9 @@ func WriteInvocation(invocation Invocation) error {
 	}
 	if invocation.Remote != "" {
 		fields += " remote=" + cleanField(invocation.Remote)
+	}
+	if invocation.OperationID != "" {
+		fields += " op=" + cleanField(invocation.OperationID)
 	}
 	message := redactArguments(append([]string{invocation.Command}, invocation.Arguments...))
 	_, err = fmt.Fprintf(file, "%s pid=%d cwd=%s where=%s%s -- %s\n",

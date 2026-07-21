@@ -29,18 +29,19 @@ export SUBYARD_SECURITY_SKIP_LIVE=1
 mkdir -p "$SUBYARD_HOME" "$SUBYARD_CONFIG_HOME" "$SUBYARD_CONFIG_DIR"
 printf '1G %s\n' "$(date +%s)" > "$SUBYARD_HOME/space.cache"
 
-output="$("$ROOT/bin/yard" status </dev/null)"
+output="$("$ROOT/scripts/status-probe.sh" running </dev/null)"
 for expected in \
-  'android   emulator' \
-  'openclaw  qa-bot-broker' \
-  'openclaw  staging-gateway'
+  'android/emulator' \
+  'openclaw/qa-bot-broker' \
+  'openclaw/staging-gateway'
 do
-  grep -Fq "$expected" <<<"$output" || {
+  jq -e --arg expected "$expected" \
+    '.shared[] | select((.profile + "/" + .name) == $expected)' <<<"$output" >/dev/null || {
     printf 'missing status row: %s\n\n%s\n' "$expected" "$output" >&2
     exit 1
   }
 done
-grep -Fq 'security static-only' <<<"$output" || {
+jq -e '.security == "static-only"' <<<"$output" >/dev/null || {
   printf 'status did not distinguish static-only security checks:\n\n%s\n' "$output" >&2
   exit 1
 }

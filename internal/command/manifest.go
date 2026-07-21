@@ -195,7 +195,9 @@ func safeToken(value string) bool {
 }
 
 func validHandler(handler string) bool {
-	if handler == "@help" || handler == "@resource" || handler == "@rpc" {
+	if slices.Contains([]string{
+		"@help", "@resource", "@rpc", "@status", "@list", "@state", "@project-state", "@credential-policy", "@migrate",
+	}, handler) {
 		return true
 	}
 	if handler == "" || filepath.IsAbs(handler) || strings.HasPrefix(handler, "-") || strings.Contains(handler, "..") {

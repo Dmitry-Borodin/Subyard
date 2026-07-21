@@ -57,6 +57,14 @@ set_key() {
 set_key restricted true
 set_key restricted.containers.nesting allow
 set_key restricted.containers.privilege unprivileged
+# Device-cgroup BPF interception is required only when this trusted test yard hosts
+# a nested Incus VM lab. Keep the project-level permission explicitly blocked for
+# every normal yard; allowing it broadens the L0/L1 syscall boundary.
+if [ "${NESTED_E2E_VMS:-0}" = 1 ]; then
+  set_key restricted.containers.interception allow
+else
+  set_key restricted.containers.interception block
+fi
 set_key restricted.devices.disk allow
 # No Incus source-path allowlist: a restricted disk path forbids `shift` (idmapped
 # mounts), which the host mounts need. Tooling keeps sources under $RESTRICTED_DISK_PATHS.

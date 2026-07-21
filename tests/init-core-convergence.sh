@@ -22,6 +22,8 @@ MOCK_PROJECT_DEVICES='root eth0'
 MOCK_INSTANCE_DEVICES='srv'
 MOCK_SRV_SOURCE="$SRV_VOLUME"
 MOCK_NESTING=true
+MOCK_INTERCEPTION=block
+MOCK_BPF=''
 MOCK_SSH_LISTEN="tcp:127.0.0.1:$SSH_PORT"
 MOCK_HOST_HAS_KVM=false
 incus() {
@@ -32,6 +34,7 @@ incus() {
         restricted) printf '%s\n' "$MOCK_RESTRICTED" ;;
         restricted.containers.nesting) printf 'allow\n' ;;
         restricted.containers.privilege) printf 'unprivileged\n' ;;
+        restricted.containers.interception) printf '%s\n' "${MOCK_INTERCEPTION:-block}" ;;
         restricted.devices.disk | restricted.devices.unix-char | restricted.devices.proxy) printf 'allow\n' ;;
         restricted.devices.disk.paths) ;;
       esac ;;
@@ -45,6 +48,18 @@ incus() {
           listen) printf '%s\n' "$MOCK_SSH_LISTEN" ;;
           connect) printf 'tcp:127.0.0.1:22\n' ;;
         esac
+      elif [ "${5:-}" = kvm ] || [ "${5:-}" = e2e-vsock ] \
+        || [ "${5:-}" = e2e-vhost-vsock ] || [ "${5:-}" = e2e-tun ]; then
+        case "${5:-}" in
+          kvm) MOCK_CHAR_SOURCE=/dev/kvm ;;
+          e2e-vsock) MOCK_CHAR_SOURCE=/dev/vsock ;;
+          e2e-vhost-vsock) MOCK_CHAR_SOURCE=/dev/vhost-vsock ;;
+          e2e-tun) MOCK_CHAR_SOURCE=/dev/net/tun ;;
+        esac
+        case "${6:-}" in
+          type) printf 'unix-char\n' ;;
+          source | path) printf '%s\n' "$MOCK_CHAR_SOURCE" ;;
+        esac
       else
         case "${6:-}" in
           source) printf '%s\n' "$MOCK_SRV_SOURCE" ;;
@@ -52,7 +67,12 @@ incus() {
           pool) printf '%s\n' "$SRV_POOL" ;;
         esac
       fi ;;
-    'config get yard') printf '%s\n' "$MOCK_NESTING" ;;
+    'config get yard')
+      case "${4:-}" in
+        security.nesting) printf '%s\n' "$MOCK_NESTING" ;;
+        security.syscalls.intercept.bpf | security.syscalls.intercept.bpf.devices)
+          printf '%s\n' "${MOCK_BPF:-}" ;;
+      esac ;;
   esac
 }
 reconcile_host_has_kvm() { "$MOCK_HOST_HAS_KVM"; }
@@ -79,6 +99,28 @@ MOCK_SRV_SOURCE=wrong-volume
 MOCK_SRV_SOURCE="$SRV_VOLUME"
 MOCK_NESTING=false
 ! stage_instance_check || fail "missing container nesting accepted"
+MOCK_NESTING=true
+
+NESTED_E2E_VMS=1
+MOCK_INTERCEPTION=allow
+MOCK_BPF=true
+MOCK_HOST_HAS_KVM=true
+MOCK_INSTANCE_DEVICES='srv kvm e2e-vsock e2e-vhost-vsock e2e-tun'
+stage_project_check || fail "nested VM project policy rejected"
+stage_instance_check || fail "nested VM boundary rejected"
+MOCK_BPF=''
+! stage_instance_check || fail "missing nested VM BPF interception accepted"
+MOCK_BPF=true
+MOCK_INTERCEPTION=block
+! stage_project_check || fail "blocked nested VM interception policy accepted"
+MOCK_INTERCEPTION=allow
+MOCK_INSTANCE_DEVICES='srv kvm e2e-vsock e2e-tun'
+! stage_instance_check || fail "missing vhost-vsock device accepted"
+NESTED_E2E_VMS=0
+MOCK_INTERCEPTION=block
+MOCK_BPF=''
+MOCK_HOST_HAS_KVM=false
+MOCK_INSTANCE_DEVICES=srv
 
 mkdir -p "$HOME/.ssh"
 printf 'Host %s\n    Port %s\n' "$SSH_HOST" "$SSH_PORT" > "$HOME/.ssh/subyard.config"

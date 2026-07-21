@@ -23,13 +23,11 @@ record="$(state_file demo-12345678)"
 [ "$(stat -c %a "$record")" = 600 ] || fail 'state record is not owner-only'
 before="$(sha256sum "$record")"
 
-# A failed encoder may leave neither a partial final record nor a temporary candidate.
-jq() { return 42; }
-if state_write demo-12345678 Changed /bad /bad sync yard; then
-  fail 'failed encoder was reported as a successful write'
+# A rejected candidate may leave neither a partial final record nor a temporary candidate.
+if state_write demo-12345678 Changed /bad /bad invalid yard >/dev/null 2>&1; then
+  fail 'invalid candidate was reported as a successful write'
 fi
-unset -f jq
-[ "$(sha256sum "$record")" = "$before" ] || fail 'failed write replaced the valid record'
+[ "$(sha256sum "$record")" = "$before" ] || fail 'rejected write replaced the valid record'
 if find "$SUBYARD_STATE_DIR" -maxdepth 1 -name '.*.json.tmp.*' -print -quit | grep -q .; then
   fail 'failed write leaked a partial candidate'
 fi
@@ -43,6 +41,7 @@ grep -Fq 'invalid project state' "$TMP/corrupt.out" || fail 'corrupt JSON diagno
 
 cp "$TMP/good.json" "$record"
 jq '.schema=2' "$record" > "$TMP/drift.json"
+chmod 600 "$TMP/drift.json"
 mv "$TMP/drift.json" "$record"
 if (state_get demo-12345678 name) >"$TMP/schema.out" 2>&1; then
   fail 'unknown state schema was accepted'
@@ -51,6 +50,7 @@ grep -Fq 'expected schema 1' "$TMP/schema.out" || fail 'schema drift diagnostic 
 
 cp "$TMP/good.json" "$record"
 jq '.projectId="other-12345678"' "$record" > "$TMP/mismatch.json"
+chmod 600 "$TMP/mismatch.json"
 mv "$TMP/mismatch.json" "$record"
 if (state_get demo-12345678 name) >"$TMP/mismatch.out" 2>&1; then
   fail 'record/filename identity mismatch was accepted'

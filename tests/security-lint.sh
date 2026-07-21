@@ -59,8 +59,14 @@ case "${1:-} ${2:-}" in
     case "${4:-}" in
       restricted) printf 'true\n' ;;
       restricted.containers.privilege) printf 'unprivileged\n' ;;
+      restricted.containers.interception) printf '%s\n' "${MOCK_INTERCEPTION:-block}" ;;
     esac ;;
-  'config get') printf 'false\n' ;;
+  'config get')
+    case "${4:-}" in
+      security.privileged) printf 'false\n' ;;
+      security.syscalls.intercept.bpf | security.syscalls.intercept.bpf.devices)
+        printf '%s\n' "${MOCK_BPF:-}" ;;
+    esac ;;
   'config device')
     case "${3:-}" in
       list) printf '%s\n' "${MOCK_DEVICE_NAME:-fixture}" ;;
@@ -92,5 +98,15 @@ if PATH="$TMP/bin:$PATH" SUBYARD_SECURITY_SKIP_LIVE=0 \
   fail "unsupported unix-char device passed security lint"
 fi
 grep -Fq 'supported device allowlist' "$TMP/char-bad.out" || fail "unix-char failure is unclear"
+
+PATH="$TMP/bin:$PATH" SUBYARD_SECURITY_SKIP_LIVE=0 NESTED_E2E_VMS=1 \
+  MOCK_INTERCEPTION=allow MOCK_BPF=true MOCK_DEVICE_TYPE=unix-char MOCK_DEVICE_SOURCE=/dev/vsock \
+  bash "$ROOT/scripts/security-lint.sh" --quiet --require-live
+if PATH="$TMP/bin:$PATH" SUBYARD_SECURITY_SKIP_LIVE=0 NESTED_E2E_VMS=0 \
+  MOCK_DEVICE_TYPE=unix-char MOCK_DEVICE_SOURCE=/dev/vsock \
+  bash "$ROOT/scripts/security-lint.sh" --quiet --require-live >"$TMP/vsock-disabled.out" 2>&1; then
+  fail "vsock passthrough was accepted while nested VMs were disabled"
+fi
+grep -Fq 'nested VM device' "$TMP/vsock-disabled.out" || fail "disabled vsock failure is unclear"
 
 printf 'ok: security lint rejects unsafe static and expanded live devices\n'

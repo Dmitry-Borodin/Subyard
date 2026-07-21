@@ -54,7 +54,7 @@ func (store *FileStore) List(ctx context.Context) ([]domain.ProjectRecord, error
 		id := strings.TrimSuffix(entry.Name(), ".json")
 		record, err := readRecord(filepath.Join(store.directory, entry.Name()), id)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid project state: %w", err)
 		}
 		records = append(records, record)
 	}
@@ -76,6 +76,9 @@ func (store *FileStore) Get(ctx context.Context, id string) (domain.ProjectRecor
 	record, err := readRecord(store.path(id), id)
 	if errors.Is(err, os.ErrNotExist) {
 		return domain.ProjectRecord{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	if err != nil {
+		return domain.ProjectRecord{}, fmt.Errorf("invalid project state: %w", err)
 	}
 	return record, err
 }
@@ -230,6 +233,21 @@ func readRecord(path, expectedID string) (domain.ProjectRecord, error) {
 		return domain.ProjectRecord{}, fmt.Errorf("invalid project state %s: %w", path, err)
 	}
 	return record, nil
+}
+
+// ValidateFile checks an unpublished candidate using the same compatibility and
+// permission boundary as normal reads. The path must be inside this store.
+func (store *FileStore) ValidateFile(path, expectedID string) error {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(store.directory, absolute)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("project state candidate escapes state directory")
+	}
+	_, err = readRecord(absolute, expectedID)
+	return err
 }
 
 func syncDirectory(path string) error {

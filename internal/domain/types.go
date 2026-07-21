@@ -42,17 +42,22 @@ type Context struct {
 	IncusProject    string       `json:"incusProject"`
 	IncusBridge     string       `json:"incusBridge"`
 	SSHHost         string       `json:"sshHost"`
+	DevUser         string       `json:"devUser"`
 	SSHPort         int          `json:"sshPort"`
 	RemoteDest      string       `json:"remoteDest,omitempty"`
 	RemoteYard      string       `json:"remoteYard,omitempty"`
 	ShiftMode       string       `json:"shiftMode"`
 	ForwardSSHAgent bool         `json:"forwardSshAgent"`
 	DevSudo         bool         `json:"devSudo"`
+	NestedE2EVMs    bool         `json:"nestedE2EVMs"`
 	DevUID          int          `json:"devUid"`
 	Paths           RuntimePaths `json:"paths"`
 }
 
 func NormalizeContext(ctx Context) (Context, error) {
+	if ctx.DevUser == "" {
+		ctx.DevUser = "dev"
+	}
 	clean := func(name, value string) (string, error) {
 		if !filepath.IsAbs(value) {
 			return "", fmt.Errorf("%s must be an absolute path", name)
@@ -96,8 +101,11 @@ func (ctx Context) Validate() error {
 	if ctx.InstanceType != InstanceContainer && ctx.InstanceType != InstanceVM {
 		return fmt.Errorf("instance type must be %q or %q", InstanceContainer, InstanceVM)
 	}
-	if ctx.InstanceName == "" || ctx.IncusProject == "" || ctx.SSHHost == "" {
-		return errors.New("instance name, Incus project and SSH host are required")
+	if ctx.NestedE2EVMs && ctx.InstanceType != InstanceContainer {
+		return errors.New("nested E2E VMs currently require a container yard")
+	}
+	if ctx.InstanceName == "" || ctx.IncusProject == "" || ctx.SSHHost == "" || ctx.DevUser == "" {
+		return errors.New("instance name, Incus project, SSH host and dev user are required")
 	}
 	if ctx.ShiftMode != "shift" && ctx.ShiftMode != "acl" {
 		return errors.New("shift mode must be shift or acl")
@@ -149,7 +157,7 @@ type ProjectRecord struct {
 
 func (record ProjectRecord) Validate(expectedID string) error {
 	if record.Schema != 1 {
-		return fmt.Errorf("unsupported project state schema %d", record.Schema)
+		return fmt.Errorf("unsupported project state schema %d; expected schema 1", record.Schema)
 	}
 	if !SafeID(record.ProjectID) {
 		return fmt.Errorf("invalid project ID %q", record.ProjectID)
@@ -214,12 +222,70 @@ type CredentialMetadata struct {
 	RecipientActors []string  `json:"recipientActors"`
 	Exclusive       bool      `json:"exclusive"`
 	Syncable        bool      `json:"syncable"`
-	AuthorityHost   string    `json:"authorityHost,omitempty"`
-	AssignedYard    string    `json:"assignedYard,omitempty"`
+	AuthorityHost   string    `json:"authorityHost"`
+	AssignedYard    string    `json:"assignedYard"`
 	AssignmentEpoch int64     `json:"assignmentEpoch"`
 	ActorID         string    `json:"actorId"`
 	ActorCounter    int64     `json:"actorCounter"`
 	Timestamp       time.Time `json:"timestamp"`
+}
+
+type CredentialSyncState struct {
+	Peer                string `json:"peer"`
+	LastAttempt         int64  `json:"lastAttempt"`
+	LastSuccess         int64  `json:"lastSuccess"`
+	Error               string `json:"error"`
+	LastHead            string `json:"lastHead"`
+	ConsecutiveFailures int    `json:"consecutiveFailures"`
+	NextRetry           int64  `json:"nextRetry"`
+}
+
+type CredentialPeer struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Name          string `json:"name"`
+	ActorID       string `json:"actorId"`
+	AgeRecipient  string `json:"ageRecipient"`
+	SigningPublic string `json:"signingPublic"`
+	Transport     string `json:"transport"`
+	Dest          string `json:"dest"`
+	RemoteYard    string `json:"remoteYard"`
+	ManualOnly    bool   `json:"manualOnly"`
+	Trusted       bool   `json:"trusted"`
+}
+
+type CredentialSummary struct {
+	CredentialID    string   `json:"credentialId"`
+	Label           string   `json:"label"`
+	Kind            string   `json:"kind"`
+	Zone            string   `json:"zone"`
+	Consumer        string   `json:"consumer"`
+	State           string   `json:"state"`
+	Heads           []string `json:"heads"`
+	NeedsMerge      bool     `json:"needsMerge"`
+	Conflict        bool     `json:"conflict"`
+	ConflictReason  string   `json:"conflictReason,omitempty"`
+	Exclusive       bool     `json:"exclusive"`
+	AuthorityHost   string   `json:"authorityHost,omitempty"`
+	AssignedYard    string   `json:"assignedYard,omitempty"`
+	AssignmentEpoch int64    `json:"assignmentEpoch,omitempty"`
+	Syncable        bool     `json:"syncable"`
+}
+
+type CredentialPeerStatus struct {
+	Name                string `json:"name"`
+	Role                string `json:"role"`
+	ManualOnly          bool   `json:"manualOnly"`
+	Trusted             bool   `json:"trusted"`
+	LastAttempt         int64  `json:"lastAttempt"`
+	LastSuccess         int64  `json:"lastSuccess"`
+	ConsecutiveFailures int    `json:"consecutiveFailures"`
+	NextRetry           int64  `json:"nextRetry"`
+	Failed              bool   `json:"failed"`
+}
+
+type CredentialStatus struct {
+	Credentials []CredentialSummary    `json:"credentials"`
+	Peers       []CredentialPeerStatus `json:"peers"`
 }
 
 type OperationEvent struct {

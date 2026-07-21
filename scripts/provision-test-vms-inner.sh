@@ -94,7 +94,7 @@ reconcile_inner_incus() {
 : "${E2E_VM_IMAGE:=images:debian/13/cloud}"
 : "${E2E_VM_CPU:=2}"
 : "${E2E_VM_MEMORY:=4GiB}"
-: "${E2E_VM_DISK:=30GiB}"
+: "${E2E_VM_DISK:=10GiB}"
 : "${E2E_VM_TTL_MINUTES:=240}"
 : "${E2E_VM_BOOT_TIMEOUT:=300}"
 : "${E2E_VM_STATE_DIR:=/var/lib/subyard/test-vms}"
@@ -108,8 +108,8 @@ case "$E2E_VM_DISK" in
   *GiB) e2e_disk_mib=$(( ${E2E_VM_DISK%GiB} * 1024 )) ;;
   *MiB) e2e_disk_mib=${E2E_VM_DISK%MiB} ;;
 esac
-[ "$e2e_disk_mib" -ge 24576 ] \
-  || { printf 'E2E_VM_DISK must be at least 24GiB\n' >&2; exit 1; }
+[ "$e2e_disk_mib" -ge 10240 ] \
+  || { printf 'E2E_VM_DISK must be at least 10GiB\n' >&2; exit 1; }
 case "$E2E_VM_IMAGE" in '' | -* | *[!A-Za-z0-9._:/@+-]*) printf 'invalid E2E_VM_IMAGE\n' >&2; exit 1 ;; esac
 [[ "$E2E_VM_TTL_MINUTES" =~ ^[0-9]+$ ]] \
   && [ "$E2E_VM_TTL_MINUTES" -ge 15 ] && [ "$E2E_VM_TTL_MINUTES" -le 1440 ] \

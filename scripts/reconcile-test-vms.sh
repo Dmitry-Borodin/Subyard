@@ -87,7 +87,7 @@ incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
   --env E2E_VM_IMAGE="${E2E_VM_IMAGE:-images:debian/13/cloud}" \
   --env E2E_VM_CPU="${E2E_VM_CPU:-2}" \
   --env E2E_VM_MEMORY="${E2E_VM_MEMORY:-4GiB}" \
-  --env E2E_VM_DISK="${E2E_VM_DISK:-30GiB}" \
+  --env E2E_VM_DISK="${E2E_VM_DISK:-10GiB}" \
   --env E2E_VM_TTL_MINUTES="${E2E_VM_TTL_MINUTES:-240}" \
   --env E2E_VM_BOOT_TIMEOUT="${E2E_VM_BOOT_TIMEOUT:-300}" \
   -- bash -euo pipefail -s < "$PROVISION_SRC"

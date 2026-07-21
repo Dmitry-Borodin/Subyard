@@ -18,6 +18,31 @@ yard_env_file() {
   return 1
 }
 
+yard_template_file() { # <yard-env-file>; empty when no public template is selected
+  local file="${1:?yard_template_file needs a yard env file}" template path
+  template="$(yard_env_val "$file" YARD_TEMPLATE)"
+  [ -n "$template" ] || return 1
+  yard_valid_name "$template" || die "invalid YARD_TEMPLATE '$template' in $file"
+  path="$SUBYARD_CONFIG_DIR/yards/profiles/$template.env"
+  [ -r "$path" ] || die "unknown YARD_TEMPLATE '$template' in $file"
+  printf '%s\n' "$path"
+}
+
+yard_source_env() { # <yard-name>; public template first, selected machine/operator file second
+  local name="${1:?yard_source_env needs a name}" file template_file=''
+  file="$(yard_env_file "$name")" || return 1
+  template_file="$(yard_template_file "$file" 2>/dev/null || true)"
+  if [ -n "$template_file" ]; then
+    # shellcheck disable=SC1090
+    . "$template_file"
+  elif [ -n "$(yard_env_val "$file" YARD_TEMPLATE)" ]; then
+    # Re-run without stderr suppression to report the invalid/missing template.
+    yard_template_file "$file" >/dev/null
+  fi
+  # shellcheck disable=SC1090
+  . "$file"
+}
+
 yard_registry_names() {
   local dir file
   {
@@ -66,8 +91,7 @@ yard_context_select() {
     || die "invalid yard name '$name' (allowed: lowercase letters, digits, '-', '_'; must start with a letter or digit)"
   file="$(yard_env_file "$name")" \
     || die "unknown yard '$name' — known yards: $(yard_registry_names | tr '\n' ' ')"
-  # shellcheck disable=SC1090
-  . "$file"
+  yard_source_env "$name"
   yard_apply_derivations "$name"
   if [ "${YARD_TYPE:-local}" != remote ] && [ -z "${SSH_PORT:-}" ]; then
     die "yard '$name' ($file) sets no SSH_PORT — a local yard needs a unique host loopback port (add e.g. SSH_PORT=2223)"
@@ -87,8 +111,13 @@ state_dir_for_yard() {
 }
 
 yard_env_peek() {
-  local file
+  local file template_file
   file="$(yard_env_file "$1" 2>/dev/null)" || return 0
-  [ -r "$file" ] && yard_env_val "$file" "$2"
+  if grep -Eq "^[[:space:]]*$2=" "$file"; then
+    yard_env_val "$file" "$2"
+    return 0
+  fi
+  template_file="$(yard_template_file "$file" 2>/dev/null || true)"
+  [ -n "$template_file" ] && yard_env_val "$template_file" "$2"
   return 0
 }

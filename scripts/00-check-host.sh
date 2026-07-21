@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 00-check-host.sh — Phase 0: report whether the host can run a yard (exit 0 = ready).
-# Env: STORAGE_PATH (default $SUBYARD_HOME/incus/storage), MIN_DISK_GIB (hard floor, default 20),
+# Env: STORAGE_PATH (default $SUBYARD_HOME/incus/storage), MIN_DISK_GIB (hard floor, default 5),
 #      REC_DISK_GIB (recommended for the heavy 'android' profile, default 50).
 set -euo pipefail
 
@@ -66,7 +66,7 @@ if [ "${YARD_TYPE:-local}" = remote ]; then
   exit 0
 fi
 
-MIN_DISK_GIB="${MIN_DISK_GIB:-20}"   # hard floor: a base yard won't fit below this
+MIN_DISK_GIB="${MIN_DISK_GIB:-5}"    # hard floor for a base yard
 REC_DISK_GIB="${REC_DISK_GIB:-50}"   # recommended: the 'android' profile (SDK/AVD) is heavy
 # Nested Docker (project-env boxes) needs the Incus AppArmor fix for CVE-2025-52881
 # (runc fd-reopen vs the nesting profile); landed in Incus 6.0.6 LTS / 6.19.

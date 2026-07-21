@@ -13,7 +13,7 @@ DEV_USER=$(id -un)
 E2E_VM_IMAGE=images:debian/13/cloud
 E2E_VM_CPU=2
 E2E_VM_MEMORY=1GiB
-E2E_VM_DISK=30GiB
+E2E_VM_DISK=10GiB
 E2E_VM_TTL_MINUTES=15
 E2E_VM_BOOT_TIMEOUT=30
 E2E_VM_STATE_DIR=$TMP/state
@@ -55,6 +55,7 @@ tighten_project() { printf 'tighten\n' >> "$events"; }
 start_vm() { printf 'start:%s\n' "$1" >> "$events"; }
 wait_agent() { printf 'agent:%s\n' "$1" >> "$events"; }
 record_host_key() { printf 'hostkey:%s\n' "$1" >> "$events"; }
+ensure_peer_trust() { printf 'peer-trust\n' >> "$events"; }
 ssh_smoke() { printf 'ssh:%s\n' "$1" >> "$events"; }
 cleanup_managed() { printf 'cleanup\n' >> "$events"; }
 
@@ -63,6 +64,7 @@ cmd_up >/dev/null
 [ "$(grep -c '^start:e2e-vm-' "$events")" -eq 2 ] || fail "up did not start exactly two fixed VM names"
 grep -Fxq 'ssh:e2e-vm-1' "$events" || fail "VM 1 SSH smoke was skipped"
 grep -Fxq 'ssh:e2e-vm-2' "$events" || fail "VM 2 SSH smoke was skipped"
+grep -Fxq 'peer-trust' "$events" || fail "mutual VM trust reconciliation was skipped"
 ! grep -Fxq cleanup "$events" || fail "successful up invoked failure cleanup"
 
 : > "$events"
@@ -227,6 +229,27 @@ printf '%s\n' "$cloud_fixture" | grep -Fxq 'ssh_pwauth: false' \
 ) >/dev/null || fail "key-only guest account reconciliation failed"
 grep -Fxq "exec e2e-vm-1 --project $PROJECT -- usermod --password x dev" "$TMP/guest-ready-calls" \
   || fail "existing VM user was not unlocked for public-key login"
+
+# Cross-owner checks use VM-local synthetic keys. The trusted inner control plane exchanges only
+# public client and host keys, then proves both directions without TOFU or a shared private key.
+(
+  unset -f ensure_peer_trust
+  . "$ROOT/scripts/test-vms-inner.sh"
+  vm_ip() { case "$1" in e2e-vm-1) printf '10.42.0.11\n' ;; *) printf '10.42.0.12\n' ;; esac; }
+  ensure_guest_peer_key() { case "$1" in e2e-vm-1) printf 'ssh-ed25519 AAAA1111\n' ;; *) printf 'ssh-ed25519 AAAA2222\n' ;; esac; }
+  guest_host_public_key() { case "$1" in e2e-vm-1) printf 'ssh-ed25519 BBBB1111\n' ;; *) printf 'ssh-ed25519 BBBB2222\n' ;; esac; }
+  install_guest_peer_trust() { printf 'install:%s:%s:%s:%s\n' "$@" >> "$TMP/peer-events"; }
+  peer_ssh_smoke() { printf 'smoke:%s:%s\n' "$@" >> "$TMP/peer-events"; }
+  ensure_peer_trust
+) >/dev/null || fail "mutual VM trust reconciliation failed"
+grep -Fxq 'install:e2e-vm-1:10.42.0.12:ssh-ed25519 AAAA2222:ssh-ed25519 BBBB2222' \
+  "$TMP/peer-events" || fail "VM1 did not trust VM2 public client and host keys"
+grep -Fxq 'install:e2e-vm-2:10.42.0.11:ssh-ed25519 AAAA1111:ssh-ed25519 BBBB1111' \
+  "$TMP/peer-events" || fail "VM2 did not trust VM1 public client and host keys"
+grep -Fxq 'smoke:e2e-vm-1:10.42.0.12' "$TMP/peer-events" \
+  || fail "VM1-to-VM2 SSH smoke was skipped"
+grep -Fxq 'smoke:e2e-vm-2:10.42.0.11' "$TMP/peer-events" \
+  || fail "VM2-to-VM1 SSH smoke was skipped"
 
 # Operator-owned guarded cleanup first deletes the two known instances, then performs a normal
 # deletion of the empty project. Incus 6.0's `project delete --force` prompts even on closed stdin

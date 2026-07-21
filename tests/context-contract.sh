@@ -35,9 +35,9 @@ INSTANCE_TYPE=vm
 ! context_validate || fail "nested E2E VMs accepted on an unsupported yard type"
 INSTANCE_TYPE=container
 context_validate || fail "valid nested E2E VM context rejected: $CONTEXT_ERROR"
-E2E_VM_DISK=20GiB
+E2E_VM_DISK=9GiB
 ! context_validate || fail "undersized nested E2E VM disk accepted"
-E2E_VM_DISK=30GiB
+E2E_VM_DISK=10GiB
 NESTED_E2E_VMS=0
 path_is_broad_host_root / || fail "root was not classified broad"
 path_is_broad_host_root "$SUBYARD_OPERATOR_HOME" || fail "operator home was not classified broad"

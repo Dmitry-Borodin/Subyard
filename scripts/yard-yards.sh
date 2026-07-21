@@ -35,8 +35,8 @@ subyard_context_load
 
 for a in "$@"; do case "$a" in -y | --yes) ;; -*) die "unknown option '$a'" ;; *) die "yards takes no arguments" ;; esac; done
 
-# Resolve one yard's derived context in a subshell (no incus, never dies): source its env file
-# + name derivations, then the config defaults, and print a tab record. Unset the per-yard keys
+# Resolve one yard's derived context in a subshell (no incus, never dies): source its optional
+# public template and env file + name derivations, then the config defaults, and print a tab record. Unset the per-yard keys
 # first so an inherited context (this process may run under -Y) can't leak into another yard's row.
 yard_record() {
   local name="$1"
@@ -46,10 +46,7 @@ yard_record() {
           REMOTE_DEST REMOTE_YARD
     local declared_port=''
     if [ "$name" != default ]; then
-      local f
-      f="$(yard_env_file "$name")" || return 0
-      # shellcheck disable=SC1090
-      . "$f"
+      yard_source_env "$name" || return 0
       yard_apply_derivations "$name"
       declared_port="${SSH_PORT:-}"   # a local named yard must declare it; '' => show '-'
     fi

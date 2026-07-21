@@ -13,7 +13,7 @@ PREFIX="${E2E_VM_PREFIX:-e2e-vm}"
 IMAGE="${E2E_VM_IMAGE:-images:debian/13/cloud}"
 CPU="${E2E_VM_CPU:-2}"
 MEMORY="${E2E_VM_MEMORY:-4GiB}"
-DISK="${E2E_VM_DISK:-30GiB}"
+DISK="${E2E_VM_DISK:-10GiB}"
 TTL_MINUTES="${E2E_VM_TTL_MINUTES:-240}"
 BOOT_TIMEOUT="${E2E_VM_BOOT_TIMEOUT:-300}"
 DEV_USER="${DEV_USER:-dev}"
@@ -90,7 +90,7 @@ validate_config() {
     *GiB) disk_mib=$(( ${DISK%GiB} * 1024 )) ;;
     *MiB) disk_mib=${DISK%MiB} ;;
   esac
-  [ "$disk_mib" -ge 24576 ] || die "E2E_VM_DISK must be at least 24GiB"
+  [ "$disk_mib" -ge 10240 ] || die "E2E_VM_DISK must be at least 10GiB"
   case "$IMAGE" in '' | -* | *[!A-Za-z0-9._:/@+-]*) die "unsafe E2E_VM_IMAGE '$IMAGE'" ;; esac
   [[ "$TTL_MINUTES" =~ ^[0-9]+$ ]] && [ "$TTL_MINUTES" -ge 15 ] && [ "$TTL_MINUTES" -le 1440 ] \
     || die "E2E_VM_TTL_MINUTES must be from 15 to 1440"
@@ -327,6 +327,86 @@ ssh_smoke() {
   ok "$vm SSH and passwordless sudo verified"
 }
 
+ensure_guest_peer_key() {
+  local vm="$1"
+  inner_incus exec "$vm" --project "$PROJECT" -- sh -eu -c '
+    install -d -m 0700 -o dev -g dev /home/dev/.ssh
+    if [ ! -s /home/dev/.ssh/id_ed25519 ] || [ ! -s /home/dev/.ssh/id_ed25519.pub ]; then
+      rm -f /home/dev/.ssh/id_ed25519 /home/dev/.ssh/id_ed25519.pub
+      runuser -u dev -- ssh-keygen -q -t ed25519 -N "" -C subyard-e2e-peer \
+        -f /home/dev/.ssh/id_ed25519
+    fi
+    awk '\''$1 == "ssh-ed25519" && NF >= 2 { print $1 " " $2; exit }'\'' \
+      /home/dev/.ssh/id_ed25519.pub
+  '
+}
+
+guest_host_public_key() {
+  local vm="$1"
+  inner_incus exec "$vm" --project "$PROJECT" -- \
+    awk '$1 == "ssh-ed25519" && NF >= 2 { print $1 " " $2; exit }' \
+      /etc/ssh/ssh_host_ed25519_key.pub
+}
+
+validate_public_key() {
+  local label="$1" key="$2"
+  [[ "$key" =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/=]+$ ]] \
+    || die "$label did not expose one valid Ed25519 public key"
+}
+
+install_guest_peer_trust() {
+  local target="$1" peer_ip="$2" peer_public_key="$3" peer_host_key="$4"
+  inner_incus exec "$target" --project "$PROJECT" \
+    --env PEER_IP="$peer_ip" \
+    --env PEER_PUBLIC_KEY="$peer_public_key" \
+    --env PEER_HOST_KEY="$peer_host_key" \
+    -- sh -eu -c '
+      home=/home/dev
+      ssh_dir="$home/.ssh"
+      authorized="$ssh_dir/authorized_keys"
+      known="$ssh_dir/known_hosts"
+      temp="$(mktemp "$ssh_dir/.known-hosts.XXXXXX")"
+      install -d -m 0700 -o dev -g dev "$ssh_dir"
+      touch "$authorized" "$known"
+      grep -qxF "$PEER_PUBLIC_KEY" "$authorized" \
+        || printf "%s\n" "$PEER_PUBLIC_KEY" >> "$authorized"
+      awk -v ip="$PEER_IP" '\''$1 != ip { print }'\'' "$known" > "$temp"
+      printf "%s %s\n" "$PEER_IP" "$PEER_HOST_KEY" >> "$temp"
+      chmod 0600 "$authorized" "$temp"
+      chown dev:dev "$authorized" "$temp"
+      mv -f "$temp" "$known"
+    '
+}
+
+peer_ssh_smoke() {
+  local source="$1" peer_ip="$2"
+  inner_incus exec "$source" --project "$PROJECT" -- runuser -u dev -- \
+    ssh -n -i /home/dev/.ssh/id_ed25519 \
+      -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      -o UserKnownHostsFile=/home/dev/.ssh/known_hosts -o ConnectTimeout=8 \
+      "dev@$peer_ip" -- sudo -n true
+}
+
+ensure_peer_trust() {
+  local vm1="$PREFIX-1" vm2="$PREFIX-2" ip1 ip2 key1 key2 host1 host2
+  ip1="$(vm_ip "$vm1")" || return
+  ip2="$(vm_ip "$vm2")" || return
+  key1="$(ensure_guest_peer_key "$vm1")" || return
+  key2="$(ensure_guest_peer_key "$vm2")" || return
+  host1="$(guest_host_public_key "$vm1")" || return
+  host2="$(guest_host_public_key "$vm2")" || return
+  validate_public_key "$vm1 peer identity" "$key1"
+  validate_public_key "$vm2 peer identity" "$key2"
+  validate_public_key "$vm1 host identity" "$host1"
+  validate_public_key "$vm2 host identity" "$host2"
+  install_guest_peer_trust "$vm1" "$ip2" "$key2" "$host2" || return
+  install_guest_peer_trust "$vm2" "$ip1" "$key1" "$host1" || return
+  info "verifying mutual VM SSH trust"
+  peer_ssh_smoke "$vm1" "$ip2" || return
+  peer_ssh_smoke "$vm2" "$ip1" || return
+  ok "both VMs trust each other's synthetic identity and pinned host key"
+}
+
 cleanup_managed() {
   local quiet="${1:-0}" vm name names extra=0
   if project_exists; then
@@ -421,6 +501,7 @@ cmd_up() {
     record_host_key "$vm" || return
   done
   chmod 0644 "$KNOWN_HOSTS"
+  ensure_peer_trust || return
   for vm in "$PREFIX-1" "$PREFIX-2"; do ssh_smoke "$vm" || return; done
   UP_FAILED=0
   trap - EXIT

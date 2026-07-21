@@ -20,21 +20,19 @@ enters the yard and runs the same worker there; it does not route the VM network
 
 ## Enable the `e2e-yard` trusted yard
 
-`e2e-yard` is an ordinary named yard reserved for this acceptance lane. The name is public and
-stable; it derives the L0 instance `yard-e2e-yard`, Incus project `subyard-e2e-yard` and SSH alias
-`yard-e2e-yard`. It must still have a registry file because every named yard needs a unique host SSH
-port. Copy the public [E2E yard template](../config/yards/e2e-yard.env.example) to either
-`private/yards/e2e-yard.env` or `~/.config/subyard/yards/e2e-yard.env`, then change `SSH_PORT` if
-port 2223 is already assigned on the host. For example, a machine-local registry entry can be
-created with:
+The VM settings are a public but dormant yard profile. They are never loaded for the default yard or
+merely because the repository was checked out. Register `e2e-yard` on an explicitly selected
+operator machine by creating `private/yards/e2e-yard.env` or
+`~/.config/subyard/yards/e2e-yard.env` with:
 
 ```sh
-install -d -m 0700 ~/.config/subyard/yards
-install -m 0600 config/yards/e2e-yard.env.example ~/.config/subyard/yards/e2e-yard.env
+YARD_TEMPLATE=e2e-vms
+SSH_PORT=2223
 ```
 
-The checked-in template is dormant: `config/yards/` is documentation, not a yard registry. The
-explicit copy is the trust decision that opts this named yard into the wider nested-VM boundary.
+The public profile supplies only generic VM settings. The registry file supplies the machine-local
+activation and unique port without duplicating those settings. Selecting this yard and confirming
+`yard -Y e2e-yard init` opts that machine into the wider nested-VM boundary.
 
 The outer `e2e-yard` deliberately remains a container. `NESTED_E2E_VMS=1` provisions the inner
 Incus daemon there; that daemon creates the fixed virtual machines `e2e-vm-1` and `e2e-vm-2` with
@@ -93,11 +91,28 @@ requires the synthetic account not to be shadow-locked before OpenSSH accepts it
 worker uses an intentionally invalid password-hash marker for that purpose and verifies that SSH
 password authentication remains disabled. No host or production credential is copied.
 
+For cross-owner checks, each VM generates its own lab-only Ed25519 identity. The trusted inner
+Incus control plane exchanges only their public client keys and reads each VM's public SSH host key
+directly from the guest. Both directions are then pinned and smoke-tested. Private peer keys never
+leave the VM that created them, and no operator key is copied into either VM.
+
 Candidate delivery must not assume that a cloud image enables the SFTP subsystem. The agent runner
 uses an SSH byte stream with an explicit checksum rather than ordinary SFTP-mode `scp`.
 
+Agents run arbitrary checks from the current dirty public worktree with:
+
+```sh
+scripts/agent-e2e.sh -- COMMAND [ARG...]
+scripts/agent-e2e.sh --vm 1 -- COMMAND [ARG...]
+```
+
+The script requires an already allocated lab, copies the same worktree to the selected VM or both,
+sets `SUBYARD_E2E_VM` to `1` or `2`, streams command output, and removes its run-specific guest
+directories even when a check fails. It never invokes allocation lifecycle commands.
+
 `up` creates a restricted inner project with a hard limit of two VMs and aggregate CPU/RAM limits.
-Each VM receives a 30 GiB root disk by default so it can pass Subyard's 20 GiB free-space preflight.
+Each VM receives a 10 GiB root disk by default. A clean Debian guest leaves about 9 GiB available,
+above Subyard's 5 GiB base-yard preflight floor.
 Both instances and the project carry a Subyard ownership marker. A failed `up` writes bounded
 diagnostics to the lab state directory and leaves the partial allocation in place for inspection;
 only the operator's `down` or the TTL cleaner removes it. `down` refuses cleanup if the project

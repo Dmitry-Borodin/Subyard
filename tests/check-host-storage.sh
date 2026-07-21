@@ -7,6 +7,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
+grep -Fq 'MIN_DISK_GIB="${MIN_DISK_GIB:-5}"' "$ROOT/scripts/00-check-host.sh" \
+  || fail "default base-yard storage floor is not 5 GiB"
+
 # shellcheck source=tests/helpers/test-context.sh
 . "$ROOT/tests/helpers/test-context.sh"
 setup_test_context "$TMP"

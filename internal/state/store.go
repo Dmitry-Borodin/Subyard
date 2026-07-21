@@ -31,6 +31,46 @@ func NewFileStore(directory string) (*FileStore, error) {
 
 func (store *FileStore) Directory() string { return store.directory }
 
+// RepairLegacyPermissions tightens valid records created by the original Bash
+// store, whose shell redirection inherited 0666 & umask (commonly 0664). It
+// never relaxes permissions and validates the record through an O_NOFOLLOW file
+// descriptor before changing that same descriptor to mode 0600.
+func (store *FileStore) RepairLegacyPermissions(ctx context.Context) (bool, error) {
+	if _, err := os.Lstat(store.directory); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	lock, err := store.lock(ctx, true)
+	if err != nil {
+		return false, err
+	}
+	defer unlock(lock)
+
+	entries, err := os.ReadDir(store.directory)
+	if err != nil {
+		return false, fmt.Errorf("read state directory: %w", err)
+	}
+	changed := false
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		repaired, err := repairLegacyRecord(filepath.Join(store.directory, entry.Name()), id)
+		if err != nil {
+			return false, fmt.Errorf("repair legacy project state: %w", err)
+		}
+		changed = changed || repaired
+	}
+	if changed {
+		if err := syncDirectory(store.directory); err != nil {
+			return false, err
+		}
+	}
+	return changed, nil
+}
+
 func (store *FileStore) List(ctx context.Context) ([]domain.ProjectRecord, error) {
 	lock, err := store.lock(ctx, false)
 	if err != nil {
@@ -220,7 +260,60 @@ func readRecord(path, expectedID string) (domain.ProjectRecord, error) {
 		return domain.ProjectRecord{}, err
 	}
 	defer file.Close()
-	decoder := json.NewDecoder(io.LimitReader(file, 1024*1024))
+	return decodeRecord(file, path, expectedID)
+}
+
+func repairLegacyRecord(path, expectedID string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, fmt.Errorf("project state is not a regular file: %s", path)
+	}
+	permissions := info.Mode().Perm()
+	if permissions&0o077 == 0 {
+		return false, nil
+	}
+	// The legacy shell redirection started from 0666. Require owner read/write,
+	// reject executable/special modes, and only remove group/other read/write.
+	if permissions&0o600 != 0o600 || permissions&^0o666 != 0 ||
+		info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+		return false, fmt.Errorf("project state permissions are too broad: %o", permissions)
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return false, fmt.Errorf("project state changed while opening: %s", path)
+	}
+	stat, ok := openedInfo.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		return false, fmt.Errorf("project state is not owned by the operator: %s", path)
+	}
+	if openedInfo.Size() > 1024*1024 {
+		return false, fmt.Errorf("project state exceeds size limit: %s", path)
+	}
+	if _, err := decodeRecord(file, path, expectedID); err != nil {
+		return false, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return false, fmt.Errorf("protect legacy project state: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return false, fmt.Errorf("sync legacy project state: %w", err)
+	}
+	return true, nil
+}
+
+func decodeRecord(reader io.Reader, path, expectedID string) (domain.ProjectRecord, error) {
+	decoder := json.NewDecoder(io.LimitReader(reader, 1024*1024))
 	var record domain.ProjectRecord
 	if err := decoder.Decode(&record); err != nil {
 		return domain.ProjectRecord{}, fmt.Errorf("decode project state %s: %w", path, err)

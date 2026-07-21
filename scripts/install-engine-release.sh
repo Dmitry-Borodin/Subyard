@@ -55,8 +55,8 @@ trap 'rm -f "$candidate" ${backup:+"$backup"}' EXIT
 install -m 0755 "$ARTIFACT" "$candidate"
 SUBYARD_REPOSITORY_ROOT="$REPO" "$candidate" --version >/dev/null \
   || { printf 'install-engine-release: candidate self-check failed\n' >&2; exit 1; }
-SUBYARD_REPOSITORY_ROOT="$REPO" "$candidate" _migrate check >/dev/null \
-  || { printf 'install-engine-release: state compatibility check failed\n' >&2; exit 1; }
+SUBYARD_REPOSITORY_ROOT="$REPO" "$candidate" _migrate apply >/dev/null \
+  || { printf 'install-engine-release: state migration failed\n' >&2; exit 1; }
 if [ -e "$TARGET" ]; then
   [ -f "$TARGET" ] && [ ! -L "$TARGET" ] \
     || { printf 'install-engine-release: current target is not a regular file\n' >&2; exit 1; }

@@ -44,7 +44,8 @@ The host-free `tests/engine-release.sh` already proves artifact checksums, upgra
 stdio half-close and supported/unsupported protocol negotiation. On the real lane, install its two
 versioned artifacts on a dedicated owner, connect from a second controller over SSH stdio, upgrade
 the owner while the controller stays on the previous version, and then run
-`scripts/install-engine-release.sh --rollback`. Verify the migration check before every switch.
+`scripts/install-engine-release.sh --rollback`. The upgrade path runs `_migrate apply` before its
+switch; rollback runs a compatibility check against the retained engine before its switch.
 
 Use two synthetic credential peers to exercise pinned SOPS/age tooling and the real SSH path:
 reciprocal trust, a shared record, an exclusive assignment move, sync, materialization and revoke.

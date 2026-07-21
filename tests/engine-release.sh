@@ -6,6 +6,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 release="$TMP/release"; target="$TMP/install/yard-engine"
+export SUBYARD_OPERATOR_HOME="$TMP/home"
+export SUBYARD_CONFIG_HOME="$TMP/config"
+export SUBYARD_HOME="$TMP/data"
 
 fail() { printf 'engine release: %s\n' "$*" >&2; exit 1; }
 
@@ -54,8 +57,15 @@ jq -e '.schemaVersion == 1 and .version == "1.0.0-test" and .rpc.min == 1 and .r
 rpc_negotiate "$artifact_one" 1.0.0-test 1 compatible artifact-one-v1
 rpc_negotiate "$artifact_one" 1.0.0-test 2 incompatible artifact-one-v2
 
+legacy_state="$SUBYARD_CONFIG_HOME/projects/legacy-12345678.json"
+install -d -m 0700 "$(dirname "$legacy_state")"
+printf '%s\n' '{"schema":1,"projectId":"legacy-12345678","name":"Legacy","hostPath":"/host/Legacy","yardPath":"/srv/workspaces/legacy-12345678/src","mode":"sync","sshHost":"yard"}' > "$legacy_state"
+chmod 0664 "$legacy_state"
+
 "$ROOT/scripts/install-engine-release.sh" --target "$target" \
   --artifact "$artifact_one" --checksum "$artifact_one.sha256" >/dev/null
+[ "$(stat -c '%a' "$legacy_state")" = 600 ] \
+  || { printf 'release install did not migrate legacy project permissions\n' >&2; exit 1; }
 [ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.0.0-test' ] \
   || { printf 'first release version mismatch\n' >&2; exit 1; }
 

@@ -20,13 +20,32 @@ type Report struct {
 	Changed                bool `json:"changed"`
 }
 
-// Check validates every existing store before an engine replacement. Schema 1
-// is already canonical, so apply currently performs the same fail-closed check
-// and reports Changed=false. Future migrations extend this explicit registry.
+// Check validates every existing store before an engine replacement without
+// changing it.
 func Check(
 	ctx context.Context,
 	projectDirectories []string,
 	credentials ports.CredentialMetadataReader,
+) (Report, error) {
+	return run(ctx, projectDirectories, credentials, false)
+}
+
+// Apply performs registered, backwards-compatible repairs before validating
+// every store. It currently tightens project records created by the legacy
+// shell writer to mode 0600; schema and payload compatibility remain fail-closed.
+func Apply(
+	ctx context.Context,
+	projectDirectories []string,
+	credentials ports.CredentialMetadataReader,
+) (Report, error) {
+	return run(ctx, projectDirectories, credentials, true)
+}
+
+func run(
+	ctx context.Context,
+	projectDirectories []string,
+	credentials ports.CredentialMetadataReader,
+	apply bool,
 ) (Report, error) {
 	report := Report{SchemaVersion: 1, ProjectStateSchema: 1, CredentialSchema: 1}
 	directories := uniquePaths(projectDirectories)
@@ -44,6 +63,13 @@ func Check(
 		store, err := state.NewFileStore(directory)
 		if err != nil {
 			return Report{}, err
+		}
+		if apply {
+			changed, err := store.RepairLegacyPermissions(ctx)
+			if err != nil {
+				return Report{}, err
+			}
+			report.Changed = report.Changed || changed
 		}
 		if _, err := store.List(ctx); err != nil {
 			return Report{}, err

@@ -40,7 +40,8 @@ manifest under `.build/release/`. A downloaded artifact is installed atomically 
 retained as `yard-engine.previous`. `scripts/install-engine-release.sh --rollback` swaps the two
 verified executables without a download. State schema compatibility remains fail-closed in the Go
 readers, so an unsupported project or credential schema blocks an upgrade/snapshot instead of being
-silently rewritten.
+silently rewritten. Upgrade apply only tightens valid legacy project-state permissions to `0600`;
+payload and schema changes still require an explicit registered migration.
 
 `./tests/run.sh` is the single unprivileged gate. It runs formatting, vet, race-enabled Go tests, a
 short parser fuzz smoke, the static binary build, and all Bash unit/contract/integration tests. It

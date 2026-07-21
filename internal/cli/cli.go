@@ -251,6 +251,17 @@ func (cli *CLI) projectObserver() ports.ProjectObserver {
 	return projectruntime.Runtime{Incus: incusPort, Executor: executor}
 }
 
+func openProjectStore(ctx context.Context, directory string) (*state.FileStore, error) {
+	store, err := state.NewFileStore(directory)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := store.RepairLegacyPermissions(ctx); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
 func (cli *CLI) statusPorts() (ports.Incus, ports.InstanceExecutor) {
 	incusPort := cli.options.Incus
 	executor := cli.options.Executor
@@ -335,7 +346,7 @@ func (cli *CLI) runStatus(ctx context.Context, loaded config.Loaded, arguments [
 }
 
 func (cli *CLI) printYardStatus(ctx context.Context, loaded config.Loaded) int {
-	store, err := state.NewFileStore(loaded.Context.Paths.StateDir)
+	store, err := openProjectStore(ctx, loaded.Context.Paths.StateDir)
 	if err != nil {
 		cli.errorf("open project state: %v", err)
 		return 1
@@ -552,7 +563,7 @@ func (cli *CLI) runProjectList(
 }
 
 func (cli *CLI) printSingleProjectList(ctx context.Context, yard domain.Context, live bool) int {
-	store, err := state.NewFileStore(yard.Paths.StateDir)
+	store, err := openProjectStore(ctx, yard.Paths.StateDir)
 	if err != nil {
 		cli.errorf("open project state: %v", err)
 		return 1
@@ -617,7 +628,7 @@ func (cli *CLI) printAllProjectLists(
 			cli.errorf("load yard %q: %v", name, err)
 			return 1
 		}
-		store, err := state.NewFileStore(yard.Paths.StateDir)
+		store, err := openProjectStore(ctx, yard.Paths.StateDir)
 		if err != nil {
 			cli.errorf("open project state for %q: %v", name, err)
 			return 1
@@ -699,7 +710,7 @@ func (cli *CLI) runProjectState(
 	arguments []string,
 	ownerEndpoint bool,
 ) int {
-	store, err := state.NewFileStore(yard.Paths.StateDir)
+	store, err := openProjectStore(ctx, yard.Paths.StateDir)
 	if err != nil {
 		cli.errorf("open project state: %v", err)
 		return 1
@@ -1129,7 +1140,13 @@ func (cli *CLI) runMigration(ctx context.Context, arguments []string) int {
 	if keysRoot == "" {
 		keysRoot = filepath.Join(configHome, "keys")
 	}
-	report, err := migration.Check(ctx, projectDirectories, credentialmeta.Reader{Root: keysRoot})
+	var report migration.Report
+	var err error
+	if arguments[0] == "apply" {
+		report, err = migration.Apply(ctx, projectDirectories, credentialmeta.Reader{Root: keysRoot})
+	} else {
+		report, err = migration.Check(ctx, projectDirectories, credentialmeta.Reader{Root: keysRoot})
+	}
 	if err != nil {
 		cli.errorf("state migration %s: %v", arguments[0], err)
 		return 1
@@ -1193,7 +1210,7 @@ func (cli *CLI) projectStores(ctx context.Context, yard domain.Context) (map[str
 		if err != nil {
 			return nil, err
 		}
-		store, err := state.NewFileStore(contextForYard.Paths.StateDir)
+		store, err := openProjectStore(ctx, contextForYard.Paths.StateDir)
 		if err != nil {
 			return nil, err
 		}
@@ -1804,7 +1821,7 @@ func (handler *rpcHandler) commands() []map[string]any {
 }
 
 func (handler *rpcHandler) projects(ctx context.Context, live bool) (rpcProjectList, error) {
-	store, err := state.NewFileStore(handler.loaded.Context.Paths.StateDir)
+	store, err := openProjectStore(ctx, handler.loaded.Context.Paths.StateDir)
 	if err != nil {
 		return rpcProjectList{}, err
 	}
@@ -1817,7 +1834,7 @@ func (handler *rpcHandler) projects(ctx context.Context, live bool) (rpcProjectL
 }
 
 func (handler *rpcHandler) status(ctx context.Context) (domain.YardStatus, error) {
-	store, err := state.NewFileStore(handler.loaded.Context.Paths.StateDir)
+	store, err := openProjectStore(ctx, handler.loaded.Context.Paths.StateDir)
 	if err != nil {
 		return domain.YardStatus{}, err
 	}

@@ -95,6 +95,81 @@ func TestFileStoreRejectsBroadPermissionsAndOversizedState(t *testing.T) {
 	}
 }
 
+func TestFileStoreRepairsValidatedLegacyPermissions(t *testing.T) {
+	store := newTestStore(t)
+	record := fixtureRecord("legacy")
+	if err := store.Put(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Directory(), "legacy.json")
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.RepairLegacyPermissions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("legacy state permissions were not repaired")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("legacy state mode = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := store.Get(context.Background(), record.ProjectID); err != nil {
+		t.Fatal(err)
+	}
+	changed, err = store.RepairLegacyPermissions(context.Background())
+	if err != nil || changed {
+		t.Fatalf("canonical state repair = %t, %v", changed, err)
+	}
+}
+
+func TestFileStoreDoesNotRepairInvalidBroadState(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Directory(), "invalid.json")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RepairLegacyPermissions(context.Background()); err == nil {
+		t.Fatal("invalid broad state was repaired")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o664 {
+		t.Fatalf("invalid state mode changed to %o", info.Mode().Perm())
+	}
+}
+
+func TestFileStoreDoesNotRepairAnomalousLegacyMode(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Put(context.Background(), fixtureRecord("executable")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Directory(), "executable.json")
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RepairLegacyPermissions(context.Background()); err == nil {
+		t.Fatal("executable state mode was repaired")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("anomalous state mode changed to %o", info.Mode().Perm())
+	}
+}
+
 func TestFileStoreDeleteIsIdempotent(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.Put(context.Background(), fixtureRecord("gone")); err != nil {

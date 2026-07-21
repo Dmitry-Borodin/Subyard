@@ -122,7 +122,10 @@ owner-only JSON file per project ID. Schema 1 requires typed identity, name,
 host/yard paths, mode, and SSH host; target/profile and yard-origin markers are optional compatible
 fields. Reads reject corrupt JSON, filename/identity mismatch, invalid targets, and unknown schema
 versions. Writes use a mode-0600 candidate in the same directory, validate it, then atomically
-rename it over the prior record.
+rename it over the prior record. When a store is opened, valid owner-owned schema-1 records whose
+mode matches the original Bash writer's `0666 & umask` output are tightened in place to `0600`
+through a no-follow file descriptor; symlinks, malformed records and anomalous modes remain
+fail-closed. The same repair is registered in `_migrate apply` for release upgrades.
 
 The remaining shell modules are intentionally narrow:
 

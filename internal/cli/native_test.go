@@ -244,6 +244,45 @@ func TestNativeLiveListConvergesValidatedMetadata(t *testing.T) {
 	}
 }
 
+func TestNativeListRepairsLegacyProjectPermissions(t *testing.T) {
+	root, environment, stateDirectory := nativeFixture(t)
+	store, err := state.NewFileStore(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(context.Background(), domain.ProjectRecord{
+		Schema: 1, ProjectID: "legacy-12345678", Name: "Legacy", HostPath: "/host/Legacy",
+		YardPath: "/srv/workspaces/legacy-12345678/src", Mode: domain.ProjectSync, SSHHost: "yard",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(stateDirectory, "legacy-12345678.json")
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"list"}, Environment: environment,
+		WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("list failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Legacy") {
+		t.Fatalf("legacy project missing from list:\n%s", stdout.String())
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("legacy state mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
 func nativeFixture(t *testing.T) (string, []string, string) {
 	t.Helper()
 	root := t.TempDir()

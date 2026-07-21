@@ -6,7 +6,6 @@
 
 # Local Go build/install artifacts.
 /.build/
-/bin/yard-engine
 
 # Profile secrets: the .conf contract is committed; a sibling .env may carry keys,
 # so its values stay host-only and never land in git. The .example template IS committed.

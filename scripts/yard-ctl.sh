@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+code#!/usr/bin/env bash
 # yard-ctl.sh — mutating yard lifecycle safety adapter: start | stop.
 #   start   start the yard instance (idempotent)
 #   stop    stop the yard instance (idempotent; --force bypasses the VS Code activity guard)

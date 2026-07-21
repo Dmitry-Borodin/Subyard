@@ -19,8 +19,9 @@ yard's encapsulation.
 
 ## Quick start
 
-Subyard targets a Linux host with Incus. The installer links `yard` and `sy`
-into `~/.local/bin` and enables shell completion.
+Subyard targets a Linux amd64 host with Incus. The repository currently carries a checked-in
+bootstrap engine, so the operator CLI does not require Go or compile source at runtime. The installer
+links `yard` and `sy` into `~/.local/bin` and enables shell completion.
 
 ```bash
 ./scripts/install-cli.sh

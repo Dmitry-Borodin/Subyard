@@ -28,11 +28,12 @@ make build
 ./tests/run.sh
 ```
 
-`make build` writes the ignored `.build/yard` atomically. `bin/yard` is only a source-tree launcher:
-it rebuilds a stale engine when a Go compiler is available. `scripts/install-cli.sh` builds first and
-atomically installs the native artifact as the ignored `bin/yard-engine`, then links
-`~/.local/bin/yard` and `sy` directly to it. Installed/runtime use therefore never downloads a
-compiler or module, and `make clean` cannot remove the installed engine.
+`make build` writes the ignored developer candidate `.build/yard` atomically. The stable `bin/yard`
+launcher always executes the checked-in `bin/yard-engine`; it never compiles source or downloads a
+toolchain at runtime. `scripts/install-cli.sh` links `~/.local/bin/yard` and `sy` to that launcher, so
+an updated checkout remains usable on an operator host without Go. This temporary bootstrap artifact
+supports Linux amd64. Contributors who change production Go source must rebuild it with the pinned
+toolchain; `./tests/run.sh` requires the candidate and tracked artifact to match byte for byte.
 
 `make package VERSION=<version>` writes a versioned Linux binary, detached SHA-256 and compatibility
 manifest under `.build/release/`. A downloaded artifact is installed atomically with
@@ -74,7 +75,7 @@ figures are a regression baseline, not release limits; release evidence should r
 target host.
 
 The switched engine was measured again in the same development class on 2026-07-21: the stripped
-amd64 artifact was 14,307,490 bytes, 20 warm `yard --list` process samples had a 13.3 ms median
+amd64 artifact was about 14.4 MB, 20 warm `yard --list` process samples had a 13.3 ms median
 (7.2–22.5 ms range), and a negotiated idle stdio RPC process used about 11.9 MiB RSS with zero CPU
 ticks over one second. The expected step from the core baseline is explained by the official Incus,
 HTTP and WebSocket client graph now being linked into the sole production binary. RPC remains

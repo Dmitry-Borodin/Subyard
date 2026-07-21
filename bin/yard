@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# Source-tree launcher for the native Go control-plane engine.
+# Stable source-tree launcher for the checked-in native Go control-plane engine.
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
 REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
-ENGINE="$REPO/.build/yard"
+ENGINE="$REPO/bin/yard-engine"
 PROG="${0##*/}"
 
-# The build helper is a no-op while the artifact is current. A packaged install
-# links directly to bin/yard-engine and never downloads a toolchain at runtime.
-"$REPO/scripts/build-engine.sh"
 [ -x "$ENGINE" ] || {
-  printf '%s: native engine is unavailable at %s\n' "$PROG" "$ENGINE" >&2
+  printf '%s: checked-in native engine is unavailable at %s\n' "$PROG" "$ENGINE" >&2
   exit 2
 }
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64) ;;
+  *)
+    printf '%s: the checked-in bootstrap engine supports linux/amd64 only\n' "$PROG" >&2
+    exit 2
+    ;;
+esac
 
 export SUBYARD_REPOSITORY_ROOT="$REPO"
 exec -a "$PROG" "$ENGINE" "$@"

@@ -9,7 +9,8 @@ ports.
 ## Implementation map
 
 ```text
-bin/yard                                source-tree Go-engine launcher only
+bin/yard                                stable launcher for the checked-in bootstrap engine
+bin/yard-engine                         temporary Linux amd64 native bootstrap
 cmd/yard                                native CLI/RPC entrypoint
 internal/
   ├── command, config, domain           manifest and immutable context
@@ -29,9 +30,10 @@ config/profiles/<profile>/
 
 The Go engine owns global yard selection, validated config, operation identity/audit, remote-plane
 selection, project state/resolution, read-only status/inventory, credential DAG decisions, official
-Incus calls and the versioned stdio RPC. `bin/yard` only rebuilds a stale contributor binary; installed
-commands link directly to the native `bin/yard-engine` artifact. The engine does not own command-specific or
-profile-specific system mutations. `scripts/init.sh` remains the structured host-reconciliation adapter:
+Incus calls and the versioned stdio RPC. `bin/yard` always executes the checked-in native
+`bin/yard-engine`; it never compiles source on the operator host. Installed commands link to that stable
+launcher. The engine does not own command-specific or profile-specific system mutations.
+`scripts/init.sh` remains the structured host-reconciliation adapter:
 it composes the ordered stage planner, owns the one top-level confirmation and keeps the separate
 desired-power finalization transaction. Profile process identity and platform facts remain in their
 owning Bash adapter; host-free tests inject facts and fake binaries.

@@ -9,7 +9,7 @@ fixture="$TMP/repository"
 no_go_path="$TMP/no-go-bin"
 
 install -d "$fixture/scripts" "$fixture/cmd/yard" "$fixture/internal/sample" "$fixture/.build" "$no_go_path"
-for command in dirname find grep; do
+for command in bash dirname find grep readlink uname; do
   ln -s "$(command -v "$command")" "$no_go_path/$command"
 done
 install -m 0755 "$ROOT/scripts/build-engine.sh" "$fixture/scripts/build-engine.sh"
@@ -30,4 +30,9 @@ fi
 grep -Fq 'Go is required' "$TMP/stderr" \
   || { printf 'build-engine: missing-Go diagnostic regressed\n' >&2; exit 1; }
 
-printf 'ok: engine freshness ignores test-only Go changes and tracks production sources\n'
+[ -x "$ROOT/bin/yard-engine" ] \
+  || { printf 'build-engine: checked-in bootstrap engine is missing\n' >&2; exit 1; }
+[ "$(PATH="$no_go_path" "$ROOT/bin/yard" --version)" = 'yard 0.1.0-dev' ] \
+  || { printf 'build-engine: checked-in bootstrap did not run without Go\n' >&2; exit 1; }
+
+printf 'ok: engine freshness is source-aware and the checked-in bootstrap runs without Go\n'

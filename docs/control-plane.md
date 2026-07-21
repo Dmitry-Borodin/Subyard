@@ -1,29 +1,37 @@
 # Control-plane architecture
 
-Subyard's production control plane is Bash, with explicit module boundaries that are also the
-compatibility contracts for a future engine implementation. There is one implementation path for
-each operation: registries select a handler, the handler loads one validated context, and side
-effects stay behind stage, transport, state, credential, or profile-resource adapters.
+Subyard's production entrypoint and control-plane foundation are a native Go engine. Bash remains
+the system-adapter and safety layer for host mutations, reconciliation and protected credential
+materialization. There is one implementation path for each migrated operation: the Go registry
+selects an adapter, Go loads and validates the context once, and side effects stay behind explicit
+ports.
 
 ## Implementation map
 
 ```text
-bin/yard
-  ├── config/commands.registry          command/help/completion/remote-plane metadata
-  ├── scripts/lib/                      context, config, registry, UI, cache, host adapters
-  ├── scripts/state/                    project store, resolver, transport, yard metadata
-  ├── scripts/reconcile/
+bin/yard                                source-tree Go-engine launcher only
+cmd/yard                                native CLI/RPC entrypoint
+internal/
+  ├── command, config, domain           manifest and immutable context
+  ├── application, credential           planner/events and metadata policy
+  ├── state, rpc                         atomic state and framed sessions
+  └── adapters/                          Incus, shell and local/SSH transports
+scripts/
+  ├── lib/                              compatibility UI/cache/host adapters
+  ├── state/                            project store, resolver, transport, yard metadata
+  ├── reconcile/
   │     └── stages/                     one check/plan/apply/verify contract per init stage
-  ├── scripts/credentials/              DAG policy and explicit crypto/store/peer adapters
-  └── config/profiles/<profile>/
-        ├── provision.sh                optional in-yard toolchain
-        └── resources/<resource>/       profile-owned lifecycle mechanics
+  └── credentials/                      DAG policy and explicit crypto/store/peer adapters
+config/profiles/<profile>/
+  ├── provision.sh                      optional in-yard toolchain
+  └── resources/<resource>/             profile-owned lifecycle mechanics
 ```
 
-`bin/yard` owns bootstrap, global yard selection, audit, remote-plane selection, and dispatch. It
-does not own command-specific or profile-specific lifecycle logic. `scripts/init.sh` composes the
-ordered stage planner and owns the one top-level confirmation plus the separate desired-power
-finalization transaction.
+The Go engine owns global yard selection, validated config, audit, remote-plane selection, registry
+dispatch and the versioned stdio RPC. `bin/yard` only rebuilds a stale contributor binary; installed
+commands link directly to the native `bin/yard-engine` artifact. The engine does not own command-specific or
+profile-specific system mutations. `scripts/init.sh` composes the ordered stage planner and owns the
+one top-level confirmation plus the separate desired-power finalization transaction.
 
 ## Recorded P0 baseline
 
@@ -52,11 +60,12 @@ acceptance.
 `config/commands.registry` is pipe-delimited:
 
 ```text
-name|aliases|handler|arg0|remote|visibility|section|completion|display|summary|options|verbs
+name|aliases|handler|arg0|remote|effect|visibility|section|completion|display|summary|options|verbs
 ```
 
 - `remote` is `local`, `forward`, or `deny`.
-- `handler` is a script under `scripts/`, or a reserved dispatcher adapter such as `@help`.
+- `effect` is conservatively `read` or `mutate`; a mixed command is `mutate`.
+- `handler` is a script under `scripts/`, or a reserved dispatcher adapter such as `@help`/`@rpc`.
 - `completion` names a provider consumed by both Bash and Zsh completion; `options` and `verbs`
   carry their shared token lists.
 - Public dispatch, aliases, `yard --list`, top-level help, and completion metadata all use this
@@ -65,12 +74,25 @@ name|aliases|handler|arg0|remote|visibility|section|completion|display|summary|o
 Profile resource commands use the separate `.res` interface below because profiles own those
 commands and mechanics.
 
+### RPC
+
+`yard rpc --stdio` is the only machine protocol. Each frame is a four-byte big-endian length
+followed by at most 1 MiB of JSON. A session must call `rpc.negotiate` first; responses and ordered
+events carry protocol version, request/operation ID and typed errors. A `cancel` frame targets an
+active operation ID, and a bounded writer queue closes a client that cannot keep up.
+
+The first switched surface exposes `command.list`, `context.get`, `system.snapshot` and
+`system.ping`. State, Incus and credential calls are added only when their CLI slice switches to the
+same Go implementation; human CLI output is never parsed as a fallback API. Secret-like fields are
+rejected recursively from RPC parameters, and stdout contains frames only.
+
 ### Config and context
 
-Every executable explicitly composes source-only modules and calls `subyard_context_load` once.
-Loading selects the local/named/remote yard, applies generic default config, normalizes paths, and
-validates the complete context before side effects. It then exposes the non-secret normalized values
-through the read-only `context_value` snapshot. A second load is a no-op.
+The Go engine parses assignment-only config without executing shell, selects the local/named/remote
+yard, applies generic defaults, normalizes paths and validates the complete context before dispatch.
+It passes the validated environment to shell adapters with `SUBYARD_CONFIG_LOADED=1`; their existing
+boundary captures the immutable non-secret view without sourcing the files again. Direct execution
+of a system-adapter script retains the compatibility loader for diagnostics.
 
 The validated context contract includes:
 
@@ -152,15 +174,15 @@ probe, and render hints from the descriptor.
 
 ## Test topology
 
-`./tests/run.sh` syntax-checks every nested shell file, validates that each top-level test belongs to
-exactly one suite, then runs:
+`./tests/run.sh` verifies gofmt, vet, race tests, a fuzz smoke and a static build; syntax-checks every
+nested shell file; validates that each top-level test belongs to exactly one suite; then runs:
 
 - `tests/suites/unit.list`: pure and filesystem-local policy;
 - `tests/suites/contract.list`: CLI, context, registry, convergence, and security contracts;
 - `tests/suites/integration.list`: process tests with temporary roots and fake external commands.
 
-CI runs the same suite and recursively ShellChecks all Bash entrypoints, modules, profile handlers,
-and tests. Synthetic credential fixtures contain no real secret.
+CI selects Go from `go.mod`, runs the same suite and recursively ShellChecks all Bash entrypoints,
+modules, profile handlers and tests. Synthetic credential fixtures contain no real secret.
 
 ## Real-host acceptance lane
 

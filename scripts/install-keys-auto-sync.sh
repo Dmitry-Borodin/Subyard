@@ -29,8 +29,12 @@ SERVICE="$UNIT_DIR/subyard-keys-sync.service"
 TIMER="$UNIT_DIR/subyard-keys-sync.timer"
 SERVICE_TEMPLATE="$REPO/config/systemd/subyard-keys-sync.service.in"
 TIMER_TEMPLATE="$REPO/config/systemd/subyard-keys-sync.timer.in"
-YARD_BIN="$(readlink -f "$REPO/bin/yard")"
 SKIP_ENABLE="${SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE:-0}"
+YARD_BIN="$(readlink -f "$REPO/bin/yard-engine")"
+if [ ! -x "$YARD_BIN" ] && [ "$SKIP_ENABLE" = 1 ]; then
+  YARD_BIN="$(readlink -f "$REPO/bin/yard")"
+fi
+[ -x "$YARD_BIN" ] || die "installed yard engine is missing — run: $REPO/scripts/install-cli.sh"
 
 render_service() { sed "s|@YARD_BIN@|$YARD_BIN|g" "$SERVICE_TEMPLATE"; }
 

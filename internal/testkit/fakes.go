@@ -1,0 +1,343 @@
+// Package testkit contains deterministic, side-effect-free implementations of
+// application ports. Production packages must never import it.
+package testkit
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+)
+
+type MemoryState struct {
+	mu      sync.RWMutex
+	records map[string]domain.ProjectRecord
+	Err     error
+}
+
+func NewMemoryState(records ...domain.ProjectRecord) *MemoryState {
+	state := &MemoryState{records: make(map[string]domain.ProjectRecord)}
+	for _, record := range records {
+		state.records[record.ProjectID] = record
+	}
+	return state
+}
+
+func (state *MemoryState) List(context.Context) ([]domain.ProjectRecord, error) {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	if state.Err != nil {
+		return nil, state.Err
+	}
+	result := make([]domain.ProjectRecord, 0, len(state.records))
+	for _, record := range state.records {
+		result = append(result, record)
+	}
+	slices.SortFunc(result, func(left, right domain.ProjectRecord) int {
+		if left.ProjectID < right.ProjectID {
+			return -1
+		}
+		if left.ProjectID > right.ProjectID {
+			return 1
+		}
+		return 0
+	})
+	return result, nil
+}
+
+func (state *MemoryState) Get(_ context.Context, id string) (domain.ProjectRecord, error) {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	if state.Err != nil {
+		return domain.ProjectRecord{}, state.Err
+	}
+	record, ok := state.records[id]
+	if !ok {
+		return domain.ProjectRecord{}, errors.New("not found")
+	}
+	return record, nil
+}
+
+func (state *MemoryState) Put(_ context.Context, record domain.ProjectRecord) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.Err != nil {
+		return state.Err
+	}
+	state.records[record.ProjectID] = record
+	return nil
+}
+
+func (state *MemoryState) Delete(_ context.Context, id string) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.Err != nil {
+		return state.Err
+	}
+	delete(state.records, id)
+	return nil
+}
+
+type ManualClock struct {
+	mu      sync.Mutex
+	now     time.Time
+	waiters []clockWaiter
+}
+
+type clockWaiter struct {
+	at      time.Time
+	channel chan time.Time
+}
+
+func NewManualClock(now time.Time) *ManualClock { return &ManualClock{now: now} }
+
+func (clock *ManualClock) Now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.now
+}
+
+func (clock *ManualClock) After(delay time.Duration) <-chan time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	channel := make(chan time.Time, 1)
+	clock.waiters = append(clock.waiters, clockWaiter{at: clock.now.Add(delay), channel: channel})
+	return channel
+}
+
+func (clock *ManualClock) Advance(delay time.Duration) {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.now = clock.now.Add(delay)
+	pending := clock.waiters[:0]
+	for _, waiter := range clock.waiters {
+		if !waiter.at.After(clock.now) {
+			waiter.channel <- clock.now
+			close(waiter.channel)
+		} else {
+			pending = append(pending, waiter)
+		}
+	}
+	clock.waiters = pending
+}
+
+type IDs struct {
+	mu     sync.Mutex
+	Values []string
+}
+
+func (source *IDs) NewID() string {
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	if len(source.Values) == 0 {
+		panic("testkit IDs exhausted")
+	}
+	value := source.Values[0]
+	source.Values = source.Values[1:]
+	return value
+}
+
+type Prompt struct {
+	Answers []bool
+	Err     error
+	Seen    []string
+}
+
+func (prompt *Prompt) Confirm(_ context.Context, summary string, _ []string) (bool, error) {
+	prompt.Seen = append(prompt.Seen, summary)
+	if prompt.Err != nil {
+		return false, prompt.Err
+	}
+	if len(prompt.Answers) == 0 {
+		return false, errors.New("testkit prompt answers exhausted")
+	}
+	answer := prompt.Answers[0]
+	prompt.Answers = prompt.Answers[1:]
+	return answer, nil
+}
+
+type AdapterStep struct {
+	Result domain.AdapterResult
+	Stderr string
+	Err    error
+}
+
+type ScriptedAdapter struct {
+	mu       sync.Mutex
+	Steps    []AdapterStep
+	Requests []domain.AdapterRequest
+	Secrets  [][]byte
+}
+
+func (adapter *ScriptedAdapter) Run(_ context.Context, request domain.AdapterRequest, secret io.Reader) (domain.AdapterResult, string, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	adapter.Requests = append(adapter.Requests, request)
+	var protected []byte
+	if secret != nil {
+		protected, _ = io.ReadAll(secret)
+	}
+	adapter.Secrets = append(adapter.Secrets, protected)
+	if len(adapter.Steps) == 0 {
+		return domain.AdapterResult{}, "", errors.New("testkit adapter steps exhausted")
+	}
+	step := adapter.Steps[0]
+	adapter.Steps = adapter.Steps[1:]
+	return step.Result, step.Stderr, step.Err
+}
+
+type Incus struct {
+	ServerInfo ports.ServerInfo
+	Instances  map[string]ports.InstanceInfo
+	EventsOut  chan domain.OperationEvent
+	ErrorsOut  chan error
+	Err        error
+}
+
+func (fake *Incus) Server(context.Context) (ports.ServerInfo, error) {
+	return fake.ServerInfo, fake.Err
+}
+
+func (fake *Incus) Instance(_ context.Context, project, name string) (ports.InstanceInfo, error) {
+	if fake.Err != nil {
+		return ports.InstanceInfo{}, fake.Err
+	}
+	instance, ok := fake.Instances[project+"/"+name]
+	if !ok {
+		return ports.InstanceInfo{}, errors.New("instance not found")
+	}
+	return instance, nil
+}
+
+func (fake *Incus) Events(context.Context, []string) (<-chan domain.OperationEvent, <-chan error) {
+	if fake.EventsOut == nil {
+		fake.EventsOut = make(chan domain.OperationEvent)
+		close(fake.EventsOut)
+	}
+	if fake.ErrorsOut == nil {
+		fake.ErrorsOut = make(chan error)
+		close(fake.ErrorsOut)
+	}
+	return fake.EventsOut, fake.ErrorsOut
+}
+
+type Audit struct {
+	mu     sync.Mutex
+	Events []domain.OperationEvent
+	Err    error
+}
+
+func (sink *Audit) WriteAudit(_ context.Context, event domain.OperationEvent) error {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	sink.Events = append(sink.Events, event)
+	return sink.Err
+}
+
+type Events struct{ Audit }
+
+func (sink *Events) Publish(ctx context.Context, event domain.OperationEvent) error {
+	return sink.WriteAudit(ctx, event)
+}
+
+type CredentialStore struct {
+	Metadata []domain.CredentialMetadata
+	Payloads map[string][]byte
+	Err      error
+}
+
+func (store *CredentialStore) ListMetadata(context.Context) ([]domain.CredentialMetadata, error) {
+	return slices.Clone(store.Metadata), store.Err
+}
+
+func (store *CredentialStore) Heads(_ context.Context, credentialID string) ([]domain.CredentialMetadata, error) {
+	if store.Err != nil {
+		return nil, store.Err
+	}
+	parents := make(map[string]struct{})
+	for _, metadata := range store.Metadata {
+		if metadata.CredentialID == credentialID {
+			for _, parent := range metadata.Parents {
+				parents[parent] = struct{}{}
+			}
+		}
+	}
+	result := make([]domain.CredentialMetadata, 0)
+	for _, metadata := range store.Metadata {
+		if metadata.CredentialID == credentialID {
+			if _, child := parents[metadata.RevisionID]; !child {
+				result = append(result, metadata)
+			}
+		}
+	}
+	return result, nil
+}
+
+func (store *CredentialStore) Publish(_ context.Context, metadata domain.CredentialMetadata, reader io.Reader) error {
+	if store.Err != nil {
+		return store.Err
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	store.Metadata = append(store.Metadata, metadata)
+	if store.Payloads == nil {
+		store.Payloads = make(map[string][]byte)
+	}
+	store.Payloads[metadata.RevisionID] = bytes.Clone(payload)
+	return nil
+}
+
+type Materializer struct {
+	Metadata []domain.CredentialMetadata
+	Payloads [][]byte
+	Err      error
+}
+
+func (materializer *Materializer) Materialize(_ context.Context, metadata domain.CredentialMetadata, reader io.Reader) error {
+	if materializer.Err != nil {
+		return materializer.Err
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	materializer.Metadata = append(materializer.Metadata, metadata)
+	materializer.Payloads = append(materializer.Payloads, payload)
+	return nil
+}
+
+type CredentialCrypto struct {
+	Payloads map[string][]byte
+	Err      error
+}
+
+func (crypto *CredentialCrypto) Decrypt(_ context.Context, metadata domain.CredentialMetadata, writer io.Writer) error {
+	if crypto.Err != nil {
+		return crypto.Err
+	}
+	_, err := writer.Write(crypto.Payloads[metadata.RevisionID])
+	return err
+}
+
+func (crypto *CredentialCrypto) Verify(context.Context, domain.CredentialMetadata) error {
+	return crypto.Err
+}
+
+type Peer struct {
+	Received []domain.CredentialMetadata
+	Reply    []domain.CredentialMetadata
+	Err      error
+}
+
+func (peer *Peer) Exchange(_ context.Context, _ string, metadata []domain.CredentialMetadata) ([]domain.CredentialMetadata, error) {
+	peer.Received = slices.Clone(metadata)
+	return slices.Clone(peer.Reply), peer.Err
+}

@@ -10,6 +10,18 @@ mapfile -t syntax_files < <(
 )
 for file in "${syntax_files[@]}"; do bash -n "$file"; done
 
+command -v go >/dev/null 2>&1 \
+  || { printf 'FAIL: Go is required; go.mod selects the supported toolchain\n' >&2; exit 1; }
+
+printf 'SUITE go\n'
+mapfile -t unformatted < <(gofmt -l "$ROOT/cmd" "$ROOT/internal")
+[ "${#unformatted[@]}" -eq 0 ] \
+  || { printf 'FAIL: gofmt required: %s\n' "${unformatted[*]}" >&2; exit 1; }
+(cd "$ROOT" && go vet ./...)
+(cd "$ROOT" && go test -race ./...)
+(cd "$ROOT" && go test ./internal/command -run '^$' -fuzz '^FuzzParseDoesNotPanic$' -fuzztime=1s)
+"$ROOT/scripts/build-engine.sh"
+
 mapfile -t actual_tests < <(find "$ROOT/tests" -maxdepth 1 -type f -name '*.sh' ! -name run.sh -printf '%f\n' | sort)
 mapfile -t declared_tests < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$ROOT"/tests/suites/*.list | sort)
 [ "${#actual_tests[@]}" -eq "${#declared_tests[@]}" ] \

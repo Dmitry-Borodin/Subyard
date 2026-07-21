@@ -1,0 +1,122 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"sync"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+)
+
+var ErrDeclined = errors.New("operation declined")
+
+type Orchestrator struct {
+	Clock    ports.Clock
+	IDs      ports.IDSource
+	Prompt   ports.Prompter
+	Runner   ports.AdapterRunner
+	Audit    ports.AuditSink
+	Events   ports.EventSink
+	mu       sync.Mutex
+	revision uint64
+}
+
+func (orchestrator *Orchestrator) Plan(ctx context.Context, yard domain.Context, policy domain.CommandPolicy, assumeYes bool) (domain.OperationPlan, error) {
+	if orchestrator.Clock == nil || orchestrator.IDs == nil {
+		return domain.OperationPlan{}, errors.New("clock and ID source are required")
+	}
+	if policy.Name == "" || (policy.Effect != domain.CommandRead && policy.Effect != domain.CommandMutate) {
+		return domain.OperationPlan{}, errors.New("invalid command policy")
+	}
+	if policy.RemotePolicy != domain.RemoteOnController && policy.RemotePolicy != domain.RemoteOnOwner &&
+		policy.RemotePolicy != domain.RemoteDenied {
+		return domain.OperationPlan{}, errors.New("invalid remote command policy")
+	}
+	target := domain.TargetLocalOwner
+	if yard.YardType == domain.YardRemote {
+		switch policy.RemotePolicy {
+		case domain.RemoteOnController:
+			target = domain.TargetLocalController
+		case domain.RemoteOnOwner:
+			target = domain.TargetRemoteOwner
+		case domain.RemoteDenied:
+			return domain.OperationPlan{}, fmt.Errorf("command %q is host-local and denied for a remote yard", policy.Name)
+		default:
+			return domain.OperationPlan{}, errors.New("invalid remote command policy")
+		}
+	}
+	confirmed := policy.Effect == domain.CommandRead || assumeYes
+	if !confirmed {
+		if orchestrator.Prompt == nil {
+			return domain.OperationPlan{}, errors.New("mutating operation requires a prompt port")
+		}
+		accepted, err := orchestrator.Prompt.Confirm(ctx, policy.Name, policy.Consequences)
+		if err != nil {
+			return domain.OperationPlan{}, err
+		}
+		if !accepted {
+			return domain.OperationPlan{}, ErrDeclined
+		}
+		confirmed = true
+	}
+	return domain.OperationPlan{
+		OperationID: orchestrator.IDs.NewID(), Command: policy.Name, Target: target,
+		Confirmed: confirmed, CreatedAt: orchestrator.Clock.Now().UTC(),
+	}, nil
+}
+
+func (orchestrator *Orchestrator) RunAdapter(
+	ctx context.Context,
+	plan domain.OperationPlan,
+	request domain.AdapterRequest,
+	protectedInput io.Reader,
+) (domain.AdapterResult, string, error) {
+	if orchestrator.Runner == nil {
+		return domain.AdapterResult{}, "", errors.New("adapter runner is required")
+	}
+	if request.OperationID != plan.OperationID {
+		return domain.AdapterResult{}, "", errors.New("adapter request does not belong to the operation plan")
+	}
+	if err := orchestrator.record(ctx, plan, "operation.started", nil); err != nil {
+		return domain.AdapterResult{}, "", err
+	}
+	result, stderr, runErr := orchestrator.Runner.Run(ctx, request, protectedInput)
+	data := map[string]any{"status": result.Status}
+	if runErr != nil {
+		data["status"] = "error"
+		data["error"] = runErr.Error()
+	}
+	recordErr := orchestrator.record(ctx, plan, "operation.finished", data)
+	if runErr != nil {
+		return result, stderr, runErr
+	}
+	if recordErr != nil {
+		return result, stderr, recordErr
+	}
+	return result, stderr, nil
+}
+
+func (orchestrator *Orchestrator) record(ctx context.Context, plan domain.OperationPlan, kind string, data map[string]any) error {
+	orchestrator.mu.Lock()
+	orchestrator.revision++
+	revision := orchestrator.revision
+	orchestrator.mu.Unlock()
+	event := domain.OperationEvent{
+		OperationID: plan.OperationID, Sequence: revision, Revision: revision,
+		Kind: kind, At: orchestrator.Clock.Now().UTC(), Data: data,
+	}
+	if orchestrator.Audit != nil {
+		if err := orchestrator.Audit.WriteAudit(ctx, event); err != nil {
+			return fmt.Errorf("write operation audit: %w", err)
+		}
+	}
+	if orchestrator.Events != nil {
+		if err := orchestrator.Events.Publish(ctx, event); err != nil {
+			return fmt.Errorf("publish operation event: %w", err)
+		}
+	}
+	return nil
+}

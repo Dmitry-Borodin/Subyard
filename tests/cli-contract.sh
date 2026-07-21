@@ -14,6 +14,7 @@ grep -qx security <<<"$commands" || fail "security command missing"
 "$ROOT/bin/yard" --help >/dev/null
 "$ROOT/bin/yard" --resources >/dev/null
 "$ROOT/bin/yard" --version >/dev/null
+if "$ROOT/bin/yard" rpc >/dev/null 2>&1; then fail "rpc accepted a non-stdio invocation"; fi
 
 set +e
 "$ROOT/bin/yard" definitely-not-a-command >"$CLI_TMP/unknown" 2>&1

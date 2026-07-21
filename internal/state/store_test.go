@@ -1,0 +1,127 @@
+package state
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+)
+
+func TestFileStoreAtomicConcurrentWrites(t *testing.T) {
+	store := newTestStore(t)
+	var wait sync.WaitGroup
+	for index := 0; index < 20; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			record := fixtureRecord("project-a")
+			record.Name = fmt.Sprintf("project-%02d", index)
+			if err := store.Put(context.Background(), record); err != nil {
+				t.Errorf("put: %v", err)
+			}
+		}(index)
+	}
+	wait.Wait()
+	record, err := store.Get(context.Background(), "project-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Name == "" {
+		t.Fatal("published record is incomplete")
+	}
+}
+
+func TestFileStoreRejectsCorruptAndSymlinkedState(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Directory(), "bad.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(context.Background()); err == nil {
+		t.Fatal("corrupt state was accepted")
+	}
+	if err := os.Remove(filepath.Join(store.Directory(), "bad.json")); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "target.json")
+	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(store.Directory(), "linked.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(context.Background()); err == nil {
+		t.Fatal("symlinked state was accepted")
+	}
+}
+
+func TestFileStoreRejectsBroadPermissionsAndOversizedState(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.List(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Directory(), "unsafe.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(context.Background()); err == nil {
+		t.Fatal("broad state-file permissions were accepted")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, 1024*1024+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(context.Background()); err == nil {
+		t.Fatal("oversized state file was accepted")
+	}
+}
+
+func TestFileStoreDeleteIsIdempotent(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Put(context.Background(), fixtureRecord("gone")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(context.Background(), "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(context.Background(), "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(context.Background(), "gone"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
+func newTestStore(t *testing.T) *FileStore {
+	t.Helper()
+	store, err := NewFileStore(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func fixtureRecord(id string) domain.ProjectRecord {
+	return domain.ProjectRecord{
+		Schema:     1,
+		ProjectID:  id,
+		Name:       id,
+		HostPath:   "/workspace/" + id,
+		YardPath:   "/srv/workspaces/" + id + "/src",
+		Mode:       domain.ProjectSync,
+		SSHHost:    "yard",
+		ImportedAt: "2026-07-20T00:00:00Z",
+	}
+}

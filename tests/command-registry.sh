@@ -6,26 +6,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 export SUBYARD_NO_AUDIT=1
 
-# shellcheck source=scripts/lib-command-registry.sh
-. "$ROOT/scripts/lib-command-registry.sh"
-command_registry_validate || fail "command registry validation failed"
-command_registry_lookup check || fail 'fixture command lookup failed'
-if command_registry_lookup definitely-missing; then fail 'unknown command lookup succeeded'; fi
-[ -z "$COMMAND_NAME" ] && [ -z "$COMMAND_HANDLER" ] \
-  || fail 'failed command lookup leaked stale registry metadata'
-
-core="$(command_registry_list)"
+rows="$(sed -n '/^[[:space:]]*#/d; /^[[:space:]]*$/d; p' "$ROOT/config/commands.registry")"
+core="$(awk -F'|' '$7 == "public" { print $1 }' <<<"$rows")"
 listed="$($ROOT/bin/yard --list)"
 resources="$($ROOT/bin/yard --resources | cut -f1)"
 expected="$(printf '%s\n%s\n' "$core" "$resources" | awk 'NF')"
 [ "$listed" = "$expected" ] || fail "yard --list drifted from command/resource registries"
 
 manifest="$($ROOT/bin/yard --command-manifest)"
-[ "$manifest" = "$(command_registry_manifest)" ] || fail "machine manifest drifted from registry"
+[ "$manifest" = "$rows" ] || fail "machine manifest drifted from registry"
 help="$($ROOT/bin/yard --help)"
 
 seen=' '
-while IFS='|' read -r name aliases handler arg0 remote visibility section completion display summary options verbs; do
+while IFS='|' read -r name aliases handler arg0 remote effect visibility section completion display summary options verbs; do
+  : "$arg0" "$remote" "$section" "$summary"
   case "$handler" in @*) ;; *) [ -x "$ROOT/scripts/$handler" ] || fail "$name handler is missing: $handler" ;; esac
   [ "$($ROOT/bin/yard --command-completion "$name")" = "$completion" ] \
     || fail "$name completion provider drifted"
@@ -33,6 +27,9 @@ while IFS='|' read -r name aliases handler arg0 remote visibility section comple
     || fail "$name completion options drifted"
   [ "$($ROOT/bin/yard --command-verbs "$name")" = "$verbs" ] \
     || fail "$name completion verbs drifted"
+  [ "$($ROOT/bin/yard --command-effect "$name")" = "$effect" ] \
+    || fail "$name command effect drifted"
+  case "$effect" in read | mutate) ;; *) fail "$name has invalid command effect: $effect" ;; esac
   case "$seen" in *" $name "*) fail "duplicate command/alias: $name" ;; esac
   seen+="$name "
   if [ -n "$aliases" ]; then
@@ -40,8 +37,6 @@ while IFS='|' read -r name aliases handler arg0 remote visibility section comple
     for alias in "${alias_list[@]}"; do
       case "$seen" in *" $alias "*) fail "duplicate command/alias: $alias" ;; esac
       seen+="$alias "
-      command_registry_lookup "$alias" || fail "alias is not resolved: $alias"
-      [ "$COMMAND_NAME" = "$name" ] || fail "alias $alias resolves to $COMMAND_NAME"
       [ "$($ROOT/bin/yard --command-completion "$alias")" = "$completion" ] \
         || fail "$alias completion provider drifted"
     done
@@ -49,7 +44,7 @@ while IFS='|' read -r name aliases handler arg0 remote visibility section comple
   if [ "$visibility" = public ]; then
     grep -Fq "$display" <<<"$help" || fail "$name missing from generated help"
   fi
-done < <(command_registry_rows)
+done <<<"$rows"
 
 ! grep -q "cmds='check\|cmds=( check" "$ROOT/completions/yard.bash" "$ROOT/completions/yard.zsh" \
   || fail "completion contains a duplicate fallback command list"

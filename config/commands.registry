@@ -1,37 +1,39 @@
-# name|aliases|handler|arg0|remote|visibility|section|completion|display|summary|options|verbs
+# name|aliases|handler|arg0|remote|effect|visibility|section|completion|display|summary|options|verbs
 # options and verbs are space-separated completion tokens; they are part of the machine manifest.
+# effect is conservative: a mixed command is mutate when any of its verbs can change state.
 #
 # This is the single source of truth for core command dispatch, aliases, remote execution plane,
-# top-level help/list output and completion-provider selection. Profile resource commands remain
-# data-driven by config/profiles/*/resources/*.res and are appended by lib-resources.sh.
-check||00-check-host.sh||local|public|lifecycle|simple|check|verify the host can run a yard (read-only preflight)|--help|
-security||security-lint.sh||local|public|lifecycle|simple|security|validate static and live Incus host-boundary invariants|--quiet --require-live --help|
-init|setup|init.sh||forward|public|lifecycle|simple|init|install or reconcile Incus, the yard and its core configuration|--configs --reset --yes --help|
-start||yard-ctl.sh|start|forward|public|lifecycle|simple|start|start the yard|--yes --help|
-status||yard-ctl.sh|status|forward|public|lifecycle|status|status|show yard, SSH, mounts, services, projects, security and size|--all --yes --help|
-logs||yard-logs.sh||forward|public|lifecycle|simple|logs|tail the yard runtime logs|-f -n --yes --help|
-usage||yard-usage.sh||forward|public|lifecycle|simple|usage [args]|show coding-agent token usage|--help|
-keys||yard-keys.sh||forward|public|lifecycle|keys|keys [command]|manage the host-only encrypted and versioned credential ledger|--kind --zone --consumer --file --local-only --exclusive --dry-run --manual-only --all --now --yes --help|trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move
-shell||yard-shell.sh||forward|public|lifecycle|project-shell|shell [project]|open a dev shell, optionally in a project directory|--root --yes --help|
-provision||10-provision-profile.sh||forward|public|lifecycle|profiles|provision [profile]|install a profile toolchain into the yard|-l --list --yes --help|
-stop||yard-ctl.sh|stop|forward|public|lifecycle|stop|stop [--force]|stop the yard and protect active Remote-SSH sessions|--force --yes --help|
-teardown|uninstall|99-teardown.sh||forward|public|lifecycle|teardown|teardown|delete the yard; optionally keep persistent data|--keep-data --yes --help|
-sync||project-sync.sh|sync|local|public|projects|project-target|sync [path]|copy or refresh a project in the yard|--target --yes --help|
-bind||project-sync.sh|bind|deny|public|projects|project-target|bind [path]|explicitly mount a host project path into the yard|--target --yes --help|
-clone||project-clone.sh||local|public|projects|clone|clone <url>|clone a repository directly into the yard|--target --yes --help|
-list||project-list.sh||local|public|projects|simple|list|list projects currently registered in yards|--live --help|
-code||project-code.sh||local|public|projects|project|code [project]|open a project with VS Code Remote-SSH|--yes --help|
-export||project-export.sh||local|public|projects|path|export [path]|copy changes from a synced yard project back to the host|--yes --help|
-remove||project-remove.sh||local|public|projects|remove|remove [project]|remove a project from the yard|--soft --yes --help|
-up||project-env.sh|up|forward|public|project_env|project-env-up|up [project]|build or start the optional project environment|--rebuild --yes --help|
-down||project-env.sh|down|forward|public|project_env|project-env|down [project]|stop the optional project environment|--yes --help|
-info||project-env.sh|info|forward|public|project_env|project-env|info [project]|show the optional project environment contract|--yes --help|
-yards||yard-yards.sh||local|public|lifecycle|simple|yards|list registered local and remote yards|--help|
-remote||yard-remote.sh||local|public|remote|remote|remote <command>|register, repair, remove or list remote yards|--yard --yes --help|add repair-key remove list
-help||@help||local|hidden|internal|none|help|show top-level help||
-svc|resource|@resource||forward|hidden|internal|resource|svc <resource> <verb>|dispatch a profile resource by registry name|--yes --help|
-_info||yard-info.sh||local|hidden|internal|none|_info|machine-readable owner probe||
-_authorize||yard-authorize.sh||forward|hidden|internal|none|_authorize|authorize a controller key inside a yard||
-_project-state||project-state.sh||forward|hidden|internal|none|_project-state|converge owner-host project state||
-_keys-exchange||yard-keys.sh|_exchange|forward|hidden|internal|none|_keys-exchange|credential peer exchange endpoint||
-_keys-auto-sync||yard-keys.sh|_auto-worker|forward|hidden|internal|none|_keys-auto-sync|credential auto-sync worker||
+# mutation policy, top-level help/list output and completion-provider selection. Profile resource
+# commands remain data-driven by config/profiles/*/resources/*.res and are appended by the engine.
+check||00-check-host.sh||local|read|public|lifecycle|simple|check|verify the host can run a yard (read-only preflight)|--help|
+security||security-lint.sh||local|read|public|lifecycle|simple|security|validate static and live Incus host-boundary invariants|--quiet --require-live --help|
+init|setup|init.sh||forward|mutate|public|lifecycle|simple|init|install or reconcile Incus, the yard and its core configuration|--configs --reset --yes --help|
+start||yard-ctl.sh|start|forward|mutate|public|lifecycle|simple|start|start the yard|--yes --help|
+status||yard-ctl.sh|status|forward|read|public|lifecycle|status|status|show yard, SSH, mounts, services, projects, security and size|--all --yes --help|
+logs||yard-logs.sh||forward|read|public|lifecycle|simple|logs|tail the yard runtime logs|-f -n --yes --help|
+usage||yard-usage.sh||forward|read|public|lifecycle|simple|usage [args]|show coding-agent token usage|--help|
+keys||yard-keys.sh||forward|mutate|public|lifecycle|keys|keys [command]|manage the host-only encrypted and versioned credential ledger|--kind --zone --consumer --file --local-only --exclusive --dry-run --manual-only --all --now --yes --help|trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move
+shell||yard-shell.sh||forward|mutate|public|lifecycle|project-shell|shell [project]|open a dev shell, optionally in a project directory|--root --yes --help|
+provision||10-provision-profile.sh||forward|mutate|public|lifecycle|profiles|provision [profile]|install a profile toolchain into the yard|-l --list --yes --help|
+stop||yard-ctl.sh|stop|forward|mutate|public|lifecycle|stop|stop [--force]|stop the yard and protect active Remote-SSH sessions|--force --yes --help|
+teardown|uninstall|99-teardown.sh||forward|mutate|public|lifecycle|teardown|teardown|delete the yard; optionally keep persistent data|--keep-data --yes --help|
+sync||project-sync.sh|sync|local|mutate|public|projects|project-target|sync [path]|copy or refresh a project in the yard|--target --yes --help|
+bind||project-sync.sh|bind|deny|mutate|public|projects|project-target|bind [path]|explicitly mount a host project path into the yard|--target --yes --help|
+clone||project-clone.sh||local|mutate|public|projects|clone|clone <url>|clone a repository directly into the yard|--target --yes --help|
+list||project-list.sh||local|read|public|projects|simple|list|list projects currently registered in yards|--live --help|
+code||project-code.sh||local|mutate|public|projects|project|code [project]|open a project with VS Code Remote-SSH|--yes --help|
+export||project-export.sh||local|mutate|public|projects|path|export [path]|copy changes from a synced yard project back to the host|--yes --help|
+remove||project-remove.sh||local|mutate|public|projects|remove|remove [project]|remove a project from the yard|--soft --yes --help|
+up||project-env.sh|up|forward|mutate|public|project_env|project-env-up|up [project]|build or start the optional project environment|--rebuild --yes --help|
+down||project-env.sh|down|forward|mutate|public|project_env|project-env|down [project]|stop the optional project environment|--yes --help|
+info||project-env.sh|info|forward|read|public|project_env|project-env|info [project]|show the optional project environment contract|--yes --help|
+yards||yard-yards.sh||local|read|public|lifecycle|simple|yards|list registered local and remote yards|--help|
+remote||yard-remote.sh||local|mutate|public|remote|remote|remote <command>|register, repair, remove or list remote yards|--yard --yes --help|add repair-key remove list
+help||@help||local|read|hidden|internal|none|help|show top-level help||
+rpc||@rpc||local|mutate|hidden|internal|none|rpc --stdio|serve the versioned local RPC protocol|--stdio|
+svc|resource|@resource||forward|mutate|hidden|internal|resource|svc <resource> <verb>|dispatch a profile resource by registry name|--yes --help|
+_info||yard-info.sh||local|read|hidden|internal|none|_info|machine-readable owner probe||
+_authorize||yard-authorize.sh||forward|mutate|hidden|internal|none|_authorize|authorize a controller key inside a yard||
+_project-state||project-state.sh||forward|mutate|hidden|internal|none|_project-state|converge owner-host project state||
+_keys-exchange||yard-keys.sh|_exchange|forward|mutate|hidden|internal|none|_keys-exchange|credential peer exchange endpoint||
+_keys-auto-sync||yard-keys.sh|_auto-worker|forward|mutate|hidden|internal|none|_keys-auto-sync|credential auto-sync worker||

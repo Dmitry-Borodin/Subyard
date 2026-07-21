@@ -26,10 +26,12 @@ subyard_context_load
 . "$SCRIPT_DIR/lib/host.sh"
 
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-YARD_SRC="$REPO/bin/yard"
+YARD_BUILD="$REPO/.build/yard"
+YARD_SRC="$REPO/bin/yard-engine"
 BIN_DIR="${YARD_BIN_DIR:-$HOME/.local/bin}"
 
-[ -f "$YARD_SRC" ] || die "yard CLI not found at $YARD_SRC"
+"$REPO/scripts/build-engine.sh"
+[ -x "$YARD_BUILD" ] || die "yard engine build not found at $YARD_BUILD"
 
 # Is BIN_DIR already on PATH?
 need_path_line=1
@@ -60,10 +62,16 @@ lines+=("Enable tab-completion by sourcing $COMP from $RC.")
 announce "Install the yard CLI" "${lines[@]}"
 proceed_or_die
 
+YARD_TMP="$(mktemp "$REPO/bin/.yard-engine.tmp.XXXXXX")"
+trap 'rm -f "$YARD_TMP"' EXIT
+install -m 0755 "$YARD_BUILD" "$YARD_TMP"
+mv -f "$YARD_TMP" "$YARD_SRC"
+trap - EXIT
+
 install -d "$BIN_DIR"
 ln -sf "$YARD_SRC" "$BIN_DIR/yard"
 ln -sf "$YARD_SRC" "$BIN_DIR/sy"
-ok "linked $BIN_DIR/{yard,sy} → bin/yard"
+ok "installed and linked $BIN_DIR/{yard,sy} → bin/yard-engine"
 
 if [ "$need_path_line" = 1 ]; then
   if [ -f "$RC" ] && grep -qF 'Subyard CLI' "$RC"; then

@@ -27,6 +27,8 @@ case "${1:-}" in
   exec)
     [ "${RESOURCE_TEST_UP:-1}" = 1 ] || exit 1
     case " $* " in
+      *' ss -Hltn '*) [ "${RESOURCE_TEST_LISTENING:-1}" = 1 ] ;;
+      *' pgrep -u dev -f -- '*) [ "${RESOURCE_TEST_EMULATOR_PROC:-1}" = 1 ] ;;
       *' docker inspect -f '*) printf 'true\n' ;;
     esac ;;
   file) : ;;
@@ -69,11 +71,24 @@ done
 RESOURCE_TEST_UP=1
 export RESOURCE_TEST_UP
 
+# The Android handler must pass the exact identity pattern through to the in-yard probe.
+RESOURCE_TEST_LISTENING=0 RESOURCE_TEST_EMULATOR_PROC=1 \
+  "$ROOT/bin/yard" emu status >"$TMP/emu-status.out"
+grep -Fq 'still booting' "$TMP/emu-status.out" \
+  || fail 'emulator status did not use its process probe while adb was down'
+grep -Fq 'pgrep -u dev -f -- ^(' "$RESOURCE_TEST_LOG" \
+  || fail 'emulator process probe was not user-scoped and argv-anchored'
+
 # Representative reverse lifecycle paths execute through the generic dispatcher and fake Incus.
 "$ROOT/bin/yard" emu down --yes >/dev/null
 "$ROOT/bin/yard" staging stop --yes >/dev/null
 "$ROOT/bin/yard" qa-pool down --yes >/dev/null
 grep -Fq 'config device remove' "$RESOURCE_TEST_LOG" || fail 'emulator down did not remove its bridge'
+grep -Fq 'pkill -TERM -u dev -f -- ^(' "$RESOURCE_TEST_LOG" \
+  || fail 'emulator stop was not user-scoped and argv-anchored'
+if grep -Fq 'pkill -f emulator-run.sh' "$RESOURCE_TEST_LOG"; then
+  fail 'emulator stop retained the broad path-substring kill'
+fi
 grep -Fq 'docker exec subyard-staging-canonical' "$RESOURCE_TEST_LOG" \
   || fail 'staging stop did not reach its profile mechanic'
 grep -Fq 'docker stop subyard-qa-broker' "$RESOURCE_TEST_LOG" \

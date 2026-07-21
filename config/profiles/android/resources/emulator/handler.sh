@@ -47,6 +47,8 @@ subyard_context_load
 . "$SCRIPT_DIR/lib/host.sh"
 # shellcheck source=scripts/lib-service.sh
 . "$SCRIPT_DIR/lib-service.sh"   # profile shared-resource helpers: yexec, svc_require_yard_running
+# shellcheck source=config/profiles/android/resources/emulator/process-identity.sh
+. "$RESOURCE_DIR/process-identity.sh"
 
 DEV_USER="${DEV_USER:-dev}"
 SSH_HOST="${SSH_HOST:-yard}"
@@ -73,9 +75,9 @@ emulator_listening() {
 
 # Is the emulator process tree alive in the yard? Covers the whole boot: the launcher
 # (bash, pre-`exec cage`), the cage wrapper, the emulator binary, and the qemu VM it
-# spawns. Matching only qemu-system would miss the cage->qemu window and read as "dead".
-EMU_PGREP='emulator-run.sh|cage --|/emulator/emulator|qemu-system'
-emulator_proc() { yexec pgrep -f "$EMU_PGREP" >/dev/null 2>&1; }
+# spawns. The shared pattern is anchored at argv[0], so tools that only mention one of
+# those paths cannot impersonate the emulator. The emulator always runs as DEV_USER.
+emulator_proc() { yexec pgrep -u "$DEV_USER" -f -- "$EMU_PROCESS_PATTERN" >/dev/null 2>&1; }
 
 # Yard must be reachable and running before we can touch its devices or reach the emulator.
 # Shared across profile resources (lib-service.sh): incus reachable + instance RUNNING.
@@ -280,7 +282,7 @@ cmd_down() {
     proceed_or_die y   # transient stop (shut the shared emulator down) — default Yes
     # Clean shutdown via the console if reachable, then make sure the processes are gone.
     yexec su - "$DEV_USER" -c 'adb -s emulator-'"$ADB_CONSOLE_EMULATOR_PORT"' emu kill 2>/dev/null; true' >/dev/null 2>&1 || true
-    yexec sh -c "pkill -f qemu-system 2>/dev/null; pkill -f emulator-run.sh 2>/dev/null; pkill cage 2>/dev/null; true" >/dev/null 2>&1 || true
+    yexec pkill -TERM -u "$DEV_USER" -f -- "$EMU_PROCESS_PATTERN" >/dev/null 2>&1 || true
     ok "emulator stopped"
   else
     ok "no emulator running in the yard"

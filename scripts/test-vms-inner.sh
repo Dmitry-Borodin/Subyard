@@ -13,6 +13,7 @@ PREFIX="${E2E_VM_PREFIX:-e2e-vm}"
 IMAGE="${E2E_VM_IMAGE:-images:debian/13/cloud}"
 CPU="${E2E_VM_CPU:-2}"
 MEMORY="${E2E_VM_MEMORY:-4GiB}"
+DISK="${E2E_VM_DISK:-30GiB}"
 TTL_MINUTES="${E2E_VM_TTL_MINUTES:-240}"
 BOOT_TIMEOUT="${E2E_VM_BOOT_TIMEOUT:-300}"
 DEV_USER="${DEV_USER:-dev}"
@@ -23,11 +24,36 @@ INCUS="${SUBYARD_INNER_INCUS:-incus}"
 KEY="$STATE_DIR/id_ed25519"
 KNOWN_HOSTS="$STATE_DIR/known_hosts"
 CREATED_AT="$STATE_DIR/created-at"
+FAILURE_LOG="$STATE_DIR/last-failure.log"
 ASSUME_YES=0
 
 die() { printf 'test-vms: %s\n' "$*" >&2; exit 1; }
 info() { printf '  [ .. ] %s\n' "$*"; }
 ok() { printf '  [ ok ] %s\n' "$*"; }
+
+# Incus create/set commands may consume YAML from stdin. The worker itself is reached through
+# `incus exec`, so inheriting that stream can make a command wait forever for input that will never
+# arrive. Every inner control-plane call therefore gets a closed input stream.
+inner_incus() { "$INCUS" "$@" </dev/null; }
+
+# Long image downloads, VM starts and guest initialization must remain observable even when this
+# worker is reached through a non-interactive exec. Periodic lines are intentional: unlike a TTY
+# spinner they survive SSH/Incus forwarding and leave useful timings in CI logs.
+run_with_progress() {
+  local label="$1" interval="${E2E_PROGRESS_INTERVAL:-10}" ticker rc started=$SECONDS
+  shift
+  info "$label"
+  (
+    while sleep "$interval"; do
+      printf '  [ .. ] %s (still working, %ss elapsed)\n' "$label" "$((SECONDS - started))"
+    done
+  ) &
+  ticker=$!
+  if "$@"; then rc=0; else rc=$?; fi
+  kill "$ticker" 2>/dev/null || true
+  wait "$ticker" 2>/dev/null || true
+  return "$rc"
+}
 
 usage() {
   cat <<'EOF'
@@ -58,6 +84,13 @@ validate_config() {
   case "$PREFIX" in '' | -* | *[!a-z0-9-]*) die "unsafe E2E_VM_PREFIX '$PREFIX'" ;; esac
   [[ "$CPU" =~ ^[1-9][0-9]*$ ]] || die "E2E_VM_CPU must be a positive integer"
   [[ "$MEMORY" =~ ^[1-9][0-9]*(MiB|GiB)$ ]] || die "E2E_VM_MEMORY must use MiB or GiB"
+  [[ "$DISK" =~ ^[1-9][0-9]*(MiB|GiB)$ ]] || die "E2E_VM_DISK must use MiB or GiB"
+  local disk_mib
+  case "$DISK" in
+    *GiB) disk_mib=$(( ${DISK%GiB} * 1024 )) ;;
+    *MiB) disk_mib=${DISK%MiB} ;;
+  esac
+  [ "$disk_mib" -ge 24576 ] || die "E2E_VM_DISK must be at least 24GiB"
   case "$IMAGE" in '' | -* | *[!A-Za-z0-9._:/@+-]*) die "unsafe E2E_VM_IMAGE '$IMAGE'" ;; esac
   [[ "$TTL_MINUTES" =~ ^[0-9]+$ ]] && [ "$TTL_MINUTES" -ge 15 ] && [ "$TTL_MINUTES" -le 1440 ] \
     || die "E2E_VM_TTL_MINUTES must be from 15 to 1440"
@@ -69,10 +102,10 @@ vm_name() {
   case "${1:-}" in 1 | 2) printf '%s-%s\n' "$PREFIX" "$1" ;; *) die "VM selector must be 1 or 2" ;; esac
 }
 
-project_exists() { "$INCUS" project show "$PROJECT" >/dev/null 2>&1; }
-project_marker() { "$INCUS" project get "$PROJECT" user.subyard.managed 2>/dev/null || true; }
-vm_exists() { "$INCUS" info "$1" --project "$PROJECT" >/dev/null 2>&1; }
-vm_marker() { "$INCUS" config get "$1" user.subyard.managed --project "$PROJECT" 2>/dev/null || true; }
+project_exists() { inner_incus project show "$PROJECT" >/dev/null 2>&1; }
+project_marker() { inner_incus project get "$PROJECT" user.subyard.managed 2>/dev/null || true; }
+vm_exists() { inner_incus info "$1" --project "$PROJECT" >/dev/null 2>&1; }
+vm_marker() { inner_incus config get "$1" user.subyard.managed --project "$PROJECT" 2>/dev/null || true; }
 
 require_managed_vm() {
   vm_exists "$1" || die "$1 is not up"
@@ -103,43 +136,48 @@ ensure_key() {
 }
 
 ensure_project() {
-  local total_cpu memory_number memory_unit total_memory name
+  local total_cpu memory_number memory_unit total_memory name names
   total_cpu=$((CPU * 2))
   memory_unit="${MEMORY##*[0-9]}"; memory_number="${MEMORY%$memory_unit}"
   total_memory="$((memory_number * 2))$memory_unit"
   if project_exists; then
     [ "$(project_marker)" = "$MARKER" ] \
       || die "project '$PROJECT' exists without the Subyard marker; refusing to modify it"
+    names="$(inner_incus list --project "$PROJECT" -f csv -c n)" || return
     while IFS= read -r name; do
       [ -n "$name" ] || continue
       case "$name" in
         "$PREFIX-1" | "$PREFIX-2") ;;
         *) die "unexpected instance blocks reconciliation: $name" ;;
       esac
-    done < <("$INCUS" list --project "$PROJECT" -f csv -c n)
+    done <<<"$names"
   else
-    "$INCUS" project create "$PROJECT" \
+    run_with_progress "creating inner Incus project '$PROJECT'" inner_incus project create "$PROJECT" \
       -c features.images=false \
       -c user.subyard.managed="$MARKER" \
       -c limits.instances=2 \
       -c limits.virtual-machines=2 \
       -c limits.cpu="$total_cpu" \
       -c limits.memory="$total_memory" \
-      -c restricted=true >/dev/null
+      -c restricted=true \
+      || return
     ok "created inner Incus project '$PROJECT'"
   fi
-  "$INCUS" project set "$PROJECT" limits.instances 2
-  "$INCUS" project set "$PROJECT" limits.virtual-machines 2
-  "$INCUS" project set "$PROJECT" limits.cpu "$total_cpu"
-  "$INCUS" project set "$PROJECT" limits.memory "$total_memory"
-  "$INCUS" project set "$PROJECT" restricted true
-  "$INCUS" project set "$PROJECT" user.subyard.managed "$MARKER"
+  inner_incus project set "$PROJECT" limits.instances 2 || return
+  inner_incus project set "$PROJECT" limits.virtual-machines 2 || return
+  inner_incus project set "$PROJECT" limits.cpu "$total_cpu" || return
+  inner_incus project set "$PROJECT" limits.memory "$total_memory" || return
+  inner_incus project set "$PROJECT" restricted true || return
+  inner_incus project set "$PROJECT" user.subyard.managed "$MARKER" || return
 
-  if ! "$INCUS" profile device list default --project "$PROJECT" 2>/dev/null | grep -qx root; then
-    "$INCUS" profile device add default root disk pool=default path=/ --project "$PROJECT" >/dev/null
+  if ! inner_incus profile device list default --project "$PROJECT" 2>/dev/null | grep -qx root; then
+    inner_incus profile device add default root disk pool=default path=/ \
+      --project "$PROJECT" >/dev/null || return
   fi
-  if ! "$INCUS" profile device list default --project "$PROJECT" 2>/dev/null | grep -qx eth0; then
-    "$INCUS" profile device add default eth0 nic network=incusbr0 name=eth0 --project "$PROJECT" >/dev/null
+  inner_incus profile device set default root size "$DISK" --project "$PROJECT" || return
+  if ! inner_incus profile device list default --project "$PROJECT" 2>/dev/null | grep -qx eth0; then
+    inner_incus profile device add default eth0 nic network=incusbr0 name=eth0 \
+      --project "$PROJECT" >/dev/null || return
   fi
 }
 
@@ -154,6 +192,10 @@ users:
     groups: [sudo]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
+    # OpenSSH rejects public keys for a shadow-locked user on Debian 13. "x" is deliberately not
+    # a valid password hash: it unlocks public-key login without creating a usable password.
+    lock_passwd: false
+    passwd: x
     ssh_authorized_keys:
       - $public_key
 ssh_pwauth: false
@@ -165,41 +207,86 @@ EOF
 }
 
 ensure_vm() {
-  local vm="$1" type
+  local vm="$1" type raw_apparmor
   if vm_exists "$vm"; then
-    type="$("$INCUS" list "$vm" --project "$PROJECT" -f csv -c t)"
+    type="$(inner_incus list "$vm" --project "$PROJECT" -f csv -c t)" || return
     [ "$type" = VIRTUAL-MACHINE ] || die "managed name '$vm' is not a virtual machine"
     [ "$(vm_marker "$vm")" = "$MARKER" ] || die "VM '$vm' exists without the Subyard marker"
   else
-    info "creating $vm from $IMAGE"
-    "$INCUS" init "$IMAGE" "$vm" --vm --project "$PROJECT" \
-      -c limits.cpu="$CPU" -c limits.memory="$MEMORY" -c user.subyard.managed="$MARKER"
-    "$INCUS" config set "$vm" cloud-init.user-data "$(cloud_config)" --project "$PROJECT"
+    run_with_progress "creating $vm from $IMAGE (first use downloads the image)" \
+      inner_incus init "$IMAGE" "$vm" --vm --project "$PROJECT" \
+      -c limits.cpu="$CPU" -c limits.memory="$MEMORY" -c user.subyard.managed="$MARKER" \
+      || return
+    inner_incus config set "$vm" cloud-init.user-data "$(cloud_config)" \
+      --project "$PROJECT" || return
     ok "created $vm"
   fi
-  "$INCUS" config set "$vm" limits.cpu "$CPU" --project "$PROJECT"
-  "$INCUS" config set "$vm" limits.memory "$MEMORY" --project "$PROJECT"
-  if [ "$("$INCUS" list "$vm" --project "$PROJECT" -f csv -c s)" != RUNNING ]; then
-    "$INCUS" start "$vm" --project "$PROJECT"
+  inner_incus config set "$vm" limits.cpu "$CPU" --project "$PROJECT" || return
+  inner_incus config set "$vm" limits.memory "$MEMORY" --project "$PROJECT" || return
+  # Remove the superseded per-instance workaround before tightening an upgraded project. AppArmor
+  # compatibility is now handled once by the trusted inner daemon, outside this restricted project.
+  raw_apparmor="$(inner_incus config get "$vm" raw.apparmor --project "$PROJECT")" || return
+  [ -z "$raw_apparmor" ] \
+    || inner_incus config unset "$vm" raw.apparmor --project "$PROJECT" || return
+}
+
+tighten_project() {
+  # Older workers enabled this solely for raw.apparmor. Emptying it is idempotent in Incus 6.0 and
+  # ensures the fixed test project no longer accepts arbitrary low-level VM configuration.
+  inner_incus project unset "$PROJECT" restricted.virtual-machines.lowlevel || return
+}
+
+start_vm() {
+  local vm="$1" state
+  state="$(inner_incus list "$vm" --project "$PROJECT" -f csv -c s)" || return
+  if [ "$state" != RUNNING ]; then
+    run_with_progress "starting $vm" inner_incus start "$vm" --project "$PROJECT" || return
+    ok "started $vm"
   fi
 }
 
 wait_agent() {
-  local vm="$1" deadline=$((SECONDS + BOOT_TIMEOUT))
-  info "waiting for $vm agent/cloud-init"
-  until "$INCUS" exec "$vm" --project "$PROJECT" -- true >/dev/null 2>&1; do
+  local vm="$1" account_status deadline=$((SECONDS + BOOT_TIMEOUT)) started=$SECONDS next_report=$((SECONDS + 10))
+  info "waiting for $vm Incus agent"
+  until inner_incus exec "$vm" --project "$PROJECT" -- true >/dev/null 2>&1; do
     [ "$SECONDS" -lt "$deadline" ] || die "$vm did not expose the Incus agent within ${BOOT_TIMEOUT}s"
+    if [ "$SECONDS" -ge "$next_report" ]; then
+      info "waiting for $vm Incus agent ($((SECONDS - started))s elapsed)"
+      next_report=$((SECONDS + 10))
+    fi
     sleep 2
   done
-  "$INCUS" exec "$vm" --project "$PROJECT" -- timeout "$BOOT_TIMEOUT" cloud-init status --wait >/dev/null
-  "$INCUS" exec "$vm" --project "$PROJECT" -- systemctl is-active --quiet ssh
+  ok "$vm Incus agent is ready"
+  run_with_progress "waiting for $vm cloud-init" \
+    inner_incus exec "$vm" --project "$PROJECT" -- timeout "$BOOT_TIMEOUT" cloud-init status --wait \
+    >/dev/null || return
+  # Reconcile images created by older workers too. A locked shadow entry makes modern OpenSSH reject
+  # even a matching authorized key; the invalid marker unlocks key login but can never authenticate
+  # as a password. ssh_pwauth remains disabled and is verified before the VM is declared ready.
+  inner_incus exec "$vm" --project "$PROJECT" -- usermod --password x dev || return
+  account_status="$(inner_incus exec "$vm" --project "$PROJECT" -- passwd --status dev)" || return
+  case "$account_status" in 'dev P '*) ;; *) die "$vm dev account did not become key-login capable" ;; esac
+  inner_incus exec "$vm" --project "$PROJECT" -- sshd -T \
+    | grep -Fxq 'passwordauthentication no' \
+    || die "$vm SSH password authentication is not disabled"
+  inner_incus exec "$vm" --project "$PROJECT" -- systemctl is-active --quiet ssh || return
+  ok "$vm cloud-init and SSH service are ready"
 }
 
 vm_ip() {
   local vm="$1"
-  "$INCUS" list "$vm" --project "$PROJECT" --format json \
-    | jq -er '.[0].state.network.eth0.addresses[] | select(.family=="inet" and .scope=="global") | .address' \
-    | head -n1
+  inner_incus list "$vm" --project "$PROJECT" --format json \
+    | jq -er '
+        [.[0].state.network
+          | to_entries[]
+          | select(.key != "lo")
+          | .value.addresses[]?
+          | select(.family == "inet" and .scope == "global")
+          | .address]
+        | unique
+        | if length == 1 then .[0]
+          else error("expected exactly one non-loopback global IPv4 address")
+          end'
 }
 
 ssh_options() {
@@ -208,45 +295,110 @@ ssh_options() {
 }
 
 record_host_key() {
-  local vm="$1" ip keyscan deadline=$((SECONDS + BOOT_TIMEOUT))
+  local vm="$1" ip keyscan deadline=$((SECONDS + BOOT_TIMEOUT)) started=$SECONDS next_report=$((SECONDS + 10))
   ip="$(vm_ip "$vm")" || die "$vm has no IPv4 address on eth0"
+  info "waiting for $vm SSH host key ($ip)"
   until keyscan="$(ssh-keyscan -T 3 "$ip" 2>/dev/null)" && [ -n "$keyscan" ]; do
     [ "$SECONDS" -lt "$deadline" ] || die "$vm SSH host key was not reachable within ${BOOT_TIMEOUT}s"
+    if [ "$SECONDS" -ge "$next_report" ]; then
+      info "waiting for $vm SSH host key ($((SECONDS - started))s elapsed)"
+      next_report=$((SECONDS + 10))
+    fi
     sleep 2
   done
   printf '%s\n' "$keyscan" >> "$KNOWN_HOSTS"
+  ok "$vm SSH host key recorded"
 }
 
 ssh_smoke() {
-  local vm="$1" ip deadline=$((SECONDS + BOOT_TIMEOUT)); shift
+  local vm="$1" ip deadline=$((SECONDS + BOOT_TIMEOUT)) started=$SECONDS next_report=$((SECONDS + 10)); shift
   local -a options=()
   mapfile -t options < <(ssh_options)
-  ip="$(vm_ip "$vm")"
+  ip="$(vm_ip "$vm")" || return
+  info "verifying $vm SSH and passwordless sudo"
   until ssh "${options[@]}" "dev@$ip" -- sudo -n true >/dev/null 2>&1; do
     [ "$SECONDS" -lt "$deadline" ] || die "$vm SSH/sudo smoke did not pass within ${BOOT_TIMEOUT}s"
+    if [ "$SECONDS" -ge "$next_report" ]; then
+      info "verifying $vm SSH and passwordless sudo ($((SECONDS - started))s elapsed)"
+      next_report=$((SECONDS + 10))
+    fi
     sleep 2
   done
+  ok "$vm SSH and passwordless sudo verified"
 }
 
 cleanup_managed() {
-  local quiet="${1:-0}" vm name extra=0
+  local quiet="${1:-0}" vm name names extra=0
   if project_exists; then
     [ "$(project_marker)" = "$MARKER" ] \
       || die "project '$PROJECT' is not Subyard-managed; refusing cleanup"
+    names="$(inner_incus list --project "$PROJECT" -f csv -c n)" \
+      || { printf 'test-vms: could not inventory managed project before cleanup\n' >&2; return 1; }
     while IFS= read -r name; do
       [ -n "$name" ] || continue
       case "$name" in "$PREFIX-1" | "$PREFIX-2") ;; *) extra=1; printf 'test-vms: unexpected instance blocks cleanup: %s\n' "$name" >&2 ;; esac
-    done < <("$INCUS" list --project "$PROJECT" -f csv -c n)
+    done <<<"$names"
     [ "$extra" = 0 ] || die "refusing to force-delete a project with unexpected instances"
     for vm in "$PREFIX-1" "$PREFIX-2"; do
       vm_exists "$vm" || continue
       [ "$(vm_marker "$vm")" = "$MARKER" ] || die "VM '$vm' is not Subyard-managed"
-      "$INCUS" delete "$vm" --project "$PROJECT" --force
+      inner_incus delete "$vm" --project "$PROJECT" --force || return
     done
-    "$INCUS" project delete "$PROJECT" --force
+    # The two owned instances were removed explicitly above. A normal delete is now non-interactive
+    # and fails closed if any other project resource exists; Incus 6.0's --force always prompts.
+    inner_incus project delete "$PROJECT" || return
   fi
-  rm -f "$KEY" "$KEY.pub" "$KNOWN_HOSTS" "$CREATED_AT"
+  rm -f "$KEY" "$KEY.pub" "$KNOWN_HOSTS" "$CREATED_AT" "$FAILURE_LOG"
   [ "$quiet" = 1 ] || ok "deleted both disposable VMs, inner project and synthetic SSH identity"
+}
+
+collect_failure_diagnostics() {
+  local rc="$1" vm profile created temp="${FAILURE_LOG}.tmp.$$"
+  ensure_state_dir || return 1
+  if ! {
+    printf 'timestamp_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'worker_exit=%s\n' "$rc"
+    printf 'project=%s\n' "$PROJECT"
+    printf '\n== inner Incus AppArmor mode ==\n'
+    if systemctl show incus.service --property=Environment --value 2>/dev/null \
+      | tr ' ' '\n' | grep -Fxq 'INCUS_SECURITY_APPARMOR=false'; then
+      printf 'per_instance_profiles=disabled\n'
+    else
+      printf 'per_instance_profiles=unexpectedly_enabled_or_unknown\n'
+    fi
+    if project_exists; then
+      printf '\n== project ==\n'
+      inner_incus project show "$PROJECT" || true
+      for vm in "$PREFIX-1" "$PREFIX-2"; do
+        vm_exists "$vm" || continue
+        printf '\n== %s info/log ==\n' "$vm"
+        inner_incus info --show-log "$vm" --project "$PROJECT" || true
+        profile="/var/lib/incus/security/apparmor/profiles/incus-${PROJECT}_${vm}"
+        if command -v sudo >/dev/null 2>&1 && sudo -n test -r "$profile" 2>/dev/null; then
+          printf '\n== %s residual AppArmor profile file ==\n' "$vm"
+          sudo -n awk '/^profile |unix .*type=|### Configuration: raw.apparmor/{print}' "$profile" || true
+        fi
+        if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+          created="$(cat "$CREATED_AT" 2>/dev/null || true)"
+          if [[ "$created" =~ ^[0-9]+$ ]]; then
+            printf '\n== %s bounded kernel denials since this allocation ==\n' "$vm"
+            sudo -n dmesg --since "@$created" 2>/dev/null \
+              | grep -F "profile=\"incus-${PROJECT}_${vm}_</var/lib/incus>\"" \
+              | tail -n 40 || true
+          fi
+        fi
+      done
+    else
+      printf 'project_state=absent\n'
+    fi
+  } >"$temp" 2>&1; then
+    rm -f "$temp"
+    return 1
+  fi
+  chmod 0640 "$temp" || { rm -f "$temp"; return 1; }
+  mv -f "$temp" "$FAILURE_LOG" || { rm -f "$temp"; return 1; }
+  printf 'test-vms: failure diagnostics saved to %s\n' "$FAILURE_LOG" >&2
+  sed -n '1,240p' "$FAILURE_LOG" >&2
 }
 
 cmd_up() {
@@ -255,12 +407,15 @@ cmd_up() {
   printf 'They expire automatically after %s minutes.\n' "$TTL_MINUTES"
   confirm
   ensure_key || return
+  rm -f "$FAILURE_LOG"
   UP_FAILED=1
-  trap up_cleanup_on_exit EXIT
+  trap up_failure_on_exit EXIT
   ensure_project || return
   printf '%s\n' "$(date +%s)" > "$CREATED_AT"
   : > "$KNOWN_HOSTS"
   for vm in "$PREFIX-1" "$PREFIX-2"; do ensure_vm "$vm" || return; done
+  tighten_project || return
+  for vm in "$PREFIX-1" "$PREFIX-2"; do start_vm "$vm" || return; done
   for vm in "$PREFIX-1" "$PREFIX-2"; do
     wait_agent "$vm" || return
     record_host_key "$vm" || return
@@ -272,10 +427,13 @@ cmd_up() {
   ok "both VMs are ready: use 'yard test-vms ssh 1' or 'yard test-vms exec 2 -- <command>'"
 }
 
-up_cleanup_on_exit() {
+up_failure_on_exit() {
   local rc=$?
   trap - EXIT
-  if [ "${UP_FAILED:-1}" = 1 ]; then cleanup_managed 1 || true; fi
+  if [ "${UP_FAILED:-1}" = 1 ]; then
+    collect_failure_diagnostics "$rc" || true
+    printf 'test-vms: failed allocation was left in place for diagnosis; operator cleanup: yard test-vms down\n' >&2
+  fi
   exit "$rc"
 }
 
@@ -292,7 +450,7 @@ cmd_status() {
   for vm in "$PREFIX-1" "$PREFIX-2"; do
     if vm_exists "$vm"; then
       [ "$(vm_marker "$vm")" = "$MARKER" ] || die "VM '$vm' is not Subyard-managed"
-      state="$("$INCUS" list "$vm" --project "$PROJECT" -f csv -c s)"
+      state="$(inner_incus list "$vm" --project "$PROJECT" -f csv -c s)"
       ip="$(vm_ip "$vm" 2>/dev/null || true)"
       printf '%s\t%s\t%s\n' "$vm" "$state" "${ip:--}"
     else

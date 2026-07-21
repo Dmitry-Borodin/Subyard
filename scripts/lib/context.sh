@@ -44,6 +44,15 @@ context_validate() {
     || { context_fail "E2E_VM_CPU must be a positive integer"; return; }
   [[ "${E2E_VM_MEMORY:-4GiB}" =~ ^[1-9][0-9]*(MiB|GiB)$ ]] \
     || { context_fail "E2E_VM_MEMORY must use a positive MiB or GiB value"; return; }
+  [[ "${E2E_VM_DISK:-30GiB}" =~ ^[1-9][0-9]*(MiB|GiB)$ ]] \
+    || { context_fail "E2E_VM_DISK must use a positive MiB or GiB value"; return; }
+  local disk_value="${E2E_VM_DISK:-30GiB}" disk_mib
+  case "$disk_value" in
+    *GiB) disk_mib=$(( ${disk_value%GiB} * 1024 )) ;;
+    *MiB) disk_mib=${disk_value%MiB} ;;
+  esac
+  [ "$disk_mib" -ge 24576 ] \
+    || { context_fail "E2E_VM_DISK must be at least 24GiB for the Subyard host preflight"; return; }
   [[ "${E2E_VM_TTL_MINUTES:-240}" =~ ^[0-9]+$ ]] \
     && [ "${E2E_VM_TTL_MINUTES:-240}" -ge 15 ] \
     && [ "${E2E_VM_TTL_MINUTES:-240}" -le 1440 ] \

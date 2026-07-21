@@ -27,10 +27,13 @@ stage_incus_distro_too_old() {
   return 0
 }
 
+# INCUS_PROJECT is also an Incus CLI environment variable. The native engine exports the selected
+# yard project before that project exists, so host-global bootstrap probes must pin the daemon's
+# default project explicitly instead of inheriting the yard selection.
 stage_incus_initialized() {
   reconcile_incus_reachable \
-    && incus storage show "$STORAGE_POOL" >/dev/null 2>&1 \
-    && incus network show "$INCUS_BRIDGE" >/dev/null 2>&1
+    && incus storage show "$STORAGE_POOL" --project default >/dev/null 2>&1 \
+    && incus network show "$INCUS_BRIDGE" --project default >/dev/null 2>&1
 }
 
 stage_incus_check() { stage_incus_initialized && stage_incus_recent; }

@@ -13,6 +13,10 @@ if [ -n "${SUBYARD_DISPATCH_PATH:-}" ] && [ -n "${SUBYARD_DISPATCH_COMMAND:-}" ]
   else
     SUBYARD_SCRIPT_ARGV+=("$@")
   fi
+  # Dispatch identity belongs only to the handler started by the native engine. Child phase
+  # scripts must derive their own re-exec path; otherwise a child's sudo request restarts the
+  # entire top-level command as root.
+  unset SUBYARD_DISPATCH_PATH SUBYARD_DISPATCH_COMMAND SUBYARD_DISPATCH_ARG0
 else
   SUBYARD_SCRIPT_PATH="$0"
   SUBYARD_SCRIPT_ARGV=("$@")

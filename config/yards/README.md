@@ -21,9 +21,10 @@ wins):
 | `private/yards/<name>.env` | operator overlay (private repo); wins over machine-local |
 | `~/.config/subyard/yards/<name>.env` | machine-local, no private repo needed |
 
-`config/yards/` (this directory) is **not** a registry — it only ships
-[`example.env`](example.env) as a documented template. Copy it to one of the paths above and
-rename it to the yard you want.
+`config/yards/` (this directory) is **not** a registry — files here are dormant templates. Use
+[`example.env`](example.env) for an ordinary named yard, or
+[`e2e-yard.env.example`](e2e-yard.env.example) for the trusted two-VM acceptance yard. Copy the
+chosen template to one of the registry paths above and rename it to the yard you want.
 
 The only value you must set is `SSH_PORT` (a unique host loopback port — the one thing Subyard
 cannot derive without risking a collision). Everything else is derived from the yard name and
@@ -67,6 +68,12 @@ Every lifecycle command takes the context: `yard -Y <name> {init,start,stop,stat
 logs,teardown,…}`. `yard -Y <name> teardown` removes only that yard's instance, project,
 volume, ssh snippet and state — never another yard's. Shared host objects (the storage pool,
 bridge, NetworkManager guard) are only removed when the last yard goes away.
+
+The dedicated nested-VM acceptance yard has the conventional name `e2e-yard`. Define it in
+`private/yards/e2e-yard.env` or `~/.config/subyard/yards/e2e-yard.env` by copying
+[`e2e-yard.env.example`](e2e-yard.env.example), then initialize it with `yard -Y e2e-yard init`.
+Its topology, trust boundary and lifecycle are documented in
+[`docs/test-vms.md`](../../docs/test-vms.md).
 
 ## Encrypted credential exchange
 

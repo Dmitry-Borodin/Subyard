@@ -7,32 +7,44 @@ proved by host-free contracts.
 The topology is:
 
 ```text
-L0 owner host
-└── L1 container yard
-    ├── inner Incus daemon + managed bridge
-    ├── e2e-vm-1
-    └── e2e-vm-2
+L0 host
+└── yard-e2e-yard                 INSTANCE_TYPE=container
+    └── inner Incus daemon        enabled by NESTED_E2E_VMS=1
+        ├── e2e-vm-1              virtual machine
+        └── e2e-vm-2              virtual machine
 ```
 
-The agent connects from the yard to each VM over the inner managed network. When the command is
-invoked on the owner host, the CLI enters the yard and runs the same worker there; it does not route
-the VM network onto L0.
+The inner Incus daemon also owns the managed bridge used by both VMs. The agent connects from the
+yard to each VM over that inner network. When the command is invoked on the owner host, the CLI
+enters the yard and runs the same worker there; it does not route the VM network onto L0.
 
-## Enable one trusted yard
+## Enable the `e2e-yard` trusted yard
 
-Keep the public default off. Add the opt-in to that yard's private or machine-local definition:
+`e2e-yard` is an ordinary named yard reserved for this acceptance lane. The name is public and
+stable; it derives the L0 instance `yard-e2e-yard`, Incus project `subyard-e2e-yard` and SSH alias
+`yard-e2e-yard`. It must still have a registry file because every named yard needs a unique host SSH
+port. Copy the public [E2E yard template](../config/yards/e2e-yard.env.example) to either
+`private/yards/e2e-yard.env` or `~/.config/subyard/yards/e2e-yard.env`, then change `SSH_PORT` if
+port 2223 is already assigned on the host. For example, a machine-local registry entry can be
+created with:
 
 ```sh
-NESTED_E2E_VMS=1
-E2E_VM_CPU=2
-E2E_VM_MEMORY=4GiB
-E2E_VM_TTL_MINUTES=240
+install -d -m 0700 ~/.config/subyard/yards
+install -m 0600 config/yards/e2e-yard.env.example ~/.config/subyard/yards/e2e-yard.env
 ```
+
+The checked-in template is dormant: `config/yards/` is documentation, not a yard registry. The
+explicit copy is the trust decision that opts this named yard into the wider nested-VM boundary.
+
+The outer `e2e-yard` deliberately remains a container. `NESTED_E2E_VMS=1` provisions the inner
+Incus daemon there; that daemon creates the fixed virtual machines `e2e-vm-1` and `e2e-vm-2` with
+the Incus `--vm` flag. Setting `INSTANCE_TYPE=vm` would instead make the outer yard itself a VM and
+is rejected for this nested test mode.
 
 Then reconcile it from the owner host:
 
 ```sh
-yard -Y <name> init
+yard -Y e2e-yard init
 ```
 
 The host preflight fails before mutation unless `/dev/kvm`, `/dev/vsock`,
@@ -40,32 +52,57 @@ The host preflight fails before mutation unless `/dev/kvm`, `/dev/vsock`,
 
 - allows only the device-cgroup BPF interception needed by nested Incus;
 - passes those four devices into the L1 container;
-- installs Incus 6.0 LTS and QEMU inside the yard;
+- installs Incus 6.0 LTS, QEMU, Go and ShellCheck inside the trusted developer yard;
 - creates an inner dir pool and managed NAT bridge;
 - installs the fixed lifecycle worker and a TTL cleanup timer;
 - grants the yard's `dev` user `incus-admin` access to the **inner** daemon.
+
+On hosts combining AppArmor 4.1 userspace with a 6.8 outer kernel, the fine-grained AF_UNIX policy
+compiled for QEMU can be rejected because the parser and kernel disagree on socket type/protocol
+encoding. Incus then cannot create its mandatory SPICE socketpair. The provisioner uses Incus'
+documented `INCUS_SECURITY_APPARMOR=false` server switch for the **inner daemon only**. The inner
+daemon is already root-equivalent to the trusted yard user and controls only this disposable lab;
+the outer `yard-e2e-yard` AppArmor profile remains active and continues to enforce the L0 boundary.
+The restricted VM project therefore needs no `raw.apparmor` or low-level configuration allowance.
 
 Changing the non-live boundary settings requires a yard restart. The normal SSH/VS Code activity
 guard refuses that restart while a session is connected; close the remote session and rerun init.
 
 ## Use and remove the lab
 
+Allocation is an operator decision. The operator starts the trusted outer yard, creates the two
+VMs, and later removes them and stops the yard. An agent may use an already allocated lab and copy
+the candidate under test into it, but must not invoke `up`, `down`, `start` or `stop` itself.
+
+Named yards are stopped after initialization by default. The complete operator lifecycle is:
+
 ```sh
-yard -Y <name> test-vms up
-yard -Y <name> test-vms status
-yard -Y <name> test-vms ssh 1
-yard -Y <name> test-vms exec 2 -- sudo systemctl status ssh
-yard -Y <name> test-vms down
+yard -Y e2e-yard start
+yard -Y e2e-yard test-vms up
+# The agent now delivers and tests its candidate without changing allocation state.
+yard -Y e2e-yard test-vms down
+yard -Y e2e-yard stop
 ```
 
-The same commands work from a checkout opened inside that yard. SSH uses a synthetic key created
-for this lab, pins each VM host key, logs in as `dev`, and provides passwordless `sudo` inside the
-VMs. No host or production credential is copied.
+After `up` reports both VMs ready, the agent owns `status`, candidate delivery and all test/exec
+operations. Those commands also work from a checkout opened inside the trusted yard. SSH uses a
+synthetic key created for this lab, pins each VM host key, logs in as `dev`, and provides
+passwordless `sudo` inside the VMs. Guest interface names are discovered from Incus network state;
+the worker does not assume that the guest preserves the Incus device name `eth0`. Debian 13 also
+requires the synthetic account not to be shadow-locked before OpenSSH accepts its public key. The
+worker uses an intentionally invalid password-hash marker for that purpose and verifies that SSH
+password authentication remains disabled. No host or production credential is copied.
+
+Candidate delivery must not assume that a cloud image enables the SFTP subsystem. The agent runner
+uses an SSH byte stream with an explicit checksum rather than ordinary SFTP-mode `scp`.
 
 `up` creates a restricted inner project with a hard limit of two VMs and aggregate CPU/RAM limits.
-Both instances and the project carry a Subyard ownership marker. A partial `up` is cleaned
-automatically. `down` refuses a force-delete if the project contains an unexpected instance or a
-marker does not match. The in-yard systemd timer performs the same guarded cleanup after the TTL.
+Each VM receives a 30 GiB root disk by default so it can pass Subyard's 20 GiB free-space preflight.
+Both instances and the project carry a Subyard ownership marker. A failed `up` writes bounded
+diagnostics to the lab state directory and leaves the partial allocation in place for inspection;
+only the operator's `down` or the TTL cleaner removes it. `down` refuses cleanup if the project
+contains an unexpected instance or a marker does not match; after explicitly deleting the two known
+VMs, it uses a normal non-interactive project deletion that fails if any other resource remains.
 
 Run `down` before disabling `NESTED_E2E_VMS`.
 
@@ -75,7 +112,9 @@ This mode deliberately widens the L0/L1 boundary and must not be enabled for an 
 
 - KVM and vsock devices become reachable by root inside the yard;
 - device-cgroup eBPF calls are intercepted by the L0 Incus daemon;
-- the yard user receives root-equivalent control of the inner Incus daemon.
+- the yard user receives root-equivalent control of the inner Incus daemon;
+- per-instance AppArmor profiles are disabled in that inner daemon to avoid the nested
+  parser/kernel ABI mismatch; the outer yard profile remains enforced.
 
 It does **not** pass the L0 Incus Unix socket, host Docker socket, host paths, production keys or
 other yard projects. Normal yards retain the stricter default because `NESTED_E2E_VMS=0` explicitly

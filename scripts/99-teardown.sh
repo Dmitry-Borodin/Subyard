@@ -165,18 +165,18 @@ if [ "$KEEP_DATA" = 0 ]; then
       printf '%s\n' "$others" | sed 's/^/      - /'
     else
       # Clear the admin-init 'default' profile so the network/pool are unreferenced.
-      incus profile device remove default eth0 >/dev/null 2>&1 || true
-      incus profile device remove default root >/dev/null 2>&1 || true
-      if ! incus network show "$BRIDGE" >/dev/null 2>&1; then
+      incus profile device remove default eth0 --project default >/dev/null 2>&1 || true
+      incus profile device remove default root --project default >/dev/null 2>&1 || true
+      if ! incus network show "$BRIDGE" --project default >/dev/null 2>&1; then
         bridge_gone=1; ok "bridge '$BRIDGE' absent"
-      elif incus network delete "$BRIDGE" >/dev/null 2>&1; then
+      elif incus network delete "$BRIDGE" --project default >/dev/null 2>&1; then
         bridge_gone=1; ok "deleted bridge '$BRIDGE'"
       else
         warn "bridge '$BRIDGE' not deleted (still in use) — keeping the NetworkManager guard"
       fi
-      if ! incus storage show "$STORAGE_POOL" >/dev/null 2>&1; then
+      if ! incus storage show "$STORAGE_POOL" --project default >/dev/null 2>&1; then
         pool_gone=1; ok "storage pool '$STORAGE_POOL' absent"
-      elif incus storage delete "$STORAGE_POOL" >/dev/null 2>&1; then
+      elif incus storage delete "$STORAGE_POOL" --project default >/dev/null 2>&1; then
         pool_gone=1; ok "deleted storage pool '$STORAGE_POOL'"
       else
         warn "pool '$STORAGE_POOL' not deleted (still in use) — keeping its data dir to avoid an orphan"

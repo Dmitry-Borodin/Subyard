@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# SSH config updates avoid predictable stale temp files and remain atomic/idempotent.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+
+# shellcheck source=scripts/lib/ssh-config.sh
+. "$ROOT/scripts/lib/ssh-config.sh"
+
+sshdir="$TMP/.ssh"
+config="$sshdir/config"
+legacy_temp="$config.tmp"
+mkdir -m 0700 "$sshdir"
+printf 'Host existing\n    HostName example.test\n' > "$config"
+printf 'legacy-stale-temp\n' > "$legacy_temp"
+legacy_digest="$(sha256sum "$legacy_temp" | awk '{print $1}')"
+chmod 000 "$legacy_temp"
+
+ssh_config_prepend_once "$config" 'Include subyard-e2e-yard.config' \
+  || fail 'could not prepend with a stale predictable temp present'
+ssh_config_prepend_once "$config" 'Include subyard-e2e-yard.config' \
+  || fail 'idempotent prepend failed'
+
+[ "$(grep -c '^Include subyard-e2e-yard\.config$' "$config")" -eq 1 ] \
+  || fail 'Include was missing or duplicated'
+[ "$(sed -n '1p' "$config")" = 'Include subyard-e2e-yard.config' ] \
+  || fail 'Include was not prepended'
+[ "$(stat -c '%a' "$legacy_temp")" = 0 ] || fail 'legacy temp mode was modified'
+chmod 0600 "$legacy_temp"
+[ "$(sha256sum "$legacy_temp" | awk '{print $1}')" = "$legacy_digest" ] \
+  || fail 'legacy temp content was modified'
+[ "$(stat -c '%a' "$config")" = 600 ] || fail 'SSH config mode is not 0600'
+if find "$sshdir" -maxdepth 1 -name '.subyard-ssh-config.*' -print -quit | grep -q .; then
+  fail 'atomic update left a staging file'
+fi
+
+printf 'ok: SSH config update is atomic, idempotent and ignores stale predictable temp files\n'

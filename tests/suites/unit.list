@@ -5,3 +5,5 @@ emulator-process-identity.sh
 lib-power-network.sh
 project-state-store.sh
 reconcile-resume.sh
+runtime-privilege-reexec.sh
+ssh-config.sh

@@ -6,13 +6,25 @@ SUBYARD_HOST_SOURCED=1
 
 require_root() {
   [ "$(id -u)" -eq 0 ] && return 0
-  local why="${1:-it changes the host system}"
+  local why="${1:-it changes the host system}" operator_user operator_home name
+  local -a elevated_env
   if command -v sudo >/dev/null 2>&1; then
+    operator_user="${SUBYARD_USER:-${SUDO_USER:-$(id -un)}}"
+    operator_home="${SUBYARD_OPERATOR_HOME:-$(subyard_operator_home)}"
+    elevated_env=(
+      "SUBYARD_ELEVATED=1"
+      "SUBYARD_USER=$operator_user"
+      "SUBYARD_OPERATOR_HOME=$operator_home"
+    )
+    # Preserve the normalized operator-owned roots and selected named yard across sudo's clean
+    # environment. Do not pass arbitrary ambient variables or credentials to the root process.
+    for name in SUBYARD_CONFIG_DIR SUBYARD_CONFIG_HOME SUBYARD_HOME \
+      SUBYARD_YARD SUBYARD_YARD_EXPLICIT; do
+      [ -z "${!name:-}" ] || elevated_env+=("$name=${!name}")
+    done
     warn "this needs root: $why"
     info "re-running under sudo (you'll be asked for your password)…"
-    exec sudo -- env SUBYARD_ELEVATED=1 \
-      ${SUBYARD_YARD:+SUBYARD_YARD="$SUBYARD_YARD"} \
-      ${SUBYARD_YARD_EXPLICIT:+SUBYARD_YARD_EXPLICIT="$SUBYARD_YARD_EXPLICIT"} \
+    exec sudo -- env "${elevated_env[@]}" \
       "$SUBYARD_SCRIPT_PATH" ${SUBYARD_SCRIPT_ARGV[@]+"${SUBYARD_SCRIPT_ARGV[@]}"}
   fi
   printf '\n%sNeeds root and sudo is not installed — run as root:%s\n    %s%s %s%s\n\n' \

@@ -41,9 +41,9 @@ func YardNames(directories ...string) ([]string, error) {
 	return append(names, discovered...), nil
 }
 
-func RegistryDirectories(repositoryRoot, configHome string) []string {
+func RegistryDirectories(configDir, configHome string) []string {
 	return []string{
-		filepath.Join(repositoryRoot, "private", "yards"),
+		filepath.Join(configDir, "..", "private", "yards"),
 		filepath.Join(configHome, "yards"),
 	}
 }

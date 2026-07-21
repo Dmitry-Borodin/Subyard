@@ -35,12 +35,17 @@ actual="$(sha256sum "$worker" | awk '{print $1}')"
 if [ "$WANT_ENABLED" = 1 ]; then
   command -v incus >/dev/null
   command -v qemu-system-x86_64 >/dev/null
+  command -v go >/dev/null
+  command -v shellcheck >/dev/null
   dpkg --compare-versions "$(incus --version)" ge 6.0.6
   systemctl is-active --quiet incus.service
+  grep -Fxq 'Environment=INCUS_SECURITY_APPARMOR=false' \
+    /etc/systemd/system/incus.service.d/subyard-nested-e2e.conf
   systemctl is-enabled --quiet subyard-test-vms-gc.timer
   for node in /dev/kvm /dev/vsock /dev/vhost-vsock /dev/net/tun; do [ -c "$node" ]; done
 else
   ! systemctl is-active --quiet subyard-test-vms-gc.timer
+  [ ! -e /etc/systemd/system/incus.service.d/subyard-nested-e2e.conf ]
 fi
 CHECK
 }

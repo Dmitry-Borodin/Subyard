@@ -28,6 +28,8 @@ subyard_context_load
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
+# shellcheck source=scripts/lib/ssh-config.sh
+. "$SCRIPT_DIR/lib/ssh-config.sh"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -138,9 +140,8 @@ chmod 600 "$snip"
 cfg="$sshdir/config"; touch "$cfg"; chmod 600 "$cfg"
 # Prepend this yard's Include once (must precede Host blocks to apply globally). One line per
 # snippet file, idempotent: each yard has its own `Include subyard[-<name>].config`.
-if ! grep -qxF "Include $snip_name" "$cfg"; then
-  { printf 'Include %s\n' "$snip_name"; cat "$cfg"; } > "$cfg.tmp" && mv -f "$cfg.tmp" "$cfg"
-fi
+ssh_config_prepend_once "$cfg" "Include $snip_name" \
+  || die "could not update SSH config: $cfg"
 ok "ssh Host '$SSH_HOST' ready (~/.ssh/$snip_name)"
 
 echo

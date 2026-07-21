@@ -32,4 +32,19 @@ reconcile_run_stages
 reconcile_run_stages
 [ "$(wc -l < "$TMP/log")" -eq 1 ] || { printf 'FAIL: converged stage reapplied\n' >&2; exit 1; }
 
+# The native engine exports the selected yard as INCUS_PROJECT, which is also interpreted by the
+# Incus CLI. Before a named project's creation, host pool/network probes must remain in `default`.
+INCUS_PROJECT=subyard-e2e-yard
+STORAGE_POOL=default
+INCUS_BRIDGE=incusbr0
+reconcile_incus_reachable() { return 0; }
+incus() {
+  case "$*" in
+    'storage show default --project default' | 'network show incusbr0 --project default') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+stage_incus_initialized \
+  || { printf 'FAIL: named yard redirected host bootstrap probes away from default project\n' >&2; exit 1; }
+
 printf 'ok: init stage registry applies once and verifies convergence\n'

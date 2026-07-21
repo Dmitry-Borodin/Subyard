@@ -311,7 +311,7 @@ func (cli *CLI) runStatus(ctx context.Context, loaded config.Loaded, arguments [
 		return cli.printYardStatus(ctx, loaded)
 	}
 	names, err := config.YardNames(config.RegistryDirectories(
-		cli.options.RepositoryRoot, loaded.Context.Paths.ConfigHome,
+		loaded.Context.Paths.ConfigDir, loaded.Context.Paths.ConfigHome,
 	)...)
 	if err != nil {
 		cli.errorf("discover yards: %v", err)
@@ -546,7 +546,7 @@ func (cli *CLI) runProjectList(
 		}
 	}
 	names, err := config.YardNames(config.RegistryDirectories(
-		cli.options.RepositoryRoot, loaded.Context.Paths.ConfigHome,
+		loaded.Context.Paths.ConfigDir, loaded.Context.Paths.ConfigHome,
 	)...)
 	if err != nil {
 		cli.errorf("discover yards: %v", err)
@@ -1199,7 +1199,7 @@ func (cli *CLI) resolveLocalProject(
 }
 
 func (cli *CLI) projectStores(ctx context.Context, yard domain.Context) (map[string]ports.ProjectStore, error) {
-	names, err := config.YardNames(config.RegistryDirectories(cli.options.RepositoryRoot, yard.Paths.ConfigHome)...)
+	names, err := config.YardNames(config.RegistryDirectories(yard.Paths.ConfigDir, yard.Paths.ConfigHome)...)
 	if err != nil {
 		return nil, err
 	}

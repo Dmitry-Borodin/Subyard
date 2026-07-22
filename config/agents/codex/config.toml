@@ -1,15 +1,12 @@
 # Codex default config for the yard (config/agents.env → AGENT_codex_CONFIG).
-# The container is the isolation boundary, so Codex runs with a permissive sandbox and
+# The container is the isolation boundary, so Codex runs with full local permissions and
 # unrestricted network for free local work. Publishing git history is gated at the Codex
 # level — every `git commit` and `git push` prompts the operator via
 # ~/.codex/rules/repo.rules — instead of a yard-wide git shim. Override with a fuller private
 # config via AGENT_codex_CONFIG.
 
-approval_policy = "on-request"   # run sandboxed commands freely; prompt only on a rule or escape
+approval_policy = "on-request"   # run local commands freely; prompt on explicit command rules
 approvals_reviewer = "user"      # commit/push prompts are routed to the operator
-sandbox_mode = "workspace-write"
-
-[sandbox_workspace_write]
-network_access = true            # the yard wants unrestricted network inside the container
+default_permissions = ":danger-full-access"
 
 # Sudo is governed by DEV_SUDO (config/subyard.env), not gated here.

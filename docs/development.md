@@ -17,6 +17,11 @@ sudo apt-get update
 sudo apt-get install -y golang-go gcc make shellcheck jq
 ```
 
+Inside a yard dedicated to Subyard development, enable the `subyard-dev` profile and run `yard
+provision subyard-dev` from the owner host. The profile installs the Debian Go bootstrap and
+ShellCheck in L1, while `go.mod` still selects the exact compiler and shared Go caches live under
+`/srv/cache`.
+
 Debian 13 currently ships an older bootstrap Go than the Incus client requires. That is acceptable
 for source development because Go follows the module's `toolchain` directive. Confirm the selected
 compiler with `go version` after the first build.

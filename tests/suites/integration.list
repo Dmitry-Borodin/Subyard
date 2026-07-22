@@ -9,6 +9,7 @@ profile-resource-lifecycle.sh
 project-code.sh
 project-registry-convergence.sh
 remote-projects.sh
+subyard-dev-provision.sh
 vscode-remote-maintenance.sh
 yard-ctl-stop.sh
 yard-keys.sh

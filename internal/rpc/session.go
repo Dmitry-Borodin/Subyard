@@ -168,13 +168,17 @@ func (session Session) Serve(ctx context.Context, input io.Reader, output io.Wri
 		workers.Add(1)
 		go func(request Request, operationID string) {
 			defer workers.Done()
-			defer func() {
-				operationsMu.Lock()
-				delete(operations, operationID)
-				operationsMu.Unlock()
-				cancel(nil)
-				deadlineCancel()
-			}()
+			var finishOnce sync.Once
+			finish := func() {
+				finishOnce.Do(func() {
+					operationsMu.Lock()
+					delete(operations, operationID)
+					operationsMu.Unlock()
+					cancel(nil)
+					deadlineCancel()
+				})
+			}
+			defer finish()
 			emit := func(event string, data any) (uint64, error) {
 				encoded, err := json.Marshal(data)
 				if err != nil {
@@ -198,6 +202,9 @@ func (session Session) Serve(ctx context.Context, input io.Reader, output io.Wri
 				response.Result = nil
 				response.Error = asFault(err)
 			}
+			// A response makes the operation observably complete. Release its ID before enqueueing
+			// that response so a client can immediately use the same ID for the next protocol phase.
+			finish()
 			_ = enqueue(response)
 		}(request, operationID)
 	}

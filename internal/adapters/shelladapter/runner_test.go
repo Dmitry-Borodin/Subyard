@@ -19,6 +19,8 @@ set -eu
 metadata="$(cat <&3)"
 secret="$(cat)"
 printf '%s' "$metadata" | grep -F '"value":"a b;$(nope)"' >/dev/null
+[ "$yard" = default ]
+[ "$SUBYARD_OPERATION_ID" = operation-1 ]
 printf '%s' "$secret" >&2
 printf '%s' '{"schema":1,"operationId":"operation-1","status":"ok","output":{"seen":"a b;$(nope)"}}'
 `)
@@ -33,6 +35,30 @@ printf '%s' '{"schema":1,"operationId":"operation-1","status":"ok","output":{"se
 	}
 	if stderr != "[REDACTED]" {
 		t.Fatalf("secret leaked through stderr: %q", stderr)
+	}
+}
+
+func TestRunnerPassesValidatedArgumentsWithoutShellEvaluation(t *testing.T) {
+	runner := fixtureRunner(t, `#!/bin/sh
+set -eu
+[ "$1" = run ]
+[ "$2" = 'a b;$(nope)' ]
+printf '%s' '{"schema":1,"operationId":"operation-1","status":"ok"}'
+`)
+	request := fixtureRequest()
+	request.Arguments = []string{"a b;$(nope)"}
+	if _, _, err := runner.Run(context.Background(), request, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunnerRejectsReservedContextEnvironment(t *testing.T) {
+	runner := fixtureRunner(t, "#!/bin/sh\nexit 0\n")
+	runner.ContextKeys["PATH"] = struct{}{}
+	request := fixtureRequest()
+	request.Context["PATH"] = "/tmp/untrusted"
+	if _, _, err := runner.Run(context.Background(), request, nil); err == nil {
+		t.Fatal("reserved adapter environment was accepted")
 	}
 }
 

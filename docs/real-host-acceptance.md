@@ -40,12 +40,13 @@ Exercise a synthetic project through `sync`, `list --live`, `shell`, `export`, a
 active profile resource through bring-up/status/shutdown. Android emulator process checks must stay
 user-scoped and argv-anchored.
 
-The host-free `tests/engine-release.sh` already proves artifact checksums, upgrade/rollback layout,
-stdio half-close and supported/unsupported protocol negotiation. On the real lane, install its two
-versioned artifacts on a dedicated owner, connect from a second controller over SSH stdio, upgrade
-the owner while the controller stays on the previous version, and then run
-`scripts/install-engine-release.sh --rollback`. The upgrade path runs `_migrate apply` before its
-switch; rollback runs a compatibility check against the retained engine before its switch.
+The host-free `tests/engine-release.sh` already proves engine and full-runtime checksums/provenance,
+offline and incomplete-download behavior, atomic upgrade/rollback layout, stdio half-close and
+supported/unsupported protocol negotiation. On the real lane, install two versioned runtimes on a
+dedicated owner, connect from a second controller over SSH stdio, upgrade the owner while the
+controller stays on the previous version, and then run `yard update --rollback`. The upgrade path
+runs `_migrate apply` before switching `current`; rollback checks the retained runtime before swapping
+`current` and `previous`.
 
 Use two synthetic credential peers to exercise pinned SOPS/age tooling and the real SSH path:
 reciprocal trust, a shared record, an exclusive assignment move, sync, materialization and revoke.

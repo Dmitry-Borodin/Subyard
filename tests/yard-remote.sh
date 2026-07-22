@@ -177,7 +177,7 @@ assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" 'subyard-remote-two '
 # Steady-state data-plane preflights preserve and classify SSH failures instead of turning every
 # error into a false "start it" hint.
 run_reachable() {
-  SUBYARD_YARD=one PROG=yard bash -c 'CONTROL_PLANE_ROOT="$1"; . "$1/tests/helpers/source-control-plane.sh"; . "$1/scripts/state/store.sh"; . "$1/scripts/state/resolver.sh"; . "$1/scripts/state/transport.sh"; . "$1/scripts/state/metadata.sh"; require_remote_reachable' _ "$ROOT"
+  SUBYARD_YARD=one PROG=yard bash -c 'CONTROL_PLANE_ROOT="$1"; . "$1/tests/helpers/source-control-plane.sh"; . "$1/scripts/state/transport.sh"; require_remote_reachable' _ "$ROOT"
 }
 cp "$TMP/state/four.pub" "$TMP/state/keys/yard-one.pub"
 if output="$(run_reachable 2>&1)"; then fail 'changed-key reachability probe succeeded'; fi

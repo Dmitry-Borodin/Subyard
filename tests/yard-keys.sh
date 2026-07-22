@@ -17,6 +17,40 @@ export SUBYARD_KEYS_SYSTEMD_DIR="$TMP/systemd"
 export SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE=1
 export TMPDIR="$TMP/tmp"
 mkdir -p "$HOME" "$TMPDIR" "$SUBYARD_CONFIG_HOME/yards" "$SUBYARD_KEYS_TOOLS_DIR/bin"
+install -d "$SUBYARD_HOME/runtime/current/bin"
+ln -s "$ROOT/bin/yard" "$SUBYARD_HOME/runtime/current/bin/yard"
+
+# A forced/non-login SSH command has no ambient user-bus variables. The installer must address the
+# lingered user manager explicitly so real-host initialization can enable its timer from that path.
+mkdir -p "$TMP/timer-bin"
+cat > "$TMP/timer-bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s|%s|%s\n' "${XDG_RUNTIME_DIR:-}" "${DBUS_SESSION_BUS_ADDRESS:-}" "$*" \
+  >> "$SYSTEMCTL_CALLS"
+SH
+cat > "$TMP/timer-bin/loginctl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'show-user '*'-p Linger --value') printf 'yes\n' ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$TMP/timer-bin/systemctl" "$TMP/timer-bin/loginctl"
+SYSTEMCTL_CALLS="$TMP/systemctl-calls" \
+SUBYARD_KEYS_SYSTEMD_DIR="$TMP/live-systemd" \
+SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE=0 \
+PATH="$TMP/timer-bin:$PATH" \
+ASSUME_YES=1 \
+  "$ROOT/scripts/install-keys-auto-sync.sh" >/dev/null
+expected_runtime="/run/user/$(id -u)"
+grep -Fxq "$expected_runtime|unix:path=$expected_runtime/bus|--user show-environment" "$TMP/systemctl-calls" \
+  || fail 'credential timer did not address the lingered user manager from a non-login command'
+grep -Fxq "$expected_runtime|unix:path=$expected_runtime/bus|--user daemon-reload" "$TMP/systemctl-calls" \
+  || fail 'credential timer reload lost the explicit user-bus environment'
+grep -Fxq "$expected_runtime|unix:path=$expected_runtime/bus|--user enable --now subyard-keys-sync.timer" \
+  "$TMP/systemctl-calls" || fail 'credential timer enable lost the explicit user-bus environment'
 
 # Small deterministic test doubles preserve the CLI contract without CI network. Revision files
 # still contain no plaintext and are signed with real per-host OpenSSH signing identities.

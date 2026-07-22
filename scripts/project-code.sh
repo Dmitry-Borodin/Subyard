@@ -32,15 +32,10 @@ subyard_context_load
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
-# shellcheck source=scripts/state/store.sh
-. "$SCRIPT_DIR/state/store.sh"
-# shellcheck source=scripts/state/resolver.sh
-. "$SCRIPT_DIR/state/resolver.sh"
 # shellcheck source=scripts/state/transport.sh
 . "$SCRIPT_DIR/state/transport.sh"
-# shellcheck source=scripts/state/metadata.sh
-. "$SCRIPT_DIR/state/metadata.sh"
-state_validate_all || die "project state validation failed"
+# shellcheck source=scripts/lib/project-snapshot.sh
+. "$SCRIPT_DIR/lib/project-snapshot.sh"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -55,21 +50,12 @@ DEV_GID="${DEV_GID:-1000}"
 CODE_RECOMMENDED_EXTENSIONS="${CODE_RECOMMENDED_EXTENSIONS:-anthropic.claude-code openai.chatgpt sst-dev.opencode}"
 PROJ=(--project "$INCUS_PROJECT")
 
-arg="."
 for a in "$@"; do
-  case "$a" in -y|--yes) ;; -*) die "unknown option '$a'" ;; *) arg="$a" ;; esac
+  case "$a" in -y|--yes) ;; -*) die "unknown option '$a'" ;; *) : ;; esac
 done
 
-# Accept a path (default '.'), an exact id, or a project NAME. maybe_reconcile registers on
-# demand a project that lives only in the yard (explicit context); resolve_project_ctx then
-# resolves across yards and re-execs in the owning yard.
-maybe_reconcile "$arg"
-resolve_project_ctx "$arg"
-id="$RESOLVED_ID"
-yardPath="$(state_get "$id" yardPath)"
-host="$(state_get "$id" sshHost)"; host="${host:-$SSH_HOST}"
-name="$(state_get "$id" name)"; name="${name:-$id}"
-target="$(state_get "$id" target)"
+project_snapshot_load
+host="${SUBYARD_PROJECT_SSH_HOST:-$SSH_HOST}"
 
 # target=<profile> => the project runs in an L2 box. VS Code reaches a container inside the
 # yard by first connecting to the yard over Remote-SSH and then attaching to the container
@@ -80,7 +66,7 @@ if [ -n "$target" ] && [ "$target" != yard ]; then
   info "'$name' runs in an L2 project-env box (target=$target)."
   cat <<MSG
 To edit inside the box (Dev Containers "Attach to Running Container"):
-  1) ${PROG:-yard} up $arg                  # ensure the box is running
+  1) ${PROG:-yard} up $id                   # ensure the box is running
   2) in the VS Code window that opens (connected to the yard over Remote-SSH),
      run "Dev Containers: Attach to Running Container" -> $box_cname  (folder /workspace)
 Opening the Remote-SSH entry to the yard now ...

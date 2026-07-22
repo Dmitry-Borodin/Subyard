@@ -141,7 +141,10 @@ reexec_under_group() {
 # must not create a second yard on a port another yard already claims); a plain `yard check`
 # leaves that check advisory (warn only).
 host_preflight() {
-  SUBYARD_PREFLIGHT_STRICT=1 "$SCRIPT_DIR/00-check-host.sh" \
+  local base_present=0
+  stage_instance_exists && base_present=1
+  SUBYARD_PREFLIGHT_STRICT=1 SUBYARD_PREFLIGHT_BASE_PRESENT="$base_present" \
+    "$SCRIPT_DIR/00-check-host.sh" \
     || die "host preflight failed — fix the items above, then re-run '$(yard_cmd_hint) init'"
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -17,12 +18,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/credentialmeta"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/incusclient"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/projectruntime"
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/shelladapter"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/statusruntime"
 	"github.com/Dmitry-Borodin/Subyard/internal/application"
 	"github.com/Dmitry-Borodin/Subyard/internal/audit"
@@ -55,6 +58,10 @@ type Options struct {
 	ProjectObserver ports.ProjectObserver
 	StatusFacts     ports.StatusFactsReader
 	Credentials     ports.CredentialMetadataReader
+	AdapterRunner   ports.AdapterRunner
+	Prompt          ports.Prompter
+	Clock           ports.Clock
+	Audit           ports.AuditSink
 }
 
 type CLI struct {
@@ -179,12 +186,37 @@ func (cli *CLI) Run(ctx context.Context) int {
 	if cli.env["SUBYARD_OPERATION_ID"] == "" {
 		cli.env["SUBYARD_OPERATION_ID"] = newOperationID()
 	}
+	var projectRun *projectExecution
+	if !commandHelpRequested(commandArguments) {
+		projectRun, err = cli.prepareProjectExecution(ctx, loaded, definition, commandArguments, explicit)
+		if err != nil {
+			cli.errorf("prepare %s: %v", name, err)
+			return 1
+		}
+	}
+	if projectRun != nil {
+		loaded = projectRun.Loaded
+		loadedContext = loaded.Context
+		commandArguments = projectRun.Arguments
+		for key, value := range projectRun.Environment {
+			cli.env[key] = value
+		}
+	}
 	remote := ""
 	if loadedContext.YardType == domain.YardRemote {
 		remote = loadedContext.RemoteDest
 	}
 	if name != "_info" && cli.env["SUBYARD_NO_AUDIT"] == "" {
 		cli.audit(name, commandArguments, yard, remote)
+	}
+	if core && definition.Name == "start" {
+		return cli.runStructuredStart(ctx, loaded, definition, commandArguments,
+			yes || cli.env["ASSUME_YES"] == "1")
+	}
+	if core && definition.Effect == command.EffectMutate && structuredCommandSupported(definition.Name) &&
+		!commandHelpRequested(commandArguments) {
+		return cli.runStructuredCommand(ctx, loaded, definition, commandArguments,
+			yes || cli.env["ASSUME_YES"] == "1", projectRun)
 	}
 	target, routeErr := application.Route(loadedContext, domain.RemotePolicy(remotePlane))
 	if routeErr != nil {
@@ -230,7 +262,14 @@ func (cli *CLI) Run(ctx context.Context) int {
 	if definition.Arg0 != "" {
 		handlerArguments = append([]string{definition.Arg0}, handlerArguments...)
 	}
-	return cli.runCommand(ctx, path, handlerArguments, cli.handlerEnvironment(definition.Name, definition.Arg0))
+	code := cli.runCommand(ctx, path, handlerArguments, cli.handlerEnvironment(definition.Name, definition.Arg0))
+	if code == 0 && projectRun != nil {
+		if err := cli.commitProjectExecution(ctx, projectRun); err != nil {
+			cli.errorf("commit %s: %v", name, err)
+			return 1
+		}
+	}
+	return code
 }
 
 func (cli *CLI) projectObserver() ports.ProjectObserver {
@@ -1327,11 +1366,389 @@ func (cli *CLI) runOwnerProjectState(
 func (cli *CLI) handlerEnvironment(name, arg0 string) map[string]string {
 	return map[string]string{
 		"YARD_ENGINE":              Version,
+		"YARD_VERSION":             Version,
 		"SUBYARD_DISPATCH_PATH":    cli.options.DispatcherPath,
 		"SUBYARD_DISPATCH_COMMAND": name,
 		"SUBYARD_DISPATCH_ARG0":    arg0,
 		"SUBYARD_REPOSITORY_ROOT":  cli.options.RepositoryRoot,
 	}
+}
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time                             { return time.Now() }
+func (wallClock) After(delay time.Duration) <-chan time.Time { return time.After(delay) }
+
+type fixedIDSource struct{ value string }
+
+func (source fixedIDSource) NewID() string { return source.value }
+
+type streamPrompt struct {
+	input  io.Reader
+	output io.Writer
+}
+
+func (prompt streamPrompt) Confirm(_ context.Context, summary string, consequences []string) (bool, error) {
+	fmt.Fprintf(prompt.output, "\n%s\nThis will:\n", summary)
+	for _, consequence := range consequences {
+		fmt.Fprintf(prompt.output, "  - %s\n", consequence)
+	}
+	fmt.Fprint(prompt.output, "\nProceed? [y/N] ")
+	answer, err := bufio.NewReader(prompt.input).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+type rpcOperationEvents struct{ emit rpc.Emit }
+
+func (events rpcOperationEvents) Publish(_ context.Context, event domain.OperationEvent) error {
+	_, err := events.emit(event.Kind, event)
+	return err
+}
+
+func (cli *CLI) operationOrchestrator(
+	operationID string,
+	loaded config.Loaded,
+	events ports.EventSink,
+) *application.Orchestrator {
+	clock := cli.options.Clock
+	if clock == nil {
+		clock = wallClock{}
+	}
+	prompt := cli.options.Prompt
+	if prompt == nil {
+		prompt = streamPrompt{input: cli.options.Stdin, output: cli.options.Stdout}
+	}
+	runner := cli.options.AdapterRunner
+	if runner == nil {
+		contextValues := structuredAdapterContext(loaded.Context)
+		contextKeys := make(map[string]struct{}, len(contextValues))
+		for key := range contextValues {
+			contextKeys[key] = struct{}{}
+		}
+		for _, key := range []string{
+			"SUBYARD_PROJECT_SNAPSHOT", "SUBYARD_PROJECT_ID", "SUBYARD_PROJECT_NAME",
+			"SUBYARD_PROJECT_HOST_PATH", "SUBYARD_PROJECT_YARD_PATH", "SUBYARD_PROJECT_MODE",
+			"SUBYARD_PROJECT_SSH_HOST", "SUBYARD_PROJECT_TARGET", "SUBYARD_PROJECT_PROFILE",
+			"SUBYARD_PROJECT_DEVICE", "SUBYARD_PROJECT_EXISTS", "SUBYARD_PROJECT_PROFILES",
+		} {
+			contextKeys[key] = struct{}{}
+		}
+		commandAdapter := filepath.Join(cli.options.RepositoryRoot, "scripts", "adapters", "command.sh")
+		runner = shelladapter.Runner{
+			RepositoryRoot: cli.options.RepositoryRoot,
+			Allow: map[string]map[string]string{"yard-control": {
+				"start": filepath.Join(cli.options.RepositoryRoot, "scripts", "adapters", "yard-control.sh"),
+			}, "command": {
+				"init": commandAdapter, "provision": commandAdapter, "test-vms": commandAdapter,
+				"stop": commandAdapter, "teardown": commandAdapter, "sync": commandAdapter,
+				"bind": commandAdapter, "clone": commandAdapter, "export": commandAdapter,
+				"remove": commandAdapter, "up": commandAdapter, "down": commandAdapter,
+				"remote": commandAdapter, "update": commandAdapter,
+			}},
+			ContextKeys: contextKeys,
+			Timeout:     10 * time.Minute,
+		}
+	}
+	auditSink := cli.options.Audit
+	if auditSink == nil && cli.env["SUBYARD_NO_AUDIT"] == "" {
+		home := cli.env["SUBYARD_HOME"]
+		if home == "" {
+			home = loaded.Context.Paths.DataHome
+		}
+		auditSink = audit.OperationLog{
+			Home: home, WorkingDir: cli.options.WorkingDir, Yard: loaded.Context.YardName,
+			Remote: loaded.Context.RemoteDest, Maximum: audit.MaximumFrom(cli.env["SUBYARD_AUDIT_MAX_BYTES"]),
+		}
+	}
+	return &application.Orchestrator{
+		Clock: clock, IDs: fixedIDSource{value: operationID}, Prompt: prompt,
+		Runner: runner, Audit: auditSink, Events: events,
+	}
+}
+
+func structuredAdapterContext(yard domain.Context) map[string]string {
+	boolValue := func(value bool) string {
+		if value {
+			return "1"
+		}
+		return "0"
+	}
+	yardName := yard.YardName
+	selectedYard := yardName
+	if yardName == "default" {
+		yardName = ""
+		selectedYard = ""
+	}
+	return map[string]string{
+		"YARD_VERSION":           Version,
+		"HOME":                   yard.Paths.OperatorHome,
+		"SUBYARD_OPERATOR_HOME":  yard.Paths.OperatorHome,
+		"SUBYARD_CONFIG_DIR":     yard.Paths.ConfigDir,
+		"SUBYARD_CONFIG_HOME":    yard.Paths.ConfigHome,
+		"SUBYARD_HOME":           yard.Paths.DataHome,
+		"SUBYARD_STATE_DIR":      yard.Paths.StateDir,
+		"SUBYARD_CONFIG_LOADED":  "1",
+		"SUBYARD_ENGINE_CONTEXT": "1",
+		"SUBYARD_YARD":           selectedYard,
+		"YARD_NAME":              yardName,
+		"YARD_TYPE":              string(yard.YardType),
+		"REMOTE_DEST":            yard.RemoteDest,
+		"REMOTE_YARD":            yard.RemoteYard,
+		"INSTANCE_TYPE":          string(yard.InstanceType),
+		"INSTANCE_NAME":          yard.InstanceName,
+		"INCUS_PROJECT":          yard.IncusProject,
+		"INCUS_BRIDGE":           yard.IncusBridge,
+		"SSH_HOST":               yard.SSHHost,
+		"SSH_PORT":               strconv.Itoa(yard.SSHPort),
+		"DEV_USER":               yard.DevUser,
+		"DEV_UID":                strconv.Itoa(yard.DevUID),
+		"DEV_SUDO":               boolValue(yard.DevSudo),
+		"FORWARD_SSH_AGENT":      boolValue(yard.ForwardSSHAgent),
+		"NESTED_E2E_VMS":         boolValue(yard.NestedE2EVMs),
+		"SHIFT_MODE":             yard.ShiftMode,
+		"STORAGE_PATH":           yard.Paths.StoragePath,
+		"HOST_BASE":              yard.Paths.HostBase,
+		"RESTRICTED_DISK_PATHS":  yard.Paths.HostBase,
+		"ASSUME_YES":             "1",
+		"PROG":                   cliProgramName,
+	}
+}
+
+const cliProgramName = "yard"
+
+func startPolicy(definition command.Definition, yard domain.Context) domain.CommandPolicy {
+	return domain.CommandPolicy{
+		Name: definition.Name, Effect: domain.CommandEffect(definition.Effect),
+		RemotePolicy: domain.RemotePolicy(definition.Remote),
+		Consequences: []string{
+			fmt.Sprintf("start Incus instance %s in project %s", yard.InstanceName, yard.IncusProject),
+			"verify the host route before and after the start",
+			"record desired power as running only after the safety checks pass",
+		},
+	}
+}
+
+func commandPolicy(
+	definition command.Definition,
+	yard domain.Context,
+	arguments []string,
+	project *projectExecution,
+) domain.CommandPolicy {
+	consequences := []string{
+		fmt.Sprintf("%s in yard %s", definition.Summary, yard.YardName),
+		fmt.Sprintf("execute the allowlisted physical adapter for %s", definition.Name),
+		"publish typed operation events and an audit result",
+	}
+	if len(arguments) != 0 {
+		consequences = append(consequences, "use validated arguments: "+strings.Join(arguments, " "))
+	}
+	if project != nil && project.Record.ProjectID != "" {
+		consequences = append(consequences, fmt.Sprintf("operate on project %s (%s)",
+			project.Record.Name, project.Record.ProjectID))
+		switch project.Commit {
+		case projectCommitPut:
+			consequences = append(consequences, "publish project state only after the physical operation succeeds")
+		case projectCommitDelete:
+			consequences = append(consequences, "delete project state only after physical cleanup succeeds")
+		}
+	}
+	return domain.CommandPolicy{
+		Name: definition.Name, Effect: domain.CommandEffect(definition.Effect),
+		RemotePolicy: domain.RemotePolicy(definition.Remote), Consequences: consequences,
+	}
+}
+
+func structuredCommandSupported(name string) bool {
+	switch name {
+	case "init", "provision", "test-vms", "stop", "teardown", "sync", "bind", "clone",
+		"export", "remove", "up", "down", "remote", "update":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandHelpRequested(arguments []string) bool {
+	for _, argument := range arguments {
+		if argument == "-h" || argument == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+func (cli *CLI) runStructuredCommand(
+	ctx context.Context,
+	loaded config.Loaded,
+	definition command.Definition,
+	arguments []string,
+	assumeYes bool,
+	project *projectExecution,
+) int {
+	for _, argument := range arguments {
+		if argument == "-y" || argument == "--yes" {
+			assumeYes = true
+		}
+	}
+	orchestrator := cli.operationOrchestrator(cli.env["SUBYARD_OPERATION_ID"], loaded, nil)
+	plan, err := orchestrator.Plan(ctx, loaded.Context,
+		commandPolicy(definition, loaded.Context, arguments, project), assumeYes)
+	if err != nil {
+		if errors.Is(err, application.ErrDeclined) {
+			cli.errorf("operation declined")
+		} else {
+			cli.errorf("plan %s: %v", definition.Name, err)
+		}
+		return 1
+	}
+	if plan.Target == domain.TargetRemoteOwner {
+		remoteArguments := append([]string(nil), arguments...)
+		hasYes := false
+		for _, argument := range remoteArguments {
+			hasYes = hasYes || argument == "-y" || argument == "--yes"
+		}
+		if !hasYes {
+			remoteArguments = append([]string{"--yes"}, remoteArguments...)
+		}
+		return cli.forwardRemote(ctx, loaded.Context, definition.Name, remoteArguments)
+	}
+	result, err := cli.executeStructuredCommand(ctx, orchestrator, loaded, definition, arguments,
+		plan, project, cli.options.Stdout)
+	if err != nil {
+		cli.errorf("%s: %v", definition.Name, err)
+		return 1
+	}
+	if result.Status != "ok" {
+		cli.errorf("%s adapter returned %s (%s)", definition.Name, result.Status, result.ErrorCode)
+		return 1
+	}
+	if project != nil {
+		if err := cli.commitProjectExecution(ctx, project); err != nil {
+			cli.errorf("commit %s: %v", definition.Name, err)
+			return 1
+		}
+	}
+	return 0
+}
+
+func (cli *CLI) executeStructuredCommand(
+	ctx context.Context,
+	orchestrator *application.Orchestrator,
+	loaded config.Loaded,
+	definition command.Definition,
+	arguments []string,
+	plan domain.OperationPlan,
+	project *projectExecution,
+	diagnostics io.Writer,
+) (domain.AdapterResult, error) {
+	handlerArguments := append([]string(nil), arguments...)
+	if definition.Arg0 != "" {
+		handlerArguments = append([]string{definition.Arg0}, handlerArguments...)
+	}
+	contextValues := structuredAdapterContext(loaded.Context)
+	if project != nil {
+		for key, value := range project.Environment {
+			contextValues[key] = value
+		}
+	}
+	request := domain.AdapterRequest{
+		Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
+		Adapter: "command", Action: definition.Name, Arguments: handlerArguments, Context: contextValues,
+	}
+	result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
+	if stderr != "" {
+		_, _ = io.WriteString(diagnostics, stderr)
+		if !strings.HasSuffix(stderr, "\n") {
+			_, _ = io.WriteString(diagnostics, "\n")
+		}
+	}
+	return result, err
+}
+
+func parseStructuredStartArguments(arguments []string, inheritedYes bool) (assumeYes, help bool, err error) {
+	assumeYes = inheritedYes
+	for _, argument := range arguments {
+		switch argument {
+		case "-y", "--yes":
+			assumeYes = true
+		case "-h", "--help":
+			help = true
+		default:
+			return false, false, fmt.Errorf("unknown option %q", argument)
+		}
+	}
+	return assumeYes, help, nil
+}
+
+func (cli *CLI) runStructuredStart(
+	ctx context.Context,
+	loaded config.Loaded,
+	definition command.Definition,
+	arguments []string,
+	inheritedYes bool,
+) int {
+	assumeYes, help, err := parseStructuredStartArguments(arguments, inheritedYes)
+	if err != nil {
+		cli.errorf("%v", err)
+		return 2
+	}
+	if help {
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s start [--yes]\n", cli.options.Program)
+		return 0
+	}
+	operationID := cli.env["SUBYARD_OPERATION_ID"]
+	orchestrator := cli.operationOrchestrator(operationID, loaded, nil)
+	plan, err := orchestrator.Plan(ctx, loaded.Context, startPolicy(definition, loaded.Context), assumeYes)
+	if err != nil {
+		if errors.Is(err, application.ErrDeclined) {
+			cli.errorf("operation declined")
+		} else {
+			cli.errorf("plan start: %v", err)
+		}
+		return 1
+	}
+	if plan.Target == domain.TargetRemoteOwner {
+		return cli.forwardRemote(ctx, loaded.Context, definition.Name, []string{"--yes"})
+	}
+	result, err := cli.executeStructuredStart(ctx, orchestrator, loaded.Context, plan, cli.options.Stdout)
+	if err != nil {
+		cli.errorf("start: %v", err)
+		return 1
+	}
+	if result.Status != "ok" {
+		cli.errorf("start adapter returned %s (%s)", result.Status, result.ErrorCode)
+		return 1
+	}
+	return 0
+}
+
+func (cli *CLI) executeStructuredStart(
+	ctx context.Context,
+	orchestrator *application.Orchestrator,
+	yard domain.Context,
+	plan domain.OperationPlan,
+	diagnostics io.Writer,
+) (domain.AdapterResult, error) {
+	request := domain.AdapterRequest{
+		Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
+		Adapter: "yard-control", Action: "start", Context: structuredAdapterContext(yard),
+	}
+	result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
+	if stderr != "" {
+		_, _ = io.WriteString(diagnostics, stderr)
+		if !strings.HasSuffix(stderr, "\n") {
+			_, _ = io.WriteString(diagnostics, "\n")
+		}
+	}
+	return result, err
 }
 
 func (cli *CLI) globalQuery(arguments []string) (int, bool) {
@@ -1636,10 +2053,14 @@ func (cli *CLI) serveRPC(ctx context.Context, yard string, arguments []string) i
 		cli.errorf("load RPC context: %v", err)
 		return 2
 	}
-	handler := &rpcHandler{cli: cli, loaded: loaded}
+	// An RPC session is bound to one validated context. Cross-yard selection is represented as a
+	// remote-owner route, never as an implicit context switch inside the session.
+	cli.env["SUBYARD_YARD_EXPLICIT"] = "1"
+	handler := &rpcHandler{cli: cli, loaded: loaded, plans: make(map[string]rpcPlannedOperation)}
 	session := rpc.Session{Handler: handler, EngineVersion: Version, Capabilities: []string{
 		"snapshot", "ordered-events", "cancellation", "deadlines", "commands", "context",
 		"projects", "yard-status", "credential-metadata", "credential-status",
+		"operation-plan", "operation-execute", "resync",
 	}, DrainOnEOF: true}
 	if err := session.Serve(ctx, cli.options.Stdin, cli.options.Stdout); err != nil {
 		if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
@@ -1651,8 +2072,18 @@ func (cli *CLI) serveRPC(ctx context.Context, yard string, arguments []string) i
 }
 
 type rpcHandler struct {
-	cli    *CLI
-	loaded config.Loaded
+	cli     *CLI
+	loaded  config.Loaded
+	plansMu sync.Mutex
+	plans   map[string]rpcPlannedOperation
+}
+
+type rpcPlannedOperation struct {
+	Plan       domain.OperationPlan
+	Definition command.Definition
+	Arguments  []string
+	Loaded     config.Loaded
+	Project    *projectExecution
 }
 
 type rpcProjectList struct {
@@ -1676,6 +2107,117 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		return handler.commands(), nil
 	case "context.get":
 		return handler.loaded.Context, nil
+	case "operation.plan":
+		var params struct {
+			Command   string   `json:"command"`
+			Arguments []string `json:"arguments"`
+		}
+		if err := decodeRPCParams(call.Params, &params); err != nil {
+			return nil, err
+		}
+		definition, ok := handler.cli.manifest.Lookup(params.Command)
+		if !ok || definition.Visibility != command.VisibilityPublic {
+			return nil, &rpc.Error{Code: "command_not_found", Message: params.Command}
+		}
+		if definition.Effect != command.EffectMutate {
+			return nil, &rpc.Error{Code: "command_not_mutating", Message: params.Command}
+		}
+		if definition.Name != "start" && !structuredCommandSupported(definition.Name) {
+			return nil, &rpc.Error{Code: "interactive_or_payload_command", Message: params.Command}
+		}
+		if definition.Name == "start" && len(params.Arguments) != 0 {
+			return nil, &rpc.Error{Code: "invalid_params", Message: "start does not accept RPC arguments"}
+		}
+		project, err := handler.cli.prepareProjectExecution(
+			ctx, handler.loaded, definition, params.Arguments, true,
+		)
+		if err != nil {
+			return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
+		}
+		loaded := handler.loaded
+		arguments := append([]string(nil), params.Arguments...)
+		if project != nil {
+			loaded = project.Loaded
+			arguments = project.Arguments
+		}
+		policy := commandPolicy(definition, loaded.Context, arguments, project)
+		if definition.Name == "start" {
+			policy = startPolicy(definition, loaded.Context)
+		}
+		orchestrator := handler.cli.operationOrchestrator(call.OperationID, loaded, nil)
+		plan, err := orchestrator.Prepare(loaded.Context, policy)
+		if err != nil {
+			return nil, &rpc.Error{Code: "plan_failed", Message: err.Error()}
+		}
+		handler.plansMu.Lock()
+		if handler.plans == nil {
+			handler.plans = make(map[string]rpcPlannedOperation)
+		}
+		if _, exists := handler.plans[plan.OperationID]; exists {
+			handler.plansMu.Unlock()
+			return nil, &rpc.Error{Code: "duplicate_plan", Message: plan.OperationID}
+		}
+		if len(handler.plans) >= 64 {
+			handler.plansMu.Unlock()
+			return nil, &rpc.Error{Code: "too_many_plans", Message: "execute an existing plan or start a new RPC session"}
+		}
+		handler.plans[plan.OperationID] = rpcPlannedOperation{
+			Plan: plan, Definition: definition, Arguments: arguments, Loaded: loaded, Project: project,
+		}
+		handler.plansMu.Unlock()
+		return plan, nil
+	case "operation.execute":
+		var params struct {
+			Confirmed bool `json:"confirmed"`
+		}
+		if err := decodeRPCParams(call.Params, &params); err != nil {
+			return nil, err
+		}
+		if !params.Confirmed {
+			return nil, &rpc.Error{Code: "confirmation_required", Message: "execute requires confirmed=true"}
+		}
+		handler.plansMu.Lock()
+		planned, ok := handler.plans[call.OperationID]
+		if ok {
+			delete(handler.plans, call.OperationID)
+		}
+		handler.plansMu.Unlock()
+		if !ok {
+			return nil, &rpc.Error{Code: "plan_not_found", Message: call.OperationID}
+		}
+		if planned.Plan.Target == domain.TargetRemoteOwner {
+			return nil, &rpc.Error{Code: "remote_owner_required", Message: "execute this plan through owner-host SSH stdio"}
+		}
+		orchestrator := handler.cli.operationOrchestrator(
+			call.OperationID, planned.Loaded, rpcOperationEvents{emit: emit},
+		)
+		plan, err := orchestrator.Confirm(ctx, planned.Plan, true)
+		if err != nil {
+			return nil, &rpc.Error{Code: "confirmation_failed", Message: err.Error()}
+		}
+		var result domain.AdapterResult
+		if planned.Definition.Name == "start" {
+			result, err = handler.cli.executeStructuredStart(
+				ctx, orchestrator, planned.Loaded.Context, plan, handler.cli.options.Stderr,
+			)
+		} else {
+			result, err = handler.cli.executeStructuredCommand(
+				ctx, orchestrator, planned.Loaded, planned.Definition, planned.Arguments,
+				plan, planned.Project, handler.cli.options.Stderr,
+			)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if result.Status != "ok" {
+			return nil, &rpc.Error{Code: "adapter_failed", Message: result.ErrorCode}
+		}
+		if planned.Project != nil {
+			if err := handler.cli.commitProjectExecution(ctx, planned.Project); err != nil {
+				return nil, &rpc.Error{Code: "state_commit_failed", Message: err.Error()}
+			}
+		}
+		return map[string]any{"plan": plan, "result": result}, nil
 	case "operation.route":
 		var params struct {
 			Command string `json:"command"`
@@ -1761,7 +2303,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			}
 		}
 		return map[string]any{"closed": true}, nil
-	case "system.snapshot":
+	case "system.snapshot", "system.resync":
 		if err := decodeRPCParams(call.Params, &struct{}{}); err != nil {
 			return nil, err
 		}

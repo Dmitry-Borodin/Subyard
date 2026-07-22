@@ -36,15 +36,12 @@ subyard_context_load
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
-# shellcheck source=scripts/state/store.sh
-. "$SCRIPT_DIR/state/store.sh"
-# shellcheck source=scripts/state/resolver.sh
-. "$SCRIPT_DIR/state/resolver.sh"
 # shellcheck source=scripts/state/transport.sh
 . "$SCRIPT_DIR/state/transport.sh"
 # shellcheck source=scripts/state/metadata.sh
 . "$SCRIPT_DIR/state/metadata.sh"
-state_validate_all || die "project state validation failed"
+# shellcheck source=scripts/lib/project-snapshot.sh
+. "$SCRIPT_DIR/lib/project-snapshot.sh"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -56,52 +53,23 @@ PROJ=(--project "$INCUS_PROJECT")
 # --- parse args --------------------------------------------------------------
 # TARGET (orthogonal to sync/bind): `yard` = L1, a profile name = L2 box. Default `yard`;
 # unset on re-add keeps the stored value.
-mode="${1:-}"; shift || true
-case "$mode" in sync | bind) ;; *) die "internal: mode must be sync|bind (got '$mode')" ;; esac
-path="."; target=""; at_yard=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --target)   target="${2:?--target needs yard|<profile>}"; shift ;;
-    --target=*) target="${1#*=}" ;;
-    -y | --yes) ;;  # handled by ui.sh (ASSUME_YES); ignore here
-    @?*)        at_yard="${1#@}" ;;  # trailing `@<yard>` — target yard (first sync/bind)
-    -*)         die "unknown option '$1'" ;;
-    *)          path="$1" ;;
-  esac
-  shift
-done
-[ -d "$path" ] || die "not a directory: $path"
-# --- resolve identity --------------------------------------------------------
-hostPath="$(realpath -- "$path")"
+requested_mode="${1:-}"
+case "$requested_mode" in sync | bind) ;; *) die "internal: mode must be sync|bind (got '$requested_mode')" ;; esac
+project_snapshot_load
+[ "$mode" = "$requested_mode" ] || die "internal: project snapshot mode does not match adapter action"
+[ -d "$hostPath" ] || die "not a directory: $hostPath"
 if [ "$mode" = bind ]; then
   warn "explicit bind exposes the host path directly to the yard: $hostPath"
   warn "encapsulation is reduced; yard processes can read and modify everything permitted by that mount"
 fi
-id="$(project_id "$hostPath")"
-yardPath="$(yard_path_for "$id")"
-name="$(basename -- "$hostPath")"
-
-# --- route to the target yard (multi-yard) -----------------------------------
-# Pick the yard from `@<yard>` or the path's existing registration and re-exec there if it is not
-# the loaded context. Everything below then runs in the correct yard's STATE_DIR. (See route_sync_target.)
-route_sync_target "$id" "$at_yard"
 
 # --- resolve & validate target (L1 `yard` vs L2 profile box) -----------------
 # Unset → stored target, else `yard`; a non-yard value must be a profile under config/profiles/.
-if [ -z "$target" ]; then
-  state_exists "$id" && target="$(state_get "$id" target)"
-  [ -n "$target" ] || target="yard"
-fi
+[ -n "$target" ] || die "internal: project snapshot has no target"
 if [ "$target" != yard ]; then
   [ -r "$PROFILES_DIR/$target/profile.conf" ] || die "unknown --target '$target' — use 'yard' (L1) or a profile (L2): $(for d in "$PROFILES_DIR"/*/; do [ -r "$d/profile.conf" ] && basename "$d"; done | tr '\n' ' ')"
 fi
-[ "$target" = yard ] && target_note="L1 — runs in the yard directly" || target_note="L2 — project-env box from profile '$target' (bring up: ${PROG:-yard} up $path)"
-
-if state_exists "$id"; then
-  prev="$(state_get "$id" mode)"
-  [ -n "$prev" ] && [ "$prev" != "$mode" ] \
-    && die "'$name' is already in the yard as '$prev' — run: ${PROG:-yard} remove $path, then re-add as $mode"
-fi
+[ "$target" = yard ] && target_note="L1 — runs in the yard directly" || target_note="L2 — project-env box from profile '$target' (bring up: ${PROG:-yard} up $id)"
 
 # --- bind is host-local: a remote yard has no such host path (dispatcher already refuses;
 #     defend here too so a direct script call fails with the same clear message). ------------
@@ -123,10 +91,7 @@ fi
 
 # --- bind: mount the host folder via an Incus disk device (shared files; shift=true → owned by 'dev')
 if [ "$mode" = bind ]; then
-  dev="$(ws_device_for "$id")"
   if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$dev"; then
-    state_write "$id" "$name" "$hostPath" "$yardPath" bind "$SSH_HOST"
-    state_set "$id" target "$target"
     write_yard_meta "$id" "$name" bind "$target"   # so `list --live` shows it (bind is local-only)
     ok "bind already attached: $hostPath → $INSTANCE_NAME:$yardPath (target $target)"
     info "id: $id"
@@ -139,13 +104,11 @@ if [ "$mode" = bind ]; then
     "Attach an Incus disk device (shift=true) so the yard sees this folder owned by 'dev'." \
     "Encapsulation is REDUCED: the selected host path is directly readable/writable from the yard." \
     "This is explicit operator authority, not a Subyard-managed HOST_BASE mount." \
-    "Record machine-local state in $(state_file "$id")."
+    "Publish the validated project record through the Go control plane."
   proceed_or_die
   incus config device add "$INSTANCE_NAME" "$dev" disk "${PROJ[@]}" \
     source="$hostPath" path="$yardPath" shift=true >/dev/null \
     || die "could not attach bind mount (does the host kernel support idmapped/shifted mounts?)"
-  state_write "$id" "$name" "$hostPath" "$yardPath" bind "$SSH_HOST"
-  state_set "$id" target "$target"
   # Yard-side meta (best-effort) — bind exits before the sync path's write_yard_meta, so without
   # this a bind project shows `missing` under `yard list --live`. Bind is local-only.
   write_yard_meta "$id" "$name" bind "$target"
@@ -155,17 +118,17 @@ if [ "$mode" = bind ]; then
 fi
 
 # --- sync: copy host → yard (create-or-update) -------------------------------
-state_exists "$id" && note="refresh the yard copy" || note="first copy into the yard"
+[ "${SUBYARD_PROJECT_EXISTS:-0}" = 1 ] && note="refresh the yard copy" || note="first copy into the yard"
 sync_details=(
   "Host source : $hostPath" \
   "Yard target : $yardPath (mode sync — $note)" \
   "Run target  : $target_note" \
-  "Copy the project into the yard via rsync over ssh (incremental; updates, no deletes).")
+  "Copy the project into the yard over ssh (rsync when available, otherwise a tar stream; updates, no deletes).")
 if yard_is_remote; then
   sync_details+=("The remote owner host can read everything copied from this resolved source: $hostPath.")
 fi
 sync_details+=(
-  "Record machine-local state in $(state_file "$id")."
+  "Publish the validated project record through the Go control plane."
 )
 announce "yard sync — $name" "${sync_details[@]}"
 proceed_or_die
@@ -186,10 +149,28 @@ fi
 # rsync over ssh (incremental). No --delete: agents build in the yard, so yard-only files
 # (node_modules, build output) survive. A LOCAL yard probes ssh to choose rsync vs a tar-over-
 # `incus exec` fallback; a REMOTE yard has no fallback and its reachability was already proven by
-# the `install -d` above, so it goes straight to rsync (skip the redundant probe).
-if yard_is_remote || ssh -o BatchMode=yes -o ConnectTimeout=5 "$SSH_HOST" true 2>/dev/null; then
+# the `install -d` above, so it goes straight to the selected transport (skip the redundant probe).
+remote_tar_sync() {
+  info "rsync unavailable — tar stream $hostPath → $SSH_HOST:$yardPath …"
+  tar -C "$hostPath" -cf - . \
+    | ssh "$SSH_HOST" -- tar -C "$yardPath" -xf - \
+    || die "copy failed"
+}
+
+if command -v rsync >/dev/null 2>&1 \
+  && { yard_is_remote || ssh -o BatchMode=yes -o ConnectTimeout=5 "$SSH_HOST" true 2>/dev/null; }; then
   info "rsync $hostPath → $SSH_HOST:$yardPath …"
-  rsync -a -e ssh "$hostPath/" "$SSH_HOST:$yardPath/" || die "rsync failed"
+  set +e
+  rsync -a -e ssh "$hostPath/" "$SSH_HOST:$yardPath/"
+  rsync_rc=$?
+  set -e
+  if [ "$rsync_rc" -eq 127 ] && yard_is_remote; then
+    remote_tar_sync
+  elif [ "$rsync_rc" -ne 0 ]; then
+    die "rsync failed"
+  fi
+elif yard_is_remote; then
+  remote_tar_sync
 else
   info "ssh '$SSH_HOST' unavailable — tar stream over incus exec …"
   tar -C "$hostPath" -cf - . \
@@ -198,15 +179,8 @@ else
     || die "copy failed"
 fi
 
-# Write portable yard metadata first. For a remote yard, then make owner-host registration part
-# of the successful operation; only after that publish this controller's local record. This order
-# leaves a failed owner update safely rerunnable instead of claiming a fully completed sync.
+# Write portable yard metadata. Go publishes controller and remote-owner state only after this
+# physical adapter returns success, leaving a failed operation safely rerunnable.
 write_yard_meta "$id" "$name" sync "$target"
-if yard_is_remote; then
-  remote_owner_project_upsert "$id" "$name" sync "$target" \
-    || die "project copied, but the owner-host registry was not updated; re-run the same sync command"
-fi
-state_write "$id" "$name" "$hostPath" "$yardPath" sync "$SSH_HOST"
-state_set "$id" target "$target"
 ok "sync done: $name → $yardPath (target $target)"
 info "id: $id"

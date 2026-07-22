@@ -25,6 +25,14 @@ type Orchestrator struct {
 }
 
 func (orchestrator *Orchestrator) Plan(ctx context.Context, yard domain.Context, policy domain.CommandPolicy, assumeYes bool) (domain.OperationPlan, error) {
+	plan, err := orchestrator.Prepare(yard, policy)
+	if err != nil {
+		return domain.OperationPlan{}, err
+	}
+	return orchestrator.Confirm(ctx, plan, assumeYes)
+}
+
+func (orchestrator *Orchestrator) Prepare(yard domain.Context, policy domain.CommandPolicy) (domain.OperationPlan, error) {
 	if orchestrator.Clock == nil || orchestrator.IDs == nil {
 		return domain.OperationPlan{}, errors.New("clock and ID source are required")
 	}
@@ -39,24 +47,40 @@ func (orchestrator *Orchestrator) Plan(ctx context.Context, yard domain.Context,
 	if err != nil {
 		return domain.OperationPlan{}, fmt.Errorf("command %q: %w", policy.Name, err)
 	}
-	confirmed := policy.Effect == domain.CommandRead || assumeYes
-	if !confirmed {
+	operationID := orchestrator.IDs.NewID()
+	if !domain.SafeID(operationID) {
+		return domain.OperationPlan{}, errors.New("ID source returned an invalid operation ID")
+	}
+	return domain.OperationPlan{
+		OperationID: operationID, Command: policy.Name, Effect: policy.Effect, Target: target,
+		Consequences: append([]string(nil), policy.Consequences...),
+		Confirmed:    policy.Effect == domain.CommandRead, CreatedAt: orchestrator.Clock.Now().UTC(),
+	}, nil
+}
+
+func (orchestrator *Orchestrator) Confirm(ctx context.Context, plan domain.OperationPlan, assumeYes bool) (domain.OperationPlan, error) {
+	if !domain.SafeID(plan.OperationID) || plan.Command == "" ||
+		(plan.Effect != domain.CommandRead && plan.Effect != domain.CommandMutate) {
+		return domain.OperationPlan{}, errors.New("invalid operation plan")
+	}
+	if plan.Effect == domain.CommandRead || plan.Confirmed || assumeYes {
+		plan.Confirmed = true
+		return plan, nil
+	}
+	if !plan.Confirmed {
 		if orchestrator.Prompt == nil {
 			return domain.OperationPlan{}, errors.New("mutating operation requires a prompt port")
 		}
-		accepted, err := orchestrator.Prompt.Confirm(ctx, policy.Name, policy.Consequences)
+		accepted, err := orchestrator.Prompt.Confirm(ctx, plan.Command, plan.Consequences)
 		if err != nil {
 			return domain.OperationPlan{}, err
 		}
 		if !accepted {
 			return domain.OperationPlan{}, ErrDeclined
 		}
-		confirmed = true
+		plan.Confirmed = true
 	}
-	return domain.OperationPlan{
-		OperationID: orchestrator.IDs.NewID(), Command: policy.Name, Target: target,
-		Confirmed: confirmed, CreatedAt: orchestrator.Clock.Now().UTC(),
-	}, nil
+	return plan, nil
 }
 
 func Route(yard domain.Context, policy domain.RemotePolicy) (domain.ExecutionTarget, error) {
@@ -89,6 +113,9 @@ func (orchestrator *Orchestrator) RunAdapter(
 	}
 	if request.OperationID != plan.OperationID {
 		return domain.AdapterResult{}, "", errors.New("adapter request does not belong to the operation plan")
+	}
+	if !plan.Confirmed {
+		return domain.AdapterResult{}, "", errors.New("adapter request belongs to an unconfirmed operation plan")
 	}
 	if err := orchestrator.record(ctx, plan, "operation.started", nil); err != nil {
 		return domain.AdapterResult{}, "", err

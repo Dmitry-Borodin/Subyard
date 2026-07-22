@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 )
 
 const defaultMaximum = int64(1024 * 1024)
@@ -27,6 +30,22 @@ type Invocation struct {
 	Maximum     int64
 	Now         time.Time
 	PID         int
+}
+
+type OperationLog struct {
+	Home       string
+	WorkingDir string
+	Yard       string
+	Remote     string
+	Maximum    int64
+}
+
+func (sink OperationLog) WriteAudit(_ context.Context, event domain.OperationEvent) error {
+	return WriteInvocation(Invocation{
+		Home: sink.Home, Command: event.Kind, WorkingDir: sink.WorkingDir,
+		Yard: sink.Yard, Remote: sink.Remote, Maximum: sink.Maximum,
+		OperationID: event.OperationID, Now: event.At,
+	})
 }
 
 func WriteInvocation(invocation Invocation) error {

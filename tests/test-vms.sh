@@ -47,6 +47,18 @@ unset E2E_PROGRESS_INTERVAL
 printf '%s\n' "$progress_result" | grep -Fq 'slow fixture operation (still working,' \
   || fail "long operation emitted no periodic progress"
 
+# The worker owns flags only before the explicit exec delimiter. Candidate flags and help options
+# after it are payload and must arrive in the VM byte-for-byte instead of being consumed by main.
+payload_result="$(
+  ASSUME_YES=0
+  INCUS=bash
+  validate_config() { :; }
+  cmd_exec() { printf '<%s>\n' "$@"; }
+  main exec 1 -- candidate --yes --help
+)" || fail "worker rejected an exec payload containing its own option names"
+[ "$payload_result" = $'<1>\n<-->\n<candidate>\n<--yes>\n<--help>' ] \
+  || fail "worker consumed candidate options after the exec delimiter"
+
 events="$TMP/events"
 ensure_key() { mkdir -p "$STATE_DIR"; : > "$KEY"; : > "$KEY.pub"; printf 'key\n' >> "$events"; }
 ensure_project() { printf 'project\n' >> "$events"; }
@@ -182,13 +194,17 @@ grep -Fxq "config unset e2e-vm-1 raw.apparmor --project $PROJECT" "$TMP/vm-upgra
   || fail "legacy per-VM AppArmor override was not removed"
 
 # VM images use predictable guest interface names (for example enp5s0), even though the Incus
-# device is named eth0. Address discovery must follow network state instead of assuming the guest
-# kept the device name, and it must reject an ambiguous multi-network result.
+# device is named eth0. An initialized owner also has a global address on its nested incusbr0.
+# Address discovery must therefore follow the default route instead of counting every interface.
 vm_ip_result="$(
   unset -f vm_ip
   . "$ROOT/scripts/test-vms-inner.sh"
   inner_incus() {
-    printf '%s\n' '[{"state":{"network":{"enp5s0":{"addresses":[{"family":"inet","scope":"global","address":"10.42.0.7"}]},"lo":{"addresses":[{"family":"inet","scope":"local","address":"127.0.0.1"}]}}}}]'
+    case "$1" in
+      exec) printf '%s\n' 'default via 10.42.0.1 dev enp5s0 proto dhcp src 10.42.0.7' ;;
+      list) printf '%s\n' '[{"state":{"network":{"enp5s0":{"addresses":[{"family":"inet","scope":"global","address":"10.42.0.7"}]},"incusbr0":{"addresses":[{"family":"inet","scope":"global","address":"10.99.0.1"}]},"lo":{"addresses":[{"family":"inet","scope":"local","address":"127.0.0.1"}]}}}}]' ;;
+      *) return 90 ;;
+    esac
   }
   vm_ip e2e-vm-1
 )" || fail "VM IPv4 lookup rejected a renamed guest interface"
@@ -197,11 +213,15 @@ if (
   unset -f vm_ip
   . "$ROOT/scripts/test-vms-inner.sh"
   inner_incus() {
-    printf '%s\n' '[{"state":{"network":{"enp5s0":{"addresses":[{"family":"inet","scope":"global","address":"10.42.0.7"}]},"enp6s0":{"addresses":[{"family":"inet","scope":"global","address":"10.43.0.7"}]}}}}]'
+    case "$1" in
+      exec) printf '%s\n' 'default via 10.42.0.1 dev enp5s0' 'default via 10.43.0.1 dev enp6s0' ;;
+      list) printf '%s\n' '[]' ;;
+      *) return 90 ;;
+    esac
   }
   vm_ip e2e-vm-1
 ) >/dev/null 2>&1; then
-  fail "VM IPv4 lookup accepted an ambiguous multi-network result"
+  fail "VM IPv4 lookup accepted multiple default-route interfaces"
 fi
 
 # Debian 13 OpenSSH rejects public keys for a shadow-locked account. Cloud-init and reconciliation

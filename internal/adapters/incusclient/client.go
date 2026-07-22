@@ -105,6 +105,7 @@ func (client *Client) Exec(
 	case <-ctx.Done():
 		_ = operation.Cancel()
 		<-wait
+		<-dataDone
 		return ports.InstanceExecResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()},
 			fmt.Errorf("wait for instance command: %w", context.Cause(ctx))
 	case err := <-wait:
@@ -142,7 +143,7 @@ func (client *Client) Events(ctx context.Context, types []string) (<-chan domain
 		close(errorsOut)
 		return events, errorsOut
 	}
-	listener, err := server.GetEvents()
+	listener, err := server.GetEventsAllProjects()
 	if err != nil {
 		close(events)
 		errorsOut <- normalizeError("open event stream", err)

@@ -28,21 +28,22 @@ make build
 ./tests/run.sh
 ```
 
-`make build` writes the ignored developer candidate `.build/yard` atomically. The stable `bin/yard`
-launcher always executes the checked-in `bin/yard-engine`; it never compiles source or downloads a
-toolchain at runtime. `scripts/install-cli.sh` links `~/.local/bin/yard` and `sy` to that launcher, so
-an updated checkout remains usable on an operator host without Go. This temporary bootstrap artifact
-supports Linux amd64. Contributors who change production Go source must rebuild it with the pinned
-toolchain; `./tests/run.sh` requires the candidate and tracked artifact to match byte for byte.
+`make build` writes the ignored developer candidate `.build/yard` atomically. The source-tree
+`bin/yard` launcher uses that explicit candidate and never compiles or downloads a toolchain at
+runtime. Production does not use the source checkout: `scripts/install-cli.sh` installs a verified
+self-contained runtime and links `~/.local/bin/yard` and `sy` to its stable `current/bin/yard` path.
+It also configures the effective login profile so non-interactive remote-owner SSH calls resolve the
+same entrypoint.
 
-`make package VERSION=<version>` writes a versioned Linux binary, detached SHA-256 and compatibility
-manifest under `.build/release/`. A downloaded artifact is installed atomically with
-`scripts/install-engine-release.sh --artifact <file> --checksum <file.sha256>`; the prior binary is
-retained as `yard-engine.previous`. `scripts/install-engine-release.sh --rollback` swaps the two
-verified executables without a download. State schema compatibility remains fail-closed in the Go
-readers, so an unsupported project or credential schema blocks an upgrade/snapshot instead of being
-silently rewritten. Upgrade apply only tightens valid legacy project-state permissions to `0600`;
-payload and schema changes still require an explicit registered migration.
+`make package VERSION=<version>` writes amd64 or arm64 Linux engine artifacts and a complete
+`subyard-<version>-linux-<arch>.tar.gz` runtime under `.build/release/`, each with a detached SHA-256,
+compatibility manifest and provenance. `yard update` verifies all release inputs, applies registered
+state migrations, publishes an immutable release directory and atomically switches `current`; the
+prior runtime is retained through `previous`. `yard update --rollback` checks and swaps those complete
+runtimes without a download. First install and runtime execution require no Go or source checkout.
+State schema compatibility remains fail-closed, and interrupted, incomplete or incompatible releases
+cannot replace the working runtime. Upgrade apply currently tightens valid legacy project-state
+permissions to `0600`; payload and schema changes still require an explicit registered migration.
 
 `./tests/run.sh` is the single unprivileged gate. It runs formatting, vet, race-enabled Go tests, a
 short parser fuzz smoke, the static binary build, and all Bash unit/contract/integration tests. It

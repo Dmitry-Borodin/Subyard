@@ -6,4 +6,5 @@ lib-power-network.sh
 project-state-store.sh
 reconcile-resume.sh
 runtime-privilege-reexec.sh
+shell-ownership.sh
 ssh-config.sh

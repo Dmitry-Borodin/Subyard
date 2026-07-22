@@ -68,6 +68,14 @@ fi
 
 MIN_DISK_GIB="${MIN_DISK_GIB:-5}"    # hard floor for a base yard
 REC_DISK_GIB="${REC_DISK_GIB:-50}"   # recommended: the 'android' profile (SDK/AVD) is heavy
+BASE_YARD_PRESENT="${SUBYARD_PREFLIGHT_BASE_PRESENT:-auto}"
+if [ "$BASE_YARD_PRESENT" = auto ]; then
+  BASE_YARD_PRESENT=0
+  if command -v incus >/dev/null 2>&1 \
+    && incus info "${INSTANCE_NAME:-yard}" --project "${INCUS_PROJECT:-subyard}" >/dev/null 2>&1; then
+    BASE_YARD_PRESENT=1
+  fi
+fi
 # Nested Docker (project-env boxes) needs the Incus AppArmor fix for CVE-2025-52881
 # (runc fd-reopen vs the nesting profile); landed in Incus 6.0.6 LTS / 6.19.
 MIN_INCUS_VER="${MIN_INCUS_VER:-6.0.6}"
@@ -151,6 +159,8 @@ EOF
     pass "${avail_gib} GiB free on ${probe} (fs: ${fstype})"
   elif [ "${avail_gib:-0}" -ge "$MIN_DISK_GIB" ]; then
     warn "${avail_gib} GiB free on ${probe} — ok for a base yard, but the heavy 'android' profile wants >= ${REC_DISK_GIB} GiB (fs: ${fstype})"
+  elif [ "$BASE_YARD_PRESENT" = 1 ]; then
+    warn "only ${avail_gib} GiB free on ${probe}; the base yard already exists, but new projects and profiles may need more space (fs: ${fstype})"
   else
     fail "only ${avail_gib} GiB free on ${probe}; need >= ${MIN_DISK_GIB} GiB for a base yard (fs: ${fstype})"
   fi

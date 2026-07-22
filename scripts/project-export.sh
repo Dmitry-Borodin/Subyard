@@ -29,15 +29,10 @@ subyard_context_load
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
-# shellcheck source=scripts/state/store.sh
-. "$SCRIPT_DIR/state/store.sh"
-# shellcheck source=scripts/state/resolver.sh
-. "$SCRIPT_DIR/state/resolver.sh"
 # shellcheck source=scripts/state/transport.sh
 . "$SCRIPT_DIR/state/transport.sh"
-# shellcheck source=scripts/state/metadata.sh
-. "$SCRIPT_DIR/state/metadata.sh"
-state_validate_all || die "project state validation failed"
+# shellcheck source=scripts/lib/project-snapshot.sh
+. "$SCRIPT_DIR/lib/project-snapshot.sh"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -57,13 +52,7 @@ for a in "$@"; do
 done
 
 # --- resolve identity / state ------------------------------------------------
-# resolve_project_ctx resolves across yards and re-execs in the owning yard when it lives elsewhere.
-resolve_project_ctx "$arg"
-id="$RESOLVED_ID"
-name="$(state_get "$id" name)"; name="${name:-$id}"
-hostPath="$(state_get "$id" hostPath)"
-yardPath="$(state_get "$id" yardPath)"
-mode="$(state_get "$id" mode)"
+project_snapshot_load
 case "$mode" in
   bind) die "'$name' is a bind project — its changes are already on the host; nothing to export" ;;
   git)  die "'$name' is a git-mode clone (no host copy) — pull changes with git inside the yard, not export" ;;

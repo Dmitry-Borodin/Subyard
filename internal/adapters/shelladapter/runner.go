@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +29,7 @@ type Runner struct {
 	RepositoryRoot string
 	Allow          map[string]map[string]string
 	ContextKeys    map[string]struct{}
+	Path           string
 	Timeout        time.Duration
 	MaxOutput      int64
 	MaxSecret      int64
@@ -60,14 +62,30 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 		callContext, cancel = context.WithTimeout(ctx, runner.Timeout)
 	}
 	defer cancel()
-	command := exec.CommandContext(callContext, path, request.Action)
+	commandArguments := make([]string, 0, len(request.Arguments)+1)
+	commandArguments = append(commandArguments, request.Action)
+	commandArguments = append(commandArguments, request.Arguments...)
+	command := exec.CommandContext(callContext, path, commandArguments...)
 	command.Dir = runner.RepositoryRoot
+	executablePath := runner.Path
+	if executablePath == "" {
+		executablePath = "/usr/sbin:/usr/bin:/sbin:/bin"
+	}
 	command.Env = []string{
-		"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+		"PATH=" + executablePath,
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
 		"SUBYARD_ADAPTER_SCHEMA=1",
 		"SUBYARD_METADATA_FD=3",
+		"SUBYARD_OPERATION_ID=" + request.OperationID,
+	}
+	contextKeys := make([]string, 0, len(request.Context))
+	for key := range request.Context {
+		contextKeys = append(contextKeys, key)
+	}
+	sort.Strings(contextKeys)
+	for _, key := range contextKeys {
+		command.Env = append(command.Env, key+"="+request.Context[key])
 	}
 	command.Stdin = bytes.NewReader(secretBytes)
 	command.ExtraFiles = []*os.File{metadataRead}
@@ -163,6 +181,9 @@ func (runner Runner) validate(request domain.AdapterRequest) (string, error) {
 		if _, ok := runner.ContextKeys[key]; !ok {
 			return "", fmt.Errorf("adapter context key %q is not allowed", key)
 		}
+		if !validEnvironmentKey(key) || reservedEnvironmentKey(key) {
+			return "", fmt.Errorf("adapter context key %q is not a safe environment key", key)
+		}
 		if sensitiveKey(key) {
 			return "", fmt.Errorf("secret-like adapter context key %q is forbidden", key)
 		}
@@ -173,7 +194,39 @@ func (runner Runner) validate(request domain.AdapterRequest) (string, error) {
 	if hasSensitiveValue(request.Input) {
 		return "", errors.New("secret-like fields are forbidden in adapter metadata")
 	}
+	if len(request.Arguments) > 256 {
+		return "", errors.New("adapter argument count exceeds limit")
+	}
+	for _, argument := range request.Arguments {
+		if strings.ContainsRune(argument, 0) || len(argument) > 64*1024 {
+			return "", errors.New("adapter argument is invalid")
+		}
+	}
 	return path, nil
+}
+
+func validEnvironmentKey(value string) bool {
+	if value == "" || !((value[0] >= 'A' && value[0] <= 'Z') ||
+		(value[0] >= 'a' && value[0] <= 'z') || value[0] == '_') {
+		return false
+	}
+	for index := 1; index < len(value); index++ {
+		char := value[index]
+		if !((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') ||
+			(char >= '0' && char <= '9') || char == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func reservedEnvironmentKey(value string) bool {
+	switch value {
+	case "PATH", "LANG", "LC_ALL", "SUBYARD_ADAPTER_SCHEMA", "SUBYARD_METADATA_FD", "SUBYARD_OPERATION_ID":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateResult(request domain.AdapterRequest, result domain.AdapterResult) error {

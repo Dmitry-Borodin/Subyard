@@ -31,44 +31,31 @@ subyard_context_load
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
-# shellcheck source=scripts/state/store.sh
-. "$SCRIPT_DIR/state/store.sh"
-# shellcheck source=scripts/state/resolver.sh
-. "$SCRIPT_DIR/state/resolver.sh"
 # shellcheck source=scripts/state/transport.sh
 . "$SCRIPT_DIR/state/transport.sh"
 # shellcheck source=scripts/state/metadata.sh
 . "$SCRIPT_DIR/state/metadata.sh"
-state_validate_all || die "project state validation failed"
+# shellcheck source=scripts/lib/project-snapshot.sh
+. "$SCRIPT_DIR/lib/project-snapshot.sh"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 SSH_HOST="${SSH_HOST:-yard}"   # remote yards delete the in-yard copy over this alias
 PROJ=(--project "$INCUS_PROJECT")
 
-path="."; soft=0
+soft=0
 for a in "$@"; do
   case "$a" in
     --soft)      soft=1 ;;
     --purge)     warn "--purge is deprecated: full removal is the default now (--soft keeps the copy)" ;;
     -y|--yes)    ;;  # handled by ui.sh
     -*)          die "unknown option '$a'" ;;
-    *)           path="$a" ;;
+    *)           : ;;
   esac
 done
-# Resolve the project (path, exact id, or name — git-mode clones have no host path to hash).
-# maybe_reconcile registers on demand a project that lives only in the yard (explicit context)
-# so it can be removed; resolve_project_ctx then resolves across yards and re-execs in the owner.
-maybe_reconcile "$path"
-resolve_project_ctx "$path"
-id="$RESOLVED_ID"
+project_snapshot_load
 yard="${YARD_NAME:-default}"
-name="$(state_get "$id" name)"
-hostPath="$(state_get "$id" hostPath)"
-yardPath="$(state_get "$id" yardPath)"
 yardDir="${yardPath%/src}"   # /srv/workspaces/<id>
-mode="$(state_get "$id" mode)"
-target="$(state_get "$id" target)"
 box_cname="subyard-box-$id"   # matches cname_for() in project-env.sh
 # Reachability: a local yard is "running" when incus says so; a remote yard when its ssh
 # alias answers (no local incus). Every call site below routes through this.
@@ -105,10 +92,9 @@ rm -rf -- "/srv/env-secrets/$id" "/srv/env-meta/$id"'
 
 # --- bind: detach the disk device; NEVER delete (the source is the host folder) ----
 if [ "$mode" = bind ]; then
-  dev="$(ws_device_for "$id")"
   remove_details=(
     "Yard      : $yard    Host path: $hostPath" \
-    "Drop machine-local state: $(state_file "$id").")
+    "Drop machine-local state through the Go control plane.")
   [ "${target:-yard}" = yard ] || remove_details+=("Remove its L2 project-env box and staged env (target=$target); workspace/caches kept.")
   remove_details+=(
     "Detach the bind mount '$dev' from the yard. The host folder $yardPath is untouched."
@@ -126,7 +112,6 @@ if [ "$mode" = bind ]; then
   else
     warn "yard is down — leaving the device entry; it detaches on next start or re-run when up"
   fi
-  state_remove "$id"
   ok "removed '$name' from the yard (bind detached; host files kept)"
   exit 0
 fi
@@ -135,7 +120,7 @@ fi
 if [ "$soft" = 1 ]; then
   remove_details=(
     "Yard      : $yard    Host path: $hostPath" \
-    "Drop machine-local state: $(state_file "$id").")
+    "Drop machine-local state through the Go control plane.")
   [ "${target:-yard}" = yard ] || remove_details+=("Remove its L2 project-env box and staged env (target=$target).")
   remove_details+=(
     "Leave the yard copy at $yardDir in place (re-add it later with 'yard sync'/'yard clone')."
@@ -151,7 +136,7 @@ else
   fi
   remove_details=(
     "Yard      : $yard    Host path: $hostPath" \
-    "Drop machine-local state: $(state_file "$id").")
+    "Drop machine-local state through the Go control plane.")
   [ "${target:-yard}" = yard ] || remove_details+=("Remove its L2 project-env box and staged env (target=$target).")
   remove_details+=(
     "DELETE the yard copy: $INSTANCE_NAME:$yardDir (irreversible; use --soft to keep it)."
@@ -174,9 +159,4 @@ if [ "$soft" = 0 ]; then
   esac
 fi
 
-if yard_is_remote; then
-  remote_owner_project_unregister "$id" \
-    || die "yard removal completed, but the owner-host registry was not updated; controller state was kept — re-run the same remove command"
-fi
-state_remove "$id"
 [ "$soft" = 1 ] && ok "removed '$name' from the yard (yard copy kept)" || ok "removed '$name' from the yard (yard copy deleted)"

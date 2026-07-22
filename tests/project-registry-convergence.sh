@@ -36,6 +36,11 @@ if [[ "$joined" == *'.subyard-meta.json'* ]]; then
   [ ! -e "$REGISTRY_TEST_STATE/live-meta.json" ] || cat "$REGISTRY_TEST_STATE/live-meta.json"
   exit 0
 fi
+if [[ "$joined" == *'tar -C'*'-xf -'* ]]; then
+  cat >/dev/null
+  : > "$REGISTRY_TEST_STATE/tar-stream"
+  exit 0
+fi
 exit 0
 MOCK
 chmod 755 "$TMP/bin/ssh"
@@ -118,8 +123,8 @@ ENV
 named_state="$SUBYARD_CONFIG_HOME/yards/inner/projects/named-12345678.json"
 assert_json "$named_state" '.sshHost == "yard-inner" and .hostPath == "" and .target == "yard"'
 
-# A remote controller maps to that named owner yard. Successful sync must push the owner upsert
-# before publishing controller state, and portable yard metadata must carry the target too.
+# A remote controller maps to that named owner yard. Physical adapters receive a Go snapshot,
+# write portable metadata, and stay neutral toward both controller and owner state.
 cat > "$SUBYARD_CONFIG_HOME/yards/remote.env" <<'ENV'
 YARD_TYPE=remote
 REMOTE_DEST=owner
@@ -128,53 +133,52 @@ SSH_PORT=2222
 ENV
 mkdir -p "$TMP/projects/RemoteDemo"
 printf 'demo\n' > "$TMP/projects/RemoteDemo/file.txt"
-SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 \
-  "$ROOT/scripts/project-sync.sh" sync "$TMP/projects/RemoteDemo" --target yard --yes >/dev/null
 remote_id="$(basename "$TMP/projects/RemoteDemo")-$(printf '%s' "$(realpath "$TMP/projects/RemoteDemo")" | sha256sum | cut -c1-8)"
+SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 \
+  SUBYARD_PROJECT_SNAPSHOT=1 SUBYARD_PROJECT_ID="$remote_id" SUBYARD_PROJECT_NAME=RemoteDemo \
+  SUBYARD_PROJECT_HOST_PATH="$TMP/projects/RemoteDemo" \
+  SUBYARD_PROJECT_YARD_PATH="/srv/workspaces/$remote_id/src" SUBYARD_PROJECT_MODE=sync \
+  SUBYARD_PROJECT_SSH_HOST=yard-remote SUBYARD_PROJECT_TARGET=yard \
+  SUBYARD_PROJECT_DEVICE="ws-${remote_id//[^A-Za-z0-9]/-}" SUBYARD_PROJECT_EXISTS=0 \
+  "$ROOT/scripts/project-sync.sh" sync "$TMP/projects/RemoteDemo" --target yard --yes >/dev/null
 remote_state="$SUBYARD_CONFIG_HOME/yards/remote/projects/$remote_id.json"
-[ -e "$remote_state" ] || fail 'remote sync did not publish controller state'
-owner_calls="$(cat "$REGISTRY_TEST_STATE/owner-calls")"
-assert_contains "$owner_calls" 'yard\ -Y\ inner\ _project-state\ upsert'
-assert_contains "$owner_calls" "$remote_id\\ RemoteDemo\\ sync\\ yard"
+[ ! -e "$remote_state" ] || fail 'physical sync adapter wrote controller state'
+[ ! -s "$REGISTRY_TEST_STATE/owner-calls" ] || fail 'physical sync adapter routed owner state'
 jq -e '.projectId == $id and .target == "yard"' --arg id "$remote_id" \
   "$REGISTRY_TEST_STATE/yard-meta.json" >/dev/null || fail 'yard metadata omitted the project target'
 
-# Remote clone follows the same owner convergence path and preserves its L2 target in both calls.
-: > "$REGISTRY_TEST_STATE/owner-calls"
+# A controller without a usable rsync still has a bounded tar-over-SSH data plane. Exit 127 also
+# covers the peer-side "rsync not installed" result without hiding other partial-transfer failures.
+cat > "$TMP/bin/rsync" <<'MOCK'
+#!/usr/bin/env bash
+exit 127
+MOCK
+chmod 755 "$TMP/bin/rsync"
+rm -f "$REGISTRY_TEST_STATE/tar-stream"
 SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 \
+  SUBYARD_PROJECT_SNAPSHOT=1 SUBYARD_PROJECT_ID="$remote_id" SUBYARD_PROJECT_NAME=RemoteDemo \
+  SUBYARD_PROJECT_HOST_PATH="$TMP/projects/RemoteDemo" \
+  SUBYARD_PROJECT_YARD_PATH="/srv/workspaces/$remote_id/src" SUBYARD_PROJECT_MODE=sync \
+  SUBYARD_PROJECT_SSH_HOST=yard-remote SUBYARD_PROJECT_TARGET=yard \
+  SUBYARD_PROJECT_DEVICE="ws-${remote_id//[^A-Za-z0-9]/-}" SUBYARD_PROJECT_EXISTS=1 \
+  "$ROOT/scripts/project-sync.sh" sync "$TMP/projects/RemoteDemo" --target yard --yes >/dev/null
+[ -e "$REGISTRY_TEST_STATE/tar-stream" ] || fail 'remote sync did not fall back after rsync exit 127'
+
+# Remote clone follows the same snapshot/physical-metadata contract.
+: > "$REGISTRY_TEST_STATE/owner-calls"
+clone_id="ForeignClone-$(printf '%s' https://example.invalid/repo.git | sha256sum | cut -c1-8)"
+SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 \
+  SUBYARD_PROJECT_SNAPSHOT=1 SUBYARD_PROJECT_ID="$clone_id" SUBYARD_PROJECT_NAME=ForeignClone \
+  SUBYARD_PROJECT_HOST_PATH=https://example.invalid/repo.git \
+  SUBYARD_PROJECT_YARD_PATH="/srv/workspaces/$clone_id/src" SUBYARD_PROJECT_MODE=git \
+  SUBYARD_PROJECT_SSH_HOST=yard-remote SUBYARD_PROJECT_TARGET=openclaw \
+  SUBYARD_PROJECT_DEVICE="ws-${clone_id//[^A-Za-z0-9]/-}" SUBYARD_PROJECT_EXISTS=0 \
   "$ROOT/scripts/project-clone.sh" https://example.invalid/repo.git ForeignClone \
     --target openclaw --yes >/dev/null
-clone_id="ForeignClone-$(printf '%s' https://example.invalid/repo.git | sha256sum | cut -c1-8)"
 clone_state="$SUBYARD_CONFIG_HOME/yards/remote/projects/$clone_id.json"
-[ -e "$clone_state" ] || fail 'remote clone did not publish controller state'
-assert_json "$clone_state" '.mode == "git" and .target == "openclaw"'
-owner_calls="$(cat "$REGISTRY_TEST_STATE/owner-calls")"
-assert_contains "$owner_calls" 'yard\ -Y\ inner\ _project-state\ upsert'
-assert_contains "$owner_calls" "$clone_id\\ ForeignClone\\ git\\ openclaw"
+[ ! -e "$clone_state" ] || fail 'physical clone adapter wrote controller state'
+[ ! -s "$REGISTRY_TEST_STATE/owner-calls" ] || fail 'physical clone adapter routed owner state'
 jq -e '.projectId == $id and .mode == "git" and .target == "openclaw"' --arg id "$clone_id" \
   "$REGISTRY_TEST_STATE/yard-meta.json" >/dev/null || fail 'clone metadata omitted its target'
 
-# If the owner rejects convergence, the copied workspace may exist but controller state must not
-# claim the operation completed; re-running the same explicit sync can repair it.
-mkdir -p "$TMP/projects/Rejected"
-: > "$REGISTRY_TEST_STATE/fail-owner"
-if SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 \
-  "$ROOT/scripts/project-sync.sh" sync "$TMP/projects/Rejected" --yes >"$TMP/rejected.out" 2>&1; then
-  fail 'remote sync succeeded despite owner registry failure'
-fi
-rejected_id="Rejected-$(printf '%s' "$(realpath "$TMP/projects/Rejected")" | sha256sum | cut -c1-8)"
-[ ! -e "$SUBYARD_CONFIG_HOME/yards/remote/projects/$rejected_id.json" ] \
-  || fail 'failed owner convergence left completed controller state'
-assert_contains "$(cat "$TMP/rejected.out")" 'owner-host registry was not updated'
-rm -f "$REGISTRY_TEST_STATE/fail-owner"
-
-# Remote removal unregisters the synthetic owner record before dropping controller state.
-: > "$REGISTRY_TEST_STATE/owner-calls"
-SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 \
-  "$ROOT/scripts/project-remove.sh" "$remote_id" --soft --yes >/dev/null
-[ ! -e "$remote_state" ] || fail 'remote remove kept controller state'
-owner_calls="$(cat "$REGISTRY_TEST_STATE/owner-calls")"
-assert_contains "$owner_calls" 'yard\ -Y\ inner\ _project-state\ unregister'
-assert_contains "$owner_calls" "$remote_id"
-
-printf 'ok: remote project mutations converge the owner-host registry\n'
+printf 'ok: owner endpoints are native and physical project adapters are state-neutral\n'

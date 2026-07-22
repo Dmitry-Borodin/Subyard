@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
-# Stable source-tree launcher for the checked-in native Go control-plane engine.
+# Stable launcher for a release-installed native Go control-plane engine.
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]:-$0}")"
 REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
-ENGINE="$REPO/bin/yard-engine"
+ENGINE="${YARD_ENGINE_PATH:-$REPO/bin/yard-engine}"
 PROG="${0##*/}"
 
+# A source checkout may use the explicit development build produced by tests/build tooling. It is
+# never an implicit production rebuild and is not shipped or tracked.
+if [ ! -x "$ENGINE" ] && [ -x "$REPO/.build/yard" ]; then
+  ENGINE="$REPO/.build/yard"
+fi
 [ -x "$ENGINE" ] || {
-  printf '%s: checked-in native engine is unavailable at %s\n' "$PROG" "$ENGINE" >&2
+  printf '%s: this runtime has no native engine at %s\n' "$PROG" "$ENGINE" >&2
+  printf '%s: install a release runtime (or set YARD_ENGINE_PATH for a development build)\n' "$PROG" >&2
   exit 2
 }
-case "$(uname -s)/$(uname -m)" in
-  Linux/x86_64) ;;
-  *)
-    printf '%s: the checked-in bootstrap engine supports linux/amd64 only\n' "$PROG" >&2
-    exit 2
-    ;;
-esac
 
 export SUBYARD_REPOSITORY_ROOT="$REPO"
 exec -a "$PROG" "$ENGINE" "$@"

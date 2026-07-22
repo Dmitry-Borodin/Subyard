@@ -65,13 +65,39 @@ func TestRunAdapterCorrelatesAuditAndEvents(t *testing.T) {
 		Schema: 1, OperationID: "operation-1", Status: "ok",
 	}}}}
 	orchestrator := &Orchestrator{Clock: clock, Runner: runner, Audit: audit, Events: events}
-	plan := domain.OperationPlan{OperationID: "operation-1", Command: "fixture"}
+	plan := domain.OperationPlan{
+		OperationID: "operation-1", Command: "fixture", Effect: domain.CommandMutate, Confirmed: true,
+	}
 	request := domain.AdapterRequest{Schema: 1, OperationID: "operation-1", Adapter: "fixture", Action: "run"}
 	if _, _, err := orchestrator.RunAdapter(context.Background(), plan, request, strings.NewReader("protected")); err != nil {
 		t.Fatal(err)
 	}
 	if len(audit.Events) != 2 || len(events.Events) != 2 || audit.Events[0].OperationID != "operation-1" {
 		t.Fatalf("events were not correlated: %#v %#v", audit.Events, events.Events)
+	}
+}
+
+func TestPrepareKeepsMutationUnconfirmedUntilExplicitConfirmation(t *testing.T) {
+	orchestrator := &Orchestrator{
+		Clock: testkit.NewManualClock(time.Unix(100, 0)), IDs: &testkit.IDs{Values: []string{"operation-1"}},
+	}
+	plan, err := orchestrator.Prepare(domain.Context{YardType: domain.YardLocal}, domain.CommandPolicy{
+		Name: "start", Effect: domain.CommandMutate, RemotePolicy: domain.RemoteOnOwner,
+		Consequences: []string{"start the fixture"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Confirmed || plan.Effect != domain.CommandMutate || len(plan.Consequences) != 1 {
+		t.Fatalf("unexpected prepared plan: %#v", plan)
+	}
+	confirmed, err := orchestrator.Confirm(context.Background(), plan, true)
+	if err != nil || !confirmed.Confirmed {
+		t.Fatalf("explicit confirmation failed: plan=%#v err=%v", confirmed, err)
+	}
+	request := domain.AdapterRequest{Schema: 1, OperationID: plan.OperationID, Adapter: "fixture", Action: "run"}
+	if _, _, err := orchestrator.RunAdapter(context.Background(), plan, request, nil); err == nil {
+		t.Fatal("unconfirmed plan reached the adapter")
 	}
 }
 

@@ -32,15 +32,12 @@ subyard_context_load
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
-# shellcheck source=scripts/state/store.sh
-. "$SCRIPT_DIR/state/store.sh"
-# shellcheck source=scripts/state/resolver.sh
-. "$SCRIPT_DIR/state/resolver.sh"
 # shellcheck source=scripts/state/transport.sh
 . "$SCRIPT_DIR/state/transport.sh"
 # shellcheck source=scripts/state/metadata.sh
 . "$SCRIPT_DIR/state/metadata.sh"
-state_validate_all || die "project state validation failed"
+# shellcheck source=scripts/lib/project-snapshot.sh
+. "$SCRIPT_DIR/lib/project-snapshot.sh"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -50,39 +47,15 @@ SSH_HOST="${SSH_HOST:-yard}"
 PROFILES_DIR="$SCRIPT_DIR/../config/profiles"
 PROJ=(--project "$INCUS_PROJECT")
 
-# --- parse args --------------------------------------------------------------
-# --target yard|<profile>: where the project runs (L1 yard vs L2 profile box). Default yard.
-url=""; name=""; target="yard"; at_yard=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --target)   target="${2:?--target needs yard|<profile>}"; shift ;;
-    --target=*) target="${1#*=}" ;;
-    -y | --yes) ;;  # handled by ui.sh (ASSUME_YES)
-    @?*)        at_yard="${1#@}" ;;  # trailing `@<yard>` — target yard (equivalent to -Y)
-    -*)         die "unknown option '$1'" ;;
-    *)          if [ -z "$url" ]; then url="$1"; elif [ -z "$name" ]; then name="$1"; else die "too many arguments"; fi ;;
-  esac
-  shift
-done
-[ -n "$url" ] || die "usage: ${PROG:-yard} clone <git-url> [name] [--target yard|<profile>]"
+project_snapshot_load
+[ "$mode" = git ] || die "internal: clone adapter requires a git project snapshot"
+url="$hostPath"
+[ -n "$url" ] || die "internal: clone snapshot has no URL"
 if [ "$target" != yard ]; then
   [ -r "$PROFILES_DIR/$target/profile.conf" ] || die "unknown --target '$target' — use 'yard' (L1) or a profile (L2): $(for d in "$PROFILES_DIR"/*/; do [ -r "$d/profile.conf" ] && basename "$d"; done | tr '\n' ' ')"
 fi
 
-# --- derive name + id (from the url; no host path for a clone) ----------------
-[ -n "$name" ] || { name="$(basename -- "$url")"; name="${name%.git}"; }
-sname="$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '-')"
-hash="$(printf '%s' "$url" | sha256sum | cut -c1-8)"
-id="$sname-$hash"
-yardPath="$(yard_path_for "$id")"
 yardDir="${yardPath%/src}"   # /srv/workspaces/<id>
-
-# Route to the target yard: `@<yard>` picks it; else re-exec to whichever yard already holds
-# this url; else stay in the current context. (See route_sync_target.)
-route_sync_target "$id" "$at_yard"
-
-state_exists "$id" \
-  && die "'$name' is already in the yard (id $id) — remove it first: ${PROG:-yard} remove $name"
 
 # --- preflight: yard must be reachable ---------------------------------------
 # Remote: probe the ssh alias (never incus). Local: incus daemon + instance RUNNING.
@@ -99,7 +72,7 @@ announce "yard clone — $name (mode git)" \
   "Into  : $INSTANCE_NAME:$yardPath" \
   "Run target : $([ "$target" = yard ] && echo 'L1 — runs in the yard' || echo "L2 — box from profile '$target'")" \
   "Runs 'git clone' INSIDE the yard as '$DEV_USER' (yard's network + creds; no host copy)." \
-  "Record machine-local state in $(state_file "$id")."
+  "Publish the validated project record through the Go control plane."
 proceed_or_die
 
 # Fresh dir owned by dev, then clone as dev (uses dev's in-yard git identity/creds). Remote:
@@ -121,15 +94,8 @@ else
     || die "git clone failed (private repo? enable ssh-agent forwarding at setup, or use an https token url)"
 fi
 
-# As with remote sync, owner-host registration is part of completion and happens before this
-# controller publishes its local record, keeping an interrupted operation safely rerunnable.
+# Go publishes controller and remote-owner state after this physical adapter returns success.
 write_yard_meta "$id" "$name" git "$target"
-if yard_is_remote; then
-  remote_owner_project_upsert "$id" "$name" git "$target" \
-    || die "project cloned, but the owner-host registry was not updated; re-run the same clone command"
-fi
-state_write "$id" "$name" "$url" "$yardPath" git "$SSH_HOST"
-state_set "$id" target "$target"
 ok "cloned $name → $yardPath (target $target)"
 info "id: $id"
 cat <<MSG

@@ -83,18 +83,13 @@ stage_provision_verify() { stage_provision_check; }
 
 # Profiles with an explicit in-yard provision adapter; used by init's opt-in post-stage offer.
 stage_provision_profiles() {
-  local state_dir="${SUBYARD_STATE_DIR:-$SUBYARD_CONFIG_HOME/projects}" file profile
+  local profile
   {
     for profile in ${YARD_PROFILES:-}; do
       [ -r "$SCRIPT_DIR/../config/profiles/$profile/provision.sh" ] && printf '%s\n' "$profile"
     done
-    if command -v jq >/dev/null 2>&1 && [ -d "$state_dir" ]; then
-      for file in "$state_dir"/*.json; do
-        [ -e "$file" ] || continue
-        profile="$(jq -r '.profile // ""' "$file" 2>/dev/null)"
-        [ -n "$profile" ] || continue
-        [ -r "$SCRIPT_DIR/../config/profiles/$profile/provision.sh" ] && printf '%s\n' "$profile"
-      done
-    fi
+    for profile in ${SUBYARD_PROJECT_PROFILES:-}; do
+      [ -r "$SCRIPT_DIR/../config/profiles/$profile/provision.sh" ] && printf '%s\n' "$profile"
+    done
   } | sort -u || true
 }

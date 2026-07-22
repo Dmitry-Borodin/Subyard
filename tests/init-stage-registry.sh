@@ -35,6 +35,7 @@ reconcile_run_stages
 # The native engine exports the selected yard as INCUS_PROJECT, which is also interpreted by the
 # Incus CLI. Before a named project's creation, host pool/network probes must remain in `default`.
 INCUS_PROJECT=subyard-e2e-yard
+PROJ=(--project "$INCUS_PROJECT")
 STORAGE_POOL=default
 INCUS_BRIDGE=incusbr0
 reconcile_incus_reachable() { return 0; }
@@ -46,5 +47,11 @@ incus() {
 }
 stage_incus_initialized \
   || { printf 'FAIL: named yard redirected host bootstrap probes away from default project\n' >&2; exit 1; }
+
+incus() {
+  [ "$*" = "info yard --project $INCUS_PROJECT" ]
+}
+stage_instance_exists \
+  || { printf 'FAIL: existing base-yard detection did not use the selected Incus project\n' >&2; exit 1; }
 
 printf 'ok: init stage registry applies once and verifies convergence\n'

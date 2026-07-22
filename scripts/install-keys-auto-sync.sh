@@ -30,13 +30,33 @@ TIMER="$UNIT_DIR/subyard-keys-sync.timer"
 SERVICE_TEMPLATE="$REPO/config/systemd/subyard-keys-sync.service.in"
 TIMER_TEMPLATE="$REPO/config/systemd/subyard-keys-sync.timer.in"
 SKIP_ENABLE="${SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE:-0}"
-YARD_BIN="$(readlink -f "$REPO/bin/yard-engine")"
-if [ ! -x "$YARD_BIN" ] && [ "$SKIP_ENABLE" = 1 ]; then
-  YARD_BIN="$(readlink -f "$REPO/bin/yard")"
+RUNTIME_ROOT="${YARD_RUNTIME_ROOT:-$SUBYARD_HOME/runtime}"
+YARD_BIN="$RUNTIME_ROOT/current/bin/yard"
+if [ "$SKIP_ENABLE" = 1 ] && [ ! -x "$YARD_BIN" ]; then
+  YARD_BIN="$REPO/bin/yard"
 fi
-[ -x "$YARD_BIN" ] || die "installed yard engine is missing — run: $REPO/scripts/install-cli.sh"
+[ -x "$YARD_BIN" ] || die "release yard runtime is missing — run: $REPO/scripts/install-cli.sh"
 
-render_service() { sed "s|@YARD_BIN@|$YARD_BIN|g" "$SERVICE_TEMPLATE"; }
+render_service() {
+  sed -e "s|@YARD_BIN@|$YARD_BIN|g" "$SERVICE_TEMPLATE"
+}
+
+user_systemctl() {
+  local runtime_dir bus_address
+  runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  bus_address="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$runtime_dir/bus}"
+  XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$bus_address" systemctl --user "$@"
+}
+
+wait_for_user_manager() {
+  local attempts=0
+  while [ "$attempts" -lt 50 ]; do
+    user_systemctl show-environment >/dev/null 2>&1 && return 0
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  return 1
+}
 
 units_current() {
   [ -r "$SERVICE" ] && [ -r "$TIMER" ] \
@@ -45,7 +65,7 @@ units_current() {
 
 timer_enabled() {
   [ "$SKIP_ENABLE" = 1 ] && return 0
-  systemctl --user is-enabled --quiet subyard-keys-sync.timer 2>/dev/null || return 1
+  user_systemctl is-enabled --quiet subyard-keys-sync.timer 2>/dev/null || return 1
   command -v loginctl >/dev/null 2>&1 || return 1
   [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)" = yes ] || return 1
 }
@@ -93,7 +113,8 @@ if [ "$linger" != yes ]; then
     die "systemd lingering is disabled and sudo is unavailable; the 24-hour sync bound cannot be installed"
   fi
 fi
-systemctl --user daemon-reload || die "could not reload the user systemd manager"
-systemctl --user enable --now subyard-keys-sync.timer \
+wait_for_user_manager || die "could not connect to the user systemd manager after enabling lingering"
+user_systemctl daemon-reload || die "could not reload the user systemd manager"
+user_systemctl enable --now subyard-keys-sync.timer \
   || die "could not enable subyard-keys-sync.timer"
 ok "enabled subyard-keys-sync.timer (6-hour interval, persistent catch-up)"

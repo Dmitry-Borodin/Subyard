@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/shelladapter"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
 	"github.com/Dmitry-Borodin/Subyard/internal/rpc"
@@ -140,6 +145,353 @@ func TestRPCIncusEventsAreTypedAndBoundToCancellation(t *testing.T) {
 	)
 	if err != nil || emitted.OperationID != "incus-op" || result.(map[string]any)["closed"] != true {
 		t.Fatalf("typed Incus event stream failed: event=%#v result=%#v err=%v", emitted, result, err)
+	}
+}
+
+func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	clock := testkit.NewManualClock(time.Unix(100, 0))
+	cliRunner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
+		Schema: 1, OperationID: "operation-cli", Status: "ok",
+	}}}}
+	prompt := &testkit.Prompt{Answers: []bool{true}}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"start"},
+		Environment: append(environment, "SUBYARD_OPERATION_ID=operation-cli"), WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr, AdapterRunner: cliRunner, Prompt: prompt, Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("structured CLI start failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if len(prompt.Seen) != 1 || len(cliRunner.Requests) != 1 ||
+		cliRunner.Requests[0].Adapter != "yard-control" || cliRunner.Requests[0].Action != "start" ||
+		cliRunner.Requests[0].Context["SUBYARD_CONFIG_LOADED"] != "1" {
+		t.Fatalf("CLI bypassed the structured operation: prompt=%#v requests=%#v", prompt.Seen, cliRunner.Requests)
+	}
+
+	rpcRunner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
+		Schema: 1, OperationID: "operation-rpc", Status: "ok",
+	}}}}
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+		Stderr: &stderr, AdapterRunner: rpcRunner, Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &rpcHandler{cli: program, loaded: loaded, plans: make(map[string]rpcPlannedOperation)}
+	planResult, err := handler.Handle(context.Background(), rpc.Call{
+		ID: "plan", OperationID: "operation-rpc", Method: "operation.plan",
+		Params: json.RawMessage(`{"command":"start","arguments":[]}`),
+	}, func(string, any) (uint64, error) { return 1, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := planResult.(domain.OperationPlan)
+	if plan.Confirmed || plan.Effect != domain.CommandMutate || len(plan.Consequences) != 3 {
+		t.Fatalf("RPC returned an invalid plan: %#v", plan)
+	}
+	if _, err := handler.Handle(context.Background(), rpc.Call{
+		ID: "execute-refused", OperationID: "operation-rpc", Method: "operation.execute",
+		Params: json.RawMessage(`{"confirmed":false}`),
+	}, func(string, any) (uint64, error) { return 1, nil }); err == nil || err.(*rpc.Error).Code != "confirmation_required" {
+		t.Fatalf("RPC accepted an unconfirmed mutation: %v", err)
+	}
+	events := make([]string, 0, 2)
+	result, err := handler.Handle(context.Background(), rpc.Call{
+		ID: "execute", OperationID: "operation-rpc", Method: "operation.execute",
+		Params: json.RawMessage(`{"confirmed":true}`),
+	}, func(event string, _ any) (uint64, error) {
+		events = append(events, event)
+		return uint64(len(events)), nil
+	})
+	if err != nil || result.(map[string]any)["result"].(domain.AdapterResult).Status != "ok" ||
+		len(events) != 2 || events[0] != "operation.started" || events[1] != "operation.finished" ||
+		len(rpcRunner.Requests) != 1 {
+		t.Fatalf("RPC execution bypassed orchestration: result=%#v events=%#v requests=%#v err=%v",
+			result, events, rpcRunner.Requests, err)
+	}
+	if _, err := handler.Handle(context.Background(), rpc.Call{
+		ID: "execute-replay", OperationID: "operation-rpc", Method: "operation.execute",
+		Params: json.RawMessage(`{"confirmed":true}`),
+	}, func(string, any) (uint64, error) { return 1, nil }); err == nil || err.(*rpc.Error).Code != "plan_not_found" {
+		t.Fatalf("RPC replayed an already executed plan: %v", err)
+	}
+}
+
+func TestStructuredMutationSharesTypedAdapterAcrossCLIAndRPC(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	clock := testkit.NewManualClock(time.Unix(100, 0))
+	cliRunner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
+		Schema: 1, OperationID: "operation-stop-cli", Status: "ok",
+	}}}}
+	prompt := &testkit.Prompt{Answers: []bool{true}}
+	var stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"stop", "--force"},
+		Environment: append(environment, "SUBYARD_OPERATION_ID=operation-stop-cli"), WorkingDir: root,
+		Stderr: &stderr, AdapterRunner: cliRunner, Prompt: prompt, Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("structured CLI stop failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if len(cliRunner.Requests) != 1 || cliRunner.Requests[0].Adapter != "command" ||
+		cliRunner.Requests[0].Action != "stop" ||
+		!slices.Equal(cliRunner.Requests[0].Arguments, []string{"stop", "--force"}) {
+		t.Fatalf("CLI mutation bypassed the typed command adapter: %#v", cliRunner.Requests)
+	}
+
+	rpcRunner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
+		Schema: 1, OperationID: "operation-stop-rpc", Status: "ok",
+	}}}}
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+		Stderr: &stderr, AdapterRunner: rpcRunner, Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &rpcHandler{cli: program, loaded: loaded, plans: make(map[string]rpcPlannedOperation)}
+	planResult, err := handler.Handle(context.Background(), rpc.Call{
+		ID: "plan-stop", OperationID: "operation-stop-rpc", Method: "operation.plan",
+		Params: json.RawMessage(`{"command":"stop","arguments":["--force"]}`),
+	}, func(string, any) (uint64, error) { return 1, nil })
+	if err != nil || planResult.(domain.OperationPlan).Command != "stop" {
+		t.Fatalf("typed stop plan failed: %#v %v", planResult, err)
+	}
+	if _, err := handler.Handle(context.Background(), rpc.Call{
+		ID: "execute-stop", OperationID: "operation-stop-rpc", Method: "operation.execute",
+		Params: json.RawMessage(`{"confirmed":true}`),
+	}, func(string, any) (uint64, error) { return 1, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcRunner.Requests) != 1 || rpcRunner.Requests[0].Action != "stop" ||
+		!slices.Equal(rpcRunner.Requests[0].Arguments, []string{"stop", "--force"}) {
+		t.Fatalf("RPC mutation bypassed the typed command adapter: %#v", rpcRunner.Requests)
+	}
+}
+
+func TestStructuredStartAutomationSkipsOnlyTheLocalPrompt(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		arguments   []string
+		environment []string
+	}{
+		{name: "command option", arguments: []string{"start", "--yes"}},
+		{name: "global option", arguments: []string{"--yes", "start"}},
+		{name: "automation environment", arguments: []string{"start"}, environment: []string{"ASSUME_YES=1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, environment, _ := nativeFixture(t)
+			environment = append(environment, test.environment...)
+			runner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
+				Schema: 1, OperationID: "operation-automation", Status: "ok",
+			}}}}
+			prompt := &testkit.Prompt{}
+			var stderr bytes.Buffer
+			program, err := New(Options{
+				RepositoryRoot: root, Program: "yard", Arguments: test.arguments,
+				Environment: append(environment, "SUBYARD_OPERATION_ID=operation-automation"),
+				WorkingDir:  root, Stderr: &stderr, AdapterRunner: runner, Prompt: prompt,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code := program.Run(context.Background()); code != 0 {
+				t.Fatalf("automated start failed: code=%d stderr=%q", code, stderr.String())
+			}
+			if len(prompt.Seen) != 0 || len(runner.Requests) != 1 {
+				t.Fatalf("automation did not bypass exactly the local prompt: prompt=%#v requests=%#v",
+					prompt.Seen, runner.Requests)
+			}
+		})
+	}
+}
+
+func TestProductionStartAdapterUsesGuardedShellHandler(t *testing.T) {
+	fixtureRoot, environment, _ := nativeFixture(t)
+	program, err := New(Options{
+		RepositoryRoot: fixtureRoot, Program: "yard", Environment: environment, WorkingDir: fixtureRoot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := repositoryRoot(t)
+	temporary := t.TempDir()
+	bin := filepath.Join(temporary, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(temporary, "state")
+	logPath := filepath.Join(temporary, "incus.log")
+	writeCLIFile(t, statePath, "STOPPED\n", 0o600)
+	writeCLIFile(t, logPath, "", 0o600)
+	writeCLIFile(t, filepath.Join(bin, "incus"), fmt.Sprintf(`#!/bin/sh
+set -eu
+state=%q
+log=%q
+case "${1:-}" in
+  info) exit 0 ;;
+  list) cat "$state" ;;
+  start) printf 'RUNNING\n' > "$state"; printf 'start\n' >> "$log" ;;
+  config)
+    case "${2:-}" in
+      get)
+        case "${4:-}" in
+          user.subyard.managed|user.subyard.initialized) printf 'true\n' ;;
+          user.subyard.desired_power) printf 'stopped\n' ;;
+          boot.autostart) printf 'false\n' ;;
+          user.subyard.bridge) printf 'incusbr0\n' ;;
+        esac
+        ;;
+      set) printf 'set:%%s=%%s\n' "$4" "$5" >> "$log" ;;
+    esac
+    ;;
+  *) exit 90 ;;
+esac
+`, statePath, logPath), 0o700)
+	writeCLIFile(t, filepath.Join(bin, "systemctl"), `#!/bin/sh
+case "$*" in
+  'is-active NetworkManager') printf 'inactive\n'; exit 3 ;;
+esac
+exit 90
+`, 0o700)
+	writeCLIFile(t, filepath.Join(bin, "ip"), "#!/bin/sh\nexit 0\n", 0o700)
+	contextValues := structuredAdapterContext(loaded.Context)
+	if contextValues["YARD_VERSION"] != Version {
+		t.Fatalf("structured adapter context lost engine version: %#v", contextValues)
+	}
+	remoteContext := loaded.Context
+	remoteContext.YardType = domain.YardRemote
+	remoteContext.RemoteDest = "dev@owner.example"
+	remoteContext.RemoteYard = "named"
+	remoteValues := structuredAdapterContext(remoteContext)
+	if remoteValues["REMOTE_DEST"] != remoteContext.RemoteDest || remoteValues["REMOTE_YARD"] != remoteContext.RemoteYard {
+		t.Fatalf("structured adapter context lost remote route: %#v", remoteValues)
+	}
+	contextKeys := make(map[string]struct{}, len(contextValues))
+	for key := range contextValues {
+		contextKeys[key] = struct{}{}
+	}
+	runner := shelladapter.Runner{
+		RepositoryRoot: root,
+		Allow: map[string]map[string]string{"yard-control": {
+			"start": filepath.Join(root, "scripts", "adapters", "yard-control.sh"),
+		}},
+		ContextKeys: contextKeys, Path: bin + ":/usr/sbin:/usr/bin:/sbin:/bin", Timeout: time.Second,
+	}
+	request := domain.AdapterRequest{
+		Schema: 1, OperationID: "operation-production", Adapter: "yard-control", Action: "start",
+		Context: contextValues,
+	}
+	result, diagnostics, err := runner.Run(context.Background(), request, nil)
+	if err != nil || result.Status != "ok" || !strings.Contains(diagnostics, "started (desired=running") {
+		t.Fatalf("production adapter failed: result=%#v diagnostics=%q err=%v", result, diagnostics, err)
+	}
+	payload, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), "start\n") ||
+		!strings.Contains(string(payload), "set:user.subyard.desired_power=running") {
+		t.Fatalf("guarded handler did not commit start: %s", payload)
+	}
+}
+
+func TestStructuredStartRunsOverFramedRPCSession(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	runner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
+		Schema: 1, OperationID: "operation-wire", Status: "ok",
+	}}}}
+	client, server := net.Pipe()
+	defer client.Close()
+	if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"rpc", "--stdio"},
+		Environment: environment, WorkingDir: root, Stdin: server, Stdout: server, Stderr: &stderr,
+		AdapterRunner: runner, Clock: testkit.NewManualClock(time.Unix(100, 0)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() {
+		done <- program.Run(context.Background())
+		_ = server.Close()
+	}()
+	codec := rpc.NewCodec(client, client)
+	if err := codec.Write(rpc.Request{Version: 1, Type: "request", ID: "negotiate", Method: "rpc.negotiate"}); err != nil {
+		t.Fatal(err)
+	}
+	negotiated, err := codec.ReadResponse()
+	if err != nil || negotiated.Error != nil {
+		t.Fatalf("RPC negotiation failed: response=%#v err=%v", negotiated, err)
+	}
+	if err := codec.Write(rpc.Request{
+		Version: 1, Type: "request", ID: "plan", OperationID: "operation-wire", Method: "operation.plan",
+		Params: json.RawMessage(`{"command":"start","arguments":[]}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	planned, err := codec.ReadResponse()
+	if err != nil || planned.Error != nil || planned.OperationID != "operation-wire" {
+		t.Fatalf("RPC plan failed: response=%#v err=%v", planned, err)
+	}
+	if err := codec.Write(rpc.Request{
+		Version: 1, Type: "request", ID: "execute", OperationID: "operation-wire", Method: "operation.execute",
+		Params: json.RawMessage(`{"confirmed":true}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seenEvents := make([]string, 0, 2)
+	var executed rpc.Response
+	for executed.ID == "" {
+		response, err := codec.ReadResponse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Type == "event" {
+			seenEvents = append(seenEvents, response.Event)
+		} else {
+			executed = response
+		}
+	}
+	if executed.Error != nil || executed.OperationID != "operation-wire" ||
+		len(seenEvents) != 2 || seenEvents[0] != "operation.started" || seenEvents[1] != "operation.finished" ||
+		len(runner.Requests) != 1 {
+		t.Fatalf("framed execution failed: response=%#v events=%#v requests=%#v stderr=%q",
+			executed, seenEvents, runner.Requests, stderr.String())
+	}
+	_ = client.Close()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("RPC server exited %d: %s", code, stderr.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RPC server did not stop after EOF")
 	}
 }
 
@@ -283,6 +635,101 @@ func TestNativeListRepairsLegacyProjectPermissions(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptersReceiveGoResolvedSnapshotAndGoCommitsState(t *testing.T) {
+	root, environment, stateDirectory := nativeFixture(t)
+	projectPath := filepath.Join(root, "Demo")
+	if err := os.MkdirAll(projectPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := program.prepareProjectImport(
+		context.Background(), loaded, "sync", []string{projectPath, "--target", "yard"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.Commit != projectCommitPut || execution.Environment["SUBYARD_PROJECT_SNAPSHOT"] != "1" ||
+		execution.Environment["SUBYARD_PROJECT_HOST_PATH"] != projectPath ||
+		execution.Environment["SUBYARD_PROJECT_YARD_PATH"] != state.YardPath(execution.Record.ProjectID) {
+		t.Fatalf("unexpected project adapter snapshot: %#v", execution)
+	}
+	store, err := state.NewFileStore(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(context.Background(), execution.Record.ProjectID); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("project state was published before the adapter succeeded: %v", err)
+	}
+	if err := program.commitProjectExecution(context.Background(), execution); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.Get(context.Background(), execution.Record.ProjectID)
+	if err != nil || record.HostPath != projectPath || record.Target != "yard" {
+		t.Fatalf("Go did not publish the adapter result atomically: %#v %v", record, err)
+	}
+}
+
+func TestProjectSelectionRoutesAcrossYardsBeforeAdapter(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	configHome := ""
+	for _, pair := range environment {
+		if strings.HasPrefix(pair, "SUBYARD_CONFIG_HOME=") {
+			configHome = strings.TrimPrefix(pair, "SUBYARD_CONFIG_HOME=")
+		}
+	}
+	if configHome == "" {
+		t.Fatal("fixture has no config home")
+	}
+	yardRegistry := filepath.Join(configHome, "yards")
+	if err := os.MkdirAll(yardRegistry, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(yardRegistry, "other.env"), "SSH_PORT=2233\n", 0o600)
+	otherState := filepath.Join(yardRegistry, "other", "projects")
+	store, err := state.NewFileStore(otherState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := domain.ProjectRecord{
+		Schema: 1, ProjectID: "demo-12345678", Name: "Demo", HostPath: "/host/Demo",
+		YardPath: state.YardPath("demo-12345678"), Mode: domain.ProjectSync,
+		SSHHost: "yard-other", Target: "yard",
+	}
+	if err := store.Put(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := program.prepareExistingProject(
+		context.Background(), loaded, "code", []string{"Demo"}, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.Loaded.Context.YardName != "other" ||
+		execution.Environment["SUBYARD_PROJECT_ID"] != record.ProjectID ||
+		execution.Environment["SUBYARD_PROJECT_SSH_HOST"] != "yard-other" {
+		t.Fatalf("project was not routed before adapter launch: %#v", execution)
+	}
+}
+
 func nativeFixture(t *testing.T) (string, []string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -292,8 +739,11 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		}
 	}
 	manifest := strings.Join([]string{
+		"start||yard-ctl.sh|start|forward|mutate|public|lifecycle|simple|start|start|--yes --help|",
+		"stop||yard-ctl.sh|stop|forward|mutate|public|lifecycle|simple|stop|stop|--force --yes --help|",
 		"status||@status||forward|read|public|lifecycle|status|status|status|--all --help|",
 		"list||@list||local|read|public|projects|simple|list|list|--live --help|",
+		"rpc||@rpc||local|mutate|hidden|internal|none|rpc --stdio|rpc|--stdio|",
 		"_state||@state||local|mutate|hidden|internal|none|_state|state||",
 	}, "\n") + "\n"
 	writeCLIFile(t, filepath.Join(root, "config", "commands.registry"), manifest, 0o600)

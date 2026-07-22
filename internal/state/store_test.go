@@ -137,6 +137,9 @@ func TestFileStoreDoesNotRepairInvalidBroadState(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{}\n"), 0o664); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.RepairLegacyPermissions(context.Background()); err == nil {
 		t.Fatal("invalid broad state was repaired")
 	}

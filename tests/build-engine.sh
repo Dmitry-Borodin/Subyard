@@ -30,9 +30,25 @@ fi
 grep -Fq 'Go is required' "$TMP/stderr" \
   || { printf 'build-engine: missing-Go diagnostic regressed\n' >&2; exit 1; }
 
-[ -x "$ROOT/bin/yard-engine" ] \
-  || { printf 'build-engine: checked-in bootstrap engine is missing\n' >&2; exit 1; }
-[ "$(PATH="$no_go_path" "$ROOT/bin/yard" --version)" = 'yard 0.1.0-dev' ] \
-  || { printf 'build-engine: checked-in bootstrap did not run without Go\n' >&2; exit 1; }
+mkdir -p "$TMP/fake-go-bin"
+cat > "$TMP/fake-go-bin/go" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$PWD" = "$EXPECTED_BUILD_CWD" ] || exit 71
+while [ $# -gt 0 ]; do
+  if [ "$1" = -o ]; then : > "$2"; exit 0; fi
+  shift
+done
+exit 72
+SH
+chmod +x "$TMP/fake-go-bin/go"
+(cd "$TMP" && PATH="$TMP/fake-go-bin:$PATH" EXPECTED_BUILD_CWD="$ROOT" \
+  "$ROOT/scripts/build-engine.sh" --force --output "$TMP/yard")
+[ -x "$TMP/yard" ] \
+  || { printf 'build-engine: invocation outside the repository did not produce an engine\n' >&2; exit 1; }
 
-printf 'ok: engine freshness is source-aware and the checked-in bootstrap runs without Go\n'
+install -m 0755 "$ROOT/.build/yard" "$TMP/release-engine"
+[ "$(PATH="$no_go_path" YARD_ENGINE_PATH="$TMP/release-engine" "$ROOT/bin/yard" --version)" = 'yard 0.1.0-dev' ] \
+  || { printf 'build-engine: explicit release engine did not run without Go\n' >&2; exit 1; }
+
+printf 'ok: engine freshness is source-aware and the release launcher runs without Go\n'

@@ -69,6 +69,9 @@ func TestOfficialClientMapsEventsAndDisconnect(t *testing.T) {
 	if err := server.WaitForEventClient(waitContext); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(server.EventQuery(), "all-projects=true") {
+		t.Fatalf("event stream is not subscribed across projects: %q", server.EventQuery())
+	}
 	if err := server.Emit(map[string]any{
 		"type": "lifecycle", "timestamp": time.Unix(100, 0).UTC(),
 		"metadata": map[string]any{"id": "operation-1", "action": "instance-started", "apiToken": "must-not-escape"},

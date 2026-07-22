@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -98,6 +99,32 @@ func TestSessionNegotiationEventsAndCancellation(t *testing.T) {
 	}
 	if !cancelled {
 		t.Fatalf("slow operation was not cancelled: %#v", responses)
+	}
+	_ = client.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompletedOperationIDCanBeReusedAfterItsResponse(t *testing.T) {
+	handler := HandlerFunc(func(context.Context, Call, Emit) (any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	client, server := net.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- (Session{Handler: handler}).Serve(context.Background(), server, server) }()
+	codec := NewCodec(client, client)
+	writeRequest(t, codec, Request{Version: 1, Type: "request", ID: "n", Method: "rpc.negotiate"})
+	_ = readResponse(t, codec)
+	for index := range 256 {
+		requestID := fmt.Sprintf("phase-%d", index)
+		writeRequest(t, codec, Request{
+			Version: 1, Type: "request", ID: requestID, OperationID: "operation-phases", Method: "phase",
+		})
+		response := readResponse(t, codec)
+		if response.ID != requestID || response.Error != nil {
+			t.Fatalf("completed operation ID remained active after response %d: %#v", index, response)
+		}
 	}
 	_ = client.Close()
 	if err := <-done; err != nil {

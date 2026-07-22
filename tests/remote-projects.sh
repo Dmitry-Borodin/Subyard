@@ -124,7 +124,15 @@ write_state() {
   chmod 0600 "$state_file"
 }
 run_remove() {
-  SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 \
+  local target
+  target="$(jq -r '.target' "$state_file")"
+  SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 SUBYARD_PROJECT_SNAPSHOT=1 \
+    SUBYARD_PROJECT_ID=demo-12345678 SUBYARD_PROJECT_NAME=demo \
+    SUBYARD_PROJECT_HOST_PATH=/controller/demo \
+    SUBYARD_PROJECT_YARD_PATH=/srv/workspaces/demo-12345678/src \
+    SUBYARD_PROJECT_MODE=sync SUBYARD_PROJECT_SSH_HOST=yard-remote \
+    SUBYARD_PROJECT_TARGET="$target" SUBYARD_PROJECT_DEVICE=ws-demo-12345678 \
+    SUBYARD_PROJECT_EXISTS=1 \
     "$ROOT/scripts/project-remove.sh" demo-12345678 "$@" --yes
 }
 
@@ -135,7 +143,7 @@ output="$(run_remove --soft)"
 assert_not_contains "$output" 'L2'
 assert_not_contains "$output" 'box teardown'
 [ ! -e "$REMOTE_TEST_STATE/owner-cleanup" ] || fail 'L1 removal called owner-host L2 cleanup'
-[ ! -e "$state_file" ] || fail 'L1 removal kept controller state'
+[ -e "$state_file" ] || fail 'physical L1 adapter wrote controller state instead of leaving commit to Go'
 
 # An owner-host L2 teardown failure is fatal before either controller state or workspace deletion.
 write_state openclaw
@@ -146,12 +154,12 @@ assert_contains "$output" 'project state and workspace were kept'
 [ -e "$state_file" ] || fail 'failed L2 teardown removed controller state'
 [ ! -e "$REMOTE_TEST_STATE/workspace-delete" ] || fail 'failed L2 teardown deleted the workspace'
 
-# Once owner cleanup succeeds, full removal proceeds in order and drops both workspace and state.
+# Once owner cleanup succeeds, physical removal proceeds; Go owns the later state commit.
 printf 'ok\n' > "$REMOTE_TEST_STATE/cleanup-mode"
 output="$(run_remove)"
 assert_contains "$output" 'removed remote L2 box/staged env'
 [ -e "$REMOTE_TEST_STATE/owner-cleanup" ] || fail 'successful L2 removal skipped owner cleanup'
 [ -e "$REMOTE_TEST_STATE/workspace-delete" ] || fail 'successful L2 removal skipped workspace deletion'
-[ ! -e "$state_file" ] || fail 'successful L2 removal kept controller state'
+[ -e "$state_file" ] || fail 'physical L2 adapter wrote controller state instead of leaving commit to Go'
 
-printf 'ok: remote project counts are live/cached and removal is target-aware\n'
+printf 'ok: remote project counts are live/cached and physical removal is target-aware and state-neutral\n'

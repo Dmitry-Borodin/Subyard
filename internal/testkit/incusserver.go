@@ -34,6 +34,7 @@ type IncusServer struct {
 	execSteps   []IncusServerExecStep
 	execCalls   []IncusServerExecCall
 	operations  map[string]*incusOperation
+	eventQuery  string
 	nextOp      int
 }
 
@@ -211,10 +212,19 @@ func (fake *IncusServer) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		}
 		writeIncusSync(writer, instance)
 	case request.URL.Path == "/1.0/events":
+		fake.mu.Lock()
+		fake.eventQuery = request.URL.RawQuery
+		fake.mu.Unlock()
 		fake.serveEvents(writer, request)
 	default:
 		writeIncusError(writer, http.StatusNotFound, "endpoint not found")
 	}
+}
+
+func (fake *IncusServer) EventQuery() string {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return fake.eventQuery
 }
 
 func (fake *IncusServer) startExec(writer http.ResponseWriter, request *http.Request) {

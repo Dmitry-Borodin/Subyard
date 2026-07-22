@@ -49,13 +49,36 @@ rpc_negotiate() { # <engine> <engine-version> <protocol-version> <compatible|inc
 }
 
 artifact_one="$("$ROOT/scripts/package-engine.sh" --output-dir "$release" --version 1.0.0-test)"
+bundle_one="$release/subyard-1.0.0-test-linux-amd64.tar.gz"
 [ -x "$artifact_one" ] || { printf 'release artifact is not executable\n' >&2; exit 1; }
-[ -r "$artifact_one.sha256" ] && [ -r "$artifact_one.manifest.json" ] \
-  || { printf 'release checksum or manifest missing\n' >&2; exit 1; }
+[ -r "$artifact_one.sha256" ] && [ -r "$artifact_one.manifest.json" ] && [ -r "$artifact_one.provenance.json" ] \
+  || { printf 'release checksum, manifest or provenance missing\n' >&2; exit 1; }
+[ -r "$bundle_one" ] && [ -r "$bundle_one.sha256" ] \
+  && [ -r "$bundle_one.manifest.json" ] && [ -r "$bundle_one.provenance.json" ] \
+  || fail 'self-contained runtime bundle contract is missing'
+jq -e '.schemaVersion == 1 and .kind == "runtime" and .version == "1.0.0-test" and
+  .rpc.min == 1 and .rpc.max == 1' "$bundle_one.manifest.json" >/dev/null \
+  || fail 'runtime bundle manifest is incompatible'
+bundle_list="$TMP/runtime-bundle.list"
+tar -tzf "$bundle_one" > "$bundle_list"
+grep -Fxq './bin/yard' "$bundle_list" \
+  && grep -Fxq './bin/yard-engine' "$bundle_list" \
+  && grep -Fxq './scripts/update-engine.sh' "$bundle_list" \
+  && grep -Fxq './config/commands.registry' "$bundle_list" \
+  || fail 'runtime bundle does not contain the complete launcher contract'
 jq -e '.schemaVersion == 1 and .version == "1.0.0-test" and .rpc.min == 1 and .rpc.max == 1 and
   .projectStateSchema == 1 and .credentialSchema == 1' "$artifact_one.manifest.json" >/dev/null
+jq -e '.schemaVersion == 1 and .version == "1.0.0-test" and
+  .sourceRepository == "github.com/Dmitry-Borodin/Subyard" and (.sha256 | length == 64)' \
+  "$artifact_one.provenance.json" >/dev/null
 rpc_negotiate "$artifact_one" 1.0.0-test 1 compatible artifact-one-v1
 rpc_negotiate "$artifact_one" 1.0.0-test 2 incompatible artifact-one-v2
+
+arm_release="$TMP/release-arm64"
+artifact_arm="$("$ROOT/scripts/package-engine.sh" --output-dir "$arm_release" --version 1.0.0-test --arch arm64)"
+jq -e '.os == "linux" and .arch == "arm64" and .version == "1.0.0-test"' \
+  "$artifact_arm.manifest.json" >/dev/null \
+  || fail 'arm64 release contract was not published'
 
 legacy_state="$SUBYARD_CONFIG_HOME/projects/legacy-12345678.json"
 install -d -m 0700 "$(dirname "$legacy_state")"
@@ -63,7 +86,8 @@ printf '%s\n' '{"schema":1,"projectId":"legacy-12345678","name":"Legacy","hostPa
 chmod 0664 "$legacy_state"
 
 "$ROOT/scripts/install-engine-release.sh" --target "$target" \
-  --artifact "$artifact_one" --checksum "$artifact_one.sha256" >/dev/null
+  --artifact "$artifact_one" --checksum "$artifact_one.sha256" \
+  --manifest "$artifact_one.manifest.json" --provenance "$artifact_one.provenance.json" >/dev/null
 [ "$(stat -c '%a' "$legacy_state")" = 600 ] \
   || { printf 'release install did not migrate legacy project permissions\n' >&2; exit 1; }
 [ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.0.0-test' ] \
@@ -72,18 +96,21 @@ chmod 0664 "$legacy_state"
 bad_checksum="$TMP/bad.sha256"
 printf '%064d  bad\n' 0 > "$bad_checksum"
 if "$ROOT/scripts/install-engine-release.sh" --target "$target" \
-  --artifact "$artifact_one" --checksum "$bad_checksum" >/dev/null 2>&1; then
+  --artifact "$artifact_one" --checksum "$bad_checksum" \
+  --manifest "$artifact_one.manifest.json" --provenance "$artifact_one.provenance.json" >/dev/null 2>&1; then
   printf 'checksum mismatch unexpectedly installed\n' >&2; exit 1
 fi
 [ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.0.0-test' ] \
   || { printf 'checksum failure replaced current engine\n' >&2; exit 1; }
 
 artifact_two="$("$ROOT/scripts/package-engine.sh" --output-dir "$release" --version 1.1.0-test)"
+bundle_two="$release/subyard-1.1.0-test-linux-amd64.tar.gz"
 jq -e '.version == "1.1.0-test" and .rpc.min == 1 and .rpc.max == 1' \
   "$artifact_two.manifest.json" >/dev/null
 rpc_negotiate "$artifact_two" 1.1.0-test 1 compatible artifact-two-v1
 "$ROOT/scripts/install-engine-release.sh" --target "$target" \
-  --artifact "$artifact_two" --checksum "$artifact_two.sha256" >/dev/null
+  --artifact "$artifact_two" --checksum "$artifact_two.sha256" \
+  --manifest "$artifact_two.manifest.json" --provenance "$artifact_two.provenance.json" >/dev/null
 [ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.1.0-test' ] \
   || { printf 'upgrade version mismatch\n' >&2; exit 1; }
 [ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target.previous" --version | awk '{print $2}')" = '1.0.0-test' ] \
@@ -106,4 +133,49 @@ install -m 0755 "$artifact_one" "$target.previous"
   || { printf 'rollback did not retain replaced release\n' >&2; exit 1; }
 rpc_negotiate "$target" 1.0.0-test 1 compatible installed-rollback-v1
 
-printf 'ok: engine release is versioned, checksum-verified, atomic and rollback-capable\n'
+# The public updater publishes a complete runtime, atomically switches stable links and can reuse
+# its exact cache offline without touching a working current release.
+runtime_root="$TMP/update-runtime"
+YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
+  "$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --version 1.0.0-test >/dev/null
+[ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
+  || fail 'yard update did not install the selected release'
+[ -x "$runtime_root/current/scripts/update-engine.sh" ] \
+  && [ -r "$runtime_root/current/config/commands.registry" ] \
+  && [ -r "$runtime_root/current/completions/yard.bash" ] \
+  || fail 'yard update installed an incomplete runtime'
+YARD_RELEASE_CACHE="$TMP/cache" "$ROOT/scripts/update-engine.sh" \
+  --runtime-root "$runtime_root" --version 1.0.0-test --offline --check >/dev/null \
+  || fail 'offline update check did not use the verified cache'
+cached_bundle="$TMP/cache/1.0.0-test/$(basename "$bundle_one")"
+printf 'truncated\n' >> "$cached_bundle"
+if YARD_RELEASE_CACHE="$TMP/cache" "$ROOT/scripts/update-engine.sh" \
+  --runtime-root "$runtime_root" --version 1.0.0-test --offline --check >/dev/null 2>&1; then
+  fail 'offline update check accepted a corrupt cached bundle'
+fi
+[ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
+  || fail 'failed offline check changed the current runtime'
+
+partial="$TMP/partial"; install -d "$partial"
+install -m 0644 "$bundle_two" "$partial/$(basename "$bundle_two")"
+install -m 0644 "$bundle_two.sha256" "$bundle_two.manifest.json" "$partial/"
+if YARD_RELEASE_BASE_URL="file://$partial" YARD_RELEASE_CACHE="$TMP/partial-cache" \
+  "$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null 2>&1; then
+  fail 'incomplete release unexpectedly installed'
+fi
+[ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
+  || fail 'interrupted/incomplete update replaced the current runtime'
+
+YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
+  "$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
+[ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \
+  || fail 'runtime upgrade did not switch current'
+[ "$("$runtime_root/previous/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
+  || fail 'runtime upgrade did not retain previous'
+"$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --rollback >/dev/null
+[ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
+  || fail 'runtime rollback did not restore previous'
+[ "$("$runtime_root/previous/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \
+  || fail 'runtime rollback did not retain the replaced release'
+
+printf 'ok: engine and self-contained runtime releases are verified, offline-safe, atomic and rollback-capable\n'

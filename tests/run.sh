@@ -21,10 +21,10 @@ mapfile -t unformatted < <(gofmt -l "$ROOT/cmd" "$ROOT/internal")
 (cd "$ROOT" && go test -race ./...)
 (cd "$ROOT" && go test ./internal/command -run '^$' -fuzz '^FuzzParseDoesNotPanic$' -fuzztime=1s)
 "$ROOT/scripts/build-engine.sh"
-[ -x "$ROOT/bin/yard-engine" ] \
-  || { printf 'FAIL: checked-in bin/yard-engine is missing or not executable\n' >&2; exit 1; }
-cmp -s "$ROOT/.build/yard" "$ROOT/bin/yard-engine" \
-  || { printf 'FAIL: bin/yard-engine is stale; rebuild it from the current production Go sources\n' >&2; exit 1; }
+[ -x "$ROOT/.build/yard" ] \
+  || { printf 'FAIL: development engine was not built\n' >&2; exit 1; }
+[ ! -e "$ROOT/bin/yard-engine" ] \
+  || { printf 'FAIL: tracked/source-tree bootstrap engine must not return\n' >&2; exit 1; }
 
 mapfile -t actual_tests < <(find "$ROOT/tests" -maxdepth 1 -type f -name '*.sh' ! -name run.sh -printf '%f\n' | sort)
 mapfile -t declared_tests < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$ROOT"/tests/suites/*.list | sort)

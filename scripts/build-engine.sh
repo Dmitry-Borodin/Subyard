@@ -40,9 +40,10 @@ lock="$(dirname "$OUTPUT")/.build.lock"
   trap 'rm -f "$tmp"' EXIT
   # Build metadata must not depend on the caller's HOME-level git safe.directory list. Tests and
   # packaged builds deliberately use isolated homes, and the explicit VERSION is authoritative.
+  cd "$REPO"
   CGO_ENABLED=0 go build -buildvcs=false -mod=readonly -trimpath \
     -ldflags "-s -w -X github.com/Dmitry-Borodin/Subyard/internal/cli.Version=$VERSION" \
-    -o "$tmp" "$REPO/cmd/yard"
+    -o "$tmp" ./cmd/yard
   chmod 0755 "$tmp"
   mv -f "$tmp" "$OUTPUT"
   trap - EXIT

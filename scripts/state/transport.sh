@@ -36,16 +36,6 @@ remote_owner_yard_cmd() {
       -o StrictHostKeyChecking=accept-new "$dest" -- bash -lc "$(printf '%q' "$rc")"
 }
 
-# Remote project data is copied straight into the yard, bypassing its owner host. Complete the
-# operation by converging the owner's machine-local registry through the hidden validated endpoint.
-remote_owner_project_upsert() { # <id> <name> <mode> <target>
-  remote_owner_yard_cmd _project-state upsert "$1" "$2" "$3" "$4"
-}
-
-remote_owner_project_unregister() { # <id>
-  remote_owner_yard_cmd _project-state unregister "$1"
-}
-
 # remote_alias_configured — distinguish a missing/legacy snippet from a network failure. `ssh -G`
 # resolves Includes without opening a connection; the managed alias must expose this context's
 # stable HostKeyAlias. A legacy snippet therefore gets the useful "re-run remote add" diagnosis.

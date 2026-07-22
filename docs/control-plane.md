@@ -9,8 +9,9 @@ ports.
 ## Implementation map
 
 ```text
-bin/yard                                stable launcher for the checked-in bootstrap engine
-bin/yard-engine                         temporary Linux amd64 native bootstrap
+bin/yard                                source-tree and release-runtime launcher
+.build/yard                             ignored source-development engine
+<runtime>/current/bin/yard-engine       verified amd64/arm64 production engine
 cmd/yard                                native CLI/RPC entrypoint
 internal/
   ├── command, config, domain           manifest and immutable context
@@ -18,8 +19,9 @@ internal/
   ├── state, migration, rpc              atomic state, schema checks and framed sessions
   └── adapters/                          Incus, metadata, shell and local/SSH transports
 scripts/
+  ├── adapters/                         structured system-side-effect wrappers
   ├── lib/                              compatibility UI/cache/host adapters
-  ├── state/                            thin native-state calls plus transport/yard metadata
+  ├── state/                            physical transport and portable yard metadata
   ├── reconcile/
   │     └── stages/                     one check/plan/apply/verify contract per init stage
   └── credentials/                      protected crypto/store/peer/materialization adapters
@@ -30,9 +32,15 @@ config/profiles/<profile>/
 
 The Go engine owns global yard selection, validated config, operation identity/audit, remote-plane
 selection, project state/resolution, read-only status/inventory, credential DAG decisions, official
-Incus calls and the versioned stdio RPC. `bin/yard` always executes the checked-in native
-`bin/yard-engine`; it never compiles source on the operator host. Installed commands link to that stable
-launcher. The engine does not own command-specific or profile-specific system mutations.
+Incus calls and the versioned stdio RPC. The source launcher executes only an explicit `.build/yard`
+development candidate. Installed commands use an immutable, checksum/provenance-verified runtime
+containing its launcher, engine, scripts, registry and completion files; `current`/`previous` switch
+the whole runtime and production never reads a source checkout. Non-interactive mutations share the
+Go-owned plan, consequences, confirmation, operation
+ID, audit, events and cancellation path across CLI and RPC. `start` uses the allowlisted
+`scripts/adapters/yard-control.sh`; other migrated actions use the fixed physical map in
+`scripts/adapters/command.sh`. The engine does not perform the command-specific or
+profile-specific host mutation itself.
 `scripts/init.sh` remains the structured host-reconciliation adapter:
 it composes the ordered stage planner, owns the one top-level confirmation and keeps the separate
 desired-power finalization transaction. Profile process identity and platform facts remain in their
@@ -91,9 +99,13 @@ explicit cancellation produce different typed errors.
 The outer event `sequence` and `revision` are one monotonic per-session stream; adapter-local Incus
 revisions remain typed event data and cannot make the RPC revision move backwards after a snapshot.
 
-The switched surface exposes `command.list`, `context.get`, `operation.route`, `project.list`,
-`yard.status`, `credential.list`, `credential.status`, `incus.events`, `system.snapshot` and
-`system.ping`. The full
+The switched surface exposes `command.list`, `context.get`, `operation.route`, `operation.plan`,
+`operation.execute`, `project.list`, `yard.status`, `credential.list`, `credential.status`,
+`incus.events`, `system.snapshot`, `system.resync` and `system.ping`. `operation.plan` accepts every
+non-interactive mutating command backed by the structured adapter allowlist. Interactive terminal and
+protected credential-payload commands keep their dedicated transport rather than treating human
+stdin/stdout as a typed result. Its server-side plan is bounded and single-use; execution requires an
+explicit `confirmed=true` and emits correlated start/final events. The full
 snapshot contains one revision over context, public commands, project inventory, yard status and
 redacted credential metadata; `snapshot.ready` and Incus events use the same ordered event channel.
 Human CLI output is never parsed as a fallback API. Secret-like fields are rejected recursively from
@@ -117,6 +129,12 @@ The validated context contract includes:
 
 Source-only domain modules do not load configuration themselves.
 
+Structured system adapters are selected by an `(adapter, action)` allowlist and receive only the
+validated non-secret context keys declared by the caller. Metadata uses a dedicated file descriptor,
+protected input uses stdin, diagnostics use stderr, and stdout is reserved for one schema-checked JSON
+result correlated by operation ID. The runner supplies a fixed production `PATH`, enforces output and
+time limits, and terminates the adapter process group on cancellation.
+
 ### Project state and routing
 
 The native `internal/state` store is the only project-state implementation. Project state is one
@@ -129,16 +147,16 @@ mode matches the original Bash writer's `0666 & umask` output are tightened in p
 through a no-follow file descriptor; symlinks, malformed records and anomalous modes remain
 fail-closed. The same repair is registered in `_migrate apply` for release upgrades.
 
-The remaining shell modules are intentionally narrow:
+Before a project adapter starts, Go resolves paths/names/qualified selectors across yards, loads the
+owning context, validates the typed record and supplies a `SUBYARD_PROJECT_*` snapshot. Physical
+sync/clone/export/remove/L2 adapters never open project-state files or re-exec routing decisions.
+After a successful mutating adapter, Go atomically publishes or deletes controller state and, for a
+remote yard, converges the owner endpoint before publishing controller state.
 
-- `state/store.sh`: compatibility function names that call the native state endpoint;
-- `state/resolver.sh`: compatibility calls into native local/qualified cross-yard resolution;
-- `state/transport.sh`: remote owner control plane and direct yard data-plane probes;
-- `state/metadata.sh`: yard discovery input and owner convergence through native state;
-- `lib/cache.sh`: last-good remote `_info` cache.
-
-Owner upsert/unregister, second-controller discovery, qualified selectors, and synthetic `--live`
-records are compatibility behavior, not best-effort implementation details.
+The remaining shell modules are intentionally physical: `state/transport.sh` contains bounded SSH
+owner/data-plane probes, `state/metadata.sh` reads and writes portable in-yard discovery records,
+`lib/project-snapshot.sh` validates the adapter envelope, and `lib/cache.sh` maintains the last-good
+remote `_info` cache. The retired `state/store.sh` and `state/resolver.sh` shims must not return.
 
 ### Reconciliation stages
 

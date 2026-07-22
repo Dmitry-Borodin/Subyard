@@ -1,11 +1,14 @@
 package audit
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 )
 
 func TestWriteInvocationRedactsAndRotates(t *testing.T) {
@@ -34,5 +37,27 @@ func TestWriteInvocationRedactsAndRotates(t *testing.T) {
 		if !strings.Contains(text, " op=op-fixture ") {
 			t.Fatalf("operation correlation missing in %s: %q", name, text)
 		}
+	}
+}
+
+func TestOperationLogCorrelatesLifecycleWithoutEventData(t *testing.T) {
+	home := t.TempDir()
+	sink := OperationLog{Home: home, WorkingDir: "/workspace", Yard: "named"}
+	err := sink.WriteAudit(context.Background(), domain.OperationEvent{
+		OperationID: "op-lifecycle", Kind: "operation.finished",
+		At:   time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC),
+		Data: map[string]any{"password": "must-not-be-logged"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(filepath.Join(home, "logs", "yard.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	if !strings.Contains(text, "op=op-lifecycle") || !strings.Contains(text, "operation.finished") ||
+		strings.Contains(text, "must-not-be-logged") {
+		t.Fatalf("unexpected operation audit: %q", text)
 	}
 }

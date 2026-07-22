@@ -26,12 +26,20 @@ export MOCK_INCUS_LOG="$TMP/incus.log"
 check_explicit_path() {
   local path="$1" label="$2"
   : > "$MOCK_INCUS_LOG"
-  if "$ROOT/bin/yard" bind "$path" --yes >"$TMP/$label.out" 2>&1; then
+  if SUBYARD_PROJECT_SNAPSHOT=1 SUBYARD_PROJECT_ID="project-12345678" \
+    SUBYARD_PROJECT_NAME="project" SUBYARD_PROJECT_HOST_PATH="$path" \
+    SUBYARD_PROJECT_YARD_PATH="/srv/workspaces/project-12345678/src" \
+    SUBYARD_PROJECT_MODE=bind SUBYARD_PROJECT_SSH_HOST=yard SUBYARD_PROJECT_TARGET=yard \
+    SUBYARD_PROJECT_DEVICE=ws-project-12345678 SUBYARD_PROJECT_EXISTS=0 \
+    "$ROOT/scripts/project-sync.sh" bind --yes >"$TMP/$label.out" 2>&1; then
     fail "mocked bind unexpectedly completed: $label"
   fi
   grep -Fq 'explicit bind exposes the host path directly to the yard' "$TMP/$label.out" \
     || fail "encapsulation warning missing: $label"
-  [ -s "$MOCK_INCUS_LOG" ] || fail "explicit path was rejected before Incus: $label"
+  if [ ! -s "$MOCK_INCUS_LOG" ]; then
+    sed 's/^/  | /' "$TMP/$label.out" >&2
+    fail "explicit path was rejected before Incus: $label"
+  fi
 }
 
 check_explicit_path "$TMP/arbitrary/project" arbitrary

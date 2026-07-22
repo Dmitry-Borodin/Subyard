@@ -26,16 +26,6 @@ subyard_context_load
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
-# shellcheck source=scripts/state/store.sh
-. "$SCRIPT_DIR/state/store.sh"
-# shellcheck source=scripts/state/resolver.sh
-. "$SCRIPT_DIR/state/resolver.sh"
-# shellcheck source=scripts/state/transport.sh
-. "$SCRIPT_DIR/state/transport.sh"
-# shellcheck source=scripts/state/metadata.sh
-. "$SCRIPT_DIR/state/metadata.sh"
-state_validate_all || die "project state validation failed"
-
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 DEV_USER="${DEV_USER:-dev}"
@@ -71,9 +61,9 @@ done
 if [ -n "$want" ]; then
   profiles=("$want"); src="requested"
 elif [ -n "${YARD_PROFILES:-}" ]; then
-  # Union, YARD_PROFILES first then state-registered profiles, order-stable and deduped.
+  # Union, YARD_PROFILES first then Go-resolved project profiles, order-stable and deduped.
   read -ra _yp <<<"$YARD_PROFILES"
-  mapfile -t _st < <(for id in $(state_ids); do state_get "$id" profile; done | sed '/^$/d')
+  read -ra _st <<<"${SUBYARD_PROJECT_PROFILES:-}"
   declare -A _seen=(); profiles=()
   for prof in "${_yp[@]}" ${_st[@]+"${_st[@]}"}; do
     [ -n "$prof" ] && [ -z "${_seen[$prof]:-}" ] || continue
@@ -81,7 +71,7 @@ elif [ -n "${YARD_PROFILES:-}" ]; then
   done
   src="yard profiles (${YARD_NAME:-default}) ∪ in-yard projects"
 else
-  mapfile -t profiles < <(for id in $(state_ids); do state_get "$id" profile; done | sed '/^$/d' | sort -u)
+  read -ra profiles <<<"${SUBYARD_PROJECT_PROFILES:-}"
   if [ "${#profiles[@]}" -gt 0 ]; then src="in-yard projects"
   else mapfile -t profiles < <(disk_profiles); src="available on disk — no in-yard project registers a profile"; fi
 fi

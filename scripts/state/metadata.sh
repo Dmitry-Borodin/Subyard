@@ -41,9 +41,9 @@ write_yard_meta() {
   warn "could not write yard meta for '$name' (non-fatal)"; return 0
 }
 
-# --- yard-side reconcile (list --live) ---------------------------------------
-# `list --live`, and register-on-demand in remove/code, read the yard's meta files over the
-# same transport. Non-fatal: an unreachable yard yields no rows, never a hang or a die.
+# --- yard-side observation ---------------------------------------------------
+# The Go project observer reads these records for `list --live` and explicit-context discovery.
+# These helpers remain physical metadata transport for the owner probe and compatibility callers.
 
 # _yard_meta_stream <ssh_host> <remote:0|1> <instance> <project> — cat every meta in the yard
 # (concatenated JSON objects) via ssh (remote, or local when the alias is up) else incus exec.
@@ -99,31 +99,4 @@ yard_live_projects_for() {
     *)       : "${host:=yard-$y}"; : "${inst:=yard-$y}"; : "${proj:=subyard-$y}" ;;
   esac
   _yard_meta_stream "$host" "$remote" "$inst" "$proj" | _yard_meta_parse
-}
-
-# resolve_project_id_soft <arg> — like resolve_project_id but returns 1 instead of dying when
-# nothing matches (so callers can try a yard-side reconcile before giving up).
-resolve_project_id_soft() {
-  state_engine resolve-local-soft "${1:-.}"
-}
-
-# maybe_reconcile <arg> — register-on-demand: under an EXPLICIT context, if <arg> is not in
-# local state but the active yard holds a project of that id/name (per its meta), write a
-# minimal local record (hostPath empty) so remove/code can act on it. Best-effort; the
-# subsequent resolve_project_ctx then finds it. Does nothing without an explicit context.
-maybe_reconcile() {
-  [ -n "${SUBYARD_YARD_EXPLICIT:-}" ] || return 0
-  local arg="${1:-.}" yid ynm ymode ytarget
-  arg="$(project_arg_in_context "$arg")"
-  resolve_project_id_soft "$arg" >/dev/null 2>&1 && return 0   # already known locally
-  while IFS=$'\t' read -r yid ynm ymode ytarget; do
-    [ -n "$yid" ] || continue
-    state_yard_record_valid "$yid" "$ymode" "$ytarget" || continue
-    if [ "$arg" = "$yid" ] || [ "${arg,,}" = "${ynm,,}" ]; then
-      state_upsert_yard "$yid" "$ynm" "$ymode" "$ytarget" "${SSH_HOST:-yard}"
-      warn "registered '$ynm' from the yard on demand (no host path recorded; export/sync from this machine need one — re-add with '$(yard_cmd_hint) sync <path>')"
-      return 0
-    fi
-  done < <(yard_live_projects)
-  return 0
 }

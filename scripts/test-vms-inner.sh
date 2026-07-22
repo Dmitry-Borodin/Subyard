@@ -274,18 +274,23 @@ wait_agent() {
 }
 
 vm_ip() {
-  local vm="$1"
+  local vm="$1" routes interface
+  routes="$(inner_incus exec "$vm" --project "$PROJECT" -- ip -4 route show default)" || return
+  interface="$({
+    printf '%s\n' "$routes" \
+      | awk '$1 == "default" { for (i = 1; i <= NF; i++) if ($i == "dev") print $(i + 1) }' \
+      | sort -u
+  })"
+  [[ "$interface" =~ ^[[:alnum:]_.:-]+$ ]] \
+    || { printf 'test-vms: expected exactly one default-route interface for %s\n' "$vm" >&2; return 1; }
   inner_incus list "$vm" --project "$PROJECT" --format json \
-    | jq -er '
-        [.[0].state.network
-          | to_entries[]
-          | select(.key != "lo")
-          | .value.addresses[]?
+    | jq -er --arg interface "$interface" '
+        [.[0].state.network[$interface].addresses[]?
           | select(.family == "inet" and .scope == "global")
           | .address]
         | unique
         | if length == 1 then .[0]
-          else error("expected exactly one non-loopback global IPv4 address")
+          else error("expected exactly one global IPv4 address on the default-route interface")
           end'
 }
 
@@ -296,7 +301,7 @@ ssh_options() {
 
 record_host_key() {
   local vm="$1" ip keyscan deadline=$((SECONDS + BOOT_TIMEOUT)) started=$SECONDS next_report=$((SECONDS + 10))
-  ip="$(vm_ip "$vm")" || die "$vm has no IPv4 address on eth0"
+  ip="$(vm_ip "$vm")" || die "$vm has no IPv4 address on its default-route interface"
   info "waiting for $vm SSH host key ($ip)"
   until keyscan="$(ssh-keyscan -T 3 "$ip" 2>/dev/null)" && [ -n "$keyscan" ]; do
     [ "$SECONDS" -lt "$deadline" ] || die "$vm SSH host key was not reachable within ${BOOT_TIMEOUT}s"
@@ -577,8 +582,14 @@ cmd_exec() {
 
 main() {
   local -a args=(); local arg
-  for arg in "$@"; do
-    case "$arg" in --yes | -y) ASSUME_YES=1 ;; --help | -h) usage; return ;; *) args+=("$arg") ;; esac
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --yes | -y) ASSUME_YES=1 ;;
+      --help | -h) usage; return ;;
+      --) args+=(-- "$@"); break ;;
+      *) args+=("$arg") ;;
+    esac
   done
   set -- "${args[@]}"
   validate_config

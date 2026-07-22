@@ -302,6 +302,7 @@ type AdapterRequest struct {
 	OperationID string            `json:"operationId"`
 	Adapter     string            `json:"adapter"`
 	Action      string            `json:"action"`
+	Arguments   []string          `json:"arguments,omitempty"`
 	Context     map[string]string `json:"context"`
 	Input       map[string]any    `json:"input,omitempty"`
 }
@@ -345,9 +346,11 @@ type CommandPolicy struct {
 }
 
 type OperationPlan struct {
-	OperationID string          `json:"operationId"`
-	Command     string          `json:"command"`
-	Target      ExecutionTarget `json:"target"`
-	Confirmed   bool            `json:"confirmed"`
-	CreatedAt   time.Time       `json:"createdAt"`
+	OperationID  string          `json:"operationId"`
+	Command      string          `json:"command"`
+	Effect       CommandEffect   `json:"effect"`
+	Target       ExecutionTarget `json:"target"`
+	Consequences []string        `json:"consequences,omitempty"`
+	Confirmed    bool            `json:"confirmed"`
+	CreatedAt    time.Time       `json:"createdAt"`
 }

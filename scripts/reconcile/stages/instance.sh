@@ -10,8 +10,12 @@ stage_instance_char_matches() { # <device> <source>
     && [ "$(incus config device get "$INSTANCE_NAME" "$1" path "${PROJ[@]}" 2>/dev/null || true)" = "$2" ]
 }
 
+stage_instance_exists() {
+  reconcile_incus_reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1
+}
+
 stage_instance_check() {
-  reconcile_incus_reachable && incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 || return 1
+  stage_instance_exists || return 1
   incus storage volume show "${SRV_POOL:-default}" "${SRV_VOLUME:-yard-srv}" "${PROJ[@]}" >/dev/null 2>&1 \
     || return 1
   local devices source path pool

@@ -44,15 +44,10 @@ subyard_context_load
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
-# shellcheck source=scripts/state/store.sh
-. "$SCRIPT_DIR/state/store.sh"
-# shellcheck source=scripts/state/resolver.sh
-. "$SCRIPT_DIR/state/resolver.sh"
 # shellcheck source=scripts/state/transport.sh
 . "$SCRIPT_DIR/state/transport.sh"
-# shellcheck source=scripts/state/metadata.sh
-. "$SCRIPT_DIR/state/metadata.sh"
-state_validate_all || die "project state validation failed"
+# shellcheck source=scripts/lib/project-snapshot.sh
+. "$SCRIPT_DIR/lib/project-snapshot.sh"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -169,19 +164,13 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-# Accept a path (default '.'), an exact id, or a project NAME. resolve_project_ctx resolves
-# across yards and re-execs in the owning yard when the box lives elsewhere.
-resolve_project_ctx "$path"
-id="$RESOLVED_ID"
-name="$(state_get "$id" name)"
-yardPath="$(state_get "$id" yardPath)"
+project_snapshot_load
 cname="$(cname_for "$id")"
 ysecret="/srv/env-secrets/$id/profile.env"   # dev-owned, 0600, inside the yard
 ymeta="/srv/env-meta/$id/profile.json"        # dev-owned, 0644, no secret values
 
 # The project's target IS the profile for its L2 box. target=yard (or unset) => it runs in
 # L1, there is no box — say so plainly for every subcommand.
-target="$(state_get "$id" target)"
 case "$target" in
   ""|yard) die "'$name' has target=${target:-yard} — it runs in L1 (the yard), there is no L2 box. Work in the yard ('${PROG:-yard} shell $name' / '${PROG:-yard} code $name'), or re-add with --target <profile> to use a box." ;;
 esac

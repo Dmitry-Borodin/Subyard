@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Install test tools
+        run: sudo apt-get update -qq && sudo apt-get install -y gcc jq openssh-server shellcheck
+      - name: Verify release candidate
+        run: |
+          mapfile -t shell_files < <(find scripts dev config/profiles config/agents tests -type f -name '*.sh' -print | sort)
+          shellcheck -x -S warning bin/yard completions/yard.bash "${shell_files[@]}"
+          ./tests/run.sh
+      - name: Build release assets
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            printf 'release tag must be stable semver: vMAJOR.MINOR.PATCH\n' >&2
+            exit 2
+          }
+          version="${GITHUB_REF_NAME#v}"
+          for arch in amd64 arm64; do
+            scripts/package-engine.sh --output-dir .build/release --version "$version" --arch "$arch"
+          done
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t assets < <(find .build/release -maxdepth 1 -type f -print | sort)
+          ((${#assets[@]} > 0)) || { printf 'no release assets found\n' >&2; exit 1; }
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            --verify-tag --generate-notes --title "Subyard ${GITHUB_REF_NAME#v}"

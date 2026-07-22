@@ -37,10 +37,11 @@ same entrypoint.
 
 `make package VERSION=<version>` writes amd64 or arm64 Linux engine artifacts and a complete
 `subyard-<version>-linux-<arch>.tar.gz` runtime under `.build/release/`, each with a detached SHA-256,
-compatibility manifest and provenance. `yard update` verifies all release inputs, applies registered
-state migrations, publishes an immutable release directory and atomically switches `current`; the
-prior runtime is retained through `previous`. `yard update --rollback` checks and swaps those complete
-runtimes without a download. First install and runtime execution require no Go or source checkout.
+compatibility manifest and provenance. A `vMAJOR.MINOR.PATCH` tag runs the full gate and publishes
+both architectures to a tag-backed GitHub Release. `yard update` verifies all release inputs, applies
+registered state migrations, publishes an immutable release directory and atomically switches
+`current`; the prior runtime is retained through `previous`. `yard update --rollback` checks and swaps
+those complete runtimes without a download. First install and runtime execution require no Go or source checkout.
 State schema compatibility remains fail-closed, and interrupted, incomplete or incompatible releases
 cannot replace the working runtime. Upgrade apply currently tightens valid legacy project-state
 permissions to `0600`; payload and schema changes still require an explicit registered migration.

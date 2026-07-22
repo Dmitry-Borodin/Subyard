@@ -12,6 +12,13 @@ export SUBYARD_HOME="$TMP/data"
 
 fail() { printf 'engine release: %s\n' "$*" >&2; exit 1; }
 
+workflow="$ROOT/.github/workflows/release.yml"
+[ -r "$workflow" ] || fail 'tag release workflow is missing'
+grep -Fq 'contents: write' "$workflow" \
+  && grep -Fq 'for arch in amd64 arm64' "$workflow" \
+  && grep -Fq 'gh release create "$GITHUB_REF_NAME"' "$workflow" \
+  || fail 'tag workflow does not publish both supported runtime architectures'
+
 rpc_negotiate() { # <engine> <engine-version> <protocol-version> <compatible|incompatible> <label>
   local engine="$1" engine_version="$2" protocol="$3" expectation="$4" label="$5"
   local payload hex request response header size body
@@ -178,4 +185,4 @@ YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
 [ "$("$runtime_root/previous/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \
   || fail 'runtime rollback did not retain the replaced release'
 
-printf 'ok: engine and self-contained runtime releases are verified, offline-safe, atomic and rollback-capable\n'
+printf 'ok: release publishing and runtimes are verified, offline-safe, atomic and rollback-capable\n'

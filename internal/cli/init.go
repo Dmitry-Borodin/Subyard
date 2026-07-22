@@ -1,14 +1,10 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/reconcileruntime"
@@ -199,7 +195,7 @@ func (cli *CLI) printInitPlan(execution *initExecution) {
 	}
 }
 
-func (execution *initExecution) run(ctx context.Context, cli *CLI, assumeYes bool, output io.Writer) error {
+func (execution *initExecution) run(ctx context.Context, cli *CLI, output io.Writer) error {
 	if execution.mode == initConfigs {
 		return execution.platform.RefreshConfigs(ctx)
 	}
@@ -215,7 +211,7 @@ func (execution *initExecution) run(ctx context.Context, cli *CLI, assumeYes boo
 	if err := reconciler.Apply(ctx); err != nil {
 		return err
 	}
-	if err := cli.offerInitProvision(ctx, execution, assumeYes, output); err != nil {
+	if err := cli.printInitProvisionHint(ctx, execution, output); err != nil {
 		return err
 	}
 	finalizer := application.Reconciler{
@@ -231,69 +227,32 @@ func (execution *initExecution) run(ctx context.Context, cli *CLI, assumeYes boo
 	return nil
 }
 
-func (cli *CLI) offerInitProvision(
+func (cli *CLI) printInitProvisionHint(
 	ctx context.Context,
 	execution *initExecution,
-	assumeYes bool,
 	output io.Writer,
 ) error {
-	profiles := initProvisionProfiles(cli.options.RepositoryRoot, execution.loaded.Environment)
+	project, err := cli.prepareProjectInventory(ctx, execution.loaded, nil)
+	if err != nil {
+		return err
+	}
+	provision, err := cli.prepareProvisionExecution(execution.loaded, nil, project)
+	if err != nil {
+		return err
+	}
+	profiles := provision.profiles
 	hint := cli.yardHint(execution.loaded.Context)
 	if len(profiles) == 0 {
 		fmt.Fprintf(output, "  %s provision -l\n", hint)
 		return nil
 	}
-	if assumeYes || !readerIsTerminal(cli.options.Stdin) {
-		fmt.Fprintf(output, "  %s provision    # %s\n", hint, strings.Join(profiles, " "))
-		return nil
-	}
-	fmt.Fprintf(output, "Provision toolchains for [%s] now? [y/N] ", strings.Join(profiles, " "))
-	answer, err := bufio.NewReader(cli.options.Stdin).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	switch strings.ToLower(strings.TrimSpace(answer)) {
-	case "y", "yes":
-		return execution.platform.Provision(ctx)
-	default:
-		fmt.Fprintf(output, "  %s provision\n", hint)
-		return nil
-	}
-}
-
-func initProvisionProfiles(root string, environment map[string]string) []string {
-	seen := make(map[string]struct{})
-	for _, name := range append(strings.Fields(environment["YARD_PROFILES"]),
-		strings.Fields(environment["SUBYARD_PROJECT_PROFILES"])...) {
-		if !domain.SafeName(name) {
-			continue
-		}
-		path := filepath.Join(root, "config", "profiles", name, "provision.sh")
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			seen[name] = struct{}{}
-		}
-	}
-	result := make([]string, 0, len(seen))
-	for name := range seen {
-		result = append(result, name)
-	}
-	sort.Strings(result)
-	return result
-}
-
-func readerIsTerminal(reader io.Reader) bool {
-	file, ok := reader.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	fmt.Fprintf(output, "  %s provision    # %s\n", hint, strings.Join(profiles, " "))
+	return nil
 }
 
 type initAdapter struct {
 	execution *initExecution
 	cli       *CLI
-	assumeYes bool
 	output    io.Writer
 }
 
@@ -305,7 +264,7 @@ func (adapter initAdapter) Run(
 	if request.Adapter != "init" || request.Action != "reconcile" || adapter.execution == nil {
 		return domain.AdapterResult{}, "", errors.New("invalid init adapter request")
 	}
-	if err := adapter.execution.run(ctx, adapter.cli, adapter.assumeYes, adapter.output); err != nil {
+	if err := adapter.execution.run(ctx, adapter.cli, adapter.output); err != nil {
 		return domain.AdapterResult{}, "", err
 	}
 	return domain.AdapterResult{

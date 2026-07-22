@@ -446,11 +446,8 @@ func (runtime Runtime) RefreshConfigs(ctx context.Context) error {
 }
 
 func (runtime Runtime) Teardown(ctx context.Context) error {
-	return runtime.runScript(ctx, runtime.Stdout, "99-teardown.sh", "--yes")
-}
-
-func (runtime Runtime) Provision(ctx context.Context) error {
-	return runtime.runPreparedPowerScript(ctx, runtime.Stdout, "10-provision-profile.sh", "--yes")
+	return runtime.runScriptEnvironment(ctx, runtime.Stdout,
+		map[string]string{"SUBYARD_TEARDOWN_KEEP_DATA": "0"}, "teardown-physical.sh", "--yes")
 }
 
 func (runtime Runtime) powerImportsConverged(ctx context.Context) (bool, error) {

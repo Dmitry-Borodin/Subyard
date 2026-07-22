@@ -284,6 +284,15 @@ func (cli *CLI) Run(ctx context.Context) int {
 	case "@lifecycle":
 		fmt.Fprintf(cli.options.Stdout, "Usage: %s %s\n", cli.options.Program, definition.Display)
 		return 0
+	case "@provision":
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s provision [profile | --list]\n", cli.options.Program)
+		return 0
+	case "@test-vms":
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s test-vms <up | status | down>\n", cli.options.Program)
+		return 0
+	case "@teardown":
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s teardown [--keep-data]\n", cli.options.Program)
+		return 0
 	}
 	if profileResource {
 		return cli.runCommand(ctx, resourceDefinition.HandlerPath(), commandArguments,
@@ -1666,7 +1675,7 @@ func (cli *CLI) operationOrchestrator(
 			"SUBYARD_PROJECT_SSH_HOST", "SUBYARD_PROJECT_TARGET", "SUBYARD_PROJECT_PROFILE",
 			"SUBYARD_PROJECT_DEVICE", "SUBYARD_PROJECT_EXISTS", "SUBYARD_PROJECT_PROFILES",
 			"SUBYARD_PROJECT_REMOVE_SOFT", "SUBYARD_PROJECT_REBUILD",
-			"SUBYARD_POWER_DESIRED", "SUBYARD_SUDO_PREAUTHORIZED",
+			"SUBYARD_POWER_DESIRED", "SUBYARD_SUDO_PREAUTHORIZED", "SUBYARD_TEARDOWN_KEEP_DATA",
 		} {
 			contextKeys[key] = struct{}{}
 		}
@@ -1676,9 +1685,30 @@ func (cli *CLI) operationOrchestrator(
 			if definition.Handler == "@lifecycle" {
 				adapter, handler = "lifecycle", "lifecycle-guard.sh"
 			}
-			actions[adapter] = map[string]shelladapter.Action{definition.Name: {
-				Path: filepath.Join(cli.options.RepositoryRoot, "scripts", handler), Direct: true,
-			}}
+			if definition.Handler == "@provision" {
+				path := filepath.Join(cli.options.RepositoryRoot, "scripts", "lifecycle-guard.sh")
+				actions["lifecycle"] = map[string]shelladapter.Action{
+					"start": {Path: path, Direct: true}, "stop": {Path: path, Direct: true},
+				}
+				actions["provision"] = map[string]shelladapter.Action{
+					"profile": {Path: filepath.Join(cli.options.RepositoryRoot, "scripts/provision-profile.sh"), Direct: true},
+				}
+			} else if definition.Handler == "@test-vms" {
+				path := filepath.Join(cli.options.RepositoryRoot, "scripts/e2e-lab/invoke.sh")
+				actions["test-vms"] = map[string]shelladapter.Action{
+					"up": {Path: path, Direct: true}, "status": {Path: path, Direct: true},
+					"down": {Path: path, Direct: true},
+				}
+			} else if definition.Handler == "@teardown" {
+				path := filepath.Join(cli.options.RepositoryRoot, "scripts/teardown-physical.sh")
+				actions["teardown"] = map[string]shelladapter.Action{
+					"apply": {Path: path, Direct: true},
+				}
+			} else {
+				actions[adapter] = map[string]shelladapter.Action{definition.Name: {
+					Path: filepath.Join(cli.options.RepositoryRoot, "scripts", handler), Direct: true,
+				}}
+			}
 		}
 		runner = shelladapter.Runner{
 			RepositoryRoot: cli.options.RepositoryRoot,
@@ -1856,6 +1886,16 @@ func commandHelpRequested(arguments []string) bool {
 	return false
 }
 
+func writeAdapterDiagnostics(output io.Writer, value string) {
+	if value == "" {
+		return
+	}
+	_, _ = io.WriteString(output, value)
+	if !strings.HasSuffix(value, "\n") {
+		_, _ = io.WriteString(output, "\n")
+	}
+}
+
 func (cli *CLI) runStructuredCommand(
 	ctx context.Context,
 	loaded config.Loaded,
@@ -1893,6 +1933,37 @@ func (cli *CLI) runStructuredCommand(
 			return 2
 		}
 	}
+	var provisionRun *provisionExecution
+	if definition.Handler == "@provision" {
+		var err error
+		provisionRun, err = cli.prepareProvisionExecution(loaded, arguments, project)
+		if err != nil {
+			cli.errorf("prepare provision: %v", err)
+			return 2
+		}
+		if provisionRun.list {
+			provisionRun.printList(cli.options.Stdout)
+			return 0
+		}
+	}
+	var testVMRun *testVMExecution
+	if definition.Handler == "@test-vms" {
+		var err error
+		testVMRun, err = prepareTestVMExecution(loaded, arguments)
+		if err != nil {
+			cli.errorf("prepare test-vms: %v", err)
+			return 2
+		}
+	}
+	var teardownRun *teardownExecution
+	if definition.Handler == "@teardown" {
+		var err error
+		teardownRun, err = prepareTeardownExecution(arguments)
+		if err != nil {
+			cli.errorf("prepare teardown: %v", err)
+			return 2
+		}
+	}
 	orchestrator := cli.operationOrchestrator(cli.env["SUBYARD_OPERATION_ID"], loaded, nil, &definition)
 	policy := commandPolicy(definition, loaded.Context, arguments, project, remote)
 	if initRun != nil {
@@ -1900,6 +1971,15 @@ func (cli *CLI) runStructuredCommand(
 	}
 	if lifecycleRun != nil {
 		policy = lifecycleRun.policy(definition, loaded.Context)
+	}
+	if provisionRun != nil {
+		policy = provisionRun.policy(definition, loaded.Context)
+	}
+	if testVMRun != nil {
+		policy = testVMRun.policy(definition, loaded.Context)
+	}
+	if teardownRun != nil {
+		policy = teardownRun.policy(definition, loaded.Context)
 	}
 	plan, err := orchestrator.Plan(ctx, loaded.Context,
 		policy, assumeYes)
@@ -1923,7 +2003,8 @@ func (cli *CLI) runStructuredCommand(
 		return cli.forwardRemote(ctx, loaded.Context, definition.Name, remoteArguments)
 	}
 	result, err := cli.executeStructuredCommand(ctx, orchestrator, loaded, definition, arguments,
-		plan, project, remote, initRun, lifecycleRun, assumeYes, cli.options.Stdout)
+		plan, project, remote, initRun, lifecycleRun, provisionRun, testVMRun, teardownRun,
+		cli.options.Stdout)
 	if err != nil {
 		cli.errorf("%s: %v", definition.Name, err)
 		return 1
@@ -1955,7 +2036,9 @@ func (cli *CLI) executeStructuredCommand(
 	remote *domain.RemotePrepared,
 	initRun *initExecution,
 	lifecycleRun *lifecycleExecution,
-	assumeYes bool,
+	provisionRun *provisionExecution,
+	testVMRun *testVMExecution,
+	teardownRun *teardownExecution,
 	diagnostics io.Writer,
 ) (domain.AdapterResult, error) {
 	if remote != nil {
@@ -1969,7 +2052,7 @@ func (cli *CLI) executeStructuredCommand(
 	}
 	if initRun != nil && definition.Handler == "@init" {
 		orchestrator.Runner = initAdapter{
-			execution: initRun, cli: cli, assumeYes: assumeYes, output: diagnostics,
+			execution: initRun, cli: cli, output: diagnostics,
 		}
 		request := domain.AdapterRequest{
 			Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
@@ -1980,6 +2063,15 @@ func (cli *CLI) executeStructuredCommand(
 	}
 	if lifecycleRun != nil && definition.Handler == "@lifecycle" {
 		return cli.executeLifecycle(ctx, orchestrator, loaded.Context, plan, lifecycleRun, diagnostics)
+	}
+	if provisionRun != nil && definition.Handler == "@provision" {
+		return cli.executeProvision(ctx, orchestrator, loaded, plan, provisionRun, diagnostics)
+	}
+	if testVMRun != nil && definition.Handler == "@test-vms" {
+		return cli.executeTestVMs(ctx, orchestrator, loaded, plan, testVMRun, diagnostics)
+	}
+	if teardownRun != nil && definition.Handler == "@teardown" {
+		return cli.executeTeardown(ctx, orchestrator, loaded, plan, teardownRun, diagnostics)
 	}
 	if project != nil && definition.Handler == "@project" {
 		if definition.Name == "code" {
@@ -1998,9 +2090,7 @@ func (cli *CLI) executeStructuredCommand(
 			Adapter: "project", Action: definition.Name,
 		}
 		result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
-		if stderr != "" {
-			_, _ = io.WriteString(diagnostics, stderr)
-		}
+		writeAdapterDiagnostics(diagnostics, stderr)
 		return result, err
 	}
 	if project != nil && definition.Handler == "@project-env" {
@@ -2024,12 +2114,7 @@ func (cli *CLI) executeStructuredCommand(
 			Adapter: "project-env", Action: definition.Name,
 		}
 		result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, protected)
-		if stderr != "" {
-			_, _ = io.WriteString(diagnostics, stderr)
-			if !strings.HasSuffix(stderr, "\n") {
-				_, _ = io.WriteString(diagnostics, "\n")
-			}
-		}
+		writeAdapterDiagnostics(diagnostics, stderr)
 		return result, err
 	}
 	handlerArguments := append([]string(nil), arguments...)
@@ -2064,12 +2149,7 @@ func (cli *CLI) executeStructuredCommand(
 		Adapter: "command", Action: definition.Name, Arguments: handlerArguments, Context: contextValues,
 	}
 	result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
-	if stderr != "" {
-		_, _ = io.WriteString(diagnostics, stderr)
-		if !strings.HasSuffix(stderr, "\n") {
-			_, _ = io.WriteString(diagnostics, "\n")
-		}
-	}
+	writeAdapterDiagnostics(diagnostics, stderr)
 	return result, err
 }
 
@@ -2572,6 +2652,9 @@ type rpcPlannedOperation struct {
 	Remote     *domain.RemotePrepared
 	Init       *initExecution
 	Lifecycle  *lifecycleExecution
+	Provision  *provisionExecution
+	TestVMs    *testVMExecution
+	Teardown   *teardownExecution
 	Release    *releaseExecution
 }
 
@@ -2654,12 +2737,42 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 				return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
 			}
 		}
+		var provisionRun *provisionExecution
+		if definition.Handler == "@provision" {
+			provisionRun, err = handler.cli.prepareProvisionExecution(loaded, arguments, project)
+			if err != nil {
+				return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
+			}
+		}
+		var testVMRun *testVMExecution
+		if definition.Handler == "@test-vms" {
+			testVMRun, err = prepareTestVMExecution(loaded, arguments)
+			if err != nil {
+				return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
+			}
+		}
+		var teardownRun *teardownExecution
+		if definition.Handler == "@teardown" {
+			teardownRun, err = prepareTeardownExecution(arguments)
+			if err != nil {
+				return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
+			}
+		}
 		policy := commandPolicy(definition, loaded.Context, arguments, project, remote)
 		if initRun != nil {
 			policy.Consequences = initRun.consequences()
 		}
 		if lifecycleRun != nil {
 			policy = lifecycleRun.policy(definition, loaded.Context)
+		}
+		if provisionRun != nil {
+			policy = provisionRun.policy(definition, loaded.Context)
+		}
+		if testVMRun != nil {
+			policy = testVMRun.policy(definition, loaded.Context)
+		}
+		if teardownRun != nil {
+			policy = teardownRun.policy(definition, loaded.Context)
 		}
 		if releaseRun != nil {
 			policy = releaseRun.policy(definition)
@@ -2683,7 +2796,8 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		}
 		handler.plans[plan.OperationID] = rpcPlannedOperation{
 			Plan: plan, Definition: definition, Arguments: arguments, Loaded: loaded, Project: project,
-			Remote: remote, Init: initRun, Lifecycle: lifecycleRun, Release: releaseRun,
+			Remote: remote, Init: initRun, Lifecycle: lifecycleRun, Provision: provisionRun,
+			TestVMs: testVMRun, Teardown: teardownRun, Release: releaseRun,
 		}
 		handler.plansMu.Unlock()
 		return plan, nil
@@ -2723,7 +2837,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			result, err = handler.cli.executeStructuredCommand(
 				ctx, orchestrator, planned.Loaded, planned.Definition, planned.Arguments,
 				plan, planned.Project, planned.Remote, planned.Init, planned.Lifecycle,
-				true, handler.cli.options.Stderr,
+				planned.Provision, planned.TestVMs, planned.Teardown, handler.cli.options.Stderr,
 			)
 		}
 		if err != nil {

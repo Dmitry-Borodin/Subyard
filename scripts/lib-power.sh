@@ -7,9 +7,13 @@
 SUBYARD_LIBPOWER_SOURCED=1
 
 POWER_KEY_MANAGED=user.subyard.managed
+# shellcheck disable=SC2034 # exported to sourced callers
 POWER_KEY_NAME=user.subyard.name
+# shellcheck disable=SC2034 # exported to sourced callers
 POWER_KEY_BRIDGE=user.subyard.bridge
+# shellcheck disable=SC2034 # exported to sourced callers
 POWER_KEY_DESIRED=user.subyard.desired_power
+# shellcheck disable=SC2034 # exported to sourced callers
 POWER_KEY_INITIALIZED=user.subyard.initialized
 POWER_ERROR=
 

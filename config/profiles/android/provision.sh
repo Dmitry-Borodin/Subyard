@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # config/profiles/android/provision.sh — install the Android toolchain into the yard (run as root
-# inside the yard by 10-provision-profile.sh; idempotent). Vars: ANDROID_API, JDK_VERSION,
+# inside the yard by the Go provision workflow; idempotent). Vars: ANDROID_API, JDK_VERSION,
 # BUILD_TOOLS_VERSION, SYSTEM_IMAGE, ANDROID_SDK_ROOT, GRADLE_USER_HOME, CMDLINE_TOOLS_URL, DEV_USER.
 set -euo pipefail
 

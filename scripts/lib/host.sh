@@ -19,7 +19,7 @@ require_root() {
     # Preserve the normalized operator-owned roots and selected named yard across sudo's clean
     # environment. Do not pass arbitrary ambient variables or credentials to the root process.
     for name in SUBYARD_CONFIG_DIR SUBYARD_CONFIG_HOME SUBYARD_HOME \
-      SUBYARD_YARD SUBYARD_YARD_EXPLICIT; do
+      SUBYARD_YARD SUBYARD_YARD_EXPLICIT SUBYARD_TEARDOWN_KEEP_DATA; do
       [ -z "${!name:-}" ] || elevated_env+=("$name=${!name}")
     done
     warn "this needs root: $why"

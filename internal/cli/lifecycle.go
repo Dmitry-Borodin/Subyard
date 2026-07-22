@@ -111,9 +111,7 @@ func (cli *CLI) executeLifecycle(
 		Adapter: "lifecycle", Action: execution.action, Arguments: arguments, Context: contextValues,
 	}
 	result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
-	if stderr != "" {
-		_, _ = io.WriteString(diagnostics, stderr)
-	}
+	writeAdapterDiagnostics(diagnostics, stderr)
 	if err == nil && result.Status == "ok" {
 		if execution.action == "start" {
 			fmt.Fprintf(diagnostics, "  [ ok ] %s started (desired=running)\n", yard.InstanceName)

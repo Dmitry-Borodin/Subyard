@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # config/profiles/openclaw/provision.sh — install the OpenClaw toolchain into the yard (run as root
-# inside the yard by 10-provision-profile.sh; idempotent). Vars: NODE_VERSION, COREPACK_VERSION,
+# inside the yard by the Go provision workflow; idempotent). Vars: NODE_VERSION, COREPACK_VERSION,
 # PNPM_VERSION, DEV_USER, OPTIONAL_FEATURES, and the cache contract forwarded from profile.conf
 # (PIP_CACHE_DIR, npm_config_cache, npm_config_store_dir, PLAYWRIGHT_BROWSERS_PATH). Cache paths use
 # DEV_USER tool configs to keep root writes out of the shared cache.

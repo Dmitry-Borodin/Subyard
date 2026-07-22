@@ -15,7 +15,7 @@ for removed in "$ROOT/scripts/state/store.sh" "$ROOT/scripts/state/resolver.sh" 
 done
 
 production=(
-  scripts/09-yard-extras.sh scripts/10-provision-profile.sh
+  scripts/09-yard-extras.sh
 )
 for relative in "${production[@]}"; do
   if grep -Eq 'state_(engine|get|write|set|remove|exists|ids|validate)|resolve_project|route_sync_target|maybe_reconcile|_project-state' "$ROOT/$relative"; then

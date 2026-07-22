@@ -43,7 +43,6 @@ type initPlatformFixture struct {
 	preflightFresh []bool
 	configs        int
 	teardowns      int
-	provisions     int
 }
 
 func newInitPlatformFixture() *initPlatformFixture {
@@ -87,11 +86,6 @@ func (fixture *initPlatformFixture) Teardown(context.Context) error {
 	for stage := range fixture.converged {
 		fixture.converged[stage] = false
 	}
-	return nil
-}
-
-func (fixture *initPlatformFixture) Provision(context.Context) error {
-	fixture.provisions++
 	return nil
 }
 

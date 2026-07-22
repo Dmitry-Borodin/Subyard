@@ -33,7 +33,6 @@ func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {
 	definitions := manifest.Commands()
 	allowedHandlers := map[string]bool{
 		"00-check-host.sh": true, "security-lint.sh": true,
-		"10-provision-profile.sh": true, "e2e-lab/command.sh": true, "99-teardown.sh": true,
 	}
 	handlers := make(map[string]bool)
 	for _, definition := range definitions {

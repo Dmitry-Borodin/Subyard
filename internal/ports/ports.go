@@ -171,7 +171,6 @@ type InitPlatform interface {
 	Preflight(context.Context, bool) error
 	RefreshConfigs(context.Context) error
 	Teardown(context.Context) error
-	Provision(context.Context) error
 }
 
 type RemoteTransport interface {

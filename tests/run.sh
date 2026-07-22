@@ -19,7 +19,7 @@ mapfile -t unformatted < <(gofmt -l "$ROOT/cmd" "$ROOT/internal")
   || { printf 'FAIL: gofmt required: %s\n' "${unformatted[*]}" >&2; exit 1; }
 (cd "$ROOT" && go vet ./...)
 (cd "$ROOT" && go test -race ./...)
-(cd "$ROOT" && go test ./internal/command -run '^$' -fuzz '^FuzzParseDoesNotPanic$' -fuzztime=1s)
+(cd "$ROOT" && go test ./internal/command -run '^$' -fuzz '^FuzzParseDoesNotPanic$' -fuzztime=1000x)
 "$ROOT/scripts/build-engine.sh"
 [ -x "$ROOT/.build/yard" ] \
   || { printf 'FAIL: development engine was not built\n' >&2; exit 1; }

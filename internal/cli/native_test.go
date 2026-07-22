@@ -230,7 +230,7 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 	}
 }
 
-func TestStartAuthorizesNetworkManagerBeforeBoundedAdapter(t *testing.T) {
+func TestNetworkManagerPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
 	root, environment, _ := nativeFixture(t)
 	bin := filepath.Join(root, "bin")
 	if err := os.MkdirAll(bin, 0o700); err != nil {
@@ -249,7 +249,7 @@ func TestStartAuthorizesNetworkManagerBeforeBoundedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := program.prepareStartPrivileges(context.Background(), &diagnostics, 1000); err != nil {
+	if err := program.prepareNetworkManagerPrivileges(context.Background(), &diagnostics, 1000); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := os.ReadFile(logPath)
@@ -264,11 +264,37 @@ func TestStartAuthorizesNetworkManagerBeforeBoundedAdapter(t *testing.T) {
 	if err := os.Remove(logPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := program.prepareStartPrivileges(context.Background(), &diagnostics, 1000); err != nil {
+	if err := program.prepareNetworkManagerPrivileges(context.Background(), &diagnostics, 1000); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("inactive NetworkManager invoked sudo: %v", err)
+	}
+}
+
+func TestStructuredInitMarksNetworkManagerProbePreauthorized(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	runner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
+		Schema: 1, OperationID: "operation-init", Status: "ok",
+	}}}}
+	prompt := &testkit.Prompt{Answers: []bool{true}}
+	var stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"init"},
+		Environment: append(environment, "SUBYARD_OPERATION_ID=operation-init"), WorkingDir: root,
+		Stderr: &stderr, AdapterRunner: runner, Prompt: prompt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("structured CLI init failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if len(prompt.Seen) != 1 || len(runner.Requests) != 1 ||
+		runner.Requests[0].Adapter != "command" || runner.Requests[0].Action != "init" ||
+		runner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
+		t.Fatalf("init did not carry the preauthorized network probe: prompt=%#v requests=%#v",
+			prompt.Seen, runner.Requests)
 	}
 }
 
@@ -923,6 +949,7 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		}
 	}
 	manifest := strings.Join([]string{
+		"init|setup|init.sh||forward|mutate|public|lifecycle|simple|init|install or reconcile the yard|--configs --reset --yes --help|",
 		"start||yard-ctl.sh|start|forward|mutate|public|lifecycle|simple|start|start|--yes --help|",
 		"stop||yard-ctl.sh|stop|forward|mutate|public|lifecycle|simple|stop|stop|--force --yes --help|",
 		"status||@status||forward|read|public|lifecycle|status|status|status|--all --help|",

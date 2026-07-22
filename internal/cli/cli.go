@@ -2152,6 +2152,14 @@ func (cli *CLI) executeStructuredCommand(
 		handlerArguments = append([]string{definition.Arg0}, handlerArguments...)
 	}
 	contextValues := structuredCommandContext(loaded)
+	if definition.Name == "init" {
+		if cli.options.AdapterRunner == nil {
+			if err := cli.prepareNetworkManagerPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
+				return domain.AdapterResult{}, err
+			}
+		}
+		contextValues["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
+	}
 	if project != nil {
 		for key, value := range project.Environment {
 			contextValues[key] = value
@@ -2236,7 +2244,7 @@ func (cli *CLI) executeStructuredStart(
 	diagnostics io.Writer,
 ) (domain.AdapterResult, error) {
 	if cli.options.AdapterRunner == nil {
-		if err := cli.prepareStartPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
+		if err := cli.prepareNetworkManagerPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
 			return domain.AdapterResult{}, err
 		}
 	}
@@ -2258,7 +2266,7 @@ func (cli *CLI) executeStructuredStart(
 	return result, err
 }
 
-func (cli *CLI) prepareStartPrivileges(ctx context.Context, diagnostics io.Writer, effectiveUID int) error {
+func (cli *CLI) prepareNetworkManagerPrivileges(ctx context.Context, diagnostics io.Writer, effectiveUID int) error {
 	if effectiveUID == 0 {
 		return nil
 	}
@@ -2272,11 +2280,11 @@ func (cli *CLI) prepareStartPrivileges(ctx context.Context, diagnostics io.Write
 	case "active", "activating", "reloading", "deactivating":
 	case "":
 		if checkErr != nil {
-			return fmt.Errorf("inspect NetworkManager before start: %w", checkErr)
+			return fmt.Errorf("inspect NetworkManager before host network check: %w", checkErr)
 		}
-		return errors.New("inspect NetworkManager before start: empty service state")
+		return errors.New("inspect NetworkManager before host network check: empty service state")
 	default:
-		return fmt.Errorf("inspect NetworkManager before start: unexpected state %q", state)
+		return fmt.Errorf("inspect NetworkManager before host network check: unexpected state %q", state)
 	}
 	fmt.Fprintln(diagnostics, "  [ .. ] authorizing the NetworkManager safety check")
 	command := exec.CommandContext(ctx, "sudo", "-v")

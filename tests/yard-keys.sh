@@ -17,6 +17,18 @@ export SUBYARD_KEYS_SYSTEMD_DIR="$TMP/systemd"
 export SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE=1
 export TMPDIR="$TMP/tmp"
 mkdir -p "$HOME" "$TMPDIR" "$SUBYARD_CONFIG_HOME/yards" "$SUBYARD_KEYS_TOOLS_DIR/bin"
+
+# A source checkout is a valid development/E2E runtime after its explicit build. This fallback must
+# not require a release install, while a release runtime remains preferred as soon as one exists.
+[ -x "$ROOT/.build/yard" ] || fail 'development engine must be built before credential tests'
+YARD_RUNTIME_ROOT="$TMP/missing-runtime" \
+SUBYARD_KEYS_SYSTEMD_DIR="$TMP/dev-systemd" \
+ASSUME_YES=1 \
+  "$ROOT/scripts/install-keys-auto-sync.sh" >/dev/null
+grep -Fxq "ExecStart=$ROOT/.build/yard _keys-auto-sync --if-due" \
+  "$TMP/dev-systemd/subyard-keys-sync.service" \
+  || fail 'credential timer did not accept the explicit development candidate'
+
 install -d "$SUBYARD_HOME/runtime/current/bin"
 ln -s "$ROOT/bin/yard" "$SUBYARD_HOME/runtime/current/bin/yard"
 
@@ -143,6 +155,9 @@ bootstrap_keys one >/dev/null
 bootstrap_keys two >/dev/null
 bootstrap_keys one_alt >/dev/null
 ASSUME_YES=1 "$ROOT/scripts/install-keys-auto-sync.sh" >/dev/null
+grep -Fxq "ExecStart=$SUBYARD_HOME/runtime/current/bin/yard _keys-auto-sync --if-due" \
+  "$SUBYARD_KEYS_SYSTEMD_DIR/subyard-keys-sync.service" \
+  || fail 'credential timer did not prefer the release runtime'
 [ -r "$SUBYARD_KEYS_ROOT/one/identity/age.txt" ] || fail 'yard one age identity missing'
 [ "$(stat -c '%a' "$SUBYARD_KEYS_ROOT/one/identity/age.txt")" = 600 ] || fail 'age identity mode is not 0600'
 [ "$(jq -r '.actorId' "$SUBYARD_KEYS_ROOT/one/identity.json")" = \

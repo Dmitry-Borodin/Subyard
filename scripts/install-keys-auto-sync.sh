@@ -26,10 +26,16 @@ TIMER_TEMPLATE="$REPO/config/systemd/subyard-keys-sync.timer.in"
 SKIP_ENABLE="${SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE:-0}"
 RUNTIME_ROOT="${YARD_RUNTIME_ROOT:-$SUBYARD_HOME/runtime}"
 YARD_BIN="$RUNTIME_ROOT/current/bin/yard"
+DEVELOPMENT_YARD_BIN="$REPO/.build/yard"
+if [ ! -x "$YARD_BIN" ] && [ -f "$DEVELOPMENT_YARD_BIN" ] \
+  && [ ! -L "$DEVELOPMENT_YARD_BIN" ] && [ -x "$DEVELOPMENT_YARD_BIN" ]; then
+  YARD_BIN="$DEVELOPMENT_YARD_BIN"
+fi
 if [ "$SKIP_ENABLE" = 1 ] && [ ! -x "$YARD_BIN" ]; then
   YARD_BIN="$REPO/bin/yard"
 fi
-[ -x "$YARD_BIN" ] || die "release yard runtime is missing — run: $REPO/scripts/install-cli.sh"
+[ -x "$YARD_BIN" ] \
+  || die "yard runtime is missing — run: $REPO/scripts/install-cli.sh (or build the development candidate)"
 
 render_service() {
   sed -e "s|@YARD_BIN@|$YARD_BIN|g" "$SERVICE_TEMPLATE"

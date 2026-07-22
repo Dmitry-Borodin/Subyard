@@ -55,6 +55,12 @@ for command in commit push; do
   grep -Fq "pattern = [\"git\", \"$command\"]" "$ROOT/config/agents/codex/rules/repo.rules" \
     || fail "Codex $command gate missing"
 done
+grep -Fq 'HOST_OPENCODE_AGENTS_MD=' "$ROOT/config/host.env" \
+  || fail "OpenCode host instructions are not configurable"
+grep -Fq 'HOST_OPENCODE_AGENTS_MD' "$ROOT/scripts/agent-configs.sh" \
+  || fail "OpenCode host instructions are not copied"
+grep -Fq 'OPENCODE_AGENTS_REQ' "$ROOT/scripts/reconcile/stages/provision.sh" \
+  || fail "OpenCode host instructions are not checked during convergence"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -67,9 +73,11 @@ export HOME="$tmp/home"
 export SUBYARD_CONFIG_HOME="$tmp/state"
 export SUBYARD_HOME="$tmp/data"
 export SUBYARD_CONFIG_DIR="$tmp/config"
-mkdir -p "$tmp/config" "$tmp/yard"
+mkdir -p "$tmp/config" "$tmp/yard" "$tmp/host-instructions"
 cp "$ROOT/config/agents.env" "$tmp/config/agents.env"
 cp -R "$ROOT/config/agents" "$tmp/config/agents"
+printf '%s\n' 'OpenCode host instructions' > "$tmp/host-instructions/OPENCODE.md"
+export HOST_OPENCODE_AGENTS_MD="$tmp/host-instructions/OPENCODE.md"
 refresh() {
   PATH="$ROOT/tests/fixtures/agent-configs-bin:$PATH" \
   MOCK_YARD_ROOT="$tmp/yard" \
@@ -82,6 +90,7 @@ first="$(sha256sum \
   "$tmp/yard/home/dev/.codex/config.toml" \
   "$tmp/yard/home/dev/.codex/rules/repo.rules" \
   "$tmp/yard/home/dev/.config/opencode/opencode.jsonc" \
+  "$tmp/yard/home/dev/.config/opencode/AGENTS.md" \
   "$tmp/yard/home/dev/.pi/agent/settings.json")"
 refresh
 second="$(sha256sum \
@@ -89,8 +98,11 @@ second="$(sha256sum \
   "$tmp/yard/home/dev/.codex/config.toml" \
   "$tmp/yard/home/dev/.codex/rules/repo.rules" \
   "$tmp/yard/home/dev/.config/opencode/opencode.jsonc" \
+  "$tmp/yard/home/dev/.config/opencode/AGENTS.md" \
   "$tmp/yard/home/dev/.pi/agent/settings.json")"
 [ "$first" = "$second" ] || fail "agent config refresh is not idempotent"
+cmp "$HOST_OPENCODE_AGENTS_MD" "$tmp/yard/home/dev/.config/opencode/AGENTS.md" \
+  || fail "OpenCode host instructions were not copied verbatim"
 [ ! -e "$tmp/yard/home/dev/.local/share/opencode/auth.json" ] \
   || fail "config refresh copied OpenCode auth"
 

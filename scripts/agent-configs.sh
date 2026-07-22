@@ -35,7 +35,7 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
   || die "yard is not running — start it: $(yard_cmd_hint) start"
 
 announce_confirm "Refresh agent instructions and configs in $INSTANCE_NAME" \
-  "Overwrite the in-yard copies of global Claude/Codex instructions when their host sources exist." \
+  "Overwrite the in-yard copies of global Claude/Codex/OpenCode instructions when their host sources exist." \
   "Overwrite enabled agents' default config/rules from the current Subyard templates." \
   "Keep agent credentials, sessions, projects, packages, services, and host networking unchanged."
 
@@ -55,6 +55,14 @@ if [ -n "${HOST_CODEX_AGENTS_MD:-}" ] && [ -f "$HOST_CODEX_AGENTS_MD" ]; then
   ok "copied $HOST_CODEX_AGENTS_MD -> ~$DEV_USER/.codex/AGENTS.md"
 else
   ok "no HOST_CODEX_AGENTS_MD file to copy — skipping"
+fi
+if [ -n "${HOST_OPENCODE_AGENTS_MD:-}" ] && [ -f "$HOST_OPENCODE_AGENTS_MD" ]; then
+  incus file push "$HOST_OPENCODE_AGENTS_MD" \
+    "$INSTANCE_NAME/home/$DEV_USER/.config/opencode/AGENTS.md" "${PROJ[@]}" \
+    --create-dirs --uid "$DEV_UID" --gid "$DEV_UID" --mode 0644
+  ok "copied $HOST_OPENCODE_AGENTS_MD -> ~$DEV_USER/.config/opencode/AGENTS.md"
+else
+  ok "no HOST_OPENCODE_AGENTS_MD file to copy — skipping"
 fi
 
 echo "Agent configs:"

@@ -27,13 +27,15 @@ stage_provision_check() {
       = "${CCUSAGE_VERSION:-}" ]
     return
   fi
-  local claude_req=0 codex_agents_req=0 agent_commands
+  local claude_req=0 codex_agents_req=0 opencode_agents_req=0 agent_commands
   [ -n "${HOST_CLAUDE_MD:-}" ] && [ -f "$HOST_CLAUDE_MD" ] && claude_req=1
   [ -n "${HOST_CODEX_AGENTS_MD:-}" ] && [ -f "$HOST_CODEX_AGENTS_MD" ] && codex_agents_req=1
+  [ -n "${HOST_OPENCODE_AGENTS_MD:-}" ] && [ -f "$HOST_OPENCODE_AGENTS_MD" ] && opencode_agents_req=1
   agent_commands="$(stage_provision_agent_commands)" || return 1
   incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
     --env DEV_USER="${DEV_USER:-dev}" --env DEV_SUDO="${DEV_SUDO:-0}" \
     --env CLAUDE_REQ="$claude_req" --env CODEX_AGENTS_REQ="$codex_agents_req" \
+    --env OPENCODE_AGENTS_REQ="$opencode_agents_req" \
     --env HOST_LINKS="${HOST_LINKS:-}" --env AGENT_COMMANDS="$agent_commands" \
     --env CCUSAGE_VERSION="${CCUSAGE_VERSION:-}" \
     --env CCUSAGE_PATH="${CCUSAGE_INSTALL_PATH:-/usr/local/bin/ccusage}" \
@@ -57,6 +59,7 @@ esac
 home="$(getent passwd "$DEV_USER" | cut -d: -f6)"; home="${home:-/home/$DEV_USER}"
 if [ "${CLAUDE_REQ:-0}" = 1 ]; then [ -f "$home/.claude/CLAUDE.md" ]; fi
 if [ "${CODEX_AGENTS_REQ:-0}" = 1 ]; then [ -f "$home/.codex/AGENTS.md" ]; fi
+if [ "${OPENCODE_AGENTS_REQ:-0}" = 1 ]; then [ -f "$home/.config/opencode/AGENTS.md" ]; fi
 sudoers="/etc/sudoers.d/90-subyard-$DEV_USER"
 if [ "${DEV_SUDO:-0}" = 1 ]; then [ -f "$sudoers" ]; else [ ! -f "$sudoers" ]; fi
 drift=0

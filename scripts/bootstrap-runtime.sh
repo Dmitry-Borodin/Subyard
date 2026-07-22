@@ -2,12 +2,12 @@
 # First-install bootstrap for hosts that do not have a Subyard engine yet.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPOSITORY="${YARD_RELEASE_REPOSITORY:-Dmitry-Borodin/Subyard}"
 CHANNEL=stable
 VERSION="${YARD_RELEASE_VERSION:-}"
 RUNTIME_ROOT="${YARD_RUNTIME_ROOT:-${SUBYARD_HOME:-$HOME/.subyard}/runtime}"
 CACHE_ROOT="${YARD_RELEASE_CACHE:-${SUBYARD_HOME:-$HOME/.subyard}/releases}"
+BIN_DIR="${YARD_BIN_DIR:-$HOME/.local/bin}"
 OFFLINE=0
 
 while [ $# -gt 0 ]; do
@@ -34,6 +34,7 @@ case "$(uname -s)/$(uname -m)" in
   *) printf 'bootstrap-runtime: unsupported platform: %s/%s\n' "$(uname -s)" "$(uname -m)" >&2; exit 2 ;;
 esac
 command -v jq >/dev/null 2>&1 || { printf 'bootstrap-runtime: jq is required\n' >&2; exit 2; }
+command -v sha256sum >/dev/null 2>&1 || { printf 'bootstrap-runtime: sha256sum is required\n' >&2; exit 2; }
 
 tag=""
 if [ -z "$VERSION" ]; then
@@ -84,6 +85,22 @@ for suffix in '' .sha256 .manifest.json .provenance.json; do
     || { printf 'bootstrap-runtime: release download failed; current runtime was not changed\n' >&2; exit 1; }
 done
 
+installer="$release_dir/subyard-install-runtime-release.sh"
+installer_checksum="$installer.sha256"
+for suffix in '' .sha256; do
+  fetch "subyard-install-runtime-release.sh$suffix" "$installer$suffix" \
+    || { printf 'bootstrap-runtime: installer download failed; current runtime was not changed\n' >&2; exit 1; }
+done
+read -r installer_expected _ < "$installer_checksum" || true
+installer_actual="$(sha256sum "$installer" | cut -d' ' -f1)"
+[ "${installer_actual,,}" = "${installer_expected,,}" ] && [ "${#installer_actual}" = 64 ] \
+  || { printf 'bootstrap-runtime: installer checksum mismatch\n' >&2; exit 1; }
+chmod 0700 "$installer"
+
 printf 'channel=%s available=%s platform=%s/%s\n' "$CHANNEL" "$VERSION" "$os" "$arch"
-exec "$SCRIPT_DIR/install-runtime-release.sh" --runtime-root "$RUNTIME_ROOT" \
+"$installer" --runtime-root "$RUNTIME_ROOT" \
   --bundle "$bundle" --checksum "$checksum" --manifest "$manifest" --provenance "$provenance"
+install -d "$BIN_DIR"
+ln -sfn "$RUNTIME_ROOT/current/bin/yard" "$BIN_DIR/yard"
+ln -sfn "$RUNTIME_ROOT/current/bin/yard" "$BIN_DIR/sy"
+printf 'yard installed: %s/yard\n' "$BIN_DIR"

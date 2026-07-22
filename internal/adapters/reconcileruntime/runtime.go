@@ -577,8 +577,12 @@ func (runtime Runtime) finalizePowerState(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	action := "stop"
+	if intent.Desired == application.PowerRunning {
+		action = "start"
+	}
 	if err := runtime.runScript(
-		ctx, runtime.Stderr, "lifecycle-guard.sh", intent.Desired, "--reconcile",
+		ctx, runtime.Stderr, "lifecycle-guard.sh", action, "--reconcile",
 	); err != nil {
 		return err
 	}

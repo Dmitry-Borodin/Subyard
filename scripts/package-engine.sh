@@ -24,6 +24,11 @@ case "$TARGET_ARCH" in amd64 | arm64) ;; *) printf 'package-engine: unsupported 
 
 goos=linux; goarch="$TARGET_ARCH"
 install -d "$OUTPUT_DIR"
+install -m 0755 "$REPO/scripts/bootstrap-runtime.sh" "$OUTPUT_DIR/subyard-install.sh"
+install -m 0755 "$REPO/scripts/install-runtime-release.sh" \
+  "$OUTPUT_DIR/subyard-install-runtime-release.sh"
+( cd "$OUTPUT_DIR" && sha256sum subyard-install-runtime-release.sh \
+    > subyard-install-runtime-release.sh.sha256 )
 artifact="$OUTPUT_DIR/yard-$VERSION-$goos-$goarch"
 GOOS="$goos" GOARCH="$goarch" YARD_BUILD_VERSION="$VERSION" \
   "$SCRIPT_DIR/build-engine.sh" --force --output "$artifact"

@@ -141,6 +141,56 @@ func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 	}
 }
 
+func TestFinalizeMapsDesiredPowerToLifecycleAction(t *testing.T) {
+	for _, test := range []struct {
+		desired string
+		action  string
+	}{
+		{desired: "running", action: "start --reconcile"},
+		{desired: "stopped", action: "stop --reconcile"},
+	} {
+		t.Run(test.desired, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, "scripts"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			arguments := filepath.Join(root, "arguments")
+			if err := os.WriteFile(filepath.Join(root, "scripts", "lifecycle-guard.sh"), []byte(
+				"#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$ARGUMENTS\"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			incus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{
+				"subyard/yard": {
+					Name: "yard", Project: "subyard", Status: test.desired,
+					LocalConfig: map[string]string{
+						"user.subyard.managed": "true", "user.subyard.initialized": "false",
+						"user.subyard.desired_power": test.desired, "user.subyard.name": "default",
+						"user.subyard.bridge": "incusbr0", "boot.autostart": "false",
+					},
+				},
+			}}
+			runtime := Runtime{
+				RepositoryRoot: root, Environment: append(os.Environ(), "ARGUMENTS="+arguments),
+				Incus: incus, ConfigWriter: incus,
+				Yard: domain.Context{IncusProject: "subyard", InstanceName: "yard"},
+			}
+			if err := runtime.ApplyStage(context.Background(), "finalize"); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(arguments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != test.action+"\n" {
+				t.Fatalf("lifecycle arguments = %q, want %q", got, test.action)
+			}
+			if incus.Instances["subyard/yard"].LocalConfig["user.subyard.initialized"] != "true" {
+				t.Fatal("final power state was not committed")
+			}
+		})
+	}
+}
+
 func TestSSHProbeOwnsProxyAndClientConfig(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")

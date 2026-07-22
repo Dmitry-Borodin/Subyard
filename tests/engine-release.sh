@@ -58,6 +58,10 @@ rpc_negotiate() { # <engine> <engine-version> <protocol-version> <compatible|inc
 
 artifact_one="$("$ROOT/scripts/package-engine.sh" --output-dir "$release" --version 1.0.0-test)"
 bundle_one="$release/subyard-1.0.0-test-linux-amd64.tar.gz"
+[ -x "$release/subyard-install.sh" ] \
+  && [ -x "$release/subyard-install-runtime-release.sh" ] \
+  && [ -r "$release/subyard-install-runtime-release.sh.sha256" ] \
+  || fail 'standalone first-install assets are missing'
 [ -x "$artifact_one" ] || { printf 'release artifact is not executable\n' >&2; exit 1; }
 [ -r "$artifact_one.sha256" ] && [ -r "$artifact_one.manifest.json" ] && [ -r "$artifact_one.provenance.json" ] \
   || { printf 'release checksum, manifest or provenance missing\n' >&2; exit 1; }
@@ -85,6 +89,36 @@ jq -e '.schemaVersion == 1 and .version == "1.0.0-test" and
   "$artifact_one.provenance.json" >/dev/null
 rpc_negotiate "$artifact_one" 1.0.0-test 1 compatible artifact-one-v1
 rpc_negotiate "$artifact_one" 1.0.0-test 2 incompatible artifact-one-v2
+
+standalone_home="$TMP/standalone-home"
+standalone_bin="$TMP/standalone-bin"
+standalone_no_go="$TMP/standalone-no-go"
+install -d "$standalone_home" "$standalone_bin" "$standalone_no_go"
+cat > "$standalone_no_go/go" <<EOF
+#!/bin/sh
+touch '$TMP/standalone-go-invoked'
+exit 99
+EOF
+chmod 0700 "$standalone_no_go/go"
+HOME="$standalone_home" SUBYARD_HOME="$standalone_home/.subyard" \
+  SUBYARD_CONFIG_HOME="$standalone_home/.config/subyard" YARD_BIN_DIR="$standalone_bin" \
+  YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_VERSION=1.0.0-test \
+  PATH="$standalone_no_go:$PATH" \
+  "$release/subyard-install.sh" >/dev/null
+[ "$($standalone_bin/yard --version)" = 'yard 1.0.0-test' ] \
+  && [ -L "$standalone_bin/sy" ] && [ ! -e "$TMP/standalone-go-invoked" ] \
+  || fail 'standalone installer did not publish a usable runtime without a checkout'
+
+bad_release="$TMP/bad-standalone-release"
+cp -a "$release" "$bad_release"
+printf 'corrupt\n' >> "$bad_release/subyard-install-runtime-release.sh"
+if HOME="$TMP/bad-standalone-home" YARD_RUNTIME_ROOT="$TMP/bad-standalone-runtime" \
+  YARD_RELEASE_BASE_URL="file://$bad_release" YARD_RELEASE_VERSION=1.0.0-test \
+  "$bad_release/subyard-install.sh" >/dev/null 2>&1; then
+  fail 'standalone bootstrap accepted a corrupt installer'
+fi
+[ ! -e "$TMP/bad-standalone-runtime/current" ] \
+  || fail 'corrupt standalone installer changed the current runtime'
 
 arm_release="$TMP/release-arm64"
 artifact_arm="$("$ROOT/scripts/package-engine.sh" --output-dir "$arm_release" --version 1.0.0-test --arch arm64)"

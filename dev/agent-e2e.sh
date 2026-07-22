@@ -374,8 +374,19 @@ verify_boundary() {
 }
 
 guest() {
-  local vm="$1"; shift
-  ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$@"
+  local vm="$1" command; shift
+  command="$(quote_ssh_command "$@")"
+  ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command"
+}
+
+quote_ssh_command() {
+  local argument quoted command=''
+  [ "$#" -gt 0 ] || return 1
+  for argument in "$@"; do
+    printf -v quoted '%q' "$argument"
+    command+="${command:+ }$quoted"
+  done
+  printf '%s\n' "$command"
 }
 
 cleanup_guest() {
@@ -471,10 +482,11 @@ run_guest() {
 }
 
 run_direct_ssh() {
-  local vm="$1"; shift
+  local vm="$1" command; shift
   prepare_client
   if [ "$#" -gt 0 ]; then
-    exec ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$@"
+    command="$(quote_ssh_command "$@")"
+    exec ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command"
   fi
   exec ssh -F "$CLIENT_CONFIG" -tt "e2e-vm-$vm"
 }

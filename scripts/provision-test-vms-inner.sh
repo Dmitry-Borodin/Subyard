@@ -3,6 +3,22 @@
 # Installs/reconciles the inner Incus VM backend and TTL cleanup service.
 set -euo pipefail
 
+run_with_progress() {
+  local label="$1" ticker rc started=$SECONDS
+  shift
+  printf '  [ .. ] %s\n' "$label"
+  (
+    while sleep 10; do
+      printf '  [ .. ] %s (still working, %ss elapsed)\n' "$label" "$((SECONDS - started))"
+    done
+  ) &
+  ticker=$!
+  if "$@"; then rc=0; else rc=$?; fi
+  kill "$ticker" 2>/dev/null || true
+  wait "$ticker" 2>/dev/null || true
+  return "$rc"
+}
+
 inner_incus() {
   # This provisioner is executed with `bash -s`, so its stdin is the script body itself. Incus
   # create commands accept YAML on stdin; never let a child consume the remaining shell program.
@@ -325,8 +341,11 @@ EOF
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq incus qemu-system-x86 openssh-client nftables
+run_with_progress "updating inner VM backend packages" apt-get update -qq
+run_with_progress "installing inner Incus and QEMU" \
+  apt-get install -y -qq --no-install-recommends \
+    incus qemu-system-x86 qemu-utils ovmf openssh-client nftables
+apt-get clean
 version_ok || { printf 'Incus 6.0.6 or newer is required inside the yard\n' >&2; exit 1; }
 # AppArmor 4.1 userspace emits AF_UNIX rules that the 6.8 kernel rejects with a type/protocol ABI
 # mismatch. Disable only the inner daemon's per-instance profiles. The trusted L1 container remains

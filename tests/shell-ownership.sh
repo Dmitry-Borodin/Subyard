@@ -12,7 +12,8 @@ classify() {
     credentials/policy.sh|credentials/revision-adapter.sh|credentials/store.sh|\
     credentials/sync-state.sh|credentials/sync.sh|credentials/transport.sh|credentials/verification.sh)
       printf 'credential-payload\n' ;;
-    lib/cache.sh|lib/config.sh|lib/context.sh|lib/env.sh|lib/host.sh|lib/project-snapshot.sh|\
+    lib/cache.sh|lib/config.sh|lib/context.sh|lib/e2e-agent-enrollment.sh|lib/env.sh|\
+    lib/host.sh|lib/project-snapshot.sh|\
     lib/registry.sh|lib/runtime.sh|lib/ssh-config.sh|lib/ui.sh)
       printf 'adapter-contract\n' ;;
     reconcile/facts.sh|reconcile/finalize.sh|reconcile/planner.sh|reconcile/registry.sh|\
@@ -38,7 +39,7 @@ classify() {
       printf 'metadata-transport\n' ;;
     yard-keys.sh)
       printf 'credential-payload\n' ;;
-    test-vms-inner.sh|test-vms.sh|agent-e2e.sh)
+    test-vms-inner.sh|test-vms-status.sh|test-vms.sh|agent-e2e.sh)
       printf 'e2e-adapter\n' ;;
     build-engine.sh|install-cli.sh|install-engine-release.sh|install-runtime-release.sh|\
     package-engine.sh|update-engine.sh)

@@ -54,7 +54,7 @@ yard -Y e2e-yard test-vms down
 yard -Y e2e-yard stop
 ```
 
-Each VM defaults to a 10 GiB root disk and a 240-minute TTL. `down` refuses unknown instances or
+Each VM defaults to a 10 GiB root disk and a 20-hour TTL. `down` refuses unknown instances or
 invalid ownership markers. Run it before disabling `NESTED_E2E_VMS`.
 
 ## Agent workflow

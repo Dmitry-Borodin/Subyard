@@ -7,6 +7,10 @@ TOKEN="${2:-}"
 PEER_IP="${3:-}"
 PEER_ROOT="/tmp/subyard-p0-peer-$TOKEN"
 MARKER="subyard-p0-$TOKEN"
+PEER_INCUS_MARKER="$PEER_ROOT/.subyard-p0-incus-init"
+PEER_INCUS_POOL="subyard-p0-$TOKEN"
+OWNER_BASELINE_IMAGES=''
+OWNER_BASELINE_CAPTURED=0
 
 die() { printf 'p0-guest: %s\n' "$*" >&2; exit 2; }
 valid_token() { [[ "$1" =~ ^[0-9]+$ ]]; }
@@ -27,10 +31,10 @@ owner_project_contract() {
   clean_tree "$source" "$MARKER"
   install -d -m 0700 "$source"
   printf '%s\n' "$MARKER" > "$source/.subyard-p0-marker"
-  printf 'base\n' > "$source/result.txt"
+  printf '%s\nbase\n' "$MARKER" > "$source/result.txt"
   ./bin/yard -Y e2e-yard sync "$source" --yes >/dev/null
-  ./bin/yard -Y e2e-yard shell "$source" -- sh -c 'printf "mutated\n" >> result.txt'
-  ./bin/yard -Y e2e-yard export "$source" >/dev/null
+  ./bin/yard -Y e2e-yard shell "$source" --yes -- sh -c 'printf "mutated\n" >> result.txt'
+  ./bin/yard -Y e2e-yard export "$source" --yes >/dev/null
   patch="$(grep -RIl -- 'mutated' "${SUBYARD_HOME:-$HOME/.subyard}/exports" | head -n1)"
   [ -n "$patch" ] || die 'project export did not contain the guest change'
   ./bin/yard -Y e2e-yard remove "$source" --yes >/dev/null
@@ -38,12 +42,55 @@ owner_project_contract() {
   clean_tree "$source" "$MARKER"
 }
 
-owner() {
+owner_cleanup() {
+  local rc=$? source="/tmp/subyard-p0-project-$TOKEN" patch fingerprint cleanup_failed=0
+  trap - EXIT
+  set +e
+  clean_tree "$source" "$MARKER" || cleanup_failed=1
+  if [ -d "${SUBYARD_HOME:-$HOME/.subyard}/exports" ]; then
+    while IFS= read -r patch; do find "$patch" -delete || cleanup_failed=1; done \
+      < <(grep -RIl -- "$MARKER" "${SUBYARD_HOME:-$HOME/.subyard}/exports" 2>/dev/null)
+  fi
+  if [ -f private/yards/e2e-yard.env ] \
+    && incus project show subyard-e2e-yard >/dev/null 2>&1; then
+    ./bin/yard -Y e2e-yard teardown --yes >/dev/null 2>&1 || cleanup_failed=1
+  fi
+  if [ "$OWNER_BASELINE_CAPTURED" = 1 ]; then
+    while IFS= read -r fingerprint; do
+      [ -n "$fingerprint" ] || continue
+      printf '%s\n' "$OWNER_BASELINE_IMAGES" | grep -Fxq "$fingerprint" \
+        || incus image delete "$fingerprint" --project default >/dev/null 2>&1 \
+        || cleanup_failed=1
+    done < <(incus image list --project default --format csv -c f)
+  fi
+  [ "$cleanup_failed" = 0 ] || rc=3
+  exit "$rc"
+}
+
+install_owner_runtime() {
+  local arch release artifact
+  arch="$(go env GOARCH)"
+  release="$ROOT/.build/p0-owner-release"
+  artifact="$release/subyard-p0-owner-linux-$arch"
+  scripts/package-engine.sh --output-dir "$release" --version p0-owner --arch "$arch" >/dev/null
+  scripts/install-runtime-release.sh \
+    --bundle "$artifact.tar.gz" \
+    --checksum "$artifact.tar.gz.sha256" \
+    --manifest "$artifact.tar.gz.manifest.json" \
+    --provenance "$artifact.tar.gz.provenance.json" >/dev/null
+}
+
+owner() (
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner lane requires VM1'
+  trap owner_cleanup EXIT
+  YARD_BUILD_VERSION=p0-owner scripts/build-engine.sh --force >/dev/null
+  install_owner_runtime
+  OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
+  OWNER_BASELINE_CAPTURED=1
   install -d -m 0700 private/yards
   printf 'YARD_TEMPLATE=e2e-vms\nSSH_PORT=2223\n' > private/yards/e2e-yard.env
   ./bin/yard -Y e2e-yard init --yes
-  ./bin/yard -Y e2e-yard start
+  ./bin/yard -Y e2e-yard start --yes
   SUBYARD_E2E_LEGACY_FIXTURE=1 \
     bash dev/e2e/seed-test-vms-legacy-state.sh subyard-e2e-yard yard-e2e-yard
   ./bin/yard -Y e2e-yard init --yes
@@ -62,7 +109,7 @@ owner() {
   ./bin/yard -Y e2e-yard teardown --yes
   ! incus project show subyard-e2e-yard >/dev/null 2>&1 || die 'candidate project remains after teardown'
   printf 'ok: VM1 owner, legacy upgrade, lifecycle, Incus and rollback\n'
-}
+)
 
 controller() (
   local temp
@@ -98,7 +145,8 @@ install_peer_wrapper() {
       "$PEER_ROOT/data" "$PEER_ROOT/host-data" "$PEER_ROOT/host-data"
     printf 'export SUBYARD_KEYS_ROOT=%q SUBYARD_KEYS_TOOLS_DIR=%q SUBYARD_KEYS_CONSUMER_ROOT=%q\n' \
       "$PEER_ROOT/keys" "$PEER_ROOT/tools" "$PEER_ROOT/consumer"
-    printf 'export SUBYARD_REPOSITORY_ROOT=%q SUBYARD_NO_AUDIT=1\n' "$PEER_ROOT/src"
+    printf 'export SUBYARD_REPOSITORY_ROOT=%q YARD_ENGINE_PATH=%q SUBYARD_NO_AUDIT=1\n' \
+      "$PEER_ROOT/src" "$PEER_ROOT/yard-engine"
     printf 'exec %q/bin/yard "$@"\n' "$PEER_ROOT/src"
   } > "$wrapper"
   chmod 0755 "$wrapper"
@@ -118,11 +166,78 @@ bootstrap_peer_keys() {
     ' >/dev/null
 }
 
+ensure_peer_incus() {
+  if incus info >/dev/null 2>&1; then
+    if dpkg --compare-versions "$(incus --version)" ge 6.0.6; then return 0; fi
+    printf '  [ .. ] VM%s: upgrading Incus to the supported LTS\n' "$SUBYARD_E2E_VM"
+    bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly --upgrade-only
+    dpkg --compare-versions "$(incus --version)" ge 6.0.6 \
+      || die 'Incus upgrade did not reach 6.0.6'
+    return
+  fi
+  if command -v incus >/dev/null 2>&1 || [ -S /var/lib/incus/unix.socket ]; then
+    die 'Incus exists but is unavailable to the peer user'
+  fi
+  printf '%s\n' "$MARKER" > "$PEER_INCUS_MARKER"
+  printf '  [ .. ] VM%s: initializing the Incus owner API\n' "$SUBYARD_E2E_VM"
+  SUBYARD_USER="$(id -un)" SUBYARD_HOME="$PEER_ROOT/incus-home" \
+    STORAGE_PATH="$PEER_ROOT/incus-home/storage" \
+    bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
+}
+
+ensure_peer_snapshot_fixture() {
+  if incus project show subyard >/dev/null 2>&1; then
+    [ "$(incus project get subyard user.subyard.p0)" = "$MARKER" ] \
+      || die "Incus project 'subyard' is not the peer fixture"
+    [ "$(incus config get yard user.subyard.p0 --project subyard)" = "$MARKER" ] \
+      || die "Incus instance 'subyard/yard' is not the peer fixture"
+    return
+  fi
+  install -d -m 0700 "$PEER_ROOT/incus-pool"
+  incus storage create "$PEER_INCUS_POOL" dir source="$PEER_ROOT/incus-pool" --project default >/dev/null
+  incus project create subyard -c features.images=false -c features.profiles=false \
+    -c features.storage.volumes=false -c user.subyard.p0="$MARKER" >/dev/null
+  incus init --empty yard --project subyard --storage "$PEER_INCUS_POOL" --no-profiles \
+    -c user.subyard.p0="$MARKER" >/dev/null
+}
+
+cleanup_peer_snapshot_fixture() {
+  incus project show subyard >/dev/null 2>&1 || return 0
+  [ "$(incus project get subyard user.subyard.p0)" = "$MARKER" ] \
+    || die "refusing to clean unrelated Incus project 'subyard'"
+  [ "$(incus config get yard user.subyard.p0 --project subyard)" = "$MARKER" ] \
+    || die "refusing to clean unrelated Incus instance 'subyard/yard'"
+  incus delete yard --project subyard --force >/dev/null
+  incus project delete subyard >/dev/null
+  incus storage delete "$PEER_INCUS_POOL" --project default >/dev/null
+}
+
+cleanup_peer_incus() {
+  [ -e "$PEER_INCUS_MARKER" ] || return 0
+  [ "$(cat "$PEER_INCUS_MARKER" 2>/dev/null)" = "$MARKER" ] \
+    || die 'refusing to clean unmarked peer Incus state'
+  [ -z "$(incus list --all-projects --format csv -c n)" ] \
+    || die 'peer Incus still has instances'
+  if incus profile device list default --project default 2>/dev/null | grep -qx eth0; then
+    incus profile device remove default eth0 --project default >/dev/null
+  fi
+  if incus profile device list default --project default 2>/dev/null | grep -qx root; then
+    incus profile device remove default root --project default >/dev/null
+  fi
+  incus network show incusbr0 --project default >/dev/null 2>&1 \
+    && incus network delete incusbr0 --project default >/dev/null
+  incus storage show default --project default >/dev/null 2>&1 \
+    && incus storage delete default --project default >/dev/null
+  sudo -n find "$PEER_ROOT/incus-home" -depth -delete 2>/dev/null || true
+}
+
 peer_prepare() {
   valid_ip "$PEER_IP" || die 'peer IP is invalid'
-  clean_tree "$PEER_ROOT" "$MARKER"
+  peer_clean
   install -d -m 0700 "$PEER_ROOT/src" "$PEER_ROOT/home" "$PEER_ROOT/config/yards"
   printf '%s\n' "$MARKER" > "$PEER_ROOT/.subyard-p0-marker"
+  ensure_peer_incus
+  ensure_peer_snapshot_fixture
   cp -a "$ROOT/." "$PEER_ROOT/src/"
   YARD_BUILD_VERSION="p0-vm-$SUBYARD_E2E_VM" \
     "$PEER_ROOT/src/scripts/build-engine.sh" --force --output "$PEER_ROOT/yard-engine" >/dev/null
@@ -201,10 +316,14 @@ peer_rpc() {
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
-  jq -s -e 'any(.[]; .id=="negotiate" and .error==null) and
+  if ! jq -s -e 'any(.[]; .id=="negotiate" and .error==null) and
     any(.[]; .id=="snapshot" and .type=="event" and .event=="snapshot.ready") and
     any(.[]; .id=="snapshot" and .type=="response" and .error==null and .result.revision>=1)' \
-    "$body" >/dev/null || die 'RPC did not renegotiate and resync after disconnect'
+    "$body" >/dev/null; then
+    printf 'p0-guest: resync frames:\n' >&2
+    sed -n '1,12p' "$body" >&2
+    die 'RPC did not renegotiate and resync after disconnect'
+  fi
   printf 'ok: VM%s cross-owner RPC, cancellation, skew and resync\n' "$SUBYARD_E2E_VM"
 }
 
@@ -240,6 +359,8 @@ peer_clean() {
   if sudo -n test -e /usr/local/bin/yard && sudo -n grep -Fqx "# $MARKER" /usr/local/bin/yard; then
     sudo -n find /usr/local/bin/yard -delete
   fi
+  cleanup_peer_snapshot_fixture
+  cleanup_peer_incus
   clean_tree "$PEER_ROOT" "$MARKER"
 }
 

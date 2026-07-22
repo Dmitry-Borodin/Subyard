@@ -47,6 +47,8 @@ write_guest_command 2 "$command_root" sh -c \
   'test "$SUBYARD_E2E_VM" = 2 && test "$1" = "argument with spaces"' fixture 'argument with spaces' \
   > "$TMP/run.sh"
 bash "$TMP/run.sh" || fail "guest command did not preserve its argv or VM selector"
+quoted="$(quote_ssh_command bash -c 'test "$1" = "argument with spaces"' _ 'argument with spaces')"
+bash -c "$quoted" || fail "direct SSH command did not preserve its argv"
 
 # Accept only two ready, unexpired VMs with pinned host keys.
 ensure_state_root
@@ -165,6 +167,22 @@ if sed '/^[[:space:]]*#/d' "$ROOT/dev/e2e/p0-acceptance.sh" \
   | grep -Eq 'test-vms[[:space:]]+(up|down)|yard[[:space:]].*(start|stop)'; then
   fail "P0 acceptance contains an allocation lifecycle call"
 fi
+grep -Fq 'trap owner_cleanup EXIT' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not clean its candidate after failure"
+grep -Fq 'scripts/build-engine.sh --force' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not build an explicit source candidate"
+grep -Fq 'scripts/install-runtime-release.sh' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not install an immutable candidate runtime"
+grep -Fq './bin/yard -Y e2e-yard start --yes' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not make start automation explicit"
+grep -Fq 'shell "$source" --yes --' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not confirm shell automation"
+grep -Fq 'export "$source" --yes' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not confirm export automation"
+grep -Fq 'YARD_ENGINE_PATH=%q' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 peer wrapper does not select its explicit candidate engine"
+grep -Fq 'cleanup_peer_incus' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 peer lane does not clean its Incus fixture"
 ! grep -Fq 'test-vms-inner' "$ROOT/dev/agent-e2e.sh" \
   || fail "agent E2E transport still invokes the privileged lifecycle worker"
 

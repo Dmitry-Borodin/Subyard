@@ -48,17 +48,16 @@ unset E2E_PROGRESS_INTERVAL
 printf '%s\n' "$progress_result" | grep -Fq 'slow fixture operation (still working,' \
   || fail "long operation emitted no periodic progress"
 
-# The worker owns flags only before the explicit exec delimiter. Candidate flags and help options
-# after it are payload and must arrive in the VM byte-for-byte instead of being consumed by main.
-payload_result="$(
-  ASSUME_YES=0
+# The privileged L1 worker exposes lifecycle only; agents use the restricted bastion.
+if (
   INCUS=bash
   validate_config() { :; }
-  cmd_exec() { printf '<%s>\n' "$@"; }
-  main exec 1 -- candidate --yes --help
-)" || fail "worker rejected an exec payload containing its own option names"
-[ "$payload_result" = $'<1>\n<-->\n<candidate>\n<--yes>\n<--help>' ] \
-  || fail "worker consumed candidate options after the exec delimiter"
+  main exec 1 -- true
+) >"$TMP/removed-exec" 2>&1; then
+  fail "privileged worker still exposes direct VM exec"
+fi
+grep -Fq "unknown command 'exec'" "$TMP/removed-exec" \
+  || fail "removed worker exec command has an unclear error"
 
 events="$TMP/events"
 ensure_key() { mkdir -p "$STATE_DIR"; : > "$KEY"; : > "$KEY.pub"; printf 'key\n' >> "$events"; }
@@ -400,6 +399,15 @@ grep -Fq 'iifname "incusbr0" drop' "$ROOT/scripts/provision-test-vms-inner.sh" \
   || fail "inner provisioner does not block guest-initiated access to L1"
 grep -Fq 'PasswordAuthentication no' "$ROOT/scripts/provision-test-vms-inner.sh" \
   || fail "bastion provisioner does not disable password authentication"
+grep -Fq 'apt-get install -y -qq --no-install-recommends' \
+  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  || fail "inner VM backend installs optional QEMU desktop packages"
+grep -Fq 'apt-get clean' "$ROOT/scripts/provision-test-vms-inner.sh" \
+  || fail "inner VM backend leaves the package cache on the small disposable disk"
+grep -Fq 'run_with_progress "installing inner Incus and QEMU"' \
+  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  && grep -Fq 'still working, %ss elapsed' "$ROOT/scripts/provision-test-vms-inner.sh" \
+  || fail "inner VM backend package installation has no periodic progress"
 grep -Fq 'install -d -m 0750 -o root -g "$primary" "$home/.ssh"' \
   "$ROOT/scripts/provision-test-vms-inner.sh" \
   || fail "bastion authorized-key directory is not root-owned and account-readable"

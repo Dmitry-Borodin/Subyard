@@ -82,15 +82,6 @@ export SUBYARD_CONFIG_DIR="$TMP/shipped"
 export SUBYARD_NO_AUDIT=1
 export REMOTE_TEST_STATE="$TMP/state"
 
-# `_info` ignores empty owner-host state and counts unique live yard metadata. A successful empty
-# scan is zero; a failed scan is unknown (null), never a made-up zero.
-info="$(YARD_META_MODE=one "$ROOT/scripts/yard-info.sh")"
-jq -e '.projects == 1' <<<"$info" >/dev/null || fail '_info did not report one unique live project'
-info="$(YARD_META_MODE=empty "$ROOT/scripts/yard-info.sh")"
-jq -e '.projects == 0' <<<"$info" >/dev/null || fail '_info did not report a successful empty scan as zero'
-info="$(YARD_META_MODE=fail "$ROOT/scripts/yard-info.sh")"
-jq -e '.projects == null' <<<"$info" >/dev/null || fail '_info did not report a failed scan as null'
-
 cat > "$SUBYARD_CONFIG_HOME/yards/remote.env" <<'ENV'
 YARD_TYPE=remote
 REMOTE_DEST=owner
@@ -101,16 +92,16 @@ ENV
 # Remote overview uses live yard inventory, retains the last numeric count when a fresh metadata
 # observation is unavailable, and shows '-' when neither live nor cached inventory exists.
 printf 'one\n' > "$REMOTE_TEST_STATE/info-mode"
-output="$($ROOT/scripts/yard-yards.sh)"
+output="$($ROOT/bin/yard yards)"
 assert_projects "$output" 1
 printf 'null\n' > "$REMOTE_TEST_STATE/info-mode"
-output="$($ROOT/scripts/yard-yards.sh)"
+output="$($ROOT/bin/yard yards)"
 assert_projects "$output" 1
 printf 'fail\n' > "$REMOTE_TEST_STATE/info-mode"
-output="$($ROOT/scripts/yard-yards.sh)"
+output="$($ROOT/bin/yard yards)"
 assert_projects "$output" 1
 rm -f "$SUBYARD_HOME/remote-remote.cache"
-output="$($ROOT/scripts/yard-yards.sh)"
+output="$($ROOT/bin/yard yards)"
 assert_projects "$output" '-'
 
 state_file="$SUBYARD_CONFIG_HOME/yards/remote/projects/demo-12345678.json"

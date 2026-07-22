@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-vms.sh — opt-in nested VM backend stage.
+# Reconcile stage for the opt-in nested VM backend.
 
 [ -n "${SUBYARD_STAGE_TEST_VMS_SOURCED:-}" ] && return 0
 SUBYARD_STAGE_TEST_VMS_SOURCED=1
@@ -8,14 +8,14 @@ SUBYARD_STAGE_TEST_VMS_SOURCED=1
 . "$SCRIPT_DIR/lib/e2e-agent-enrollment.sh"
 
 stage_test_vms_revision() {
-  sha256sum "$SCRIPT_DIR/test-vms-inner.sh" "$SCRIPT_DIR/test-vms-status.sh" \
-    "$SCRIPT_DIR/provision-test-vms-inner.sh" "$SCRIPT_DIR/reconcile-test-vms.sh" \
+  sha256sum "$SCRIPT_DIR/e2e-lab/worker.sh" "$SCRIPT_DIR/e2e-lab/status.sh" \
+    "$SCRIPT_DIR/e2e-lab/provision.sh" "$SCRIPT_DIR/e2e-lab/reconcile.sh" \
     "$SCRIPT_DIR/lib/e2e-agent-enrollment.sh" \
     | sha256sum | awk '{print $1}'
 }
 
-stage_test_vms_worker_hash() { sha256sum "$SCRIPT_DIR/test-vms-inner.sh" | awk '{print $1}'; }
-stage_test_vms_status_hash() { sha256sum "$SCRIPT_DIR/test-vms-status.sh" | awk '{print $1}'; }
+stage_test_vms_worker_hash() { sha256sum "$SCRIPT_DIR/e2e-lab/worker.sh" | awk '{print $1}'; }
+stage_test_vms_status_hash() { sha256sum "$SCRIPT_DIR/e2e-lab/status.sh" | awk '{print $1}'; }
 
 stage_test_vms_check_fail() {
   [ "${SUBYARD_TEST_VMS_CHECK_VERBOSE:-0}" = 1 ] \
@@ -173,5 +173,5 @@ stage_test_vms_plan() {
     printf 'Keep the nested VM test backend disabled\n'
   fi
 }
-stage_test_vms_apply() { "$SCRIPT_DIR/reconcile-test-vms.sh" --yes; }
+stage_test_vms_apply() { "$SCRIPT_DIR/e2e-lab/reconcile.sh" --yes; }
 stage_test_vms_verify() { SUBYARD_TEST_VMS_CHECK_VERBOSE=1 stage_test_vms_check; }

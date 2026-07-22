@@ -19,8 +19,7 @@ internal/
   ├── state, migration, rpc              atomic state, schema checks and framed sessions
   └── adapters/                          Incus, metadata, shell and local/SSH transports
 scripts/
-  ├── adapters/                         structured system-side-effect wrappers
-  ├── lib/                              compatibility UI/cache/host adapters
+  ├── lib/                              shared platform adapter contracts
   ├── state/                            physical transport and portable yard metadata
   ├── reconcile/
   │     └── stages/                     one check/plan/apply/verify contract per init stage
@@ -37,10 +36,8 @@ development candidate. Installed commands use an immutable, checksum/provenance-
 containing its launcher, engine, scripts, registry and completion files; `current`/`previous` switch
 the whole runtime and production never reads a source checkout. Non-interactive mutations share the
 Go-owned plan, consequences, confirmation, operation
-ID, audit, events and cancellation path across CLI and RPC. `start` uses the allowlisted
-`scripts/adapters/yard-control.sh`; other migrated actions use the fixed physical map in
-`scripts/adapters/command.sh`. The engine does not perform the command-specific or
-profile-specific host mutation itself.
+ID, audit, events and cancellation path across CLI and RPC. The engine maps migrated actions directly
+to fixed leaf executables and synthesizes their typed result.
 `scripts/init.sh` remains the structured host-reconciliation adapter:
 it composes the ordered stage planner, owns the one top-level confirmation and keeps the separate
 desired-power finalization transaction. Profile process identity and platform facts remain in their
@@ -129,11 +126,11 @@ The validated context contract includes:
 
 Source-only domain modules do not load configuration themselves.
 
-Structured system adapters are selected by an `(adapter, action)` allowlist and receive only the
-validated non-secret context keys declared by the caller. Metadata uses a dedicated file descriptor,
-protected input uses stdin, diagnostics use stderr, and stdout is reserved for one schema-checked JSON
-result correlated by operation ID. The runner supplies a fixed production `PATH`, enforces output and
-time limits, and terminates the adapter process group on cancellation.
+Structured system adapters are selected from the validated command manifest and receive only declared
+non-secret context keys. Metadata uses a dedicated file descriptor and protected input uses stdin.
+Leaf commands report diagnostics normally; the runner converts their exit status into a typed result.
+The runner supplies a fixed `PATH`, enforces output/time limits and terminates the process group on
+cancellation.
 
 ### Project state and routing
 
@@ -223,13 +220,14 @@ nested shell file; validates that each top-level test belongs to exactly one sui
 CI selects Go from `go.mod`, runs the same suite and recursively ShellChecks all Bash entrypoints,
 modules, profile handlers and tests. The fake Incus Unix server implements official-client REST,
 async-operation WebSockets, errors, cancellation and event disconnects. Synthetic credential fixtures
-contain no real secret. The opt-in real-host subset is documented in
+contain no real secret. The opt-in E2E VM subset is documented in
 [`real-host-acceptance.md`](real-host-acceptance.md).
 
-## Real-host acceptance lane
+## E2E VM acceptance lane
 
-Host-free fakes cannot prove Incus, kernel, network, mount, systemd, or real SSH behavior. Before a
-release that changes these boundaries, run the following on dedicated `e2e-*` contexts only:
+Host-free fakes cannot prove Incus, kernel, network, mount, systemd, or real SSH behavior. The
+operator allocates two disposable E2E VMs; the agent runs `dev/e2e/p0-acceptance.sh` without changing
+their lifecycle. Do not run this lane on the operator host or in the privileged outer yard.
 
 1. For both a container and VM context: `yard -Y <context> init`, rerun it as a no-op, introduce one
    safe managed drift (for example the ccusage convergence marker), rerun to repair it, then reboot
@@ -241,18 +239,18 @@ release that changes these boundaries, run the following on dedicated `e2e-*` co
 4. Register a dedicated remote owner, verify owner lifecycle forwarding and direct
    `sync → list → export → remove`, rotate only a test host key, and confirm an unreachable owner
    produces the documented diagnostic/cache behavior.
-5. On two dedicated owner hosts, run `keys trust → add synthetic shared/exclusive records → sync →
+5. On the two E2E VMs, run `keys trust → add synthetic shared/exclusive records → sync →
    concurrent compatible and incompatible heads → resolve → exclusive move`; verify pinned tools,
    the persistent timer, SSH transport, consumer permissions, redaction, and payload absence from
    argv/env/log/diff.
-6. Tear down only the dedicated `e2e-*` yards and confirm host networking remains available.
+6. Remove candidate resources and worktrees; allocation teardown remains an operator action.
 
 Capture results outside the public repository and never include credentials or private host names.
 
 ## Adding a command, stage, or resource
 
-- Command: add one validated registry row, implement the handler, select a completion provider, and
-  extend a contract/integration test. Do not edit dispatch/help lists separately.
+- Command: add one validated registry row and a Go use case. Add Shell only for a physical leaf, then
+  extend a contract/integration test. Do not add another dispatch list.
 - Stage: add one stage module with all four methods and one registry descriptor; add no-op, drift,
   failed-verify, and resume coverage.
 - Profile resource: keep mechanics below its profile, add a `.res` descriptor and executable

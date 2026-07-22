@@ -196,7 +196,8 @@ func safeToken(value string) bool {
 
 func validHandler(handler string) bool {
 	if slices.Contains([]string{
-		"@help", "@resource", "@rpc", "@status", "@list", "@state", "@project-state", "@credential-policy", "@migrate",
+		"@authorize", "@credential-policy", "@help", "@info", "@list", "@logs", "@migrate",
+		"@project-state", "@resource", "@rpc", "@shell", "@state", "@status", "@usage", "@yards",
 	}, handler) {
 		return true
 	}

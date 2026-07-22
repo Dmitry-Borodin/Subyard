@@ -31,6 +31,28 @@ func TestAnalyzeHeadsSafeMergeAndPayloadConflict(t *testing.T) {
 	}
 }
 
+func TestHeadsAndRecipientIntersection(t *testing.T) {
+	parent := metadata("actor-a-000000000001-aaaaaaaa", "actor-a", 1)
+	left := metadata("actor-a-000000000002-bbbbbbbb", "actor-a", 2)
+	right := metadata("actor-b-000000000001-cccccccc", "actor-b", 1)
+	left.Parents = []string{parent.RevisionID}
+	right.Parents = []string{parent.RevisionID}
+	left.RecipientActors = []string{"actor-a", "actor-b"}
+	right.RecipientActors = []string{"actor-b", "actor-c"}
+
+	heads := Heads([]domain.CredentialMetadata{right, parent, left}, parent.CredentialID)
+	if len(heads) != 2 || heads[0].RevisionID != left.RevisionID || heads[1].RevisionID != right.RevisionID {
+		t.Fatalf("unexpected heads: %#v", heads)
+	}
+	if !MetadataCompatible(heads) {
+		t.Fatal("compatible metadata was rejected")
+	}
+	recipients := RecipientIntersection(heads)
+	if len(recipients) != 1 || recipients[0] != "actor-b" {
+		t.Fatalf("unexpected recipient intersection: %#v", recipients)
+	}
+}
+
 func TestAnalyzeHeadsFailsOnTamperingAndTerminalWins(t *testing.T) {
 	left := metadata("actor-a-000000000001-aaaaaaaa", "actor-a", 1)
 	right := metadata("actor-b-000000000001-bbbbbbbb", "actor-b", 1)

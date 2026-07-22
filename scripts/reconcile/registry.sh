@@ -24,8 +24,8 @@ RECONCILE_DIR="${RECONCILE_DIR:-$SCRIPT_DIR/reconcile}"
 . "$RECONCILE_DIR/stages/mounts.sh"
 # shellcheck source=scripts/reconcile/stages/provision.sh
 . "$RECONCILE_DIR/stages/provision.sh"
-# shellcheck source=scripts/reconcile/stages/test-vms.sh
-. "$RECONCILE_DIR/stages/test-vms.sh"
+# shellcheck source=scripts/e2e-lab/stage.sh
+. "$SCRIPT_DIR/e2e-lab/stage.sh"
 # shellcheck source=scripts/reconcile/stages/ssh.sh
 . "$RECONCILE_DIR/stages/ssh.sh"
 # shellcheck source=scripts/reconcile/stages/git-identity.sh

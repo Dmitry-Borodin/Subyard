@@ -1,20 +1,25 @@
-# Real-host acceptance
+# E2E VM acceptance
 
-The default `./tests/run.sh` is intentionally host-free. Run this smaller opt-in lane only on
-dedicated `e2e-*` yards before a release that changes Incus, kernel, network, systemd, credential
-transport, or update boundaries. Never point destructive lifecycle checks at a working yard.
+The default `./tests/run.sh` is host-free. Live acceptance runs only on the two disposable VMs
+allocated by the operator with `yard -Y e2e-yard test-vms up`:
+
+```sh
+dev/e2e/p0-acceptance.sh
+```
+
+The agent does not change allocation lifecycle or work in the privileged outer yard. Never run
+these checks on the operator host or a working yard.
 
 ## Official Incus client contract
 
-The server/extensions half can be checked independently on any real daemon without creating an
-instance:
+Inside an allocated E2E VM, the server/extensions half can be checked without creating an instance:
 
 ```sh
 SUBYARD_REAL_INCUS_SOCKET=/var/lib/incus/unix.socket \
 go test -tags realincus ./internal/adapters/incusclient -run '^TestRealIncusServerContract$'
 ```
 
-Create or select one running acceptance container and one VM, then run:
+The full acceptance runner creates its own marked container and VM, then runs:
 
 ```sh
 SUBYARD_REAL_INCUS_SOCKET=/var/lib/incus/unix.socket \
@@ -31,31 +36,30 @@ inside each selected running instance.
 
 ## Platform and release checks
 
-For both dedicated instance types, run `yard -Y <context> init` twice, introduce one safe managed
-drift, and verify that the next run repairs it. Check storage/mount/idmap, NetworkManager/UFW and
-desired power across reboot. Use injected KVM facts in host-free tests; only this lane observes the
-real `/dev/kvm` and kernel behavior.
+VM1 installs the candidate runtime, runs `init` twice, repairs a legacy fixture and verifies storage,
+network, systemd, Incus container/VM and rollback behavior. VM2 runs the full suite and transport
+contracts. Only these disposable VMs observe real KVM and kernel behavior.
 
 Exercise a synthetic project through `sync`, `list --live`, `shell`, `export`, and `remove`; test an
 active profile resource through bring-up/status/shutdown. Android emulator process checks must stay
 user-scoped and argv-anchored.
 
-The host-free `tests/engine-release.sh` already proves engine and full-runtime checksums/provenance,
+The host-free `tests/engine-release.sh` proves engine and full-runtime checksums/provenance,
 offline and incomplete-download behavior, atomic upgrade/rollback layout, stdio half-close and
-supported/unsupported protocol negotiation. On the real lane, install two versioned runtimes on a
-dedicated owner, connect from a second controller over SSH stdio, upgrade the owner while the
-controller stays on the previous version, and then run `yard update --rollback`. The upgrade path
+supported/unsupported protocol negotiation. On the E2E lane, install two versioned runtimes on VM1,
+connect from VM2 over SSH stdio, upgrade the owner while the controller stays on the previous
+version, and then run `yard update --rollback`. The upgrade path
 runs `_migrate apply` before switching `current`; rollback checks the retained runtime before swapping
 `current` and `previous`.
 
 Use two synthetic credential peers to exercise pinned SOPS/age tooling and the real SSH path:
 reciprocal trust, a shared record, an exclusive assignment move, sync, materialization and revoke.
-Also exercise a dedicated remote yard through its real SSH identity and RPC transport. Repeat cold
+Also exercise a disposable remote yard through its real SSH identity and RPC transport. Repeat cold
 CLI startup, idle RPC RSS/CPU, snapshot latency and package-size measurements; compare them with the
 host-free baseline in `docs/development.md`. Record results outside the public repository without
 host names, credentials or payloads.
 
-Before the two-host SSH run, verify the exact pinned binaries locally without fake crypto:
+Before the two-VM SSH run, verify the exact pinned binaries without fake crypto:
 
 ```sh
 SUBYARD_KEYS_TOOLS_DIR=/tmp/subyard-real-tools \
@@ -78,7 +82,7 @@ system daemon:
 bash tests/real-host/ssh-rpc.sh
 ```
 
-This closes the OpenSSH transport implementation itself; the two-owner-host run remains responsible
+This closes the OpenSSH transport implementation itself; the two-E2E-VM run remains responsible
 for routing, disconnect and exclusive-handoff behavior across a real host boundary.
 
 The same ephemeral server can exercise real credential Git/SSH exchange together with the pinned
@@ -90,5 +94,5 @@ bash tests/real-host/ssh-credential-peer.sh
 ```
 
 It verifies reciprocal trust roles, the retained SSH route, signed encrypted sync, remote decrypt,
-plaintext isolation and revoke. The dedicated two-host lane still verifies host identity separation,
+plaintext isolation and revoke. The two-E2E-VM lane still verifies host identity separation,
 failure/reconnect and an exclusive handoff with real consumers.

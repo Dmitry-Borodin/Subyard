@@ -109,6 +109,27 @@ func (fake *IncusServer) WaitForExecCount(ctx context.Context, count int) error 
 	}
 }
 
+func (fake *IncusServer) WaitForExecInput(ctx context.Context, index int) error {
+	fake.mu.Lock()
+	var done <-chan struct{}
+	for _, operation := range fake.operations {
+		if operation.callIndex == index {
+			done = operation.stdinDone
+			break
+		}
+	}
+	fake.mu.Unlock()
+	if done == nil {
+		return fmt.Errorf("exec call %d has no operation", index)
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	}
+}
+
 func (fake *IncusServer) QueueExec(steps ...IncusServerExecStep) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
@@ -325,10 +346,10 @@ func (fake *IncusServer) serveOperationWebsocket(
 			if err != nil {
 				break
 			}
+			_, _ = stdin.Write(payload)
 			if messageType == websocket.TextMessage {
 				break
 			}
-			_, _ = stdin.Write(payload)
 		}
 		fake.mu.Lock()
 		fake.execCalls[operation.callIndex].Stdin = bytes.Clone(stdin.Bytes())

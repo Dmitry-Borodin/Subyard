@@ -173,6 +173,11 @@ grep -Fq 'scripts/build-engine.sh --force' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not build an explicit source candidate"
 grep -Fq 'scripts/install-runtime-release.sh' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not install an immutable candidate runtime"
+owner_bootstrap_line="$(grep -n $'^\tensure_owner_incus$' "$ROOT/dev/e2e/p0-guest.sh" | head -n1 | cut -d: -f1)"
+owner_incus_line="$(grep -n 'OWNER_BASELINE_IMAGES=.*incus image list' "$ROOT/dev/e2e/p0-guest.sh" | head -n1 | cut -d: -f1)"
+[ -n "$owner_bootstrap_line" ] && [ -n "$owner_incus_line" ] \
+  && [ "$owner_bootstrap_line" -lt "$owner_incus_line" ] \
+  || fail "P0 owner lane uses Incus before its disposable-VM bootstrap"
 grep -Fq './bin/yard -Y e2e-yard start --yes' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not make start automation explicit"
 grep -Fq 'shell "$source" --yes --' "$ROOT/dev/e2e/p0-guest.sh" \

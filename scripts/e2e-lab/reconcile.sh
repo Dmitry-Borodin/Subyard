@@ -1,37 +1,38 @@
 #!/usr/bin/env bash
-# reconcile-test-vms.sh — install/reconcile the opt-in nested VM lab inside L1.
+# Reconcile the opt-in nested VM lab inside L1.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/runtime.sh
-. "$SCRIPT_DIR/lib/runtime.sh"
+. "$ROOT/lib/runtime.sh"
 # shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
+. "$ROOT/lib/env.sh"
 # shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
+. "$ROOT/lib/registry.sh"
 # shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+. "$ROOT/lib/context.sh"
 # shellcheck source=scripts/lib/ui.sh
-. "$SCRIPT_DIR/lib/ui.sh"
+. "$ROOT/lib/ui.sh"
 # shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
+. "$ROOT/lib/config.sh"
 # shellcheck source=scripts/lib/e2e-agent-enrollment.sh
-. "$SCRIPT_DIR/lib/e2e-agent-enrollment.sh"
+. "$ROOT/lib/e2e-agent-enrollment.sh"
 subyard_context_load
 # shellcheck source=scripts/lib-power.sh
-. "$SCRIPT_DIR/lib-power.sh"
+. "$ROOT/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
-. "$SCRIPT_DIR/lib/host.sh"
+. "$ROOT/lib/host.sh"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 PROJ=(--project "$INCUS_PROJECT")
-WORKER_SRC="$SCRIPT_DIR/test-vms-inner.sh"
-STATUS_SRC="$SCRIPT_DIR/test-vms-status.sh"
-PROVISION_SRC="$SCRIPT_DIR/provision-test-vms-inner.sh"
-RECONCILE_SRC="$SCRIPT_DIR/reconcile-test-vms.sh"
+WORKER_SRC="$SCRIPT_DIR/worker.sh"
+STATUS_SRC="$SCRIPT_DIR/status.sh"
+PROVISION_SRC="$SCRIPT_DIR/provision.sh"
+RECONCILE_SRC="$SCRIPT_DIR/reconcile.sh"
 WORKER_DST=/usr/local/libexec/subyard/test-vms-inner
 STATUS_DST=/usr/local/libexec/subyard/test-vms-status
-CLIENT_EXPORT_DIR="${SUBYARD_E2E_CLIENT_EXPORT_DIR:-$SCRIPT_DIR/../temp/agent-e2e/${YARD_NAME:-default}}"
+CLIENT_EXPORT_DIR="${SUBYARD_E2E_CLIENT_EXPORT_DIR:-$ROOT/../temp/agent-e2e/${YARD_NAME:-default}}"
 desired="${NESTED_E2E_VMS:-0}"
 agent_public_key=''
 agent_fingerprint=''
@@ -45,7 +46,7 @@ else
 fi
 agent_key_hash="$(printf '%s' "$agent_public_key" | sha256sum | awk '{print $1}')"
 revision="$(sha256sum "$WORKER_SRC" "$STATUS_SRC" "$PROVISION_SRC" "$RECONCILE_SRC" \
-  "$SCRIPT_DIR/lib/e2e-agent-enrollment.sh" \
+  "$ROOT/lib/e2e-agent-enrollment.sh" \
   | sha256sum | awk '{print $1}')"
 marker="$desired:$revision:$agent_key_hash"
 agent_summary="Keep agent SSH ingress disabled (no machine-scoped public key is enrolled)."

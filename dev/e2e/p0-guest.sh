@@ -82,10 +82,11 @@ install_owner_runtime() {
 
 owner() (
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner lane requires VM1'
-  trap owner_cleanup EXIT
-  YARD_BUILD_VERSION=p0-owner scripts/build-engine.sh --force >/dev/null
-  install_owner_runtime
-  OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
+	trap owner_cleanup EXIT
+	YARD_BUILD_VERSION=p0-owner scripts/build-engine.sh --force >/dev/null
+	install_owner_runtime
+	ensure_owner_incus
+	OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
   OWNER_BASELINE_CAPTURED=1
   install -d -m 0700 private/yards
   printf 'YARD_TEMPLATE=e2e-vms\nSSH_PORT=2223\n' > private/yards/e2e-yard.env
@@ -166,8 +167,22 @@ bootstrap_peer_keys() {
     ' >/dev/null
 }
 
-ensure_peer_incus() {
-  if incus info >/dev/null 2>&1; then
+reexec_with_incus_group() {
+	local resume_mode="$1" command
+	command -v sg >/dev/null 2>&1 || die 'sg is required to activate incus-admin membership'
+	printf -v command 'exec env SUBYARD_E2E_VM=%q bash %q %q %q %q' \
+		"$SUBYARD_E2E_VM" "$ROOT/dev/e2e/p0-guest.sh" "$resume_mode" "$TOKEN" "$PEER_IP"
+	exec sg incus-admin -c "$command"
+}
+
+ensure_incus() {
+	local state_root="$1" install_marker="${2:-}" resume_mode="$3"
+	if command -v incus >/dev/null 2>&1 \
+		&& ! id -nG | tr ' ' '\n' | grep -qx incus-admin \
+		&& id -nG "$(id -un)" | tr ' ' '\n' | grep -qx incus-admin; then
+		reexec_with_incus_group "$resume_mode"
+	fi
+	if incus info >/dev/null 2>&1; then
     if dpkg --compare-versions "$(incus --version)" ge 6.0.6; then return 0; fi
     printf '  [ .. ] VM%s: upgrading Incus to the supported LTS\n' "$SUBYARD_E2E_VM"
     bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly --upgrade-only
@@ -178,12 +193,16 @@ ensure_peer_incus() {
   if command -v incus >/dev/null 2>&1 || [ -S /var/lib/incus/unix.socket ]; then
     die 'Incus exists but is unavailable to the peer user'
   fi
-  printf '%s\n' "$MARKER" > "$PEER_INCUS_MARKER"
-  printf '  [ .. ] VM%s: initializing the Incus owner API\n' "$SUBYARD_E2E_VM"
-  SUBYARD_USER="$(id -un)" SUBYARD_HOME="$PEER_ROOT/incus-home" \
-    STORAGE_PATH="$PEER_ROOT/incus-home/storage" \
-    bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
+	[ -z "$install_marker" ] || printf '%s\n' "$MARKER" > "$install_marker"
+	printf '  [ .. ] VM%s: initializing the Incus owner API\n' "$SUBYARD_E2E_VM"
+	SUBYARD_USER="$(id -un)" SUBYARD_HOME="$state_root" \
+		STORAGE_PATH="$state_root/storage" \
+		bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
+	id -nG | tr ' ' '\n' | grep -qx incus-admin || reexec_with_incus_group "$resume_mode"
 }
+
+ensure_owner_incus() { ensure_incus "$HOME/.subyard/incus" '' owner; }
+ensure_peer_incus() { ensure_incus "$PEER_ROOT/incus-home" "$PEER_INCUS_MARKER" peer-prepare-resume; }
 
 ensure_peer_snapshot_fixture() {
   if incus project show subyard >/dev/null 2>&1; then
@@ -235,9 +254,13 @@ peer_prepare() {
   valid_ip "$PEER_IP" || die 'peer IP is invalid'
   peer_clean
   install -d -m 0700 "$PEER_ROOT/src" "$PEER_ROOT/home" "$PEER_ROOT/config/yards"
-  printf '%s\n' "$MARKER" > "$PEER_ROOT/.subyard-p0-marker"
-  ensure_peer_incus
-  ensure_peer_snapshot_fixture
+	printf '%s\n' "$MARKER" > "$PEER_ROOT/.subyard-p0-marker"
+	ensure_peer_incus
+	peer_prepare_finish
+}
+
+peer_prepare_finish() {
+	ensure_peer_snapshot_fixture
   cp -a "$ROOT/." "$PEER_ROOT/src/"
   YARD_BUILD_VERSION="p0-vm-$SUBYARD_E2E_VM" \
     "$PEER_ROOT/src/scripts/build-engine.sh" --force --output "$PEER_ROOT/yard-engine" >/dev/null
@@ -368,6 +391,7 @@ case "$MODE" in
   owner) owner ;;
   controller) controller ;;
   peer-prepare) peer_prepare ;;
+  peer-prepare-resume) peer_prepare_finish ;;
   peer-rpc) peer_rpc ;;
   peer-credentials) peer_credentials ;;
   peer-clean) peer_clean ;;

@@ -6,12 +6,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$TMP"
+
 export SUBYARD_HOME="$TMP/subyard"
 export SUBYARD_CONFIG_HOME="$TMP/config"
+export SUBYARD_CONFIG_DIR="$TMP/public-config"
 export SUBYARD_STATE_DIR="$TMP/config/projects"
 export SUBYARD_NO_AUDIT=1
 export INCUS_LOG="$TMP/incus.log"
-mkdir -p "$SUBYARD_STATE_DIR" "$TMP/bin"
+unset SUBYARD_YARD SUBYARD_YARD_EXPLICIT
+mkdir -p "$SUBYARD_STATE_DIR" "$SUBYARD_CONFIG_DIR" "$TMP/bin"
 chmod 0700 "$SUBYARD_STATE_DIR"
 cat >"$TMP/bin/incus" <<'SH'
 #!/usr/bin/env bash

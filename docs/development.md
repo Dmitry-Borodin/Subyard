@@ -56,15 +56,12 @@ checksum-verifying project installer, and runs the temporary loopback contracts 
 `tests/real-host/`. Those tests use synthetic payloads and an ephemeral non-system sshd; dedicated
 container/VM and two-owner-host acceptance remains an explicit release gate.
 
-The remaining real-host acceptance lane is deliberately small: real Incus container/VM lifecycle,
-storage and idmap, NetworkManager/UFW, systemd installation, SOPS/age installation and genuine SSH
-peer/remote-yard paths. Those checks use release evidence and are not part of the yard-safe gate.
-The exact opt-in official-client command is in
+Live platform and release acceptance runs only on operator-allocated E2E VMs; see
 [`real-host-acceptance.md`](real-host-acceptance.md).
 
 On a trusted KVM-capable host, the two-instance portion can run in an opt-in container yard through
 [`yard test-vms`](test-vms.md). Its lifecycle and ownership/TTL guards are covered host-free by
-`tests/test-vms.sh`; actual VM boot, SSH and cleanup remain a real-host gate.
+`tests/test-vms.sh`; actual VM boot and SSH remain an E2E VM gate.
 
 ## Delivery spike
 

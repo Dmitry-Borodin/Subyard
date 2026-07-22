@@ -51,6 +51,7 @@ case "${1:-}" in
     [ "${MOCK_SUDO_N_RC:-0}" = 0 ] || exit "$MOCK_SUDO_N_RC"
     [ "${MOCK_SUDO_REQUIRE_V:-1}" = 0 ] || [ -f "$MOCK_SUDO_AUTH" ] || exit 1
     shift
+    [ "${1:-}" != -v ] || exit 0
     [ "${1:-}" != -- ] || shift
     exec env MOCK_NM_PRIVILEGED=1 "$@"
     ;;
@@ -142,6 +143,13 @@ grep -Fxq -- '-v' "$MOCK_SUDO_LOG" || fail "sudo credential was not prepared"
 grep -Fxq -- "-n -- $tmp/bin/NetworkManager --print-config" "$MOCK_SUDO_LOG" \
   || fail "effective config did not use sudo -n"
 grep -Fq '1:1' "$MOCK_NM_LOG" || fail "NetworkManager did not run through sudo"
+
+reset_case
+: > "$MOCK_SUDO_AUTH"
+SUBYARD_SUDO_PREAUTHORIZED=1 power_nm_prepare_reader \
+  || fail "preauthorized adapter did not accept cached sudo credentials"
+grep -Fxq -- '-n -v' "$MOCK_SUDO_LOG" \
+  || fail "preauthorized adapter attempted an interactive sudo prompt"
 
 reset_case
 MOCK_SUDO_V_RC=1

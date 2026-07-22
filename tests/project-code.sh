@@ -7,14 +7,19 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$TMP"
+
 export SUBYARD_HOME="$TMP/subyard"
 export SUBYARD_CONFIG_HOME="$TMP/config"
+export SUBYARD_CONFIG_DIR="$TMP/public-config"
 export SUBYARD_STATE_DIR="$TMP/config/projects"
 export SUBYARD_NO_AUDIT=1
 export MOCK_INCUS_LOG="$TMP/incus.log"
 export MOCK_CODE_LOG="$TMP/code.log"
 unset SUBYARD_YARD SUBYARD_YARD_EXPLICIT
-mkdir -p "$SUBYARD_STATE_DIR" "$TMP/bin"
+mkdir -p "$SUBYARD_STATE_DIR" "$SUBYARD_CONFIG_DIR" "$TMP/bin"
 chmod 0700 "$SUBYARD_STATE_DIR"
 cat > "$TMP/bin/incus" <<'SH'
 #!/usr/bin/env bash
@@ -60,7 +65,8 @@ cat > "$SUBYARD_STATE_DIR/project-id.json" <<'JSON'
 JSON
 chmod 0600 "$SUBYARD_STATE_DIR/project-id.json"
 
-"$ROOT/bin/yard" code Project > "$TMP/out" 2>&1
+"$ROOT/bin/yard" code Project > "$TMP/out" 2>&1 \
+  || { cat "$TMP/out" >&2; fail "yard code failed"; }
 grep -Fq 'sh -s -- sync anthropic.claude-code@2.1.209 openai.chatgpt@26.707.91948 sst-dev.opencode@0.0.13' "$MOCK_INCUS_LOG" \
   || fail "recommended extension versions were not sent to the yard"
 grep -Fxq -- '--list-extensions --show-versions' "$MOCK_CODE_LOG" \
@@ -84,7 +90,8 @@ cat > "$SUBYARD_CONFIG_HOME/yards/strato/projects/subyard-id.json" <<'JSON'
 JSON
 chmod 0600 "$SUBYARD_CONFIG_HOME/yards/strato/projects/subyard-id.json"
 
-"$ROOT/bin/yard" code strato/Subyard > "$TMP/qualified.out" 2>&1
+"$ROOT/bin/yard" code strato/Subyard > "$TMP/qualified.out" 2>&1 \
+  || { cat "$TMP/qualified.out" >&2; fail "qualified yard code failed"; }
 grep -Fxq -- '--file-uri vscode-remote://ssh-remote+yard-strato/home/dev/.subyard/workspaces/Subyard.code-workspace' "$MOCK_CODE_LOG" \
   || fail "qualified cross-yard selector did not open the project through the owning yard"
 

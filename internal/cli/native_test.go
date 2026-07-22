@@ -169,8 +169,9 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 		t.Fatalf("structured CLI start failed: code=%d stderr=%q", code, stderr.String())
 	}
 	if len(prompt.Seen) != 1 || len(cliRunner.Requests) != 1 ||
-		cliRunner.Requests[0].Adapter != "yard-control" || cliRunner.Requests[0].Action != "start" ||
-		cliRunner.Requests[0].Context["SUBYARD_CONFIG_LOADED"] != "1" {
+		cliRunner.Requests[0].Adapter != "command" || cliRunner.Requests[0].Action != "start" ||
+		cliRunner.Requests[0].Context["SUBYARD_CONFIG_LOADED"] != "1" ||
+		cliRunner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
 		t.Fatalf("CLI bypassed the structured operation: prompt=%#v requests=%#v", prompt.Seen, cliRunner.Requests)
 	}
 
@@ -225,6 +226,48 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 		Params: json.RawMessage(`{"confirmed":true}`),
 	}, func(string, any) (uint64, error) { return 1, nil }); err == nil || err.(*rpc.Error).Code != "plan_not_found" {
 		t.Fatalf("RPC replayed an already executed plan: %v", err)
+	}
+}
+
+func TestStartAuthorizesNetworkManagerBeforeBoundedAdapter(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "sudo.log")
+	writeCLIFile(t, filepath.Join(bin, "systemctl"), "#!/bin/sh\nprintf 'active\\n'\n", 0o700)
+	writeCLIFile(t, filepath.Join(bin, "sudo"), "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$SUDO_LOG\"\n", 0o700)
+	t.Setenv("PATH", bin)
+	environment = append(environment, "PATH="+bin, "SUDO_LOG="+logPath)
+	var diagnostics bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+		Stdin: strings.NewReader("operator input\n"), Stdout: &diagnostics, Stderr: &diagnostics,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.prepareStartPrivileges(context.Background(), &diagnostics, 1000); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "-v\n" || !strings.Contains(diagnostics.String(), "authorizing") {
+		t.Fatalf("sudo authorization was not explicit: log=%q diagnostics=%q", payload, diagnostics.String())
+	}
+
+	writeCLIFile(t, filepath.Join(bin, "systemctl"), "#!/bin/sh\nprintf 'inactive\\n'\nexit 3\n", 0o700)
+	if err := os.Remove(logPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := program.prepareStartPrivileges(context.Background(), &diagnostics, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inactive NetworkManager invoked sudo: %v", err)
 	}
 }
 
@@ -417,14 +460,16 @@ exit 90
 	}
 	runner := shelladapter.Runner{
 		RepositoryRoot: root,
-		Allow: map[string]map[string]string{"yard-control": {
-			"start": filepath.Join(root, "scripts", "adapters", "yard-control.sh"),
+		Actions: map[string]map[string]shelladapter.Action{"command": {
+			"start": {
+				Path: filepath.Join(root, "scripts", "yard-ctl.sh"), Result: shelladapter.ExitStatusResult,
+			},
 		}},
 		ContextKeys: contextKeys, Path: bin + ":/usr/sbin:/usr/bin:/sbin:/bin", Timeout: time.Second,
 	}
 	request := domain.AdapterRequest{
-		Schema: 1, OperationID: "operation-production", Adapter: "yard-control", Action: "start",
-		Context: contextValues,
+		Schema: 1, OperationID: "operation-production", Adapter: "command", Action: "start",
+		Arguments: []string{"start", "--yes"}, Context: contextValues,
 	}
 	result, diagnostics, err := runner.Run(context.Background(), request, nil)
 	if err != nil || result.Status != "ok" || !strings.Contains(diagnostics, "started (desired=running") {
@@ -527,6 +572,75 @@ func (stub projectObserverStub) Observe(
 	bool,
 ) (domain.ProjectObservation, error) {
 	return stub.value, nil
+}
+
+func TestNativeOwnerInfoUsesTypedContextAndLiveInventory(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	fakeIncus := &testkit.Incus{
+		ServerInfo: ports.ServerInfo{Environment: "incus", Version: "6.23"},
+		Instances:  map[string]ports.InstanceInfo{"subyard/yard": {Status: "Running"}},
+	}
+	observation := domain.ProjectObservation{Reached: true, Live: []domain.ProjectRecord{
+		{ProjectID: "demo-12345678"}, {ProjectID: "demo-12345678"},
+	}}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"_info"}, Environment: environment,
+		WorkingDir: root, Stdout: &stdout, Stderr: &stderr, Incus: fakeIncus,
+		ProjectObserver: projectObserverStub{value: observation},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("_info failed: code=%d stderr=%q", code, stderr.String())
+	}
+	var info ownerInfo
+	if err := json.Unmarshal(stdout.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Name != "default" || info.State != "RUNNING" || info.SSHPort != 2222 ||
+		info.Projects == nil || *info.Projects != 1 {
+		t.Fatalf("unexpected owner info: %#v", info)
+	}
+}
+
+func TestNativeAuthorizeValidatesAndWritesOneControllerKey(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	fakeIncus := &testkit.Incus{
+		Instances: map[string]ports.InstanceInfo{"subyard/yard": {Status: "Running"}},
+		ExecSteps: []testkit.IncusExecStep{{Result: ports.InstanceExecResult{
+			Stdout: []byte("added"), ExitCode: 0,
+		}}},
+	}
+	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest controller"
+	var stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"_authorize"}, Environment: environment,
+		WorkingDir: root, Stdin: strings.NewReader(key + "\n"), Stderr: &stderr,
+		Incus: fakeIncus, Executor: fakeIncus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("_authorize failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if len(fakeIncus.ExecCalls) != 1 || fakeIncus.ExecCalls[0].Request.Environment["PUBKEY"] != key ||
+		fakeIncus.ExecCalls[0].Request.Environment["DEV_USER"] != "dev" {
+		t.Fatalf("unexpected authorize request: %#v", fakeIncus.ExecCalls)
+	}
+}
+
+func TestNativeLogArgumentsAreBounded(t *testing.T) {
+	arguments, help, err := parseLogArguments([]string{"-n", "25", "docker"})
+	if err != nil || help || !slices.Equal(arguments,
+		[]string{"journalctl", "-n", "25", "-u", "docker", "--no-pager"}) {
+		t.Fatalf("unexpected log arguments: %#v help=%v err=%v", arguments, help, err)
+	}
+	if _, _, err := parseLogArguments([]string{"-n", "0"}); err == nil {
+		t.Fatal("logs accepted an invalid line count")
+	}
 }
 
 func TestNativeStatusUsesTypedPortsAndRendersParityFields(t *testing.T) {
@@ -753,6 +867,20 @@ func TestProjectSelectionRoutesAcrossYardsBeforeAdapter(t *testing.T) {
 	}
 }
 
+func TestParseShellArguments(t *testing.T) {
+	root, selector, command, help, err := parseShellArguments(
+		[]string{"--root", "Demo", "--", "sh", "-lc", "pwd"},
+	)
+	if err != nil || !root || help || selector != "Demo" ||
+		!slices.Equal(command, []string{"sh", "-lc", "pwd"}) {
+		t.Fatalf("unexpected shell parse: root=%v selector=%q command=%q help=%v err=%v",
+			root, selector, command, help, err)
+	}
+	if _, _, _, _, err := parseShellArguments([]string{"one", "two"}); err == nil {
+		t.Fatal("multiple project selectors were accepted")
+	}
+}
+
 func nativeFixture(t *testing.T) (string, []string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -765,7 +893,13 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		"start||yard-ctl.sh|start|forward|mutate|public|lifecycle|simple|start|start|--yes --help|",
 		"stop||yard-ctl.sh|stop|forward|mutate|public|lifecycle|simple|stop|stop|--force --yes --help|",
 		"status||@status||forward|read|public|lifecycle|status|status|status|--all --help|",
+		"logs||@logs||forward|read|public|lifecycle|simple|logs|logs|-f -n --yes --help|",
+		"usage||@usage||forward|read|public|lifecycle|simple|usage|usage|--help|",
+		"shell||@shell||forward|mutate|public|lifecycle|project-shell|shell|shell|--root --yes --help|",
+		"yards||@yards||local|read|public|lifecycle|simple|yards|yards|--help|",
 		"list||@list||local|read|public|projects|simple|list|list|--live --help|",
+		"_info||@info||local|read|hidden|internal|none|_info|info||",
+		"_authorize||@authorize||forward|mutate|hidden|internal|none|_authorize|authorize||",
 		"rpc||@rpc||local|mutate|hidden|internal|none|rpc --stdio|rpc|--stdio|",
 		"_state||@state||local|mutate|hidden|internal|none|_state|state||",
 	}, "\n") + "\n"

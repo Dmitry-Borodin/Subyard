@@ -12,8 +12,8 @@ done
 
 production=(
   scripts/project-sync.sh scripts/project-clone.sh scripts/project-remove.sh
-  scripts/project-code.sh scripts/project-export.sh scripts/project-env.sh scripts/yard-shell.sh
-  scripts/09-yard-extras.sh scripts/10-provision-profile.sh scripts/yard-info.sh
+  scripts/project-code.sh scripts/project-export.sh scripts/project-env.sh
+  scripts/09-yard-extras.sh scripts/10-provision-profile.sh
   scripts/reconcile/stages/provision.sh scripts/state/metadata.sh scripts/state/transport.sh
 )
 for relative in "${production[@]}"; do
@@ -24,7 +24,7 @@ done
 
 for adapter in \
   scripts/project-sync.sh scripts/project-clone.sh scripts/project-remove.sh \
-  scripts/project-code.sh scripts/project-export.sh scripts/project-env.sh scripts/yard-shell.sh; do
+  scripts/project-code.sh scripts/project-export.sh scripts/project-env.sh; do
   grep -Fq 'project-snapshot.sh' "$ROOT/$adapter" \
     || fail "$adapter does not consume the validated Go project snapshot"
 done

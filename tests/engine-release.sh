@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-release="$TMP/release"; target="$TMP/install/yard-engine"
+release="$TMP/release"
 export SUBYARD_OPERATOR_HOME="$TMP/home"
 export SUBYARD_CONFIG_HOME="$TMP/config"
 export SUBYARD_HOME="$TMP/data"
@@ -92,53 +92,11 @@ install -d -m 0700 "$(dirname "$legacy_state")"
 printf '%s\n' '{"schema":1,"projectId":"legacy-12345678","name":"Legacy","hostPath":"/host/Legacy","yardPath":"/srv/workspaces/legacy-12345678/src","mode":"sync","sshHost":"yard"}' > "$legacy_state"
 chmod 0664 "$legacy_state"
 
-"$ROOT/scripts/install-engine-release.sh" --target "$target" \
-  --artifact "$artifact_one" --checksum "$artifact_one.sha256" \
-  --manifest "$artifact_one.manifest.json" --provenance "$artifact_one.provenance.json" >/dev/null
-[ "$(stat -c '%a' "$legacy_state")" = 600 ] \
-  || { printf 'release install did not migrate legacy project permissions\n' >&2; exit 1; }
-[ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.0.0-test' ] \
-  || { printf 'first release version mismatch\n' >&2; exit 1; }
-
-bad_checksum="$TMP/bad.sha256"
-printf '%064d  bad\n' 0 > "$bad_checksum"
-if "$ROOT/scripts/install-engine-release.sh" --target "$target" \
-  --artifact "$artifact_one" --checksum "$bad_checksum" \
-  --manifest "$artifact_one.manifest.json" --provenance "$artifact_one.provenance.json" >/dev/null 2>&1; then
-  printf 'checksum mismatch unexpectedly installed\n' >&2; exit 1
-fi
-[ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.0.0-test' ] \
-  || { printf 'checksum failure replaced current engine\n' >&2; exit 1; }
-
 artifact_two="$("$ROOT/scripts/package-engine.sh" --output-dir "$release" --version 1.1.0-test)"
 bundle_two="$release/subyard-1.1.0-test-linux-amd64.tar.gz"
 jq -e '.version == "1.1.0-test" and .rpc.min == 1 and .rpc.max == 1' \
   "$artifact_two.manifest.json" >/dev/null
 rpc_negotiate "$artifact_two" 1.1.0-test 1 compatible artifact-two-v1
-"$ROOT/scripts/install-engine-release.sh" --target "$target" \
-  --artifact "$artifact_two" --checksum "$artifact_two.sha256" \
-  --manifest "$artifact_two.manifest.json" --provenance "$artifact_two.provenance.json" >/dev/null
-[ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.1.0-test' ] \
-  || { printf 'upgrade version mismatch\n' >&2; exit 1; }
-[ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target.previous" --version | awk '{print $2}')" = '1.0.0-test' ] \
-  || { printf 'previous release was not retained\n' >&2; exit 1; }
-rpc_negotiate "$target" 1.1.0-test 1 compatible installed-upgrade-v1
-
-printf '#!/bin/sh\nexit 1\n' > "$target.previous"
-chmod 0755 "$target.previous"
-if "$ROOT/scripts/install-engine-release.sh" --target "$target" --rollback >/dev/null 2>&1; then
-  fail 'rollback accepted a previous engine that failed its self-check'
-fi
-[ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.1.0-test' ] \
-  || fail 'failed rollback replaced the current engine'
-install -m 0755 "$artifact_one" "$target.previous"
-
-"$ROOT/scripts/install-engine-release.sh" --target "$target" --rollback >/dev/null
-[ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target" --version | awk '{print $2}')" = '1.0.0-test' ] \
-  || { printf 'rollback did not restore previous release\n' >&2; exit 1; }
-[ "$(SUBYARD_REPOSITORY_ROOT="$ROOT" "$target.previous" --version | awk '{print $2}')" = '1.1.0-test' ] \
-  || { printf 'rollback did not retain replaced release\n' >&2; exit 1; }
-rpc_negotiate "$target" 1.0.0-test 1 compatible installed-rollback-v1
 
 # The public updater publishes a complete runtime, atomically switches stable links and can reuse
 # its exact cache offline without touching a working current release.
@@ -147,6 +105,8 @@ YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
   "$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --version 1.0.0-test >/dev/null
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'yard update did not install the selected release'
+[ "$(stat -c '%a' "$legacy_state")" = 600 ] \
+  || fail 'runtime install did not migrate legacy project permissions'
 [ -x "$runtime_root/current/scripts/update-engine.sh" ] \
   && [ -r "$runtime_root/current/config/commands.registry" ] \
   && [ -r "$runtime_root/current/completions/yard.bash" ] \

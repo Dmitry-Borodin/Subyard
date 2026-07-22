@@ -117,6 +117,11 @@ func TestOfficialClientExecUsesAsyncWebsocketsAndFlushesOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitContext, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := server.WaitForExecInput(waitContext, 0); err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(result.Stdout, []byte("output\n")) ||
 		!bytes.Equal(result.Stderr, []byte("diagnostic\n")) || result.ExitCode != 0 {
 		t.Fatalf("unexpected exec result: %#v", result)

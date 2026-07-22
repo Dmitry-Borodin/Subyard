@@ -29,9 +29,19 @@ case "${1:-}" in
   list) printf 'RUNNING\n' ;;
   exec)
     printf '%s\n' "$@" > "$INCUS_LOG"
-    run="${!#}"
-    run="${run//\/usr\/local\/bin\/ccusage/$MOCK_CCUSAGE_BIN}"
-    exec /bin/bash -c "$run"
+    shift
+    while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+    [ "${1:-}" = -- ] && shift
+    case "${1:-}" in
+      sh)
+        [ -f "$MOCK_CCUSAGE_BIN" ] && [ ! -L "$MOCK_CCUSAGE_BIN" ] && [ -x "$MOCK_CCUSAGE_BIN" ]
+        ;;
+      /usr/local/bin/ccusage)
+        shift
+        exec "$MOCK_CCUSAGE_BIN" "$@"
+        ;;
+      *) exit 90 ;;
+    esac
     ;;
   *) exit 90 ;;
 esac
@@ -68,11 +78,13 @@ for i in "${!args[@]}"; do
   [ "${got[$i]}" = "${args[$i]}" ] || fail "argument $i changed across dispatch"
 done
 mapfile -t incus_args < "$INCUS_LOG"
-if [ "${incus_args[5]:-}" != su ] \
-  || [ "${incus_args[6]:-}" != - ] \
-  || [ "${incus_args[7]:-}" != dev ] \
-  || [ "${incus_args[8]:-}" != -c ]; then
-  fail "ccusage was not launched through the dev login user"
+if [ "${incus_args[4]:-}" != --user ] \
+  || [ "${incus_args[5]:-}" != 1000 ] \
+  || [ "${incus_args[6]:-}" != --group ] \
+  || [ "${incus_args[7]:-}" != 1000 ] \
+  || [ "${incus_args[8]:-}" != --cwd ] \
+  || [ "${incus_args[9]:-}" != /home/dev ]; then
+  fail "ccusage was not launched through the dev UID and home"
 fi
 
 # Preserve named context in the repair hint.
@@ -90,9 +102,7 @@ set -e
 grep -Fq 'repair with: yard -Y usage-test init' "$tmp/missing.err" \
   || fail "named-yard repair hint lost its context"
 [ ! -e "$FALLBACK_LOG" ] || fail "missing ccusage invoked npx or bunx"
-if grep -Eq 'bunx|npx|@latest' "$ROOT/scripts/yard-usage.sh"; then
-  fail "runtime package fallback remains in yard-usage.sh"
-fi
+[ ! -e "$ROOT/scripts/yard-usage.sh" ] || fail "retired yard-usage.sh returned"
 
 SUBYARD_USAGE_REPAIR_HINT='yard -Y controller init' \
   "$ROOT/bin/yard" usage >"$tmp/controller.out" 2>"$tmp/controller.err" || controller_rc=$?

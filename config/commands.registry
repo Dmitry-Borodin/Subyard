@@ -10,12 +10,12 @@ security||security-lint.sh||local|read|public|lifecycle|simple|security|validate
 init|setup|init.sh||forward|mutate|public|lifecycle|simple|init|install or reconcile Incus, the yard and its core configuration|--configs --reset --yes --help|
 start||yard-ctl.sh|start|forward|mutate|public|lifecycle|simple|start|start the yard|--yes --help|
 status||@status||forward|read|public|lifecycle|status|status|show yard, SSH, mounts, services, projects, security and size|--all --yes --help|
-logs||yard-logs.sh||forward|read|public|lifecycle|simple|logs|tail the yard runtime logs|-f -n --yes --help|
-usage||yard-usage.sh||forward|read|public|lifecycle|simple|usage [args]|show coding-agent token usage|--help|
+logs||@logs||forward|read|public|lifecycle|simple|logs|tail the yard runtime logs|-f -n --yes --help|
+usage||@usage||forward|read|public|lifecycle|simple|usage [args]|show coding-agent token usage|--help|
 keys||yard-keys.sh||forward|mutate|public|lifecycle|keys|keys [command]|manage the host-only encrypted and versioned credential ledger|--kind --zone --consumer --file --local-only --exclusive --dry-run --manual-only --all --now --yes --help|trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move
-shell||yard-shell.sh||forward|mutate|public|lifecycle|project-shell|shell [project]|open a dev shell, optionally in a project directory|--root --yes --help|
+shell||@shell||forward|mutate|public|lifecycle|project-shell|shell [project]|open a dev shell, optionally in a project directory|--root --yes --help|
 provision||10-provision-profile.sh||forward|mutate|public|lifecycle|profiles|provision [profile]|install a profile toolchain into the yard|-l --list --yes --help|
-test-vms||test-vms.sh||forward|mutate|public|lifecycle|simple|test-vms <command>|manage two disposable nested VMs inside a trusted test yard|--yes --help|up status ssh exec down
+test-vms||e2e-lab/command.sh||forward|mutate|public|lifecycle|simple|test-vms <command>|manage two disposable nested VMs inside a trusted test yard|--yes --help|up status ssh exec down
 stop||yard-ctl.sh|stop|forward|mutate|public|lifecycle|stop|stop [--force]|stop the yard and protect active Remote-SSH sessions|--force --yes --help|
 teardown|uninstall|99-teardown.sh||forward|mutate|public|lifecycle|teardown|teardown|delete the yard; optionally keep persistent data|--keep-data --yes --help|
 sync||project-sync.sh|sync|local|mutate|public|projects|project-target|sync [path]|copy or refresh a project in the yard|--target --yes --help|
@@ -28,14 +28,14 @@ remove||project-remove.sh||local|mutate|public|projects|remove|remove [project]|
 up||project-env.sh|up|forward|mutate|public|project_env|project-env-up|up [project]|build or start the optional project environment|--rebuild --yes --help|
 down||project-env.sh|down|forward|mutate|public|project_env|project-env|down [project]|stop the optional project environment|--yes --help|
 info||project-env.sh|info|forward|read|public|project_env|project-env|info [project]|show the optional project environment contract|--yes --help|
-yards||yard-yards.sh||local|read|public|lifecycle|simple|yards|list registered local and remote yards|--help|
+yards||@yards||local|read|public|lifecycle|simple|yards|list registered local and remote yards|--help|
 remote||yard-remote.sh||local|mutate|public|remote|remote|remote <command>|register, repair, remove or list remote yards|--yard --yes --help|add repair-key remove list
 update||update-engine.sh||local|mutate|public|lifecycle|simple|update|check, install or roll back the release runtime|--check --version --offline --rollback --force --yes --help|
 help||@help||local|read|hidden|internal|none|help|show top-level help||
 rpc||@rpc||local|mutate|hidden|internal|none|rpc --stdio|serve the versioned local RPC protocol|--stdio|
 svc|resource|@resource||forward|mutate|hidden|internal|resource|svc <resource> <verb>|dispatch a profile resource by registry name|--yes --help|
-_info||yard-info.sh||local|read|hidden|internal|none|_info|machine-readable owner probe||
-_authorize||yard-authorize.sh||forward|mutate|hidden|internal|none|_authorize|authorize a controller key inside a yard||
+_info||@info||local|read|hidden|internal|none|_info|machine-readable owner probe||
+_authorize||@authorize||forward|mutate|hidden|internal|none|_authorize|authorize a controller key inside a yard||
 _state||@state||local|mutate|hidden|internal|none|_state|native project state adapter||
 _project-state||@project-state||forward|mutate|hidden|internal|none|_project-state|converge owner-host project state||
 _credential-policy||@credential-policy||local|read|hidden|internal|none|_credential-policy|native credential metadata policy||

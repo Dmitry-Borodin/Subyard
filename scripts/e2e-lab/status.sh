@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Read-only forced command for the nested-VM SSH bastion account.
+# Read-only forced command for the E2E bastion.
 set -eu
 
 manifest=${SUBYARD_E2E_ALLOCATION_MANIFEST:-/var/lib/subyard/test-vms-public/allocation.tsv}

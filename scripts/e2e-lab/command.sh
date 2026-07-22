@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
-# test-vms.sh — owner/yard entrypoint for the disposable nested VM lab.
+# Operator entrypoint for the disposable nested VM lab.
 # On an owner host it enters the L1 yard; inside the yard it calls the installed
 # inner worker directly. The worker never receives the L0 Incus socket.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/runtime.sh
-. "$SCRIPT_DIR/lib/runtime.sh"
+. "$ROOT/lib/runtime.sh"
 # shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
+. "$ROOT/lib/env.sh"
 # shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
+. "$ROOT/lib/registry.sh"
 # shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+. "$ROOT/lib/context.sh"
 # shellcheck source=scripts/lib/ui.sh
-. "$SCRIPT_DIR/lib/ui.sh"
+. "$ROOT/lib/ui.sh"
 # shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
+. "$ROOT/lib/config.sh"
 subyard_context_load
 # shellcheck source=scripts/lib/host.sh
-. "$SCRIPT_DIR/lib/host.sh"
+. "$ROOT/lib/host.sh"
 
 WORKER=/usr/local/libexec/subyard/test-vms-inner
 action="${1:-}"

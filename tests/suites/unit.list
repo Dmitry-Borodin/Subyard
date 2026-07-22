@@ -1,6 +1,5 @@
 # Pure or filesystem-local modules with no fake process boundary.
 build-engine.sh
-credential-boundaries.sh
 emulator-process-identity.sh
 lib-power-network.sh
 project-state-store.sh

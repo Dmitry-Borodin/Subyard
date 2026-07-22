@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# provision-test-vms-inner.sh — runs as root inside the L1 yard.
-# Installs/reconciles the inner Incus VM backend and TTL cleanup service.
+# Root provisioner for the inner VM backend.
 set -euo pipefail
 
 run_with_progress() {

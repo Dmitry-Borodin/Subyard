@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,16 +28,30 @@ const (
 
 type Runner struct {
 	RepositoryRoot string
-	Allow          map[string]map[string]string
+	Actions        map[string]map[string]Action
 	ContextKeys    map[string]struct{}
+	Diagnostics    io.Writer
 	Path           string
 	Timeout        time.Duration
 	MaxOutput      int64
 	MaxSecret      int64
 }
 
+type ResultMode uint8
+
+const (
+	StructuredResult ResultMode = iota
+	ExitStatusResult
+)
+
+type Action struct {
+	Path        string
+	Result      ResultMode
+	StreamVerbs []string
+}
+
 func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, secret io.Reader) (domain.AdapterResult, string, error) {
-	path, err := runner.validate(request)
+	action, err := runner.validate(request)
 	if err != nil {
 		return domain.AdapterResult{}, "", err
 	}
@@ -62,10 +77,13 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 		callContext, cancel = context.WithTimeout(ctx, runner.Timeout)
 	}
 	defer cancel()
+	direct := action.Result == ExitStatusResult
 	commandArguments := make([]string, 0, len(request.Arguments)+1)
-	commandArguments = append(commandArguments, request.Action)
+	if !direct {
+		commandArguments = append(commandArguments, request.Action)
+	}
 	commandArguments = append(commandArguments, request.Arguments...)
-	command := exec.CommandContext(callContext, path, commandArguments...)
+	command := exec.CommandContext(callContext, action.Path, commandArguments...)
 	command.Dir = runner.RepositoryRoot
 	executablePath := runner.Path
 	if executablePath == "" {
@@ -100,8 +118,19 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 	limit := runner.outputLimit()
 	stdout := &limitedBuffer{limit: limit}
 	stderr := &limitedBuffer{limit: limit}
-	command.Stdout = stdout
-	command.Stderr = stderr
+	liveDiagnostics := runner.liveDiagnostics(request, action, secretBytes)
+	if direct && liveDiagnostics != nil {
+		liveDiagnostics = &lockedWriter{writer: liveDiagnostics}
+		command.Stdout = io.MultiWriter(stdout, liveDiagnostics)
+		command.Stderr = io.MultiWriter(stderr, liveDiagnostics)
+	} else {
+		command.Stdout = stdout
+		if liveDiagnostics == nil {
+			command.Stderr = stderr
+		} else {
+			command.Stderr = io.MultiWriter(stderr, liveDiagnostics)
+		}
+	}
 	if err := command.Start(); err != nil {
 		return domain.AdapterResult{}, "", fmt.Errorf("start adapter: %w", err)
 	}
@@ -116,7 +145,14 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 		return domain.AdapterResult{}, "", fmt.Errorf("close adapter metadata: %w", err)
 	}
 	waitErr := command.Wait()
-	redactedStderr := redactText(stderr.String(), request, secretBytes)
+	diagnostics := stderr.String()
+	if direct {
+		diagnostics = stdout.String() + diagnostics
+	}
+	redactedStderr := redactText(diagnostics, request, secretBytes)
+	if liveDiagnostics != nil {
+		redactedStderr = ""
+	}
 	if stdout.exceeded || stderr.exceeded {
 		return domain.AdapterResult{}, redactedStderr, errors.New("adapter output exceeded limit")
 	}
@@ -125,6 +161,12 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 	}
 	if waitErr != nil {
 		return domain.AdapterResult{}, redactedStderr, fmt.Errorf("adapter failed: %w", waitErr)
+	}
+	if direct {
+		return domain.AdapterResult{
+			Schema: ProtocolSchema, OperationID: request.OperationID, Status: "ok",
+			Output: map[string]any{"command": request.Action},
+		}, redactedStderr, nil
 	}
 	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
 	decoder.UseNumber()
@@ -143,66 +185,105 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 	return result, redactedStderr, nil
 }
 
-func (runner Runner) validate(request domain.AdapterRequest) (string, error) {
+func (runner Runner) liveDiagnostics(request domain.AdapterRequest, action Action, secret []byte) io.Writer {
+	if runner.Diagnostics == nil || len(secret) != 0 {
+		return nil
+	}
+	if len(action.StreamVerbs) == 0 {
+		return nil
+	}
+	filtered := make([]string, 0, len(request.Arguments))
+	for _, argument := range request.Arguments {
+		if argument != "-y" && argument != "--yes" {
+			filtered = append(filtered, argument)
+		}
+	}
+	if len(filtered) > 1 {
+		return nil
+	}
+	verb := ""
+	if len(filtered) == 1 {
+		verb = filtered[0]
+	}
+	if !contains(action.StreamVerbs, verb) {
+		return nil
+	}
+	return runner.Diagnostics
+}
+
+func (runner Runner) validate(request domain.AdapterRequest) (Action, error) {
 	if request.Schema != ProtocolSchema {
-		return "", fmt.Errorf("unsupported adapter schema %d", request.Schema)
+		return Action{}, fmt.Errorf("unsupported adapter schema %d", request.Schema)
 	}
 	if !domain.SafeID(request.OperationID) || !domain.SafeName(request.Adapter) || !domain.SafeName(request.Action) {
-		return "", errors.New("invalid adapter request identity")
+		return Action{}, errors.New("invalid adapter request identity")
 	}
-	actions, ok := runner.Allow[request.Adapter]
+	actions, ok := runner.Actions[request.Adapter]
 	if !ok {
-		return "", fmt.Errorf("adapter %q is not allowed", request.Adapter)
+		return Action{}, fmt.Errorf("adapter %q is not allowed", request.Adapter)
 	}
-	configuredPath, ok := actions[request.Action]
+	action, ok := actions[request.Action]
 	if !ok {
-		return "", fmt.Errorf("adapter action %q/%q is not allowed", request.Adapter, request.Action)
+		return Action{}, fmt.Errorf("adapter action %q/%q is not allowed", request.Adapter, request.Action)
+	}
+	if action.Result != StructuredResult && action.Result != ExitStatusResult {
+		return Action{}, errors.New("adapter action has invalid result mode")
 	}
 	root, err := filepath.Abs(runner.RepositoryRoot)
 	if err != nil {
-		return "", err
+		return Action{}, err
 	}
-	path, err := filepath.Abs(configuredPath)
+	path, err := filepath.Abs(action.Path)
 	if err != nil {
-		return "", err
+		return Action{}, err
 	}
 	relative, err := filepath.Rel(root, path)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", errors.New("adapter executable escapes repository root")
+		return Action{}, errors.New("adapter executable escapes repository root")
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
-		return "", fmt.Errorf("inspect adapter executable: %w", err)
+		return Action{}, fmt.Errorf("inspect adapter executable: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o111 == 0 {
-		return "", errors.New("adapter executable must be a non-symlink executable file")
+		return Action{}, errors.New("adapter executable must be a non-symlink executable file")
 	}
 	for key, value := range request.Context {
 		if _, ok := runner.ContextKeys[key]; !ok {
-			return "", fmt.Errorf("adapter context key %q is not allowed", key)
+			return Action{}, fmt.Errorf("adapter context key %q is not allowed", key)
 		}
 		if !validEnvironmentKey(key) || reservedEnvironmentKey(key) {
-			return "", fmt.Errorf("adapter context key %q is not a safe environment key", key)
+			return Action{}, fmt.Errorf("adapter context key %q is not a safe environment key", key)
 		}
 		if sensitiveKey(key) {
-			return "", fmt.Errorf("secret-like adapter context key %q is forbidden", key)
+			return Action{}, fmt.Errorf("secret-like adapter context key %q is forbidden", key)
 		}
 		if strings.ContainsRune(value, 0) {
-			return "", fmt.Errorf("adapter context value %q contains NUL", key)
+			return Action{}, fmt.Errorf("adapter context value %q contains NUL", key)
 		}
 	}
 	if hasSensitiveValue(request.Input) {
-		return "", errors.New("secret-like fields are forbidden in adapter metadata")
+		return Action{}, errors.New("secret-like fields are forbidden in adapter metadata")
 	}
 	if len(request.Arguments) > 256 {
-		return "", errors.New("adapter argument count exceeds limit")
+		return Action{}, errors.New("adapter argument count exceeds limit")
 	}
 	for _, argument := range request.Arguments {
 		if strings.ContainsRune(argument, 0) || len(argument) > 64*1024 {
-			return "", errors.New("adapter argument is invalid")
+			return Action{}, errors.New("adapter argument is invalid")
 		}
 	}
-	return path, nil
+	action.Path = path
+	return action, nil
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func validEnvironmentKey(value string) bool {
@@ -249,6 +330,17 @@ type limitedBuffer struct {
 	buffer   bytes.Buffer
 	limit    int64
 	exceeded bool
+}
+
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (writer *lockedWriter) Write(value []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	return writer.writer.Write(value)
 }
 
 func (buffer *limitedBuffer) Write(value []byte) (int, error) {

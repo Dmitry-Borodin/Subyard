@@ -20,8 +20,8 @@ E2E_VM_STATE_DIR=$TMP/state
 E2E_VM_PUBLIC_DIR=$TMP/public
 EOF
 export SUBYARD_TEST_VMS_CONFIG="$TMP/test-vms.env"
-# shellcheck source=scripts/test-vms-inner.sh
-. "$ROOT/scripts/test-vms-inner.sh"
+# shellcheck source=scripts/e2e-lab/worker.sh
+. "$ROOT/scripts/e2e-lab/worker.sh"
 ASSUME_YES=1
 
 # The worker is itself streamed through `incus exec`. No inner Incus subcommand may inherit that
@@ -96,7 +96,7 @@ grep -Fxq 'worker_exit=23' "$FAILURE_LOG" || fail "failure diagnostics lost the 
 
 if (
   unset -f cleanup_managed
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   project_exists() { return 0; }
   project_marker() { printf 'foreign\n'; }
   cleanup_managed 1
@@ -116,7 +116,7 @@ EOF
 chmod +x "$TMP/foreign-incus"
 if (
   unset -f ensure_project
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   INCUS="$TMP/foreign-incus"
   ensure_project
 ) >/dev/null 2>&1; then
@@ -139,7 +139,7 @@ EOF
 chmod +x "$TMP/policy-incus"
 (
   unset -f ensure_project
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   INCUS="$TMP/policy-incus"
   ensure_project
 ) >/dev/null || fail "managed partial project policy reconciliation failed"
@@ -152,7 +152,7 @@ chmod +x "$TMP/policy-incus"
 
 (
   unset -f tighten_project
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   inner_incus() { printf '%s\n' "$*" >> "$TMP/tighten-calls"; }
   tighten_project
 ) || fail "obsolete low-level project policy was not tightened"
@@ -166,7 +166,7 @@ grep -Fxq "project set $PROJECT limits.memory 2GiB" "$TMP/tighten-calls" \
 # Shrink VM limits before aggregate project limits.
 (
   unset -f ensure_project
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   MEMORY=768MiB
   project_exists() { return 0; }
   project_marker() { printf '%s\n' "$MARKER"; }
@@ -189,7 +189,7 @@ grep -Fxq "project set $PROJECT limits.memory 2GiB" "$TMP/tighten-calls" \
 # and spend BOOT_TIMEOUT waiting for an agent that can never appear.
 if (
   unset -f start_vm
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   inner_incus() {
     printf '%s\n' "$*" >> "$TMP/vm-policy-calls"
     case "$*" in
@@ -206,7 +206,7 @@ fi
 # Upgrade reconciliation removes the old per-VM raw policy before project tightening.
 (
   unset -f ensure_vm
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   vm_exists() { return 0; }
   vm_marker() { printf '%s\n' "$MARKER"; }
   inner_incus() {
@@ -228,7 +228,7 @@ grep -Fxq "config unset e2e-vm-1 raw.apparmor --project $PROJECT" "$TMP/vm-upgra
 # Address discovery must therefore follow the default route instead of counting every interface.
 vm_ip_result="$(
   unset -f vm_ip
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   inner_incus() {
     case "$1" in
       exec) printf '%s\n' 'default via 10.42.0.1 dev enp5s0 proto dhcp src 10.42.0.7' ;;
@@ -241,7 +241,7 @@ vm_ip_result="$(
 [ "$vm_ip_result" = 10.42.0.7 ] || fail "VM IPv4 lookup returned the wrong guest address"
 if (
   unset -f vm_ip
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   inner_incus() {
     case "$1" in
       exec) printf '%s\n' 'default via 10.42.0.1 dev enp5s0' 'default via 10.43.0.1 dev enp6s0' ;;
@@ -266,7 +266,7 @@ printf '%s\n' "$cloud_fixture" | grep -Fxq 'ssh_pwauth: false' \
 
 (
   unset -f wait_agent
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   inner_incus() {
     printf '%s\n' "$*" >> "$TMP/guest-ready-calls"
     case "$*" in
@@ -284,7 +284,7 @@ grep -Fq '00-subyard-e2e.conf' "$TMP/guest-ready-calls" \
 
 # Agent access is status plus forwarding to two guest SSH ports.
 (
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   AGENT_PUBLIC_KEY='ssh-ed25519 AAAAagentfixture controller'
   AGENT_USER="$(id -un)"
   AGENT_HOME="$TMP/agent-home"
@@ -315,7 +315,7 @@ grep -Fq '00-subyard-e2e.conf' "$TMP/guest-ready-calls" \
   write_manifest ready ready \
     10.42.0.11 'ssh-ed25519 AAAAhost1111' 10.42.0.12 'ssh-ed25519 AAAAhost2222'
   status_output="$(SUBYARD_E2E_ALLOCATION_MANIFEST="$MANIFEST" \
-    SSH_ORIGINAL_COMMAND='id' sh "$ROOT/scripts/test-vms-status.sh")"
+    SSH_ORIGINAL_COMMAND='id' sh "$ROOT/scripts/e2e-lab/status.sh")"
   printf '%s\n' "$status_output" | grep -Fxq $'vm\t1\te2e-vm-1\t10.42.0.11\tssh-ed25519\tAAAAhost1111' \
     || fail "forced status lost VM1 target or host-key pin"
   [ "$(stat -c '%a' "$MANIFEST")" = 644 ] || fail "public allocation snapshot mode drifted"
@@ -330,7 +330,7 @@ grep -Fq '00-subyard-e2e.conf' "$TMP/guest-ready-calls" \
 # public client and host keys, then proves both directions without TOFU or a shared private key.
 (
   unset -f ensure_peer_trust
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   vm_ip() { case "$1" in e2e-vm-1) printf '10.42.0.11\n' ;; *) printf '10.42.0.12\n' ;; esac; }
   ensure_guest_peer_key() { case "$1" in e2e-vm-1) printf 'ssh-ed25519 AAAA1111\n' ;; *) printf 'ssh-ed25519 AAAA2222\n' ;; esac; }
   guest_host_public_key() { case "$1" in e2e-vm-1) printf 'ssh-ed25519 BBBB1111\n' ;; *) printf 'ssh-ed25519 BBBB2222\n' ;; esac; }
@@ -368,7 +368,7 @@ esac
 EOF
 chmod +x "$TMP/cleanup-incus"
 (
-  . "$ROOT/scripts/test-vms-inner.sh"
+  . "$ROOT/scripts/e2e-lab/worker.sh"
   INCUS="$TMP/cleanup-incus"
   cleanup_managed 1
 ) >/dev/null || fail "guarded non-interactive cleanup failed"
@@ -388,37 +388,37 @@ grep -Fxq expired-cleanup "$events" || fail "expired lab was not cleaned"
 # The provisioner is streamed into L1 through `bash -s`; under `set -u`, its source guard must
 # accept an empty BASH_SOURCE instead of failing before the inner bootstrap starts.
 source_guard="$(sed -n '/^\[ "${BASH_SOURCE\[0\]:-\$0}" = "\$0" \] || return 0$/p' \
-  "$ROOT/scripts/provision-test-vms-inner.sh")"
+  "$ROOT/scripts/e2e-lab/provision.sh")"
 [ -n "$source_guard" ] || fail "inner provisioner has no stdin-safe source guard"
 printf '%s\n' "$source_guard" | bash -u -s \
   || fail "inner provisioner source guard rejected bash -s execution"
 ! grep -Eq 'usermod[[:space:]]+-aG[[:space:]]+(incus-admin|yard)' \
-  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "inner provisioner still grants dev access to privileged inner groups"
-grep -Fq 'iifname "incusbr0" drop' "$ROOT/scripts/provision-test-vms-inner.sh" \
+grep -Fq 'iifname "incusbr0" drop' "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "inner provisioner does not block guest-initiated access to L1"
-grep -Fq 'PasswordAuthentication no' "$ROOT/scripts/provision-test-vms-inner.sh" \
+grep -Fq 'PasswordAuthentication no' "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "bastion provisioner does not disable password authentication"
 grep -Fq 'apt-get install -y -qq --no-install-recommends' \
-  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "inner VM backend installs optional QEMU desktop packages"
-grep -Fq 'apt-get clean' "$ROOT/scripts/provision-test-vms-inner.sh" \
+grep -Fq 'apt-get clean' "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "inner VM backend leaves the package cache on the small disposable disk"
 grep -Fq 'run_with_progress "installing inner Incus and QEMU"' \
-  "$ROOT/scripts/provision-test-vms-inner.sh" \
-  && grep -Fq 'still working, %ss elapsed' "$ROOT/scripts/provision-test-vms-inner.sh" \
+  "$ROOT/scripts/e2e-lab/provision.sh" \
+  && grep -Fq 'still working, %ss elapsed' "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "inner VM backend package installation has no periodic progress"
 grep -Fq 'install -d -m 0750 -o root -g "$primary" "$home/.ssh"' \
-  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "bastion authorized-key directory is not root-owned and account-readable"
 grep -Fq 'chown root:"$primary" "$home/.ssh/authorized_keys"' \
-  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "bastion authorized-key file is not root-owned and account-readable"
 
 # Post-apply verification names the failed invariant.
 SCRIPT_DIR="$ROOT/scripts"
-# shellcheck source=scripts/reconcile/stages/test-vms.sh
-. "$ROOT/scripts/reconcile/stages/test-vms.sh"
+# shellcheck source=scripts/e2e-lab/stage.sh
+. "$ROOT/scripts/e2e-lab/stage.sh"
 reconcile_incus_reachable() { return 1; }
 quiet_diagnostic="$(stage_test_vms_check 2>&1 || true)"
 [ -z "$quiet_diagnostic" ] || fail "planning emitted test-vms drift diagnostics"
@@ -440,8 +440,8 @@ grep -Fq 'user.subyard.managed' "$ROOT/dev/e2e/seed-test-vms-legacy-state.sh" \
 INNER_FIXTURE="$TMP/inner-incus"
 mkdir -p "$INNER_FIXTURE"
 export INNER_FIXTURE
-# shellcheck source=scripts/provision-test-vms-inner.sh
-. "$ROOT/scripts/provision-test-vms-inner.sh"
+# shellcheck source=scripts/e2e-lab/provision.sh
+. "$ROOT/scripts/e2e-lab/provision.sh"
 
 E2E_VM_STATE_DIR="$TMP/legacy-test-vms-state"
 mkdir -p "$E2E_VM_STATE_DIR"

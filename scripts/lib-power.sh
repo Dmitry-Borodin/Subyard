@@ -144,8 +144,13 @@ power_nm_prepare_reader() {
   [ "$(id -u)" -ne 0 ] || return 0
   command -v sudo >/dev/null 2>&1 \
     || { power_fail "sudo is required to verify NetworkManager configuration"; return 1; }
-  sudo -v \
-    || { power_fail "could not authorize NetworkManager configuration check"; return 1; }
+  if [ "${SUBYARD_SUDO_PREAUTHORIZED:-0}" = 1 ]; then
+    sudo -n -v \
+      || { power_fail "sudo authorization expired; re-run 'yard start' in an operator terminal"; return 1; }
+  else
+    sudo -v \
+      || { power_fail "could not authorize NetworkManager configuration check"; return 1; }
+  fi
 }
 
 power_nm_print_config() {

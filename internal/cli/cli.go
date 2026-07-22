@@ -233,6 +233,18 @@ func (cli *CLI) Run(ctx context.Context) int {
 	switch definition.Handler {
 	case "@status":
 		return cli.runStatus(ctx, loaded, commandArguments)
+	case "@info":
+		return cli.runOwnerInfo(ctx, loaded)
+	case "@yards":
+		return cli.runYards(ctx, loaded, commandArguments)
+	case "@authorize":
+		return cli.runAuthorize(ctx, loaded, commandArguments)
+	case "@logs":
+		return cli.runLogs(ctx, loaded, commandArguments)
+	case "@usage":
+		return cli.runUsage(ctx, loaded, commandArguments)
+	case "@shell":
+		return cli.runShell(ctx, loaded, commandArguments, projectRun)
 	case "@list":
 		return cli.runProjectList(ctx, loaded, explicit, commandArguments)
 	case "@state":
@@ -461,6 +473,456 @@ func (cli *CLI) printYardStatus(ctx context.Context, loaded config.Loaded) int {
 	return 0
 }
 
+type ownerInfo struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Version  string `json:"version"`
+	Instance string `json:"instance"`
+	Project  string `json:"project"`
+	State    string `json:"state"`
+	SSHHost  string `json:"sshHost"`
+	SSHPort  int    `json:"sshPort"`
+	DevUser  string `json:"devUser"`
+	Projects *int   `json:"projects"`
+}
+
+func (cli *CLI) runOwnerInfo(ctx context.Context, loaded config.Loaded) int {
+	yard := loaded.Context
+	info := ownerInfo{
+		Name: yard.YardName, Type: string(domain.YardLocal), Version: Version,
+		Instance: yard.InstanceName, Project: yard.IncusProject, State: "UNKNOWN",
+		SSHHost: yard.SSHHost, SSHPort: yard.SSHPort, DevUser: yard.DevUser,
+	}
+	incusPort, _ := cli.statusPorts()
+	if _, err := incusPort.Server(ctx); err == nil {
+		info.State = "STOPPED"
+		if instance, instanceErr := incusPort.Instance(ctx, yard.IncusProject, yard.InstanceName); instanceErr == nil {
+			if state := strings.ToUpper(strings.TrimSpace(instance.Status)); state != "" {
+				info.State = state
+			}
+		}
+	}
+	if info.State == "RUNNING" {
+		observation, err := cli.projectObserver().Observe(ctx, yard, nil, true)
+		if err == nil && observation.Reached {
+			ids := make(map[string]struct{}, len(observation.Live))
+			for _, record := range observation.Live {
+				ids[record.ProjectID] = struct{}{}
+			}
+			count := len(ids)
+			info.Projects = &count
+		}
+	}
+	if err := json.NewEncoder(cli.options.Stdout).Encode(info); err != nil {
+		cli.errorf("write owner info: %v", err)
+		return 1
+	}
+	return 0
+}
+
+func (cli *CLI) runYards(ctx context.Context, loaded config.Loaded, arguments []string) int {
+	for _, argument := range arguments {
+		switch argument {
+		case "-y", "--yes":
+		case "-h", "--help":
+			fmt.Fprintf(cli.options.Stdout, "Usage: %s yards\n", cli.options.Program)
+			return 0
+		default:
+			cli.errorf("yards takes no arguments")
+			return 2
+		}
+	}
+	names, err := config.YardNames(config.RegistryDirectories(
+		loaded.Context.Paths.ConfigDir, loaded.Context.Paths.ConfigHome,
+	)...)
+	if err != nil {
+		cli.errorf("discover yards: %v", err)
+		return 1
+	}
+	fmt.Fprintf(cli.options.Stdout, "%-14s %-6s %-16s %-9s %-7s %-8s %s\n",
+		"NAME", "TYPE", "INSTANCE", "STATE", "SSH", "PROJECTS", "SIZE")
+	for _, name := range names {
+		selected := loaded
+		if name != loaded.Context.YardName {
+			selected, err = cli.loadInventoryLoaded(name, loaded)
+			if err != nil {
+				cli.errorf("load yard %q: %v", name, err)
+				continue
+			}
+		}
+		yard := selected.Context
+		if yard.YardType == domain.YardRemote {
+			info, age, observeErr := cli.observeRemoteInfo(ctx, yard)
+			if observeErr != nil {
+				cli.errorf("remote yard %q: %v", yard.YardName, observeErr)
+				continue
+			}
+			stateValue := info.State
+			if stateValue == "" {
+				stateValue = "?"
+			}
+			projects := "-"
+			if info.Projects != nil {
+				projects = strconv.Itoa(*info.Projects)
+			}
+			marker := ""
+			if age != "" {
+				marker = "  (seen " + age + " ago)"
+			}
+			fmt.Fprintf(cli.options.Stdout, "%-14s %-6s %-16s %-9s %-7s %-8s %s%s\n",
+				yard.YardName, "remote", yard.InstanceName, stateValue,
+				"yard-"+yard.YardName, projects, "-", marker)
+			continue
+		}
+		stateValue := "-"
+		incusPort, _ := cli.statusPorts()
+		if instance, instanceErr := incusPort.Instance(ctx, yard.IncusProject, yard.InstanceName); instanceErr == nil {
+			if value := strings.ToUpper(strings.TrimSpace(instance.Status)); value != "" {
+				stateValue = value
+			}
+		}
+		projects := "-"
+		if store, storeErr := openProjectStore(ctx, yard.Paths.StateDir); storeErr == nil {
+			if records, listErr := store.List(ctx); listErr == nil {
+				projects = strconv.Itoa(len(records))
+			}
+		}
+		sshPort := "-"
+		if yard.SSHPort > 0 {
+			sshPort = strconv.Itoa(yard.SSHPort)
+		}
+		fmt.Fprintf(cli.options.Stdout, "%-14s %-6s %-16s %-9s %-7s %-8s %s\n",
+			yard.YardName, "local", yard.InstanceName, stateValue, sshPort, projects,
+			cachedYardSize(yard))
+	}
+	return 0
+}
+
+func cachedYardSize(yard domain.Context) string {
+	name := "space.cache"
+	if yard.YardName != "default" {
+		name = "space-" + yard.YardName + ".cache"
+	}
+	payload, err := os.ReadFile(filepath.Join(yard.Paths.DataHome, name))
+	if err != nil {
+		return "-"
+	}
+	fields := strings.Fields(string(payload))
+	if len(fields) == 0 {
+		return "-"
+	}
+	return fields[0]
+}
+
+func (cli *CLI) runAuthorize(ctx context.Context, loaded config.Loaded, arguments []string) int {
+	if len(arguments) != 0 {
+		cli.errorf("_authorize takes no arguments")
+		return 2
+	}
+	scanner := bufio.NewScanner(cli.options.Stdin)
+	publicKey := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			publicKey = line
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		cli.errorf("_authorize: read public key: %v", err)
+		return 1
+	}
+	fields := strings.Fields(publicKey)
+	if len(fields) < 2 || !supportedSSHKeyType(fields[0]) || !safeBase64(fields[1]) {
+		cli.errorf("_authorize: stdin does not contain a supported SSH public key")
+		return 2
+	}
+	yard := loaded.Context
+	incusPort, executor := cli.statusPorts()
+	instance, err := incusPort.Instance(ctx, yard.IncusProject, yard.InstanceName)
+	if err != nil {
+		cli.errorf("_authorize: instance %q is unavailable: %v", yard.InstanceName, err)
+		return 1
+	}
+	if !strings.EqualFold(instance.Status, "running") {
+		cli.errorf("_authorize: yard %q is not running", yard.InstanceName)
+		return 1
+	}
+	result, err := executor.Exec(ctx, yard.IncusProject, yard.InstanceName, ports.InstanceExecRequest{
+		Command: []string{"sh", "-eu", "-c", `
+home="$(getent passwd "$DEV_USER" | cut -d: -f6)"
+[ -n "$home" ]
+install -d -m 700 -o "$DEV_USER" -g "$DEV_USER" "$home/.ssh"
+ak="$home/.ssh/authorized_keys"
+touch "$ak"
+if grep -qxF "$PUBKEY" "$ak"; then printf already; else printf '%s\n' "$PUBKEY" >> "$ak"; printf added; fi
+chmod 600 "$ak"
+chown "$DEV_USER:$DEV_USER" "$ak"`},
+		Environment: map[string]string{"PUBKEY": publicKey, "DEV_USER": yard.DevUser},
+	})
+	if err != nil || result.ExitCode != 0 {
+		cli.errorf("_authorize: could not update authorized_keys")
+		return 1
+	}
+	action := strings.TrimSpace(string(result.Stdout))
+	if action != "added" && action != "already" {
+		cli.errorf("_authorize: unexpected guest result")
+		return 1
+	}
+	message := "authorized"
+	if action == "already" {
+		message = "already authorized"
+	}
+	fmt.Fprintf(cli.options.Stderr, "  [ ok ] controller key %s for %s in %s\n",
+		message, yard.DevUser, yard.InstanceName)
+	return 0
+}
+
+func supportedSSHKeyType(value string) bool {
+	switch value {
+	case "ssh-ed25519", "ssh-rsa", "ssh-dss", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+		"ecdsa-sha2-nistp521", "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeBase64(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '+' || character == '/' || character == '=' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (cli *CLI) runLogs(ctx context.Context, loaded config.Loaded, arguments []string) int {
+	journalArguments, help, err := parseLogArguments(arguments)
+	if err != nil {
+		cli.errorf("logs: %v", err)
+		return 2
+	}
+	if help {
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s logs [-f] [-n LINES] [UNIT]\n", cli.options.Program)
+		return 0
+	}
+	yard := loaded.Context
+	incusPort, _ := cli.statusPorts()
+	instance, err := incusPort.Instance(ctx, yard.IncusProject, yard.InstanceName)
+	if err != nil {
+		cli.errorf("logs: instance %q is unavailable: %v", yard.InstanceName, err)
+		return 1
+	}
+	if !strings.EqualFold(instance.Status, "running") {
+		cli.errorf("logs: yard is not running")
+		return 1
+	}
+	commandArguments := []string{"exec", yard.InstanceName, "--project", yard.IncusProject, "--"}
+	commandArguments = append(commandArguments, journalArguments...)
+	return cli.runExternal(ctx, "incus", commandArguments)
+}
+
+func parseLogArguments(arguments []string) ([]string, bool, error) {
+	follow := false
+	lines := 200
+	unit := ""
+	for index := 0; index < len(arguments); index++ {
+		switch argument := arguments[index]; argument {
+		case "-f":
+			follow = true
+		case "-n":
+			index++
+			if index >= len(arguments) {
+				return nil, false, errors.New("-n needs a positive number")
+			}
+			value, err := strconv.Atoi(arguments[index])
+			if err != nil || value < 1 {
+				return nil, false, errors.New("-n needs a positive number")
+			}
+			lines = value
+		case "-y", "--yes":
+		case "-h", "--help":
+			return nil, true, nil
+		default:
+			if strings.HasPrefix(argument, "-") {
+				return nil, false, fmt.Errorf("unknown option %q", argument)
+			}
+			if unit != "" {
+				return nil, false, errors.New("logs accepts at most one unit")
+			}
+			unit = argument
+		}
+	}
+	result := []string{"journalctl", "-n", strconv.Itoa(lines)}
+	if unit != "" {
+		result = append(result, "-u", unit)
+	}
+	if follow {
+		result = append(result, "-f")
+	} else {
+		result = append(result, "--no-pager")
+	}
+	return result, false, nil
+}
+
+func (cli *CLI) runUsage(ctx context.Context, loaded config.Loaded, arguments []string) int {
+	filtered := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		switch argument {
+		case "-y", "--yes":
+		case "-h", "--help":
+			fmt.Fprintf(cli.options.Stdout, "Usage: %s usage [CCUSAGE ARG...]\n", cli.options.Program)
+			return 0
+		default:
+			filtered = append(filtered, argument)
+		}
+	}
+	yard := loaded.Context
+	stateCommand := exec.CommandContext(ctx, "incus", "list", yard.InstanceName,
+		"--project", yard.IncusProject, "-f", "csv", "-c", "s")
+	stateCommand.Env = environmentList(cli.env, nil)
+	state, err := stateCommand.Output()
+	if err != nil || !strings.EqualFold(strings.TrimSpace(string(state)), "running") {
+		cli.errorf("usage: yard is not running")
+		return 1
+	}
+	probe := exec.CommandContext(ctx, "incus", "exec", yard.InstanceName, "--project", yard.IncusProject,
+		"--", "sh", "-eu", "-c", "[ -f /usr/local/bin/ccusage ] && [ ! -L /usr/local/bin/ccusage ] && [ -x /usr/local/bin/ccusage ]")
+	probe.Env = environmentList(cli.env, nil)
+	if err := probe.Run(); err != nil {
+		hint := cli.env["SUBYARD_USAGE_REPAIR_HINT"]
+		if hint == "" {
+			hint = cli.yardHint(yard) + " init"
+		}
+		cli.errorf("usage: /usr/local/bin/ccusage is missing or not executable; repair with: %s", hint)
+		return 1
+	}
+	home := "/home/" + yard.DevUser
+	commandArguments := []string{
+		"exec", yard.InstanceName, "--project", yard.IncusProject,
+		"--user", strconv.Itoa(yard.DevUID), "--group", strconv.Itoa(yard.DevUID),
+		"--cwd", home, "--env", "HOME=" + home, "--env", "USER=" + yard.DevUser,
+		"--", "/usr/local/bin/ccusage",
+	}
+	commandArguments = append(commandArguments, filtered...)
+	return cli.runExternal(ctx, "incus", commandArguments)
+}
+
+func (cli *CLI) runShell(
+	ctx context.Context,
+	loaded config.Loaded,
+	arguments []string,
+	project *projectExecution,
+) int {
+	root, selector, guestCommand, help, err := parseShellArguments(arguments)
+	if err != nil {
+		cli.errorf("shell: %v", err)
+		return 2
+	}
+	if help {
+		fmt.Fprintf(cli.options.Stdout,
+			"Usage: %s shell [--root] [PROJECT] [-- COMMAND...]\n", cli.options.Program)
+		return 0
+	}
+	yard := loaded.Context
+	home := "/home/" + yard.DevUser
+	cwd := home
+	if selector != "" {
+		if project == nil || project.Record.YardPath == "" {
+			cli.errorf("shell: project %q has no yard path", selector)
+			return 1
+		}
+		cwd = project.Record.YardPath
+	}
+	stateCommand := exec.CommandContext(ctx, "incus", "list", yard.InstanceName,
+		"--project", yard.IncusProject, "-f", "csv", "-c", "s")
+	stateCommand.Env = environmentList(cli.env, nil)
+	state, err := stateCommand.Output()
+	if err != nil || !strings.EqualFold(strings.TrimSpace(string(state)), "running") {
+		cli.errorf("shell: yard is not running - start it: %s start", cli.yardHint(yard))
+		return 1
+	}
+	cli.autoSyncCredentials(ctx, loaded)
+	uid := yard.DevUID
+	userArguments := []string{
+		"--user", strconv.Itoa(uid), "--group", strconv.Itoa(uid), "--env", "HOME=" + home,
+	}
+	if root {
+		userArguments = []string{"--user", "0", "--group", "0", "--env", "HOME=/root"}
+	}
+	commandArguments := []string{"exec", yard.InstanceName, "--project", yard.IncusProject}
+	commandArguments = append(commandArguments, userArguments...)
+	commandArguments = append(commandArguments, "--cwd", cwd)
+	if len(guestCommand) == 0 {
+		commandArguments = append(commandArguments, "-t", "--", "bash", "-l")
+	} else {
+		commandArguments = append(commandArguments, "--")
+		commandArguments = append(commandArguments, guestCommand...)
+	}
+	return cli.runExternal(ctx, "incus", commandArguments)
+}
+
+func parseShellArguments(arguments []string) (root bool, selector string, command []string, help bool, err error) {
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		switch argument {
+		case "-y", "--yes":
+		case "-h", "--help":
+			return false, "", nil, true, nil
+		case "--root":
+			root = true
+		case "--":
+			return root, selector, append([]string(nil), arguments[index+1:]...), false, nil
+		default:
+			if strings.HasPrefix(argument, "-") {
+				return false, "", nil, false, fmt.Errorf("unknown option %q", argument)
+			}
+			if selector != "" {
+				return false, "", nil, false,
+					errors.New("only one project may be selected; put commands after '--'")
+			}
+			selector = argument
+		}
+	}
+	return root, selector, nil, false, nil
+}
+
+func (cli *CLI) autoSyncCredentials(ctx context.Context, loaded config.Loaded) {
+	identity := filepath.Join(cli.env["SUBYARD_CONFIG_HOME"], "keys", "identity.json")
+	if root := cli.env["SUBYARD_KEYS_ROOT"]; root != "" {
+		identity = filepath.Join(root, "identity.json")
+	}
+	if info, err := os.Stat(identity); err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	timeout := 8 * time.Second
+	if raw := cli.env["SUBYARD_KEYS_CONNECT_TIMEOUT"]; raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			timeout = time.Duration(seconds) * time.Second
+		}
+	}
+	syncContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	arguments := make([]string, 0, 5)
+	if loaded.Context.YardName != "default" {
+		arguments = append(arguments, "-Y", loaded.Context.YardName)
+	}
+	arguments = append(arguments, "_keys-auto-sync", "--if-due")
+	command := exec.CommandContext(syncContext, cli.options.DispatcherPath, arguments...)
+	command.Dir = cli.options.WorkingDir
+	command.Env = environmentList(cli.env, nil)
+	if err := command.Run(); err != nil {
+		fmt.Fprintln(cli.options.Stderr,
+			"warning: opportunistic encrypted-credential sync did not complete; the periodic timer will retry")
+	}
+}
+
 func (cli *CLI) yardHint(yard domain.Context) string {
 	if yard.YardName == "default" {
 		return cli.options.Program
@@ -474,12 +936,34 @@ type remoteInfo struct {
 }
 
 func (cli *CLI) printRemoteStatus(ctx context.Context, yard domain.Context) error {
+	info, age, err := cli.observeRemoteInfo(ctx, yard)
+	if err != nil {
+		return err
+	}
+	stateValue := info.State
+	if stateValue == "" {
+		stateValue = "?"
+	}
+	projects := "?"
+	if info.Projects != nil {
+		projects = strconv.Itoa(*info.Projects)
+	}
+	marker := ""
+	if age != "" {
+		marker = ", seen " + age + " ago"
+	}
+	fmt.Fprintf(cli.options.Stdout, "%s  %s  (remote %s, %s projects%s)\n",
+		yard.YardName, stateValue, yard.RemoteDest, projects, marker)
+	return nil
+}
+
+func (cli *CLI) observeRemoteInfo(ctx context.Context, yard domain.Context) (remoteInfo, string, error) {
 	cachePath := filepath.Join(yard.Paths.DataHome, "remote-"+yard.YardName+".cache")
 	cached, cachedAt, _ := readRemoteStatusCache(cachePath)
 	remoteLine := "yard _info"
 	if yard.RemoteYard != "" {
 		if !domain.SafeName(yard.RemoteYard) {
-			return errors.New("invalid remote owner yard")
+			return remoteInfo{}, "", errors.New("invalid remote owner yard")
 		}
 		remoteLine = "yard -Y " + shellQuote(yard.RemoteYard) + " _info"
 	}
@@ -496,20 +980,10 @@ func (cli *CLI) printRemoteStatus(ctx context.Context, yard domain.Context) erro
 	} else {
 		info = cached
 		if !cachedAt.IsZero() {
-			age = ", seen " + ageHuman(time.Since(cachedAt)) + " ago"
+			age = ageHuman(time.Since(cachedAt))
 		}
 	}
-	stateValue := info.State
-	if stateValue == "" {
-		stateValue = "?"
-	}
-	projects := "?"
-	if info.Projects != nil {
-		projects = strconv.Itoa(*info.Projects)
-	}
-	fmt.Fprintf(cli.options.Stdout, "%s  %s  (remote %s, %s projects%s)\n",
-		yard.YardName, stateValue, yard.RemoteDest, projects, age)
-	return nil
+	return info, age, nil
 }
 
 func readRemoteStatusCache(path string) (remoteInfo, time.Time, error) {
@@ -1417,6 +1891,7 @@ func (cli *CLI) operationOrchestrator(
 	operationID string,
 	loaded config.Loaded,
 	events ports.EventSink,
+	definition *command.Definition,
 ) *application.Orchestrator {
 	clock := cli.options.Clock
 	if clock == nil {
@@ -1438,23 +1913,25 @@ func (cli *CLI) operationOrchestrator(
 			"SUBYARD_PROJECT_HOST_PATH", "SUBYARD_PROJECT_YARD_PATH", "SUBYARD_PROJECT_MODE",
 			"SUBYARD_PROJECT_SSH_HOST", "SUBYARD_PROJECT_TARGET", "SUBYARD_PROJECT_PROFILE",
 			"SUBYARD_PROJECT_DEVICE", "SUBYARD_PROJECT_EXISTS", "SUBYARD_PROJECT_PROFILES",
+			"SUBYARD_SUDO_PREAUTHORIZED",
 		} {
 			contextKeys[key] = struct{}{}
 		}
-		commandAdapter := filepath.Join(cli.options.RepositoryRoot, "scripts", "adapters", "command.sh")
+		actions := map[string]map[string]shelladapter.Action{}
+		if definition != nil {
+			actions["command"] = map[string]shelladapter.Action{
+				definition.Name: {
+					Path:   filepath.Join(cli.options.RepositoryRoot, "scripts", definition.Handler),
+					Result: shelladapter.ExitStatusResult, StreamVerbs: commandStreamVerbs(definition.Name),
+				},
+			}
+		}
 		runner = shelladapter.Runner{
 			RepositoryRoot: cli.options.RepositoryRoot,
-			Allow: map[string]map[string]string{"yard-control": {
-				"start": filepath.Join(cli.options.RepositoryRoot, "scripts", "adapters", "yard-control.sh"),
-			}, "command": {
-				"init": commandAdapter, "provision": commandAdapter, "test-vms": commandAdapter,
-				"stop": commandAdapter, "teardown": commandAdapter, "sync": commandAdapter,
-				"bind": commandAdapter, "clone": commandAdapter, "export": commandAdapter,
-				"remove": commandAdapter, "up": commandAdapter, "down": commandAdapter,
-				"remote": commandAdapter, "update": commandAdapter,
-			}},
-			ContextKeys: contextKeys,
-			Timeout:     10 * time.Minute,
+			Actions:        actions,
+			ContextKeys:    contextKeys,
+			Diagnostics:    cli.options.Stderr,
+			Timeout:        10 * time.Minute,
 		}
 	}
 	auditSink := cli.options.Audit
@@ -1471,6 +1948,17 @@ func (cli *CLI) operationOrchestrator(
 	return &application.Orchestrator{
 		Clock: clock, IDs: fixedIDSource{value: operationID}, Prompt: prompt,
 		Runner: runner, Audit: auditSink, Events: events,
+	}
+}
+
+func commandStreamVerbs(name string) []string {
+	switch name {
+	case "init":
+		return []string{""}
+	case "test-vms":
+		return []string{"up", "down"}
+	default:
+		return nil
 	}
 }
 
@@ -1641,7 +2129,7 @@ func (cli *CLI) runStructuredCommand(
 			assumeYes = true
 		}
 	}
-	orchestrator := cli.operationOrchestrator(cli.env["SUBYARD_OPERATION_ID"], loaded, nil)
+	orchestrator := cli.operationOrchestrator(cli.env["SUBYARD_OPERATION_ID"], loaded, nil, &definition)
 	plan, err := orchestrator.Plan(ctx, loaded.Context,
 		commandPolicy(definition, loaded.Context, arguments, project), assumeYes)
 	if err != nil {
@@ -1748,7 +2236,7 @@ func (cli *CLI) runStructuredStart(
 		return 0
 	}
 	operationID := cli.env["SUBYARD_OPERATION_ID"]
-	orchestrator := cli.operationOrchestrator(operationID, loaded, nil)
+	orchestrator := cli.operationOrchestrator(operationID, loaded, nil, &definition)
 	plan, err := orchestrator.Plan(ctx, loaded.Context, startPolicy(definition, loaded.Context), assumeYes)
 	if err != nil {
 		if errors.Is(err, application.ErrDeclined) {
@@ -1780,9 +2268,18 @@ func (cli *CLI) executeStructuredStart(
 	plan domain.OperationPlan,
 	diagnostics io.Writer,
 ) (domain.AdapterResult, error) {
+	if cli.options.AdapterRunner == nil {
+		if err := cli.prepareStartPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
+			return domain.AdapterResult{}, err
+		}
+	}
+	adapterContext := structuredAdapterContext(yard)
+	adapterContext["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
+	fmt.Fprintf(diagnostics, "  [ .. ] starting %s\n", yard.InstanceName)
 	request := domain.AdapterRequest{
 		Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
-		Adapter: "yard-control", Action: "start", Context: structuredAdapterContext(yard),
+		Adapter: "command", Action: "start", Arguments: []string{"start", "--yes"},
+		Context: adapterContext,
 	}
 	result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
 	if stderr != "" {
@@ -1792,6 +2289,38 @@ func (cli *CLI) executeStructuredStart(
 		}
 	}
 	return result, err
+}
+
+func (cli *CLI) prepareStartPrivileges(ctx context.Context, diagnostics io.Writer, effectiveUID int) error {
+	if effectiveUID == 0 {
+		return nil
+	}
+	check := exec.CommandContext(ctx, "systemctl", "is-active", "NetworkManager")
+	check.Env = environmentList(cli.env, nil)
+	output, checkErr := check.Output()
+	state := strings.TrimSpace(string(output))
+	switch state {
+	case "inactive", "failed", "unknown":
+		return nil
+	case "active", "activating", "reloading", "deactivating":
+	case "":
+		if checkErr != nil {
+			return fmt.Errorf("inspect NetworkManager before start: %w", checkErr)
+		}
+		return errors.New("inspect NetworkManager before start: empty service state")
+	default:
+		return fmt.Errorf("inspect NetworkManager before start: unexpected state %q", state)
+	}
+	fmt.Fprintln(diagnostics, "  [ .. ] authorizing the NetworkManager safety check")
+	command := exec.CommandContext(ctx, "sudo", "-v")
+	command.Env = environmentList(cli.env, nil)
+	command.Stdin = cli.options.Stdin
+	command.Stdout = cli.options.Stdout
+	command.Stderr = cli.options.Stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("authorize the NetworkManager safety check: %w", err)
+	}
+	return nil
 }
 
 func (cli *CLI) globalQuery(arguments []string) (int, bool) {
@@ -2187,7 +2716,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		if definition.Name == "start" {
 			policy = startPolicy(definition, loaded.Context)
 		}
-		orchestrator := handler.cli.operationOrchestrator(call.OperationID, loaded, nil)
+		orchestrator := handler.cli.operationOrchestrator(call.OperationID, loaded, nil, nil)
 		plan, err := orchestrator.Prepare(loaded.Context, policy)
 		if err != nil {
 			return nil, &rpc.Error{Code: "plan_failed", Message: err.Error()}
@@ -2232,7 +2761,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			return nil, &rpc.Error{Code: "remote_owner_required", Message: "execute this plan through owner-host SSH stdio"}
 		}
 		orchestrator := handler.cli.operationOrchestrator(
-			call.OperationID, planned.Loaded, rpcOperationEvents{emit: emit},
+			call.OperationID, planned.Loaded, rpcOperationEvents{emit: emit}, &planned.Definition,
 		)
 		plan, err := orchestrator.Confirm(ctx, planned.Plan, true)
 		if err != nil {

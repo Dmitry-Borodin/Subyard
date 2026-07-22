@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-vms-inner.sh — trusted L1 worker for two disposable nested Incus VMs.
+# Trusted L1 worker for two disposable nested Incus VMs.
 # Installed inside an opt-in container yard; never talks to the L0 Incus socket.
 set -euo pipefail
 

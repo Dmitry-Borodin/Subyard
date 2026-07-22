@@ -134,7 +134,11 @@ func TestFileStoreDoesNotRepairInvalidBroadState(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(store.Directory(), "invalid.json")
-	if err := os.WriteFile(path, []byte("{}\n"), 0o664); err != nil {
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Normalize the legacy mode across process umasks.
+	if err := os.Chmod(path, 0o664); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0o664); err != nil {

@@ -6,9 +6,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+export SUBYARD_E2E_STATE_DIR="$TMP/client"
+export SUBYARD_E2E_SHARED_ROUTE_DIR="$TMP/shared-route"
 
-# shellcheck source=scripts/agent-e2e.sh
-. "$ROOT/scripts/agent-e2e.sh"
+# shellcheck source=dev/agent-e2e.sh
+. "$ROOT/dev/agent-e2e.sh"
 
 fixture="$TMP/worktree"
 mkdir -p "$fixture/private" "$fixture/temp"
@@ -46,11 +48,90 @@ write_guest_command 2 "$command_root" sh -c \
   > "$TMP/run.sh"
 bash "$TMP/run.sh" || fail "guest command did not preserve its argv or VM selector"
 
-# Model the already-running controller locally. Every worker exec delegates to a real command in a
-# uniquely generated /tmp directory, so this catches loss of cleanup state across shell subshells.
-controller() {
-  [ "$2" = exec ] || return 90
-  shift 4
+# Accept only two ready, unexpired VMs with pinned host keys.
+ensure_state_root
+manifest="$(printf 'subyard-e2e-allocation-v1\nstate\tready\nreason\tready\nallocation_id\t123\nexpires_at_epoch\t%s\nvm\t1\te2e-vm-1\t10.42.0.11\tssh-ed25519\tAAAA1111\nvm\t2\te2e-vm-2\t10.42.0.12\tssh-ed25519\tAAAA2222\n' "$(( $(date +%s) + 600 ))")"
+parse_allocation_manifest "$manifest"
+[ "${VM_IP[1]}" = 10.42.0.11 ] && [ "${VM_IP[2]}" = 10.42.0.12 ] \
+  || fail "allocation manifest lost the exact VM targets"
+grep -Fxq 'e2e-vm-1 ssh-ed25519 AAAA1111' "$GUEST_KNOWN_HOSTS" \
+  || fail "VM1 host-key pin was not materialized"
+if (parse_allocation_manifest $'subyard-e2e-allocation-v1\nstate\tdown\nreason\toperator-down\n') >/dev/null 2>&1; then
+  fail "down allocation was accepted"
+fi
+
+ensure_identity
+[ -f "$SHARED_ROUTE_DIR/agent-access.pub" ] \
+  || fail "controller identity did not publish an enrollment request"
+[ "$(normalized_public_key_file "$IDENTITY.pub")" = "$(cat "$SHARED_ROUTE_DIR/agent-access.pub")" ] \
+  || fail "published enrollment key does not match the controller identity"
+[ "$(stat -c '%a' "$SHARED_ROUTE_DIR/agent-access.pub")" = 644 ] \
+  || fail "published enrollment request is not public-key readable"
+[ ! -e "$SHARED_ROUTE_DIR/id_ed25519" ] \
+  || fail "controller private key entered the shared worktree directory"
+# Enrollment accepts only the ignored public request.
+# shellcheck source=scripts/lib/e2e-agent-enrollment.sh
+. "$ROOT/scripts/lib/e2e-agent-enrollment.sh"
+e2e_agent_enrollment_read "$SHARED_ROUTE_DIR" \
+  || fail "product enrollment reader rejected the helper's public request"
+[ "$E2E_AGENT_PUBLIC_KEY" = "$(normalized_public_key_file "$IDENTITY.pub")" ] \
+  || fail "product enrollment reader did not normalize the requested key"
+printf 'ssh-rsa invalid\n' > "$SHARED_ROUTE_DIR/agent-access.pub"
+if e2e_agent_enrollment_read "$SHARED_ROUTE_DIR"; then
+  fail "product enrollment reader accepted a non-Ed25519 key"
+fi
+ensure_identity
+BASTION_HOSTNAME=127.0.0.1
+BASTION_PORT=2223
+BASTION_HOST_KEY_ALIAS=''
+BASTION_KNOWN_HOSTS="$TMP/bastion-known-hosts"
+printf '[127.0.0.1]:2223 %s\n' "$(normalized_public_key_file "$IDENTITY.pub")" > "$BASTION_KNOWN_HOSTS"
+write_client_config
+grep -Fxq '    ProxyJump subyard-e2e-bastion' "$CLIENT_CONFIG" \
+  || fail "VM aliases do not use the restricted bastion"
+grep -Fxq '    ForwardAgent no' "$CLIENT_CONFIG" \
+  || fail "generated SSH config permits agent forwarding"
+[ "$(grep -c '^Host e2e-vm-' "$CLIENT_CONFIG")" -eq 2 ] \
+  || fail "generated SSH config does not expose exactly two VM aliases"
+[ "$(grep '^[[:space:]]*IdentityFile ' "$CLIENT_CONFIG" | sort -u | wc -l)" -eq 1 ] \
+  || fail "one controller identity was not reused consistently for both VM targets"
+
+cat > "$TMP/route-config" <<EOF
+Host fixture-e2e-yard
+    HostName 127.0.0.1
+    Port 2223
+    UserKnownHostsFile $BASTION_KNOWN_HOSTS
+EOF
+# shellcheck disable=SC2100 # This is an SSH host alias, not an arithmetic expression.
+BASTION_ROUTE=fixture-e2e-yard
+BASTION_HOSTNAME=''; BASTION_PORT=''; BASTION_HOST_KEY_ALIAS=''; BASTION_KNOWN_HOSTS=''
+SUBYARD_E2E_ROUTE_CONFIG="$TMP/route-config"
+resolve_bastion_route
+[ "$BASTION_HOSTNAME:$BASTION_PORT" = 127.0.0.1:2223 ] \
+  || fail "bastion route was not resolved from the isolated user SSH config"
+[ "$BASTION_KNOWN_HOSTS" = "$TMP/bastion-known-hosts" ] \
+  || fail "bastion route did not reuse its pre-pinned host key"
+
+mkdir -p "$SHARED_ROUTE_DIR"
+cat > "$SHARED_ROUTE_DIR/route.tsv" <<'EOF'
+subyard-e2e-route-v1
+hostname	10.24.0.8
+port	22
+host_key_alias	subyard-e2e-bastion
+EOF
+printf 'subyard-e2e-bastion %s\n' "$(normalized_public_key_file "$IDENTITY.pub")" \
+  > "$SHARED_ROUTE_DIR/known_hosts"
+BASTION_HOSTNAME=''; BASTION_PORT=''; BASTION_HOST_KEY_ALIAS=''; BASTION_KNOWN_HOSTS=''
+resolve_bastion_route
+[ "$BASTION_HOSTNAME:$BASTION_PORT:$BASTION_HOST_KEY_ALIAS" = \
+    10.24.0.8:22:subyard-e2e-bastion ] \
+  || fail "root-published shared bastion route was not selected"
+[ "$BASTION_KNOWN_HOSTS" = "$SHARED_ROUTE_DIR/known_hosts" ] \
+  || fail "shared bastion route lost its pinned host key"
+
+# Model direct guest SSH and cleanup locally.
+guest() {
+  shift
   "$@"
 }
 mock_bundle="$TMP/mock.tar.gz"
@@ -64,8 +145,27 @@ case "$guest_directory" in /tmp/subyard-worktree.*) ;; *) fail "guest run direct
 cleanup_guest 1 || fail "guest run directory cleanup failed"
 [ ! -e "$guest_directory" ] || fail "guest run directory survived cleanup"
 
-if grep -Eq 'controller .*\b(up|down|start|stop)\b' "$ROOT/scripts/agent-e2e.sh"; then
+set +e
+bash -c '
+  set -euo pipefail
+  . "$1/dev/agent-e2e.sh"
+  GUEST_DIRS[1]=/tmp/subyard-worktree.fixture
+  cleanup_guest() { return 1; }
+  cleanup_on_exit
+' _ "$ROOT" >/dev/null 2>&1
+cleanup_rc=$?
+set -e
+[ "$cleanup_rc" = 3 ] || fail "trap cleanup failure returned $cleanup_rc instead of 3"
+
+if sed '/^[[:space:]]*#/d' "$ROOT/dev/agent-e2e.sh" \
+  | grep -Eq 'test-vms[[:space:]]+(up|down)|yard[[:space:]].*(start|stop)'; then
   fail "agent E2E transport contains an allocation lifecycle call"
 fi
+if sed '/^[[:space:]]*#/d' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  | grep -Eq 'test-vms[[:space:]]+(up|down)|yard[[:space:]].*(start|stop)'; then
+  fail "P0 acceptance contains an allocation lifecycle call"
+fi
+! grep -Fq 'test-vms-inner' "$ROOT/dev/agent-e2e.sh" \
+  || fail "agent E2E transport still invokes the privileged lifecycle worker"
 
-printf 'ok: agent E2E transport is dirty-aware, allocation-neutral and cleanup-owned\n'
+printf 'ok: agent E2E uses pinned direct VM SSH and remains allocation-neutral and cleanup-owned\n'

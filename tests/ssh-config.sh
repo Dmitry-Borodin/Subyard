@@ -37,4 +37,22 @@ if find "$sshdir" -maxdepth 1 -name '.subyard-ssh-config.*' -print -quit | grep 
   fail 'atomic update left a staging file'
 fi
 
-printf 'ok: SSH config update is atomic, idempotent and ignores stale predictable temp files\n'
+known="$sshdir/known_hosts"
+ssh-keygen -q -t ed25519 -N '' -f "$TMP/host-one"
+ssh-keygen -q -t ed25519 -N '' -f "$TMP/host-two"
+key_one="$(awk '{print $1 " " $2}' "$TMP/host-one.pub")"
+key_two="$(awk '{print $1 " " $2}' "$TMP/host-two.pub")"
+printf 'unrelated.example %s\n[127.0.0.1]:2223 %s\n' "$key_one" "$key_one" > "$known"
+ssh_known_host_replace "$known" '[127.0.0.1]:2223' "$key_two" \
+  || fail 'could not atomically replace a pinned yard host key'
+ssh_known_host_replace "$known" '[127.0.0.1]:2223' "$key_two" \
+  || fail 'idempotent host-key pin failed'
+[ "$(ssh-keygen -F '[127.0.0.1]:2223' -f "$known" | grep -c '^\[127')" -eq 1 ] \
+  || fail 'yard host-key pin was missing or duplicated'
+grep -Fq "[127.0.0.1]:2223 $key_two" "$known" \
+  || fail 'yard host-key pin was not rotated'
+grep -Fq "unrelated.example $key_one" "$known" \
+  || fail 'host-key rotation removed an unrelated pin'
+[ "$(stat -c '%a' "$known")" = 600 ] || fail 'known_hosts mode is not 0600'
+
+printf 'ok: SSH config and host-key pins are atomic, strict and idempotent\n'

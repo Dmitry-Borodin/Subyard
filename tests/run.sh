@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mapfile -t syntax_files < <(
   printf '%s\n' "$ROOT/bin/yard"
-  find "$ROOT/scripts" "$ROOT/config/profiles" "$ROOT/config/agents" "$ROOT/tests" \
+  find "$ROOT/scripts" "$ROOT/dev" "$ROOT/config/profiles" "$ROOT/config/agents" "$ROOT/tests" \
     -type f -name '*.sh' -print | sort
 )
 for file in "${syntax_files[@]}"; do bash -n "$file"; done

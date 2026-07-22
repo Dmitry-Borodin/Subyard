@@ -50,6 +50,135 @@ restore_inner_apparmor_default() {
   fi
 }
 
+remove_group_member() {
+  local user="$1" group="$2"
+  getent group "$group" >/dev/null 2>&1 || return 0
+  id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -Fxq "$group" || return 0
+  gpasswd -d "$user" "$group" >/dev/null
+}
+
+disable_agent_account() {
+  local user="${E2E_AGENT_USER:-subyard-e2e-agent}" home="${E2E_AGENT_HOME:-/var/lib/subyard/e2e-agent}"
+  id -u "$user" >/dev/null 2>&1 || return 0
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -KILL -u "$user" >/dev/null 2>&1 || true
+  fi
+  userdel --remove "$user" >/dev/null 2>&1 || {
+    usermod --lock "$user" >/dev/null 2>&1 || true
+    rm -f "$home/.ssh/authorized_keys"
+  }
+}
+
+disable_agent_sshd_policy() {
+  local policy=/etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf
+  [ -e "$policy" ] || return 0
+  rm -f "$policy"
+  sshd -t
+  systemctl reload ssh.service
+}
+
+reconcile_agent_sshd_policy() {
+  install -d -m 0755 /etc/ssh/sshd_config.d
+  cat > /etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf <<'EOF'
+# Managed by Subyard; key authentication only.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+EOF
+  chmod 0644 /etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf
+  sshd -t
+  systemctl reload ssh.service
+}
+
+reconcile_agent_account() {
+  local user="$E2E_AGENT_USER" home="$E2E_AGENT_HOME" primary group
+  if [ -z "$E2E_AGENT_PUBLIC_KEY" ]; then
+    disable_agent_account
+    return 0
+  fi
+  if ! id -u "$user" >/dev/null 2>&1; then
+    useradd --system --create-home --home-dir "$home" --shell /bin/sh "$user"
+  fi
+  # Unlock key login with an invalid password hash; sshd disables password login.
+  usermod --home "$home" --shell /bin/sh --password x "$user"
+  primary="$(id -gn "$user")"
+  while IFS= read -r group; do
+    [ -n "$group" ] && [ "$group" != "$primary" ] || continue
+    gpasswd -d "$user" "$group" >/dev/null
+  done < <(id -nG "$user" | tr ' ' '\n')
+  install -d -m 0755 -o root -g root "$home"
+  install -d -m 0750 -o root -g "$primary" "$home/.ssh"
+  touch "$home/.ssh/authorized_keys"
+  chmod 0640 "$home/.ssh/authorized_keys"
+  chown root:"$primary" "$home/.ssh/authorized_keys"
+}
+
+reconcile_test_vm_state_directory() {
+  if [ "$(id -u)" = 0 ]; then
+    install -d -m 0700 -o root -g root "$E2E_VM_STATE_DIR"
+  else
+    install -d -m 0700 "$E2E_VM_STATE_DIR"
+  fi
+  # Five digits clear legacy setgid on the existing 2770 directory.
+  chmod 00700 "$E2E_VM_STATE_DIR"
+  if [ "$(id -u)" = 0 ]; then
+    find "$E2E_VM_STATE_DIR" -mindepth 1 -maxdepth 1 -type f \
+      -exec chown root:root -- {} + -exec chmod 0600 -- {} +
+  else
+    find "$E2E_VM_STATE_DIR" -mindepth 1 -maxdepth 1 -type f -exec chmod 0600 -- {} +
+  fi
+}
+
+install_inner_firewall() {
+  cat > /usr/local/libexec/subyard/test-vms-firewall <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  apply)
+    nft delete table inet subyard_e2e >/dev/null 2>&1 || true
+    nft -f - <<'RULES'
+table inet subyard_e2e {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    iifname "incusbr0" ct direction reply ct state established,related accept
+    iifname "incusbr0" udp dport { 53, 67 } accept
+    iifname "incusbr0" tcp dport 53 accept
+    iifname "incusbr0" drop
+  }
+}
+RULES
+    ;;
+  remove) nft delete table inet subyard_e2e >/dev/null 2>&1 || true ;;
+  *) printf 'usage: test-vms-firewall apply|remove\n' >&2; exit 2 ;;
+esac
+EOF
+  chmod 0755 /usr/local/libexec/subyard/test-vms-firewall
+  cat > /etc/systemd/system/subyard-test-vms-firewall.service <<'EOF'
+[Unit]
+Description=Isolate disposable nested VMs from the privileged yard
+After=network-online.target incus.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/subyard/test-vms-firewall apply
+ExecStop=/usr/local/libexec/subyard/test-vms-firewall remove
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now subyard-test-vms-firewall.service
+  /usr/local/libexec/subyard/test-vms-firewall apply
+}
+
+disable_inner_firewall() {
+  systemctl disable --now subyard-test-vms-firewall.service >/dev/null 2>&1 || true
+  if command -v nft >/dev/null 2>&1; then
+    nft delete table inet subyard_e2e >/dev/null 2>&1 || true
+  fi
+}
+
 reconcile_inner_incus() {
   local output
 
@@ -98,6 +227,10 @@ reconcile_inner_incus() {
 : "${E2E_VM_TTL_MINUTES:=240}"
 : "${E2E_VM_BOOT_TIMEOUT:=300}"
 : "${E2E_VM_STATE_DIR:=/var/lib/subyard/test-vms}"
+: "${E2E_VM_PUBLIC_DIR:=/var/lib/subyard/test-vms-public}"
+: "${E2E_AGENT_USER:=subyard-e2e-agent}"
+: "${E2E_AGENT_HOME:=/var/lib/subyard/e2e-agent}"
+: "${E2E_AGENT_PUBLIC_KEY:=}"
 
 case "$NESTED_E2E_VMS" in 0 | 1) ;; *) printf 'invalid NESTED_E2E_VMS\n' >&2; exit 1 ;; esac
 [[ "$DEV_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { printf 'invalid DEV_USER\n' >&2; exit 1; }
@@ -118,23 +251,48 @@ case "$E2E_VM_IMAGE" in '' | -* | *[!A-Za-z0-9._:/@+-]*) printf 'invalid E2E_VM_
   && [ "$E2E_VM_BOOT_TIMEOUT" -ge 30 ] && [ "$E2E_VM_BOOT_TIMEOUT" -le 1800 ] \
   || { printf 'invalid E2E_VM_BOOT_TIMEOUT\n' >&2; exit 1; }
 case "$E2E_VM_STATE_DIR" in /var/lib/subyard/*) ;; *) printf 'unsafe E2E_VM_STATE_DIR\n' >&2; exit 1 ;; esac
+case "$E2E_VM_PUBLIC_DIR" in /var/lib/subyard/*) ;; *) printf 'unsafe E2E_VM_PUBLIC_DIR\n' >&2; exit 1 ;; esac
+case "$E2E_AGENT_USER" in '' | -* | *[!a-z0-9_-]*) printf 'invalid E2E_AGENT_USER\n' >&2; exit 1 ;; esac
+case "$E2E_AGENT_HOME" in /var/lib/subyard/*) ;; *) printf 'unsafe E2E_AGENT_HOME\n' >&2; exit 1 ;; esac
+if [ -n "$E2E_AGENT_PUBLIC_KEY" ]; then
+  [[ "$E2E_AGENT_PUBLIC_KEY" != *$'\n'* && "$E2E_AGENT_PUBLIC_KEY" != *$'\r'* ]] \
+    || { printf 'E2E_AGENT_PUBLIC_KEY must be one line\n' >&2; exit 1; }
+  [[ "$E2E_AGENT_PUBLIC_KEY" =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] \
+    || { printf 'E2E_AGENT_PUBLIC_KEY must be an Ed25519 public key\n' >&2; exit 1; }
+  agent_key_check="$(mktemp)"
+  read -r agent_key_type agent_key_blob _agent_key_comment <<<"$E2E_AGENT_PUBLIC_KEY"
+  printf '%s %s\n' "$agent_key_type" "$agent_key_blob" > "$agent_key_check"
+  if ! ssh-keygen -l -f "$agent_key_check" >/dev/null 2>&1; then
+    rm -f "$agent_key_check"
+    printf 'E2E_AGENT_PUBLIC_KEY is not a valid Ed25519 public key\n' >&2
+    exit 1
+  fi
+  rm -f "$agent_key_check"
+fi
 
 install -d -m 0755 /etc/subyard
-cat > /etc/subyard/test-vms.env <<EOF
-NESTED_E2E_VMS=$NESTED_E2E_VMS
-DEV_USER=$DEV_USER
-E2E_VM_IMAGE=$E2E_VM_IMAGE
-E2E_VM_CPU=$E2E_VM_CPU
-E2E_VM_MEMORY=$E2E_VM_MEMORY
-E2E_VM_DISK=$E2E_VM_DISK
-E2E_VM_TTL_MINUTES=$E2E_VM_TTL_MINUTES
-E2E_VM_BOOT_TIMEOUT=$E2E_VM_BOOT_TIMEOUT
-E2E_VM_STATE_DIR=$E2E_VM_STATE_DIR
-EOF
+{
+  printf 'NESTED_E2E_VMS=%q\n' "$NESTED_E2E_VMS"
+  printf 'DEV_USER=%q\n' "$DEV_USER"
+  printf 'E2E_VM_IMAGE=%q\n' "$E2E_VM_IMAGE"
+  printf 'E2E_VM_CPU=%q\n' "$E2E_VM_CPU"
+  printf 'E2E_VM_MEMORY=%q\n' "$E2E_VM_MEMORY"
+  printf 'E2E_VM_DISK=%q\n' "$E2E_VM_DISK"
+  printf 'E2E_VM_TTL_MINUTES=%q\n' "$E2E_VM_TTL_MINUTES"
+  printf 'E2E_VM_BOOT_TIMEOUT=%q\n' "$E2E_VM_BOOT_TIMEOUT"
+  printf 'E2E_VM_STATE_DIR=%q\n' "$E2E_VM_STATE_DIR"
+  printf 'E2E_VM_PUBLIC_DIR=%q\n' "$E2E_VM_PUBLIC_DIR"
+  printf 'E2E_AGENT_USER=%q\n' "$E2E_AGENT_USER"
+  printf 'E2E_AGENT_HOME=%q\n' "$E2E_AGENT_HOME"
+  printf 'E2E_AGENT_PUBLIC_KEY=%q\n' "$E2E_AGENT_PUBLIC_KEY"
+} > /etc/subyard/test-vms.env
 chmod 0644 /etc/subyard/test-vms.env
 
 if [ "$NESTED_E2E_VMS" = 0 ]; then
   systemctl disable --now subyard-test-vms-gc.timer >/dev/null 2>&1 || true
+  disable_inner_firewall
+  disable_agent_account
+  disable_agent_sshd_policy
   restore_inner_apparmor_default
   exit 0
 fi
@@ -168,7 +326,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq incus qemu-system-x86 openssh-client golang-go shellcheck
+apt-get install -y -qq incus qemu-system-x86 openssh-client nftables
 version_ok || { printf 'Incus 6.0.6 or newer is required inside the yard\n' >&2; exit 1; }
 # AppArmor 4.1 userspace emits AF_UNIX rules that the 6.8 kernel rejects with a type/protocol ABI
 # mismatch. Disable only the inner daemon's per-instance profiles. The trusted L1 container remains
@@ -177,12 +335,16 @@ reconcile_inner_apparmor_compat
 
 getent group incus-admin >/dev/null 2>&1 || groupadd --system incus-admin
 id -u "$DEV_USER" >/dev/null 2>&1 || { printf 'yard user is missing: %s\n' "$DEV_USER" >&2; exit 1; }
-usermod -aG incus-admin "$DEV_USER"
 getent group yard >/dev/null 2>&1 || groupadd --system yard
-usermod -aG yard "$DEV_USER"
-install -d -m 2770 -o root -g yard "$E2E_VM_STATE_DIR"
+remove_group_member "$DEV_USER" incus-admin
+remove_group_member "$DEV_USER" yard
+reconcile_test_vm_state_directory
+install -d -m 0755 -o root -g root "$E2E_VM_PUBLIC_DIR"
+reconcile_agent_account
+reconcile_agent_sshd_policy
 
 reconcile_inner_incus
+install_inner_firewall
 
 cat > /etc/systemd/system/subyard-test-vms-gc.service <<'EOF'
 [Unit]
@@ -208,3 +370,6 @@ WantedBy=timers.target
 EOF
 systemctl daemon-reload
 systemctl enable --now subyard-test-vms-gc.timer
+
+# Re-enroll without changing allocation state.
+/usr/local/libexec/subyard/test-vms-inner reconcile-access

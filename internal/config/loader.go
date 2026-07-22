@@ -83,7 +83,7 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 		if err != nil {
 			return domain.Context{}, nil, err
 		}
-		if err := applyEnvFile(yardFile, values); err != nil {
+		if err := applyYardConfig(configDir, yardFile, values); err != nil {
 			return domain.Context{}, nil, err
 		}
 		applyYardDerivations(yardName, values)
@@ -102,13 +102,48 @@ func resetInheritedContext(values environment) {
 	for _, name := range []string{
 		"YARD_NAME", "YARD_TYPE", "YARD_PROFILES", "INSTANCE_TYPE", "INSTANCE_NAME", "INCUS_PROJECT",
 		"INCUS_BRIDGE", "SSH_HOST", "SSH_PORT", "REMOTE_DEST", "REMOTE_YARD", "SHIFT_MODE",
-		"FORWARD_SSH_AGENT", "DEV_SUDO", "DEV_UID", "DEV_USER", "NESTED_E2E_VMS",
+		"FORWARD_SSH_AGENT", "DEV_SUDO", "DEV_UID", "DEV_USER", "YARD_TEMPLATE", "NESTED_E2E_VMS",
 		"E2E_VM_IMAGE", "E2E_VM_CPU", "E2E_VM_MEMORY", "E2E_VM_DISK", "E2E_VM_TTL_MINUTES", "E2E_VM_BOOT_TIMEOUT",
 		"SUBYARD_STATE_DIR", "RESTRICTED_DISK_PATHS",
 		"HOST_BASE", "SRV_VOLUME",
 	} {
 		delete(values, name)
 	}
+}
+
+func applyYardConfig(configDir, yardFile string, values environment) error {
+	// Match scripts/lib/registry.sh: a machine-local yard file selects one public
+	// profile, that profile is applied first, and the machine file wins last.
+	// Probe a copy because env files are declarative but may contain defaults that
+	// depend on the existing normalized environment.
+	probe := make(environment, len(values))
+	for name, value := range values {
+		probe[name] = value
+	}
+	delete(probe, "YARD_TEMPLATE")
+	if err := applyEnvFile(yardFile, probe); err != nil {
+		return err
+	}
+	if template := probe["YARD_TEMPLATE"]; template != "" {
+		if !domain.SafeName(template) {
+			return fmt.Errorf("invalid YARD_TEMPLATE %q in %s", template, yardFile)
+		}
+		templateFile := filepath.Join(configDir, "yards", "profiles", template+".env")
+		info, err := os.Stat(templateFile)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unknown YARD_TEMPLATE %q in %s", template, yardFile)
+			}
+			return err
+		}
+		if info.IsDir() {
+			return fmt.Errorf("unknown YARD_TEMPLATE %q in %s", template, yardFile)
+		}
+		if err := applyEnvFile(templateFile, values); err != nil {
+			return err
+		}
+	}
+	return applyEnvFile(yardFile, values)
 }
 
 func environmentFrom(explicit map[string]string) environment {

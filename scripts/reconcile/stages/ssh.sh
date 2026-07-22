@@ -14,6 +14,10 @@ stage_ssh_check() {
   local snippet="$HOME/.ssh/subyard${YARD_NAME:+-$YARD_NAME}.config" config="$HOME/.ssh/config"
   [ -r "$snippet" ] && grep -qx "Host $SSH_HOST" "$snippet" && grep -qx "    Port $SSH_PORT" "$snippet" \
     || return 1
+  grep -qx '    StrictHostKeyChecking yes' "$snippet" || return 1
+  [ -r "$SUBYARD_HOME/ssh/known_hosts" ] \
+    && ssh-keygen -F "[127.0.0.1]:$SSH_PORT" -f "$SUBYARD_HOME/ssh/known_hosts" >/dev/null \
+    || return 1
   [ -r "$config" ] && grep -qxF "Include $(basename "$snippet")" "$config" || return 1
   if [ "${FORWARD_SSH_AGENT:-0}" = 1 ]; then
     grep -qx '    ForwardAgent yes' "$snippet" || return 1
@@ -21,7 +25,13 @@ stage_ssh_check() {
     ! grep -q '^[[:space:]]*ForwardAgent[[:space:]]\+yes' "$snippet" || return 1
   fi
   if reconcile_instance_running; then
-    incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.ssh/authorized_keys" >/dev/null 2>&1
+    if [ "${NESTED_E2E_VMS:-0}" = 1 ]; then
+      incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- \
+        grep -q '^from="127[.]0[.]0[.]1,::1" ' \
+          "/home/${DEV_USER:-dev}/.ssh/authorized_keys" >/dev/null 2>&1
+    else
+      incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -s "/home/${DEV_USER:-dev}/.ssh/authorized_keys" >/dev/null 2>&1
+    fi
   else
     reconcile_power_stopped
   fi

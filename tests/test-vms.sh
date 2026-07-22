@@ -17,6 +17,7 @@ E2E_VM_DISK=10GiB
 E2E_VM_TTL_MINUTES=15
 E2E_VM_BOOT_TIMEOUT=30
 E2E_VM_STATE_DIR=$TMP/state
+E2E_VM_PUBLIC_DIR=$TMP/public
 EOF
 export SUBYARD_TEST_VMS_CONFIG="$TMP/test-vms.env"
 # shellcheck source=scripts/test-vms-inner.sh
@@ -67,8 +68,12 @@ tighten_project() { printf 'tighten\n' >> "$events"; }
 start_vm() { printf 'start:%s\n' "$1" >> "$events"; }
 wait_agent() { printf 'agent:%s\n' "$1" >> "$events"; }
 record_host_key() { printf 'hostkey:%s\n' "$1" >> "$events"; }
+ensure_guest_tools() { printf 'tools:%s\n' "$1" >> "$events"; }
+install_managed_guest_keys() { printf 'managed-keys:%s\n' "$1" >> "$events"; }
 ensure_peer_trust() { printf 'peer-trust\n' >> "$events"; }
 ssh_smoke() { printf 'ssh:%s\n' "$1" >> "$events"; }
+restrict_agent_access() { printf 'agent-restrict:%s\n' "$1" >> "$events"; }
+enable_agent_access() { printf 'agent-enable\n' >> "$events"; }
 cleanup_managed() { printf 'cleanup\n' >> "$events"; }
 
 cmd_up >/dev/null
@@ -77,6 +82,7 @@ cmd_up >/dev/null
 grep -Fxq 'ssh:e2e-vm-1' "$events" || fail "VM 1 SSH smoke was skipped"
 grep -Fxq 'ssh:e2e-vm-2' "$events" || fail "VM 2 SSH smoke was skipped"
 grep -Fxq 'peer-trust' "$events" || fail "mutual VM trust reconciliation was skipped"
+grep -Fxq 'agent-enable' "$events" || fail "ready allocation did not publish agent access"
 ! grep -Fxq cleanup "$events" || fail "successful up invoked failure cleanup"
 
 : > "$events"
@@ -153,6 +159,31 @@ chmod +x "$TMP/policy-incus"
 ) || fail "obsolete low-level project policy was not tightened"
 grep -Fxq "project unset $PROJECT restricted.virtual-machines.lowlevel" "$TMP/tighten-calls" \
   || fail "project tightening did not remove its obsolete low-level allowance"
+grep -Fxq "project set $PROJECT limits.cpu 4" "$TMP/tighten-calls" \
+  || fail "project tightening did not reconcile its final CPU limit"
+grep -Fxq "project set $PROJECT limits.memory 2GiB" "$TMP/tighten-calls" \
+  || fail "project tightening did not reconcile its final memory limit"
+
+# Shrink VM limits before aggregate project limits.
+(
+  unset -f ensure_project
+  . "$ROOT/scripts/test-vms-inner.sh"
+  MEMORY=768MiB
+  project_exists() { return 0; }
+  project_marker() { printf '%s\n' "$MARKER"; }
+  inner_incus() {
+    printf '%s\n' "$*" >> "$TMP/project-shrink-calls"
+    case "$*" in
+      "list --project $PROJECT -f csv -c n") printf '%s\n' "$PREFIX-1" "$PREFIX-2" ;;
+      "project get $PROJECT limits.cpu") printf '4\n' ;;
+      "project get $PROJECT limits.memory") printf '2GiB\n' ;;
+      "profile device list default --project $PROJECT") printf 'root\neth0\n' ;;
+    esac
+  }
+  ensure_project
+) >/dev/null || fail "existing project pre-reconciliation failed"
+! grep -Fxq "project set $PROJECT limits.memory 1536MiB" "$TMP/project-shrink-calls" \
+  || fail "project memory ceiling was lowered before its VM limits"
 
 # A failed QEMU start must stop `up` immediately. Bash disables implicit errexit inside functions
 # used in conditionals, so the worker must propagate this status explicitly rather than print [ok]
@@ -249,6 +280,52 @@ printf '%s\n' "$cloud_fixture" | grep -Fxq 'ssh_pwauth: false' \
 ) >/dev/null || fail "key-only guest account reconciliation failed"
 grep -Fxq "exec e2e-vm-1 --project $PROJECT -- usermod --password x dev" "$TMP/guest-ready-calls" \
   || fail "existing VM user was not unlocked for public-key login"
+grep -Fq '00-subyard-e2e.conf' "$TMP/guest-ready-calls" \
+  || fail "guest SSH key-only policy was not explicitly reconciled"
+
+# Agent access is status plus forwarding to two guest SSH ports.
+(
+  . "$ROOT/scripts/test-vms-inner.sh"
+  AGENT_PUBLIC_KEY='ssh-ed25519 AAAAagentfixture controller'
+  AGENT_USER="$(id -un)"
+  AGENT_HOME="$TMP/agent-home"
+  AGENT_AUTHORIZED_KEYS="$AGENT_HOME/.ssh/authorized_keys"
+  PUBLIC_DIR="$TMP/agent-public"
+  MANIFEST="$PUBLIC_DIR/allocation.tsv"
+  CREATED_AT="$TMP/agent-created-at"
+  printf '%s\n' "$(date +%s)" > "$CREATED_AT"
+  kill_agent_sessions() { :; }
+
+  write_agent_authorized_keys 10.42.0.11 10.42.0.12
+  grep -Fq 'restrict,port-forwarding,permitopen="10.42.0.11:22",permitopen="10.42.0.12:22",command="/usr/local/libexec/subyard/test-vms-status"' \
+    "$AGENT_AUTHORIZED_KEYS" || fail "agent key does not have the exact two-target bastion policy"
+  [ "$(stat -c '%a' "$AGENT_AUTHORIZED_KEYS")" = 600 ] \
+    || fail "agent authorized_keys is not private"
+
+  AGENT_PUBLIC_KEY='ssh-ed25519 BBBBagentfixture rotated'
+  write_agent_authorized_keys 10.42.0.11 10.42.0.12
+  grep -Fq 'ssh-ed25519 BBBBagentfixture' "$AGENT_AUTHORIZED_KEYS" \
+    || fail "agent key rotation was not applied"
+  ! grep -Fq 'ssh-ed25519 AAAAagentfixture' "$AGENT_AUTHORIZED_KEYS" \
+    || fail "agent key rotation retained the old key"
+  rotated_hash="$(sha256sum "$AGENT_AUTHORIZED_KEYS")"
+  write_agent_authorized_keys 10.42.0.11 10.42.0.12
+  [ "$(sha256sum "$AGENT_AUTHORIZED_KEYS")" = "$rotated_hash" ] \
+    || fail "agent key reconciliation is not idempotent"
+
+  write_manifest ready ready \
+    10.42.0.11 'ssh-ed25519 AAAAhost1111' 10.42.0.12 'ssh-ed25519 AAAAhost2222'
+  status_output="$(SUBYARD_E2E_ALLOCATION_MANIFEST="$MANIFEST" \
+    SSH_ORIGINAL_COMMAND='id' sh "$ROOT/scripts/test-vms-status.sh")"
+  printf '%s\n' "$status_output" | grep -Fxq $'vm\t1\te2e-vm-1\t10.42.0.11\tssh-ed25519\tAAAAhost1111' \
+    || fail "forced status lost VM1 target or host-key pin"
+  [ "$(stat -c '%a' "$MANIFEST")" = 644 ] || fail "public allocation snapshot mode drifted"
+
+  restrict_agent_access operator-down
+  ! grep -Fq 'port-forwarding' "$AGENT_AUTHORIZED_KEYS" \
+    || fail "down allocation retained SSH forwarding"
+  grep -Fxq $'state\tdown' "$MANIFEST" || fail "down allocation was not published"
+) || exit 1
 
 # Cross-owner checks use VM-local synthetic keys. The trusted inner control plane exchanges only
 # public client and host keys, then proves both directions without TOFU or a shared private key.
@@ -301,14 +378,6 @@ grep -Fxq "project delete $PROJECT" "$TMP/cleanup-calls" \
 ! grep -Fq "project delete $PROJECT --force" "$TMP/cleanup-calls" \
   || fail "cleanup used Incus 6.0's interactive forced project deletion"
 
-if (
-  vm_exists() { return 0; }
-  vm_marker() { printf 'foreign\n'; }
-  require_managed_vm e2e-vm-1
-) >/dev/null 2>&1; then
-  fail "SSH/exec ownership guard accepted an unmarked VM"
-fi
-
 cleanup_managed() { printf 'expired-cleanup\n' >> "$events"; }
 project_exists() { return 0; }
 project_marker() { printf '%s\n' "$MARKER"; }
@@ -317,10 +386,6 @@ printf '%s\n' "$(( $(date +%s) - TTL_MINUTES * 60 - 1 ))" > "$CREATED_AT"
 cmd_gc
 grep -Fxq expired-cleanup "$events" || fail "expired lab was not cleaned"
 
-[ "$(vm_name 1)" = e2e-vm-1 ] && [ "$(vm_name 2)" = e2e-vm-2 ] \
-  || fail "VM selectors drifted"
-if (vm_name 3) >/dev/null 2>&1; then fail "unsafe VM selector was accepted"; fi
-
 # The provisioner is streamed into L1 through `bash -s`; under `set -u`, its source guard must
 # accept an empty BASH_SOURCE instead of failing before the inner bootstrap starts.
 source_guard="$(sed -n '/^\[ "${BASH_SOURCE\[0\]:-\$0}" = "\$0" \] || return 0$/p' \
@@ -328,6 +393,39 @@ source_guard="$(sed -n '/^\[ "${BASH_SOURCE\[0\]:-\$0}" = "\$0" \] || return 0$/
 [ -n "$source_guard" ] || fail "inner provisioner has no stdin-safe source guard"
 printf '%s\n' "$source_guard" | bash -u -s \
   || fail "inner provisioner source guard rejected bash -s execution"
+! grep -Eq 'usermod[[:space:]]+-aG[[:space:]]+(incus-admin|yard)' \
+  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  || fail "inner provisioner still grants dev access to privileged inner groups"
+grep -Fq 'iifname "incusbr0" drop' "$ROOT/scripts/provision-test-vms-inner.sh" \
+  || fail "inner provisioner does not block guest-initiated access to L1"
+grep -Fq 'PasswordAuthentication no' "$ROOT/scripts/provision-test-vms-inner.sh" \
+  || fail "bastion provisioner does not disable password authentication"
+grep -Fq 'install -d -m 0750 -o root -g "$primary" "$home/.ssh"' \
+  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  || fail "bastion authorized-key directory is not root-owned and account-readable"
+grep -Fq 'chown root:"$primary" "$home/.ssh/authorized_keys"' \
+  "$ROOT/scripts/provision-test-vms-inner.sh" \
+  || fail "bastion authorized-key file is not root-owned and account-readable"
+
+# Post-apply verification names the failed invariant.
+SCRIPT_DIR="$ROOT/scripts"
+# shellcheck source=scripts/reconcile/stages/test-vms.sh
+. "$ROOT/scripts/reconcile/stages/test-vms.sh"
+reconcile_incus_reachable() { return 1; }
+quiet_diagnostic="$(stage_test_vms_check 2>&1 || true)"
+[ -z "$quiet_diagnostic" ] || fail "planning emitted test-vms drift diagnostics"
+verbose_diagnostic="$(stage_test_vms_verify 2>&1 || true)"
+printf '%s\n' "$verbose_diagnostic" \
+  | grep -Fq 'test-vms convergence: outer Incus is not reachable' \
+  || fail "post-apply test-vms verification omitted its failing invariant"
+
+if SUBYARD_E2E_LEGACY_FIXTURE=1 \
+  bash "$ROOT/dev/e2e/seed-test-vms-legacy-state.sh" fixture-project fixture-instance \
+  >/dev/null 2>&1; then
+  fail "legacy upgrade fixture ran outside disposable VM1"
+fi
+grep -Fq 'user.subyard.managed' "$ROOT/dev/e2e/seed-test-vms-legacy-state.sh" \
+  || fail "legacy upgrade fixture does not verify candidate ownership"
 
 # A first inner-Incus bootstrap must recover from the nested AppArmor denial of dnsmasq's syslog
 # socket in the same run, then remain idempotent on reconciliation.
@@ -336,6 +434,17 @@ mkdir -p "$INNER_FIXTURE"
 export INNER_FIXTURE
 # shellcheck source=scripts/provision-test-vms-inner.sh
 . "$ROOT/scripts/provision-test-vms-inner.sh"
+
+E2E_VM_STATE_DIR="$TMP/legacy-test-vms-state"
+mkdir -p "$E2E_VM_STATE_DIR"
+chmod 2770 "$E2E_VM_STATE_DIR"
+printf 'legacy\n' > "$E2E_VM_STATE_DIR/worker-key"
+chmod 0660 "$E2E_VM_STATE_DIR/worker-key"
+reconcile_test_vm_state_directory
+[ "$(stat -c '%a' "$E2E_VM_STATE_DIR")" = 700 ] \
+  || fail "legacy test-vms state directory retained its setgid boundary"
+[ "$(stat -c '%a' "$E2E_VM_STATE_DIR/worker-key")" = 600 ] \
+  || fail "legacy test-vms state file retained group access"
 
 # Incus 6.0 plus AppArmor 4.1 userspace on a 6.8 outer kernel rejects QEMU AF_UNIX rules because
 # of a parser/kernel ABI mismatch. The compatibility switch applies only to the inner daemon and

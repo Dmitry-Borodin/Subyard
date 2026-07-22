@@ -402,6 +402,10 @@ func operationMetadata(
 }
 
 func (fake *IncusServer) serveEvents(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Query().Get("all-projects") != "true" {
+		writeIncusError(writer, http.StatusBadRequest, "all-projects event subscription required")
+		return
+	}
 	connection, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(writer, request, nil)
 	if err != nil {
 		return

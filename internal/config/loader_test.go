@@ -33,9 +33,10 @@ func TestLoadNamedContext(t *testing.T) {
 : "${SUBYARD_HOME:=$SUBYARD_OPERATOR_HOME/.subyard}"
 : "${STORAGE_PATH:=$SUBYARD_HOME/incus/storage}"
 : "${HOST_BASE:=${RESTRICTED_DISK_PATHS:-/srv/subyard}}"`)
-	writeFixture(t, filepath.Join(yardDir, "named.env"), "SSH_PORT=3333\nINSTANCE_NAME=fixture-yard\nHOST_BASE="+root+"/host/../host\nRESTRICTED_DISK_PATHS="+root+"/host\n")
+	writeFixture(t, filepath.Join(shipped, "yards", "profiles", "e2e-vms.env"), "NESTED_E2E_VMS=1\nE2E_VM_CPU=2\nFORWARD_SSH_AGENT=0\n")
+	writeFixture(t, filepath.Join(yardDir, "named.env"), "YARD_TEMPLATE=e2e-vms\nSSH_PORT=3333\nINSTANCE_NAME=fixture-yard\nE2E_VM_CPU=1\nHOST_BASE="+root+"/host/../host\nRESTRICTED_DISK_PATHS="+root+"/host\n")
 
-	ctx, err := LoadContext(LoadOptions{
+	loaded, err := Load(LoadOptions{
 		RepositoryRoot: root,
 		OperatorHome:   operatorHome,
 		YardName:       "named",
@@ -48,8 +49,15 @@ func TestLoadNamedContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx := loaded.Context
 	if ctx.InstanceName != "fixture-yard" || ctx.IncusProject != "subyard-named" || ctx.SSHPort != 3333 {
 		t.Fatalf("named context mismatch: %#v", ctx)
+	}
+	if !ctx.NestedE2EVMs || ctx.ForwardSSHAgent {
+		t.Fatalf("public yard template was not applied: %#v", ctx)
+	}
+	if loaded.Environment["E2E_VM_CPU"] != "1" {
+		t.Fatalf("machine yard file did not override its template: %#v", loaded.Environment)
 	}
 	if ctx.Paths.HostBase != filepath.Join(root, "host") {
 		t.Fatalf("host base was not normalized: %s", ctx.Paths.HostBase)
@@ -104,7 +112,7 @@ func TestEngineReexecDoesNotLeakPriorYardContext(t *testing.T) {
 : "${HOST_BASE:=${RESTRICTED_DISK_PATHS:-/srv/subyard}}"`)
 	writeFixture(t, filepath.Join(configHome, "yards", "named.env"), "SSH_PORT=3333\n")
 
-	ctx, err := LoadContext(LoadOptions{
+	loaded, err := Load(LoadOptions{
 		RepositoryRoot: root, OperatorHome: operatorHome, YardName: "named", DisablePrivate: true,
 		Environment: map[string]string{
 			"SUBYARD_OPERATOR_HOME": operatorHome, "SUBYARD_CONFIG_HOME": configHome,
@@ -112,13 +120,18 @@ func TestEngineReexecDoesNotLeakPriorYardContext(t *testing.T) {
 			"SSH_HOST": "yard", "SSH_PORT": "2222", "RESTRICTED_DISK_PATHS": "/srv/subyard",
 			"HOST_BASE": "/srv/subyard", "INSTANCE_TYPE": "container", "SHIFT_MODE": "shift",
 			"FORWARD_SSH_AGENT": "0", "DEV_SUDO": "0", "DEV_UID": "1000",
+			"YARD_TEMPLATE": "stale", "NESTED_E2E_VMS": "1",
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx := loaded.Context
 	if ctx.InstanceName != "yard-named" || ctx.IncusProject != "subyard-named" || ctx.SSHHost != "yard-named" {
 		t.Fatalf("prior context leaked into named reload: %#v", ctx)
+	}
+	if ctx.NestedE2EVMs || loaded.Environment["YARD_TEMPLATE"] != "" {
+		t.Fatalf("prior E2E context leaked into named reload: %#v", loaded.Environment)
 	}
 }
 

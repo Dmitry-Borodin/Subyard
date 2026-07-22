@@ -27,6 +27,8 @@ action="${1:-}"
 # worker is an unambiguous marker; do not infer this boundary merely from LXC,
 # because an owner host can itself be nested.
 if [ -x "$WORKER" ]; then
+  [ "$(id -u)" = 0 ] \
+    || die "the privileged L1 worker is operator-only; agents must use dev/agent-e2e.sh from their controller environment"
   exec "$WORKER" "$@"
 fi
 
@@ -50,21 +52,21 @@ case "$action" in
   up)
     announce "Create the disposable nested VM lab in $INSTANCE_NAME" \
       "Create/start exactly two VMs inside the yard's own Incus daemon." \
-      "Install a synthetic SSH identity with passwordless sudo inside those VMs." \
+      "Install separate root-only operator and enrolled agent SSH identities in those VMs." \
       "Apply CPU/RAM/count limits and automatic TTL cleanup." \
+      "Publish restricted direct-SSH access for the enrolled agent; no L1 shell is granted." \
       "No L0 Incus socket, host mount or real credential is exposed to the VMs."
     proceed_or_die
     set -- "$@" --yes
     ;;
   down)
     announce "Delete the disposable nested VM lab in $INSTANCE_NAME" \
-      "Delete the two marked test VMs, their inner Incus project and synthetic SSH identity." \
+      "Delete the two marked test VMs, their inner Incus project and operator worker identity." \
+      "Revoke all agent VM forwarding before cleanup." \
       "Refuse cleanup if the project contains any unexpected instance."
     proceed_or_die
     set -- "$@" --yes
     ;;
 esac
 
-mode=non-interactive
-case "$action" in ssh) mode=interactive ;; esac
-exec incus exec "$INSTANCE_NAME" "${PROJ[@]}" --mode="$mode" -- "$WORKER" "$@"
+exec incus exec "$INSTANCE_NAME" "${PROJ[@]}" --mode=non-interactive -- "$WORKER" "$@"

@@ -123,11 +123,15 @@ MOCK_HOST_HAS_KVM=false
 MOCK_INSTANCE_DEVICES=srv
 
 mkdir -p "$HOME/.ssh"
-printf 'Host %s\n    Port %s\n' "$SSH_HOST" "$SSH_PORT" > "$HOME/.ssh/subyard.config"
+printf 'Host %s\n    Port %s\n    StrictHostKeyChecking yes\n' "$SSH_HOST" "$SSH_PORT" > "$HOME/.ssh/subyard.config"
 if [ "$FORWARD_SSH_AGENT" = 1 ]; then
   printf '    ForwardAgent yes\n' >> "$HOME/.ssh/subyard.config"
 fi
 printf 'Include subyard.config\n' > "$HOME/.ssh/config"
+mkdir -p "$SUBYARD_HOME/ssh"
+ssh-keygen -q -t ed25519 -N '' -f "$TMP/yard-host-key"
+awk -v endpoint="[127.0.0.1]:$SSH_PORT" '{print endpoint " " $1 " " $2}' \
+  "$TMP/yard-host-key.pub" > "$SUBYARD_HOME/ssh/known_hosts"
 MOCK_INSTANCE_DEVICES='srv ssh'
 reconcile_power_stopped() { return 0; }
 stage_ssh_check || fail "matching SSH state rejected"

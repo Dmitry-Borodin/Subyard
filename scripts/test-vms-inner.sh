@@ -18,6 +18,14 @@ TTL_MINUTES="${E2E_VM_TTL_MINUTES:-240}"
 BOOT_TIMEOUT="${E2E_VM_BOOT_TIMEOUT:-300}"
 DEV_USER="${DEV_USER:-dev}"
 STATE_DIR="${E2E_VM_STATE_DIR:-/var/lib/subyard/test-vms}"
+PUBLIC_DIR="${E2E_VM_PUBLIC_DIR:-/var/lib/subyard/test-vms-public}"
+MANIFEST="$PUBLIC_DIR/allocation.tsv"
+AGENT_USER="${E2E_AGENT_USER:-subyard-e2e-agent}"
+AGENT_PUBLIC_KEY="${E2E_AGENT_PUBLIC_KEY:-}"
+AGENT_HOME="${E2E_AGENT_HOME:-/var/lib/subyard/e2e-agent}"
+AGENT_AUTHORIZED_KEYS="${E2E_AGENT_AUTHORIZED_KEYS:-$AGENT_HOME/.ssh/authorized_keys}"
+AGENT_KEY_MARKER="subyard-managed-e2e-agent"
+STATUS_COMMAND="${E2E_AGENT_STATUS_COMMAND:-/usr/local/libexec/subyard/test-vms-status}"
 MARKER="test-vms-v1"
 INCUS="${SUBYARD_INNER_INCUS:-incus}"
 
@@ -25,6 +33,8 @@ KEY="$STATE_DIR/id_ed25519"
 KNOWN_HOSTS="$STATE_DIR/known_hosts"
 CREATED_AT="$STATE_DIR/created-at"
 FAILURE_LOG="$STATE_DIR/last-failure.log"
+WORKER_KEY_REVISION="$STATE_DIR/worker-key-v2"
+REVOKED_WORKER_KEY="$STATE_DIR/revoked-worker.pub"
 ASSUME_YES=0
 
 die() { printf 'test-vms: %s\n' "$*" >&2; exit 1; }
@@ -61,9 +71,7 @@ Usage: yard test-vms <command> [args]
 
   up                  create/start both disposable VMs and verify SSH
   status              show VM state, address and TTL
-  ssh <1|2>           open an interactive SSH session as dev (sudo is passwordless)
-  exec <1|2> -- CMD   run a command over the pinned SSH connection
-  down                delete both VMs, their project and synthetic SSH key
+  down                delete both VMs, their project and operator worker SSH key
 
 Mutating commands ask once; --yes is for automation. The TTL cleaner removes an
 expired managed lab even if the initiating session disappears.
@@ -96,10 +104,23 @@ validate_config() {
     || die "E2E_VM_TTL_MINUTES must be from 15 to 1440"
   [[ "$BOOT_TIMEOUT" =~ ^[0-9]+$ ]] && [ "$BOOT_TIMEOUT" -ge 30 ] && [ "$BOOT_TIMEOUT" -le 1800 ] \
     || die "E2E_VM_BOOT_TIMEOUT must be from 30 to 1800"
+  case "$AGENT_USER" in '' | -* | *[!a-z0-9_-]*) die "unsafe E2E_AGENT_USER '$AGENT_USER'" ;; esac
+  case "$AGENT_HOME" in /var/lib/subyard/*) ;; *) die "unsafe E2E_AGENT_HOME '$AGENT_HOME'" ;; esac
+  case "$PUBLIC_DIR" in /var/lib/subyard/* | /tmp/*) ;; *) die "unsafe E2E_VM_PUBLIC_DIR '$PUBLIC_DIR'" ;; esac
+  case "$STATUS_COMMAND" in /usr/local/libexec/subyard/*) ;; *) die "unsafe E2E_AGENT_STATUS_COMMAND '$STATUS_COMMAND'" ;; esac
+  if [ -n "$AGENT_PUBLIC_KEY" ]; then
+    [[ "$AGENT_PUBLIC_KEY" != *$'\n'* && "$AGENT_PUBLIC_KEY" != *$'\r'* ]] \
+      || die "E2E_AGENT_PUBLIC_KEY must be one line"
+    [[ "$AGENT_PUBLIC_KEY" =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] \
+      || die "E2E_AGENT_PUBLIC_KEY must be an Ed25519 public key"
+  fi
 }
 
-vm_name() {
-  case "${1:-}" in 1 | 2) printf '%s-%s\n' "$PREFIX" "$1" ;; *) die "VM selector must be 1 or 2" ;; esac
+normalized_agent_public_key() {
+  local type blob _rest
+  [ -n "$AGENT_PUBLIC_KEY" ] || return 1
+  read -r type blob _rest <<<"$AGENT_PUBLIC_KEY"
+  printf '%s %s\n' "$type" "$blob"
 }
 
 project_exists() { inner_incus project show "$PROJECT" >/dev/null 2>&1; }
@@ -107,16 +128,9 @@ project_marker() { inner_incus project get "$PROJECT" user.subyard.managed 2>/de
 vm_exists() { inner_incus info "$1" --project "$PROJECT" >/dev/null 2>&1; }
 vm_marker() { inner_incus config get "$1" user.subyard.managed --project "$PROJECT" 2>/dev/null || true; }
 
-require_managed_vm() {
-  vm_exists "$1" || die "$1 is not up"
-  [ "$(vm_marker "$1")" = "$MARKER" ] || die "VM '$1' is not Subyard-managed"
-}
-
 ensure_state_dir() {
-  local group=yard
-  getent group "$group" >/dev/null 2>&1 || group="$(id -gn "$DEV_USER" 2>/dev/null || id -gn)"
   if [ "$(id -u)" = 0 ]; then
-    install -d -m 2770 -o root -g "$group" "$STATE_DIR"
+    install -d -m 0700 -o root -g root "$STATE_DIR"
   else
     [ -d "$STATE_DIR" ] && [ -w "$STATE_DIR" ] \
       || die "state directory is not writable; re-run yard init on the owner host"
@@ -125,21 +139,40 @@ ensure_state_dir() {
 
 ensure_key() {
   ensure_state_dir
+  if [ ! -e "$WORKER_KEY_REVISION" ]; then
+    if [ -s "$KEY.pub" ]; then
+      awk '$1 == "ssh-ed25519" && NF >= 2 { print $1 " " $2; exit }' "$KEY.pub" \
+        > "$REVOKED_WORKER_KEY"
+      chmod 0600 "$REVOKED_WORKER_KEY"
+    fi
+    rm -f "$KEY" "$KEY.pub"
+  fi
   if [ ! -s "$KEY" ] || [ ! -s "$KEY.pub" ]; then
     rm -f "$KEY" "$KEY.pub"
-    ssh-keygen -q -t ed25519 -N '' -C subyard-test-vms -f "$KEY"
+    ssh-keygen -q -t ed25519 -N '' -C subyard-managed-e2e-worker -f "$KEY"
   fi
-  if [ "$(id -u)" = 0 ] && id -u "$DEV_USER" >/dev/null 2>&1; then
-    chown "$DEV_USER" "$KEY" "$KEY.pub"
-  fi
-  chmod 0600 "$KEY"; chmod 0644 "$KEY.pub"
+  : > "$WORKER_KEY_REVISION"
+  [ "$(id -u)" != 0 ] || chown root:root "$KEY" "$KEY.pub"
+  chmod 0600 "$KEY" "$WORKER_KEY_REVISION"
+  chmod 0644 "$KEY.pub"
+}
+
+memory_to_mib() {
+  local value="$1"
+  case "$value" in
+    *GiB) printf '%s\n' "$(( ${value%GiB} * 1024 ))" ;;
+    *MiB) printf '%s\n' "${value%MiB}" ;;
+    *) return 1 ;;
+  esac
 }
 
 ensure_project() {
-  local total_cpu memory_number memory_unit total_memory name names
+  local total_cpu memory_number memory_unit total_memory total_memory_mib name names
+  local current_cpu current_memory current_memory_mib
   total_cpu=$((CPU * 2))
   memory_unit="${MEMORY##*[0-9]}"; memory_number="${MEMORY%$memory_unit}"
   total_memory="$((memory_number * 2))$memory_unit"
+  total_memory_mib="$(memory_to_mib "$total_memory")" || return
   if project_exists; then
     [ "$(project_marker)" = "$MARKER" ] \
       || die "project '$PROJECT' exists without the Subyard marker; refusing to modify it"
@@ -151,6 +184,19 @@ ensure_project() {
         *) die "unexpected instance blocks reconciliation: $name" ;;
       esac
     done <<<"$names"
+    # Raise aggregate limits before growing VM limits.
+    current_cpu="$(inner_incus project get "$PROJECT" limits.cpu)" || return
+    if [[ "$current_cpu" =~ ^[0-9]+$ ]] && [ "$current_cpu" -lt "$total_cpu" ]; then
+      inner_incus project set "$PROJECT" limits.cpu "$total_cpu" || return
+    fi
+    current_memory="$(inner_incus project get "$PROJECT" limits.memory)" || return
+    if [ -n "$current_memory" ]; then
+      current_memory_mib="$(memory_to_mib "$current_memory")" \
+        || die "managed project has an unsupported memory limit: $current_memory"
+      if [ "$current_memory_mib" -lt "$total_memory_mib" ]; then
+        inner_incus project set "$PROJECT" limits.memory "$total_memory" || return
+      fi
+    fi
   else
     run_with_progress "creating inner Incus project '$PROJECT'" inner_incus project create "$PROJECT" \
       -c features.images=false \
@@ -165,8 +211,6 @@ ensure_project() {
   fi
   inner_incus project set "$PROJECT" limits.instances 2 || return
   inner_incus project set "$PROJECT" limits.virtual-machines 2 || return
-  inner_incus project set "$PROJECT" limits.cpu "$total_cpu" || return
-  inner_incus project set "$PROJECT" limits.memory "$total_memory" || return
   inner_incus project set "$PROJECT" restricted true || return
   inner_incus project set "$PROJECT" user.subyard.managed "$MARKER" || return
 
@@ -182,8 +226,9 @@ ensure_project() {
 }
 
 cloud_config() {
-  local public_key
+  local public_key agent_key=''
   public_key="$(cat "$KEY.pub")"
+  agent_key="$(normalized_agent_public_key 2>/dev/null || true)"
   cat <<EOF
 #cloud-config
 users:
@@ -198,9 +243,12 @@ users:
     passwd: x
     ssh_authorized_keys:
       - $public_key
+EOF
+  [ -z "$agent_key" ] || printf '      - %s %s\n' "$agent_key" "$AGENT_KEY_MARKER"
+  cat <<'EOF'
 ssh_pwauth: false
 package_update: true
-packages: [openssh-server, sudo]
+packages: [openssh-server, sudo, git, curl, jq, ripgrep, golang-go, shellcheck]
 runcmd:
   - [systemctl, enable, --now, ssh]
 EOF
@@ -231,6 +279,13 @@ ensure_vm() {
 }
 
 tighten_project() {
+  local total_cpu memory_number memory_unit total_memory
+  total_cpu=$((CPU * 2))
+  memory_unit="${MEMORY##*[0-9]}"; memory_number="${MEMORY%$memory_unit}"
+  total_memory="$((memory_number * 2))$memory_unit"
+  # VM limits now permit shrinking aggregate limits.
+  inner_incus project set "$PROJECT" limits.cpu "$total_cpu" || return
+  inner_incus project set "$PROJECT" limits.memory "$total_memory" || return
   # Older workers enabled this solely for raw.apparmor. Emptying it is idempotent in Incus 6.0 and
   # ensures the fixed test project no longer accepts arbitrary low-level VM configuration.
   inner_incus project unset "$PROJECT" restricted.virtual-machines.lowlevel || return
@@ -246,7 +301,7 @@ start_vm() {
 }
 
 wait_agent() {
-  local vm="$1" account_status deadline=$((SECONDS + BOOT_TIMEOUT)) started=$SECONDS next_report=$((SECONDS + 10))
+  local vm="$1" account_status sshd_config deadline=$((SECONDS + BOOT_TIMEOUT)) started=$SECONDS next_report=$((SECONDS + 10))
   info "waiting for $vm Incus agent"
   until inner_incus exec "$vm" --project "$PROJECT" -- true >/dev/null 2>&1; do
     [ "$SECONDS" -lt "$deadline" ] || die "$vm did not expose the Incus agent within ${BOOT_TIMEOUT}s"
@@ -258,19 +313,95 @@ wait_agent() {
   done
   ok "$vm Incus agent is ready"
   run_with_progress "waiting for $vm cloud-init" \
-    inner_incus exec "$vm" --project "$PROJECT" -- timeout "$BOOT_TIMEOUT" cloud-init status --wait \
-    >/dev/null || return
+    wait_cloud_init "$vm" || return
   # Reconcile images created by older workers too. A locked shadow entry makes modern OpenSSH reject
   # even a matching authorized key; the invalid marker unlocks key login but can never authenticate
   # as a password. ssh_pwauth remains disabled and is verified before the VM is declared ready.
   inner_incus exec "$vm" --project "$PROJECT" -- usermod --password x dev || return
   account_status="$(inner_incus exec "$vm" --project "$PROJECT" -- passwd --status dev)" || return
   case "$account_status" in 'dev P '*) ;; *) die "$vm dev account did not become key-login capable" ;; esac
-  inner_incus exec "$vm" --project "$PROJECT" -- sshd -T \
-    | grep -Fxq 'passwordauthentication no' \
+  # Debian sshd uses the first included value; install this policy first.
+  inner_incus exec "$vm" --project "$PROJECT" -- sh -eu -c '
+    directory=/etc/ssh/sshd_config.d
+    target="$directory/00-subyard-e2e.conf"
+    install -d -m 0755 "$directory"
+    temp="$(mktemp "$directory/.subyard-e2e.XXXXXX")"
+    trap '\''rm -f "$temp"'\'' EXIT
+    printf "PasswordAuthentication no\nKbdInteractiveAuthentication no\n" > "$temp"
+    chmod 0644 "$temp"
+    mv -f "$temp" "$target"
+    trap - EXIT
+    sshd -t
+    systemctl reload ssh
+  ' || return
+  # Capture output before matching to avoid a pipefail broken pipe.
+  sshd_config="$(inner_incus exec "$vm" --project "$PROJECT" -- sshd -T)" || return
+  printf '%s\n' "$sshd_config" | grep -Fx 'passwordauthentication no' >/dev/null \
     || die "$vm SSH password authentication is not disabled"
   inner_incus exec "$vm" --project "$PROJECT" -- systemctl is-active --quiet ssh || return
   ok "$vm cloud-init and SSH service are ready"
+}
+
+wait_cloud_init() {
+  local vm="$1"
+  inner_incus exec "$vm" --project "$PROJECT" -- \
+    timeout "$BOOT_TIMEOUT" cloud-init status --wait >/dev/null
+}
+
+ensure_guest_tools() {
+  local vm="$1"
+  if inner_incus exec "$vm" --project "$PROJECT" -- sh -c \
+    'command -v git >/dev/null && command -v curl >/dev/null && command -v jq >/dev/null && command -v rg >/dev/null && command -v go >/dev/null && command -v shellcheck >/dev/null'; then
+    return 0
+  fi
+  run_with_progress "installing test toolchain in $vm" \
+    inner_incus exec "$vm" --project "$PROJECT" -- sh -eu -c \
+      'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; apt-get install -y -qq git curl jq ripgrep golang-go shellcheck' \
+    || return
+  ok "$vm test toolchain is ready"
+}
+
+install_managed_guest_keys() {
+  local vm="$1" worker_key agent_key='' revoked_key=''
+  worker_key="$(awk '$1 == "ssh-ed25519" && NF >= 2 { print $1 " " $2; exit }' "$KEY.pub")"
+  agent_key="$(normalized_agent_public_key 2>/dev/null || true)"
+  [ ! -s "$REVOKED_WORKER_KEY" ] \
+    || revoked_key="$(awk '$1 == "ssh-ed25519" && NF >= 2 { print $1 " " $2; exit }' "$REVOKED_WORKER_KEY")"
+  validate_public_key "$vm worker identity" "$worker_key"
+  [ -z "$agent_key" ] || validate_public_key "$vm agent identity" "$agent_key"
+  inner_incus exec "$vm" --project "$PROJECT" \
+    --env WORKER_KEY="$worker_key" \
+    --env AGENT_KEY="$agent_key" \
+    --env REVOKED_WORKER_KEY="$revoked_key" \
+    --env AGENT_KEY_MARKER="$AGENT_KEY_MARKER" \
+    -- sh -eu -c '
+      home=/home/dev
+      ssh_dir="$home/.ssh"
+      authorized="$ssh_dir/authorized_keys"
+      install -d -m 0700 -o dev -g dev "$ssh_dir"
+      touch "$authorized"
+      temp="$(mktemp "$ssh_dir/.authorized-keys.XXXXXX")"
+      revoked_type="${REVOKED_WORKER_KEY%% *}"
+      revoked_blob="${REVOKED_WORKER_KEY#* }"
+      awk -v agent_marker="$AGENT_KEY_MARKER" \
+          -v revoked_type="$revoked_type" -v revoked_blob="$revoked_blob" '\''
+        $NF == "subyard-test-vms" || $NF == "subyard-managed-e2e-worker" || $NF == agent_marker { next }
+        {
+          drop = 0
+          if (revoked_type != "" && revoked_blob != "") {
+            for (i = 1; i < NF; i++) {
+              if ($i == revoked_type && $(i + 1) == revoked_blob) drop = 1
+            }
+          }
+          if (!drop) print
+        }
+      '\'' "$authorized" > "$temp"
+      printf "%s subyard-managed-e2e-worker\n" "$WORKER_KEY" >> "$temp"
+      [ -z "$AGENT_KEY" ] || printf "%s %s\n" "$AGENT_KEY" "$AGENT_KEY_MARKER" >> "$temp"
+      chmod 0600 "$temp"
+      chown dev:dev "$temp"
+      mv -f "$temp" "$authorized"
+    '
 }
 
 vm_ip() {
@@ -353,6 +484,129 @@ guest_host_public_key() {
       /etc/ssh/ssh_host_ed25519_key.pub
 }
 
+kill_agent_sessions() {
+  id -u "$AGENT_USER" >/dev/null 2>&1 || return 0
+  command -v pkill >/dev/null 2>&1 || return 0
+  pkill -KILL -u "$AGENT_USER" >/dev/null 2>&1 || true
+}
+
+write_agent_authorized_keys() {
+  local ip1="${1:-}" ip2="${2:-}" key options temp directory primary
+  [ -n "$AGENT_PUBLIC_KEY" ] || return 0
+  id -u "$AGENT_USER" >/dev/null 2>&1 || die "agent bastion account is missing; re-run yard init"
+  key="$(normalized_agent_public_key)"
+  directory="$(dirname "$AGENT_AUTHORIZED_KEYS")"
+  if [ "$(id -u)" = 0 ]; then
+    primary="$(id -gn "$AGENT_USER")"
+    install -d -m 0750 -o root -g "$primary" "$directory"
+  else
+    install -d -m 0700 "$directory"
+  fi
+  options="restrict,command=\"$STATUS_COMMAND\""
+  if [ -n "$ip1" ] || [ -n "$ip2" ]; then
+    [[ "$ip1" =~ ^[0-9]+(\.[0-9]+){3}$ && "$ip2" =~ ^[0-9]+(\.[0-9]+){3}$ ]] \
+      || die "cannot publish non-IPv4 VM targets"
+    options="restrict,port-forwarding,permitopen=\"$ip1:22\",permitopen=\"$ip2:22\",command=\"$STATUS_COMMAND\""
+  fi
+  temp="$(mktemp "$directory/.authorized-keys.XXXXXX")"
+  printf '%s %s %s\n' "$options" "$key" "$AGENT_KEY_MARKER" > "$temp"
+  if [ "$(id -u)" = 0 ]; then
+    chmod 0640 "$temp"
+    chown root:"$primary" "$temp"
+  else
+    chmod 0600 "$temp"
+  fi
+  mv -f "$temp" "$AGENT_AUTHORIZED_KEYS"
+}
+
+write_manifest() {
+  local state="$1" reason="$2" ip1="${3:-}" host1="${4:-}" ip2="${5:-}" host2="${6:-}"
+  local temp created=0 expires=0 host1_type host1_blob host1_extra host2_type host2_blob host2_extra
+  if [ "$(id -u)" = 0 ]; then
+    install -d -m 0755 -o root -g root "$PUBLIC_DIR"
+  else
+    install -d -m 0755 "$PUBLIC_DIR"
+  fi
+  if [ -r "$CREATED_AT" ]; then
+    created="$(cat "$CREATED_AT")"
+    [[ "$created" =~ ^[0-9]+$ ]] || created=0
+  fi
+  [ "$created" = 0 ] || expires=$((created + TTL_MINUTES * 60))
+  temp="$(mktemp "$PUBLIC_DIR/.allocation.XXXXXX")"
+  {
+    printf 'subyard-e2e-allocation-v1\n'
+    printf 'state\t%s\n' "$state"
+    printf 'reason\t%s\n' "$reason"
+    printf 'allocation_id\t%s\n' "$created"
+    printf 'expires_at_epoch\t%s\n' "$expires"
+    if [ "$state" = ready ]; then
+      read -r host1_type host1_blob host1_extra <<<"$host1"
+      read -r host2_type host2_blob host2_extra <<<"$host2"
+      [ "$host1_type" = ssh-ed25519 ] && [ -n "$host1_blob" ] && [ -z "$host1_extra" ] \
+        || die "cannot publish an invalid VM1 host key"
+      [ "$host2_type" = ssh-ed25519 ] && [ -n "$host2_blob" ] && [ -z "$host2_extra" ] \
+        || die "cannot publish an invalid VM2 host key"
+      printf 'vm\t1\t%s-1\t%s\t%s\t%s\n' "$PREFIX" "$ip1" "$host1_type" "$host1_blob"
+      printf 'vm\t2\t%s-2\t%s\t%s\t%s\n' "$PREFIX" "$ip2" "$host2_type" "$host2_blob"
+    fi
+  } > "$temp"
+  chmod 0644 "$temp"
+  [ "$(id -u)" != 0 ] || chown root:root "$temp"
+  mv -f "$temp" "$MANIFEST"
+}
+
+restrict_agent_access() {
+  local reason="${1:-not-ready}"
+  kill_agent_sessions
+  write_agent_authorized_keys
+  write_manifest down "$reason"
+}
+
+enable_agent_access() {
+  local vm1="$PREFIX-1" vm2="$PREFIX-2" ip1 ip2 host1 host2
+  ip1="$(vm_ip "$vm1")" || return
+  ip2="$(vm_ip "$vm2")" || return
+  host1="$(guest_host_public_key "$vm1")" || return
+  host2="$(guest_host_public_key "$vm2")" || return
+  validate_public_key "$vm1 host identity" "$host1"
+  validate_public_key "$vm2 host identity" "$host2"
+  kill_agent_sessions
+  write_agent_authorized_keys "$ip1" "$ip2"
+  write_manifest ready ready "$ip1" "$host1" "$ip2" "$host2"
+}
+
+reconcile_existing_agent_access() {
+  local vm name names state
+  restrict_agent_access reconciling
+  project_exists || return 0
+  [ "$(project_marker)" = "$MARKER" ] \
+    || die "project '$PROJECT' exists without the Subyard marker; agent access remains disabled"
+  names="$(inner_incus list --project "$PROJECT" -f csv -c n)" || return
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "$name" in "$PREFIX-1" | "$PREFIX-2") ;; *) die "unexpected instance blocks agent access: $name" ;; esac
+  done <<<"$names"
+  for vm in "$PREFIX-1" "$PREFIX-2"; do
+    vm_exists "$vm" || { write_manifest down incomplete-allocation; return 0; }
+    [ "$(vm_marker "$vm")" = "$MARKER" ] \
+      || die "VM '$vm' is not Subyard-managed; agent access remains disabled"
+    state="$(inner_incus list "$vm" --project "$PROJECT" -f csv -c s)" || return
+    [ "$state" = RUNNING ] || { write_manifest down not-running; return 0; }
+  done
+  ensure_key || return
+  : > "$KNOWN_HOSTS"
+  for vm in "$PREFIX-1" "$PREFIX-2"; do
+    wait_agent "$vm" || return
+    ensure_guest_tools "$vm" || return
+    install_managed_guest_keys "$vm" || return
+    record_host_key "$vm" || return
+  done
+  chmod 0600 "$KNOWN_HOSTS"
+  for vm in "$PREFIX-1" "$PREFIX-2"; do ssh_smoke "$vm" || return; done
+  enable_agent_access || return
+  rm -f "$REVOKED_WORKER_KEY"
+}
+
 validate_public_key() {
   local label="$1" key="$2"
   [[ "$key" =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/=]+$ ]] \
@@ -414,6 +668,7 @@ ensure_peer_trust() {
 
 cleanup_managed() {
   local quiet="${1:-0}" vm name names extra=0
+  restrict_agent_access down
   if project_exists; then
     [ "$(project_marker)" = "$MARKER" ] \
       || die "project '$PROJECT' is not Subyard-managed; refusing cleanup"
@@ -433,8 +688,9 @@ cleanup_managed() {
     # and fails closed if any other project resource exists; Incus 6.0's --force always prompts.
     inner_incus project delete "$PROJECT" || return
   fi
-  rm -f "$KEY" "$KEY.pub" "$KNOWN_HOSTS" "$CREATED_AT" "$FAILURE_LOG"
-  [ "$quiet" = 1 ] || ok "deleted both disposable VMs, inner project and synthetic SSH identity"
+  rm -f "$KEY" "$KEY.pub" "$KNOWN_HOSTS" "$CREATED_AT" "$FAILURE_LOG" \
+    "$WORKER_KEY_REVISION" "$REVOKED_WORKER_KEY"
+  [ "$quiet" = 1 ] || ok "deleted both disposable VMs, inner project and operator worker identity"
 }
 
 collect_failure_diagnostics() {
@@ -491,6 +747,7 @@ cmd_up() {
   printf 'Create/start exactly two disposable nested VMs with SSH and passwordless sudo.\n'
   printf 'They expire automatically after %s minutes.\n' "$TTL_MINUTES"
   confirm
+  restrict_agent_access provisioning
   ensure_key || return
   rm -f "$FAILURE_LOG"
   UP_FAILED=1
@@ -503,20 +760,25 @@ cmd_up() {
   for vm in "$PREFIX-1" "$PREFIX-2"; do start_vm "$vm" || return; done
   for vm in "$PREFIX-1" "$PREFIX-2"; do
     wait_agent "$vm" || return
+    ensure_guest_tools "$vm" || return
+    install_managed_guest_keys "$vm" || return
     record_host_key "$vm" || return
   done
-  chmod 0644 "$KNOWN_HOSTS"
+  chmod 0600 "$KNOWN_HOSTS"
   ensure_peer_trust || return
   for vm in "$PREFIX-1" "$PREFIX-2"; do ssh_smoke "$vm" || return; done
+  enable_agent_access || return
+  rm -f "$REVOKED_WORKER_KEY"
   UP_FAILED=0
   trap - EXIT
-  ok "both VMs are ready: use 'yard test-vms ssh 1' or 'yard test-vms exec 2 -- <command>'"
+  ok "both VMs are ready for the enrolled agent and operator diagnostics"
 }
 
 up_failure_on_exit() {
   local rc=$?
   trap - EXIT
   if [ "${UP_FAILED:-1}" = 1 ]; then
+    restrict_agent_access allocation-failed || true
     collect_failure_diagnostics "$rc" || true
     printf 'test-vms: failed allocation was left in place for diagnosis; operator cleanup: yard test-vms down\n' >&2
   fi
@@ -562,22 +824,8 @@ cmd_gc() {
   [ $((now - created)) -lt $((TTL_MINUTES * 60)) ] || cleanup_managed 1
 }
 
-cmd_ssh() {
-  local vm ip; vm="$(vm_name "${1:-}")"
-  require_managed_vm "$vm"
-  local -a options=(); mapfile -t options < <(ssh_options)
-  ip="$(vm_ip "$vm")"
-  exec ssh -tt "${options[@]}" "dev@$ip"
-}
-
-cmd_exec() {
-  local vm ip; vm="$(vm_name "${1:-}")"; shift || true
-  [ "${1:-}" != -- ] || shift
-  [ "$#" -gt 0 ] || die "exec requires a command after the VM selector"
-  require_managed_vm "$vm"
-  local -a options=(); mapfile -t options < <(ssh_options)
-  ip="$(vm_ip "$vm")"
-  exec ssh -T "${options[@]}" "dev@$ip" -- "$@"
+cmd_reconcile_access() {
+  reconcile_existing_agent_access
 }
 
 main() {
@@ -598,12 +846,11 @@ main() {
   case "${1:-}" in
     up) shift; [ "$#" -eq 0 ] || die "up takes no positional arguments"; cmd_up ;;
     status) shift; [ "$#" -eq 0 ] || die "status takes no positional arguments"; cmd_status ;;
-    ssh) shift; cmd_ssh "$@" ;;
-    exec) shift; cmd_exec "$@" ;;
     down) shift; [ "$#" -eq 0 ] || die "down takes no positional arguments"; cmd_down ;;
     gc) shift; [ "$#" -eq 0 ] || die "gc takes no positional arguments"; cmd_gc ;;
+    reconcile-access) shift; [ "$#" -eq 0 ] || die "reconcile-access takes no positional arguments"; cmd_reconcile_access ;;
     '' | help) usage ;;
-    *) die "unknown command '$1' (expected up, status, ssh, exec or down)" ;;
+    *) die "unknown command '$1' (expected up, status or down)" ;;
   esac
 }
 

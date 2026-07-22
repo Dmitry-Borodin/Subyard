@@ -52,10 +52,15 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
 
 fwd_note=()
 [ "$FORWARD_SSH_AGENT" = 1 ] && fwd_note=("Enable ssh-agent forwarding for '$SSH_HOST' (no private key enters the yard).")
+boundary_note=()
+[ "${NESTED_E2E_VMS:-0}" != 1 ] || boundary_note=(
+  "Replace '$DEV_USER' authorized_keys with this operator key restricted to the L0 loopback proxy."
+)
 announce "yard SSH access ($SSH_HOST)" \
   "Add an Incus proxy device: host 127.0.0.1:$SSH_PORT -> yard:22 (loopback only)." \
   "Authorize your SSH public key for '$DEV_USER' in the yard." \
-  "Add a 'Host $SSH_HOST' entry to ~/.ssh (via an Include; your config is not rewritten)." \
+  "Pin the yard host key through Incus and add a strict 'Host $SSH_HOST' entry via an Include." \
+  ${boundary_note[@]+"${boundary_note[@]}"} \
   ${fwd_note[@]+"${fwd_note[@]}"}
 proceed_or_die
 
@@ -101,12 +106,21 @@ fi
 
 # --- 3. authorize the key for dev in the yard (idempotent) -------------------
 echo "Authorized key:"
-incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env PUBKEY="$PUBKEY" --env DEV_USER="$DEV_USER" -- sh -eu -c '
+incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env PUBKEY="$PUBKEY" --env DEV_USER="$DEV_USER" \
+  --env RESTRICT_TO_PROXY="${NESTED_E2E_VMS:-0}" -- sh -eu -c '
   home="$(getent passwd "$DEV_USER" | cut -d: -f6)"
   install -d -m 700 -o "$DEV_USER" -g "$DEV_USER" "$home/.ssh"
-  ak="$home/.ssh/authorized_keys"; touch "$ak"
-  grep -qxF "$PUBKEY" "$ak" || printf "%s\n" "$PUBKEY" >> "$ak"
-  chmod 600 "$ak"; chown "$DEV_USER":"$DEV_USER" "$ak"
+  ak="$home/.ssh/authorized_keys"
+  if [ "$RESTRICT_TO_PROXY" = 1 ]; then
+    temp="$(mktemp "$home/.ssh/.authorized-keys.XXXXXX")"
+    printf "from=\"127.0.0.1,::1\" %s\n" "$PUBKEY" > "$temp"
+    chmod 600 "$temp"; chown "$DEV_USER":"$DEV_USER" "$temp"
+    mv -f "$temp" "$ak"
+  else
+    touch "$ak"
+    grep -qxF "$PUBKEY" "$ak" || printf "%s\n" "$PUBKEY" >> "$ak"
+    chmod 600 "$ak"; chown "$DEV_USER":"$DEV_USER" "$ak"
+  fi
 ' || die "could not authorize the key in the yard"
 ok "$DEV_USER@$SSH_HOST authorized for your key"
 
@@ -121,7 +135,13 @@ snip_name="$(basename "$snip")"
 # Shared across yards, but host-key entries are keyed by [127.0.0.1]:<port> and each yard
 # has a unique port, so entries never collide — one known_hosts is correct and intended.
 known="$SUBYARD_HOME/ssh/known_hosts"
-install -d -m 700 "$SUBYARD_HOME/ssh"   # so ssh can record the yard's host key
+install -d -m 700 "$SUBYARD_HOME/ssh"
+yard_host_key="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- \
+  awk '$1 == "ssh-ed25519" && NF >= 2 { print $1 " " $2; exit }' \
+  /etc/ssh/ssh_host_ed25519_key.pub)" \
+  || die "could not read the yard's SSH host key through Incus"
+ssh_known_host_replace "$known" "[127.0.0.1]:$SSH_PORT" "$yard_host_key" \
+  || die "could not pin the yard's SSH host key"
 # Opt-in agent forwarding: lets in-yard `git pull/push` over SSH use the host keys
 # held by your ssh-agent, without any private key ever entering the yard.
 fwd=""; [ "$FORWARD_SSH_AGENT" = 1 ] && fwd=$'\n    ForwardAgent yes'
@@ -133,7 +153,7 @@ Host $SSH_HOST
     User $DEV_USER
     IdentityFile $IDENTITY
     IdentitiesOnly yes
-    StrictHostKeyChecking accept-new
+    StrictHostKeyChecking yes
     UserKnownHostsFile $known$fwd
 EOF
 chmod 600 "$snip"

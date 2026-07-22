@@ -76,8 +76,8 @@ YARD_TEMPLATE=e2e-vms
 SSH_PORT=2223
 ```
 
-Initialize it with `yard -Y e2e-yard init`; selecting the profile and confirming init are the
-explicit trust decisions for its wider device boundary. Its topology, trust boundary and lifecycle are documented in
+Run `dev/agent-e2e.sh --prepare`, then initialize with `yard -Y e2e-yard init`. Init confirms the
+public-key fingerprint; private keys never enter yard config. See
 [`docs/test-vms.md`](../../docs/test-vms.md).
 
 ## Encrypted credential exchange

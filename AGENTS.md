@@ -14,19 +14,29 @@ Run `./tests/run.sh` before finishing shell or CLI changes. CI additionally runs
 
 ## Agent E2E workflow
 
-The operator owns only lab allocation: `yard -Y e2e-yard test-vms up` before agent work and
-`test-vms down`/`stop` after it. An agent must not run those lifecycle commands.
+The operator owns `start`, `test-vms up/down` and `stop`. Agents use only allocated VMs.
 
-Once both VMs are allocated, use `scripts/agent-e2e.sh` from the current public worktree. It copies
-tracked, dirty and non-ignored untracked files to one or both VMs, executes an arbitrary command,
-and removes its remote worktree on every exit:
+Before first use, run `dev/agent-e2e.sh --prepare`, then ask the operator to run
+`yard -Y e2e-yard init`. The private key stays under `~/.subyard/e2e/`; only its public half is
+written to ignored `temp/agent-e2e/e2e-yard/agent-access.pub`.
+
+Run checks from the current public worktree with:
 
 ```sh
-scripts/agent-e2e.sh -- ./bin/yard --version
-scripts/agent-e2e.sh --vm 1 -- ./tests/some-real-host-check.sh
+dev/agent-e2e.sh -- ./bin/yard --version
+dev/agent-e2e.sh --vm 1 -- ./tests/some-real-host-check.sh
 ```
 
-Run independent checks on either VM and cross-owner checks after both are prepared. The script must
-remain allocation-neutral: it may use `status`/`exec`, but never `up`, `down`, `start` or `stop`.
-Do not bypass its public-worktree filter or copy `.git`, `private/`, ignored credentials or live
-machine configuration into the lab.
+The runner filters private/ignored files, verifies the bundle and removes its guest worktree.
+Use `--ssh 1|2` for diagnostics and `--ssh-config` for direct OpenSSH. Run `--verify-boundary`
+after transport or enrollment changes. Never use the privileged outer yard as an agent workspace.
+Run `dev/e2e/p0-acceptance.sh` for the full allocated two-VM matrix.
+
+VM1 must test legacy convergence before current `yard init`:
+
+```sh
+SUBYARD_E2E_LEGACY_FIXTURE=1 \
+  dev/e2e/seed-test-vms-legacy-state.sh <project> <instance>
+```
+
+The fixture is restricted to disposable VM1 candidate yards.

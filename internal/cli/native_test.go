@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/shelladapter"
+	"github.com/Dmitry-Borodin/Subyard/internal/application"
 	"github.com/Dmitry-Borodin/Subyard/internal/config"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
@@ -462,7 +463,7 @@ exit 90
 		RepositoryRoot: root,
 		Actions: map[string]map[string]shelladapter.Action{"command": {
 			"start": {
-				Path: filepath.Join(root, "scripts", "yard-ctl.sh"), Result: shelladapter.ExitStatusResult,
+				Path: filepath.Join(root, "scripts", "yard-ctl.sh"), Direct: true,
 			},
 		}},
 		ContextKeys: contextKeys, Path: bin + ":/usr/sbin:/usr/bin:/sbin:/bin", Timeout: time.Second,
@@ -613,7 +614,7 @@ func TestNativeAuthorizeValidatesAndWritesOneControllerKey(t *testing.T) {
 			Stdout: []byte("added"), ExitCode: 0,
 		}}},
 	}
-	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest controller"
+	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA controller"
 	var stderr bytes.Buffer
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard", Arguments: []string{"_authorize"}, Environment: environment,
@@ -815,6 +816,36 @@ func TestProjectAdaptersReceiveGoResolvedSnapshotAndGoCommitsState(t *testing.T)
 	}
 }
 
+func TestBindAcceptsExplicitPathAndPlansExposure(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	projectPath := filepath.Join(root, "home", ".ssh")
+	if err := os.MkdirAll(projectPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := program.prepareProjectImport(
+		context.Background(), loaded, "bind", []string{projectPath, "--target", "yard"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consequences := strings.Join(application.ProjectConsequences(
+		"bind", execution.Record, false,
+	), " ")
+	if execution.Record.HostPath != projectPath || !strings.Contains(consequences, "expose "+projectPath) {
+		t.Fatalf("explicit bind path or safety plan missing: %#v %q", execution.Record, consequences)
+	}
+}
+
 func TestProjectSelectionRoutesAcrossYardsBeforeAdapter(t *testing.T) {
 	root, environment, _ := nativeFixture(t)
 	configHome := ""
@@ -896,7 +927,10 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		"logs||@logs||forward|read|public|lifecycle|simple|logs|logs|-f -n --yes --help|",
 		"usage||@usage||forward|read|public|lifecycle|simple|usage|usage|--help|",
 		"shell||@shell||forward|mutate|public|lifecycle|project-shell|shell|shell|--root --yes --help|",
+		"clone||@project||local|mutate|public|projects|clone|clone <url>|clone|--target --yes --help|",
+		"remove||@project||local|mutate|public|projects|remove|remove [project]|remove|--soft --yes --help|",
 		"yards||@yards||local|read|public|lifecycle|simple|yards|yards|--help|",
+		"remote||@remote||local|mutate|public|remote|remote|remote|remote|--yard --yes --help|add repair-key remove list",
 		"list||@list||local|read|public|projects|simple|list|list|--live --help|",
 		"_info||@info||local|read|hidden|internal|none|_info|info||",
 		"_authorize||@authorize||forward|mutate|hidden|internal|none|_authorize|authorize||",

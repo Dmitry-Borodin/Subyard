@@ -135,53 +135,13 @@ func TestRunnerHonorsParentCancellation(t *testing.T) {
 	}
 }
 
-func TestRunnerStreamsOnlyExplicitNonSecretDiagnostics(t *testing.T) {
-	runner := fixtureRunner(t, `#!/bin/sh
-printf 'visible progress\n' >&2
-printf '%s' '{"schema":1,"operationId":"operation-1","status":"ok"}'
-`)
-	var diagnostics bytes.Buffer
-	runner.Diagnostics = &diagnostics
-	action := runner.Actions["fixture"]["run"]
-	action.StreamVerbs = []string{"up"}
-	runner.Actions["fixture"]["run"] = action
-	request := fixtureRequest()
-	request.Arguments = []string{"up"}
-	if _, stderr, err := runner.Run(context.Background(), request, nil); err != nil || stderr != "" {
-		t.Fatalf("streamed run failed: stderr=%q err=%v", stderr, err)
-	}
-	if diagnostics.String() != "visible progress\n" {
-		t.Fatalf("diagnostics were not streamed: %q", diagnostics.String())
-	}
-
-	diagnostics.Reset()
-	action.StreamVerbs = append(action.StreamVerbs, "")
-	runner.Actions["fixture"]["run"] = action
-	request.Arguments = []string{"--yes"}
-	if _, stderr, err := runner.Run(context.Background(), request, nil); err != nil || stderr != "" {
-		t.Fatalf("argument-free diagnostics did not stream: stderr=%q err=%v", stderr, err)
-	}
-	if diagnostics.String() != "visible progress\n" {
-		t.Fatalf("argument-free diagnostics were not streamed: %q", diagnostics.String())
-	}
-
-	diagnostics.Reset()
-	request.Arguments = []string{"exec", "1", "--", "env"}
-	if _, stderr, err := runner.Run(context.Background(), request, nil); err != nil || stderr != "visible progress\n" {
-		t.Fatalf("unapproved diagnostics were streamed: stderr=%q err=%v", stderr, err)
-	}
-	if diagnostics.Len() != 0 {
-		t.Fatalf("unapproved diagnostics reached the live stream: %q", diagnostics.String())
-	}
-}
-
 func TestRunnerSynthesizesDirectLeafResult(t *testing.T) {
 	runner := fixtureRunner(t, `#!/bin/sh
 printf 'stdout:%s\n' "$*"
 printf 'stderr\n' >&2
 `)
 	action := runner.Actions["fixture"]["run"]
-	action.Result = ExitStatusResult
+	action.Direct = true
 	runner.Actions["fixture"]["run"] = action
 	request := fixtureRequest()
 	request.Arguments = []string{"up", "--yes"}
@@ -195,13 +155,19 @@ printf 'stderr\n' >&2
 
 	var live bytes.Buffer
 	runner.Diagnostics = &live
-	action.StreamVerbs = []string{"up"}
-	runner.Actions["fixture"]["run"] = action
 	if _, diagnostics, err = runner.Run(context.Background(), request, nil); err != nil || diagnostics != "" {
 		t.Fatalf("direct leaf did not stream: diagnostics=%q err=%v", diagnostics, err)
 	}
 	if !strings.Contains(live.String(), "stdout:up --yes\n") || !strings.Contains(live.String(), "stderr\n") {
 		t.Fatalf("direct leaf live output is incomplete: %q", live.String())
+	}
+
+	live.Reset()
+	if _, diagnostics, err = runner.Run(context.Background(), request, strings.NewReader("protected")); err != nil || diagnostics == "" {
+		t.Fatalf("protected run failed: diagnostics=%q err=%v", diagnostics, err)
+	}
+	if live.Len() != 0 {
+		t.Fatalf("protected leaf streamed output: %q", live.String())
 	}
 }
 

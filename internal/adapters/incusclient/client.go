@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -76,6 +77,26 @@ func (client *Client) Exec(
 	name string,
 	request ports.InstanceExecRequest,
 ) (ports.InstanceExecResult, error) {
+	return client.exec(ctx, project, name, request, bytes.NewReader(request.Stdin))
+}
+
+func (client *Client) StreamExec(
+	ctx context.Context,
+	project string,
+	name string,
+	request ports.InstanceExecRequest,
+	stdin io.Reader,
+) (ports.InstanceExecResult, error) {
+	return client.exec(ctx, project, name, request, stdin)
+}
+
+func (client *Client) exec(
+	ctx context.Context,
+	project string,
+	name string,
+	request ports.InstanceExecRequest,
+	stdin io.Reader,
+) (ports.InstanceExecResult, error) {
 	if len(request.Command) == 0 {
 		return ports.InstanceExecResult{}, errors.New("instance exec command is required")
 	}
@@ -93,7 +114,7 @@ func (client *Client) Exec(
 		Command: request.Command, Environment: cloneMap(request.Environment),
 		WaitForWS: true, Interactive: false, User: request.User, Group: request.Group,
 	}, &incus.InstanceExecArgs{
-		Stdin: bytes.NewReader(request.Stdin), Stdout: &stdout, Stderr: &stderr,
+		Stdin: stdin, Stdout: &stdout, Stderr: &stderr,
 		DataDone: dataDone,
 	})
 	if err != nil {
@@ -125,6 +146,98 @@ func (client *Client) Exec(
 		}
 		return result, nil
 	}
+}
+
+func (client *Client) EnsureDiskDevice(
+	ctx context.Context,
+	project string,
+	instanceName string,
+	deviceName string,
+	source string,
+	target string,
+) (bool, error) {
+	server, err := client.connect(ctx, true)
+	if err != nil {
+		return false, err
+	}
+	if err := client.validateServerExtensions(server); err != nil {
+		return false, err
+	}
+	projectServer := server.UseProject(project)
+	instance, etag, err := projectServer.GetInstance(instanceName)
+	if err != nil {
+		return false, normalizeError("get instance", err)
+	}
+	desired := map[string]string{"type": "disk", "source": source, "path": target, "shift": "true"}
+	if current, exists := instance.Devices[deviceName]; exists {
+		if equalDevice(current, desired) {
+			return false, nil
+		}
+		return false, fmt.Errorf("instance device %q already exists with different configuration", deviceName)
+	}
+	if instance.Devices == nil {
+		instance.Devices = make(map[string]map[string]string)
+	}
+	instance.Devices[deviceName] = desired
+	if err := updateInstanceDevices(projectServer, instanceName, instance, etag); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (client *Client) RemoveDevice(
+	ctx context.Context,
+	project string,
+	instanceName string,
+	deviceName string,
+) (bool, error) {
+	server, err := client.connect(ctx, true)
+	if err != nil {
+		return false, err
+	}
+	if err := client.validateServerExtensions(server); err != nil {
+		return false, err
+	}
+	instance, etag, err := server.UseProject(project).GetInstance(instanceName)
+	if err != nil {
+		return false, normalizeError("get instance", err)
+	}
+	if _, exists := instance.Devices[deviceName]; !exists {
+		return false, nil
+	}
+	delete(instance.Devices, deviceName)
+	if err := updateInstanceDevices(server.UseProject(project), instanceName, instance, etag); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func updateInstanceDevices(
+	server incus.InstanceServer,
+	name string,
+	instance *api.Instance,
+	etag string,
+) error {
+	operation, err := server.UpdateInstance(name, instance.Writable(), etag)
+	if err != nil {
+		return normalizeError("update instance devices", err)
+	}
+	if err := operation.Wait(); err != nil {
+		return normalizeError("wait for instance device update", err)
+	}
+	return nil
+}
+
+func equalDevice(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func (client *Client) Events(ctx context.Context, types []string) (<-chan domain.OperationEvent, <-chan error) {

@@ -1,36 +1,11 @@
 #!/usr/bin/env bash
-# project-export.sh — Phase 7b (slice): pull the agent's work in the yard back to the
-# host as a reviewable patch. The counterpart to `sync` for sync-mode projects.
-# Usage: project-export.sh [path]   (default '.')
-# Diffs the yard copy against the host copy and writes a unified patch you review and
-# apply yourself (git apply -p1 / patch -p1), keeping the host copy isolated.
-# Transport mirrors sync: a tar stream over `incus exec` for a local yard, or over the
-# yard-<name> ssh alias for a remote yard (no local incus).
-# Operator-owned; no root. Config: config/incus.project.env + config/subyard.env + config/host.env.
+# Physical export adapter. Go supplies the resolved project snapshot and context.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Explicit control-plane module composition (config/context loads exactly once).
-# shellcheck source=scripts/lib/runtime.sh
-. "$SCRIPT_DIR/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
-# shellcheck source=scripts/lib/cache.sh
-. "$SCRIPT_DIR/lib/cache.sh"
-# shellcheck source=scripts/lib-power.sh
-. "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
-# shellcheck source=scripts/state/transport.sh
-. "$SCRIPT_DIR/state/transport.sh"
 # shellcheck source=scripts/lib/project-snapshot.sh
 . "$SCRIPT_DIR/lib/project-snapshot.sh"
 
@@ -40,18 +15,6 @@ DEV_UID="${DEV_UID:-1000}"
 SSH_HOST="${SSH_HOST:-yard}"   # remote yards read the yard copy over this alias
 PROJ=(--project "$INCUS_PROJECT")
 
-# --- parse args --------------------------------------------------------------
-# Accept a path (default '.'), an exact id, or a project NAME from `yard list`.
-arg="."
-for a in "$@"; do
-  case "$a" in
-    -y | --yes) ;;                       # no mutation on host beyond writing a patch file
-    -*)         die "unknown option '$a'" ;;
-    *)          arg="$a" ;;
-  esac
-done
-
-# --- resolve identity / state ------------------------------------------------
 project_snapshot_load
 case "$mode" in
   bind) die "'$name' is a bind project — its changes are already on the host; nothing to export" ;;
@@ -59,30 +22,25 @@ case "$mode" in
 esac
 [ -d "$hostPath" ] || die "host copy is gone ($hostPath) — cannot diff; re-add it with ${PROG:-yard} sync <path>"
 
-# --- preflight: yard must be reachable, yard copy must exist -----------------
-# Remote: probe the ssh alias (never incus) and test the copy over it. Local: incus.
-if yard_is_remote; then
-  require_remote_reachable
+if [ "${YARD_TYPE:-local}" = remote ]; then
   ssh "$SSH_HOST" -- test -d "$yardPath" \
-    || die "yard copy missing at $yardPath — re-run: ${PROG:-yard} sync $arg"
+    || die "yard copy missing at $yardPath — re-run: ${PROG:-yard} sync $id"
 else
   incus_preflight
   [ "$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c s 2>/dev/null)" = RUNNING ] \
     || die "yard is not running — start it: ${PROG:-yard} start"
   incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- test -d "$yardPath" \
-    || die "yard copy missing at $yardPath — re-run: ${PROG:-yard} sync $arg"
+    || die "yard copy missing at $yardPath — re-run: ${PROG:-yard} sync $id"
 fi
 
-# --- materialise both sides into a temp tree and diff ------------------------
-# a/ = host copy, b/ = yard copy; relative a/ b/ prefixes so the patch applies with
-# `git apply` / `patch -p1`. .git is excluded — we export the working tree, not history.
+# Compare host and yard worktrees without Git history.
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/yard-export.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/a" "$tmp/b"
 
 info "snapshotting host copy …"
 tar -C "$hostPath" --exclude=.git -cf - . | tar -C "$tmp/a" -xf - || die "could not read host copy"
-if yard_is_remote; then
+if [ "${YARD_TYPE:-local}" = remote ]; then
   info "pulling yard copy from $SSH_HOST:$yardPath …"
   ssh "$SSH_HOST" -- tar -C "$yardPath" --exclude=.git -cf - . | tar -C "$tmp/b" -xf - \
     || die "could not read yard copy"
@@ -104,7 +62,6 @@ if [ "$rc" -eq 0 ]; then
   exit 0
 fi
 
-# --- persist the patch on the host -------------------------------------------
 outdir="$SUBYARD_HOME/exports"; install -d -m 700 "$outdir"
 out="$outdir/$id-$(date -u +%Y%m%dT%H%M%SZ).patch"
 mv -f "$patch" "$out"; chmod 600 "$out"

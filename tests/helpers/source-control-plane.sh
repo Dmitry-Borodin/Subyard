@@ -15,8 +15,6 @@ CONTROL_PLANE_ROOT="${CONTROL_PLANE_ROOT:?set CONTROL_PLANE_ROOT before sourcing
 # shellcheck source=scripts/lib/config.sh
 . "$CONTROL_PLANE_ROOT/scripts/lib/config.sh"
 subyard_context_load
-# shellcheck source=scripts/lib/cache.sh
-. "$CONTROL_PLANE_ROOT/scripts/lib/cache.sh"
 # shellcheck source=scripts/lib-power.sh
 . "$CONTROL_PLANE_ROOT/scripts/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh

@@ -13,6 +13,8 @@ assert_not_contains() { ! grep -Fq -- "$2" <<<"$1" || fail "output unexpectedly 
 
 mkdir -p "$TMP/bin" "$TMP/home/.ssh" "$TMP/state/keys" "$TMP/state/info" \
   "$TMP/state/data-mode" "$TMP/state/owner-mode" "$TMP/config-shipped"
+go build -o "$TMP/bin/yard-engine" "$ROOT/cmd/yard"
+export YARD_ENGINE_PATH="$TMP/bin/yard-engine"
 
 # Real public keys keep known_hosts + ssh-keygen fingerprint/removal behavior realistic.
 for key in controller local one two rotated three four stopped; do
@@ -77,6 +79,7 @@ if [[ "$joined" == *_info* ]]; then
 fi
 if [[ "$joined" == *_authorize* ]]; then
   cat >/dev/null
+  : > "$REMOTE_TEST_ROOT/owner-mode/authorized-$dest"
   exit 0
 fi
 
@@ -119,7 +122,16 @@ export SUBYARD_NO_AUDIT=1
 export YARD_VERSION=test
 export REMOTE_TEST_ROOT="$TMP/state"
 
-run_add() { "$ROOT/scripts/yard-remote.sh" add "$@" --yes; }
+run_add() { "$ROOT/bin/yard" remote add "$@" --yes; }
+
+# Prepare is read-only and shows the scanned yard key before confirmation.
+if output="$(printf 'n\n' | "$ROOT/bin/yard" remote add preview owner-three 2>&1)"; then
+  fail 'declined remote add succeeded'
+fi
+assert_contains "$output" 'yard ssh key: SHA256:'
+[ ! -e "$REMOTE_TEST_ROOT/owner-mode/authorized-owner-three" ] || fail 'prepare authorized a key before confirmation'
+[ ! -e "$SUBYARD_CONFIG_HOME/yards/preview.env" ] || fail 'prepare wrote a context before confirmation'
+[ ! -e "$HOME/.ssh/subyard-preview.config" ] || fail 'prepare wrote an alias before confirmation'
 
 # A local port pin and two remote yards all use 2222. Only the per-context aliases distinguish
 # the remote keys; unique control paths also prevent one ProxyJump connection being reused by another.
@@ -167,51 +179,12 @@ assert_contains "$output" 'yard ssh host key changed'
 assert_contains "$output" 'remote repair-key one'
 [ "$(awk '$1=="subyard-remote-one" { print $2 " " $3 }' "$SUBYARD_HOME/ssh/known_hosts")" = "$old_one" ] \
   || fail 'failed add changed the existing trust pin'
-"$ROOT/scripts/yard-remote.sh" repair-key one --yes >/dev/null
+"$ROOT/bin/yard" remote repair-key one --yes >/dev/null
 new_one="$(cut -d' ' -f1,2 "$TMP/state/rotated.pub")"
 [ "$(awk '$1=="subyard-remote-one" { print $2 " " $3 }' "$SUBYARD_HOME/ssh/known_hosts")" = "$new_one" ] \
   || fail 'repair-key did not pin the scanned replacement key'
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" '[127.0.0.1]:2222 '
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" 'subyard-remote-two '
-
-# Steady-state data-plane preflights preserve and classify SSH failures instead of turning every
-# error into a false "start it" hint.
-run_reachable() {
-  SUBYARD_YARD=one PROG=yard bash -c 'CONTROL_PLANE_ROOT="$1"; . "$1/tests/helpers/source-control-plane.sh"; . "$1/scripts/state/transport.sh"; require_remote_reachable' _ "$ROOT"
-}
-cp "$TMP/state/four.pub" "$TMP/state/keys/yard-one.pub"
-if output="$(run_reachable 2>&1)"; then fail 'changed-key reachability probe succeeded'; fi
-assert_contains "$output" 'ssh host key changed'
-assert_contains "$output" 'remote repair-key one'
-cp "$TMP/state/rotated.pub" "$TMP/state/keys/yard-one.pub"
-
-printf 'auth\n' > "$TMP/state/data-mode/yard-one"
-if output="$(run_reachable 2>&1)"; then fail 'auth-failing reachability probe succeeded'; fi
-assert_contains "$output" 'rejected this controller'
-assert_not_contains "$output" 'start'
-
-printf 'proxy\n' > "$TMP/state/data-mode/yard-one"
-if output="$(run_reachable 2>&1)"; then fail 'proxy-failing reachability probe succeeded'; fi
-assert_contains "$output" 'loopback proxy or sshd'
-assert_not_contains "$output" 'state is STOPPED'
-
-set_info owner-one STOPPED
-if output="$(run_reachable 2>&1)"; then fail 'stopped reachability probe succeeded'; fi
-assert_contains "$output" 'remote yard state is STOPPED'
-assert_contains "$output" 'yard -Y one start'
-
-set_info owner-one RUNNING
-printf 'unreachable\n' > "$TMP/state/owner-mode/owner-one"
-if output="$(run_reachable 2>&1)"; then fail 'owner-unreachable probe succeeded'; fi
-assert_contains "$output" 'owner host for remote yard'
-assert_not_contains "$output" 'state is STOPPED'
-rm -f "$TMP/state/owner-mode/owner-one"
-
-sed -i '/HostKeyAlias/d' "$HOME/.ssh/subyard-one.config"
-if output="$(run_reachable 2>&1)"; then fail 'legacy-alias reachability probe succeeded'; fi
-assert_contains "$output" 'missing or legacy'
-rm -f "$TMP/state/data-mode/yard-one"
-run_add one owner-one >/dev/null
 
 # Auth/proxy/stopped failures are diagnosed accurately and leave no new context, snippet or pin.
 printf 'auth\n' > "$TMP/state/data-mode/yard-three"
@@ -232,15 +205,15 @@ if output="$(run_add stopped owner-stopped 2>&1)"; then fail 'stopped-yard add s
 assert_contains "$output" 'remote yard state is STOPPED'
 
 # Confirmed removal owns exactly its alias pin, not a shared endpoint or sibling context.
-"$ROOT/scripts/yard-remote.sh" remove two --yes >/dev/null
+"$ROOT/bin/yard" remote remove two --yes >/dev/null
 ! grep -Fq 'subyard-remote-two ' "$SUBYARD_HOME/ssh/known_hosts" || fail 'remove kept the context trust pin'
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" '[127.0.0.1]:2222 '
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" 'subyard-remote-one '
 
-"$ROOT/scripts/yard-remote.sh" remove named --yes >/dev/null
+"$ROOT/bin/yard" remote remove named --yes >/dev/null
 ! grep -Fq 'subyard-remote-named ' "$SUBYARD_HOME/ssh/known_hosts" || fail 'named remove kept the context trust pin'
 
-"$ROOT/scripts/yard-remote.sh" remove one --yes >/dev/null
+"$ROOT/bin/yard" remote remove one --yes >/dev/null
 ! grep -Fq 'Include subyard-one.config' "$HOME/.ssh/config" || fail 'last remote Include survived removal'
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" '[127.0.0.1]:2222 '
 

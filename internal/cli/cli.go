@@ -38,6 +38,7 @@ import (
 	"github.com/Dmitry-Borodin/Subyard/internal/resource"
 	"github.com/Dmitry-Borodin/Subyard/internal/rpc"
 	"github.com/Dmitry-Borodin/Subyard/internal/state"
+	"golang.org/x/crypto/ssh"
 )
 
 var Version = "0.1.0-dev"
@@ -55,10 +56,14 @@ type Options struct {
 	Stderr          io.Writer
 	Incus           ports.Incus
 	Executor        ports.InstanceExecutor
+	ProjectData     ports.YardExecutor
+	ProjectDevices  ports.InstanceDeviceManager
+	ProjectArchive  ports.DirectoryArchiver
 	ProjectObserver ports.ProjectObserver
 	StatusFacts     ports.StatusFactsReader
 	Credentials     ports.CredentialMetadataReader
 	AdapterRunner   ports.AdapterRunner
+	RemoteControl   ports.RemoteControl
 	Prompt          ports.Prompter
 	Clock           ports.Clock
 	Audit           ports.AuditSink
@@ -187,11 +192,19 @@ func (cli *CLI) Run(ctx context.Context) int {
 		cli.env["SUBYARD_OPERATION_ID"] = newOperationID()
 	}
 	var projectRun *projectExecution
+	var remoteRun *domain.RemotePrepared
 	if !commandHelpRequested(commandArguments) {
 		projectRun, err = cli.prepareProjectExecution(ctx, loaded, definition, commandArguments, explicit)
 		if err != nil {
 			cli.errorf("prepare %s: %v", name, err)
 			return 1
+		}
+		if definition.Name == "remote" {
+			remoteRun, err = cli.prepareRemoteExecution(ctx, loaded, commandArguments)
+			if err != nil {
+				cli.errorf("prepare remote: %v", err)
+				return 1
+			}
 		}
 	}
 	if projectRun != nil {
@@ -216,7 +229,7 @@ func (cli *CLI) Run(ctx context.Context) int {
 	if core && definition.Effect == command.EffectMutate && structuredCommandSupported(definition.Name) &&
 		!commandHelpRequested(commandArguments) {
 		return cli.runStructuredCommand(ctx, loaded, definition, commandArguments,
-			yes || cli.env["ASSUME_YES"] == "1", projectRun)
+			yes || cli.env["ASSUME_YES"] == "1", projectRun, remoteRun)
 	}
 	target, routeErr := application.Route(loadedContext, domain.RemotePolicy(remotePlane))
 	if routeErr != nil {
@@ -251,6 +264,12 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return cli.runProjectState(ctx, loadedContext, commandArguments, false)
 	case "@project-state":
 		return cli.runProjectState(ctx, loadedContext, commandArguments, true)
+	case "@remote":
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s remote add <name> <user@host> [--yard <yard>] | repair-key <name> | remove <name> | list\n", cli.options.Program)
+		return 0
+	case "@project":
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s %s\n", cli.options.Program, definition.Display)
+		return 0
 	}
 	if profileResource {
 		return cli.runCommand(ctx, resourceDefinition.HandlerPath(), commandArguments,
@@ -288,18 +307,36 @@ func (cli *CLI) projectObserver() ports.ProjectObserver {
 	if cli.options.ProjectObserver != nil {
 		return cli.options.ProjectObserver
 	}
-	incusPort := cli.options.Incus
-	executor := cli.options.Executor
-	if incusPort == nil || executor == nil {
-		client := incusclient.New(cli.env["SUBYARD_INCUS_SOCKET"], "projects")
-		if incusPort == nil {
-			incusPort = client
-		}
-		if executor == nil {
-			executor = client
-		}
-	}
+	incusPort, executor := cli.statusPorts()
 	return projectruntime.Runtime{Incus: incusPort, Executor: executor}
+}
+
+func (cli *CLI) projectDataPlane() ports.YardExecutor {
+	if cli.options.ProjectData != nil {
+		return cli.options.ProjectData
+	}
+	_, executor := cli.statusPorts()
+	streamer, _ := executor.(ports.InstanceStreamExecutor)
+	return projectruntime.Runtime{
+		Executor: executor, Streamer: streamer,
+		Environment: environmentList(cli.env, nil), Timeout: 10 * time.Minute,
+	}
+}
+
+func (cli *CLI) projectArchiver() ports.DirectoryArchiver {
+	if cli.options.ProjectArchive != nil {
+		return cli.options.ProjectArchive
+	}
+	return projectruntime.TarArchiver{Environment: environmentList(cli.env, nil)}
+}
+
+func (cli *CLI) projectDeviceManager() ports.InstanceDeviceManager {
+	if cli.options.ProjectDevices != nil {
+		return cli.options.ProjectDevices
+	}
+	incusPort, _ := cli.statusPorts()
+	manager, _ := incusPort.(ports.InstanceDeviceManager)
+	return manager
 }
 
 func openProjectStore(ctx context.Context, directory string) (*state.FileStore, error) {
@@ -473,18 +510,7 @@ func (cli *CLI) printYardStatus(ctx context.Context, loaded config.Loaded) int {
 	return 0
 }
 
-type ownerInfo struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Version  string `json:"version"`
-	Instance string `json:"instance"`
-	Project  string `json:"project"`
-	State    string `json:"state"`
-	SSHHost  string `json:"sshHost"`
-	SSHPort  int    `json:"sshPort"`
-	DevUser  string `json:"devUser"`
-	Projects *int   `json:"projects"`
-}
+type ownerInfo = domain.RemoteInfo
 
 func (cli *CLI) runOwnerInfo(ctx context.Context, loaded config.Loaded) int {
 	yard := loaded.Context
@@ -632,8 +658,7 @@ func (cli *CLI) runAuthorize(ctx context.Context, loaded config.Loaded, argument
 		cli.errorf("_authorize: read public key: %v", err)
 		return 1
 	}
-	fields := strings.Fields(publicKey)
-	if len(fields) < 2 || !supportedSSHKeyType(fields[0]) || !safeBase64(fields[1]) {
+	if _, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(publicKey)); err != nil || len(bytes.TrimSpace(rest)) != 0 {
 		cli.errorf("_authorize: stdin does not contain a supported SSH public key")
 		return 2
 	}
@@ -676,30 +701,6 @@ chown "$DEV_USER:$DEV_USER" "$ak"`},
 	fmt.Fprintf(cli.options.Stderr, "  [ ok ] controller key %s for %s in %s\n",
 		message, yard.DevUser, yard.InstanceName)
 	return 0
-}
-
-func supportedSSHKeyType(value string) bool {
-	switch value {
-	case "ssh-ed25519", "ssh-rsa", "ssh-dss", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
-		"ecdsa-sha2-nistp521", "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com":
-		return true
-	default:
-		return false
-	}
-}
-
-func safeBase64(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') || character == '+' || character == '/' || character == '=' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func (cli *CLI) runLogs(ctx context.Context, loaded config.Loaded, arguments []string) int {
@@ -784,11 +785,7 @@ func (cli *CLI) runUsage(ctx context.Context, loaded config.Loaded, arguments []
 		}
 	}
 	yard := loaded.Context
-	stateCommand := exec.CommandContext(ctx, "incus", "list", yard.InstanceName,
-		"--project", yard.IncusProject, "-f", "csv", "-c", "s")
-	stateCommand.Env = environmentList(cli.env, nil)
-	state, err := stateCommand.Output()
-	if err != nil || !strings.EqualFold(strings.TrimSpace(string(state)), "running") {
+	if !cli.incusCLIYardRunning(ctx, yard) {
 		cli.errorf("usage: yard is not running")
 		return 1
 	}
@@ -840,11 +837,7 @@ func (cli *CLI) runShell(
 		}
 		cwd = project.Record.YardPath
 	}
-	stateCommand := exec.CommandContext(ctx, "incus", "list", yard.InstanceName,
-		"--project", yard.IncusProject, "-f", "csv", "-c", "s")
-	stateCommand.Env = environmentList(cli.env, nil)
-	state, err := stateCommand.Output()
-	if err != nil || !strings.EqualFold(strings.TrimSpace(string(state)), "running") {
+	if !cli.incusCLIYardRunning(ctx, yard) {
 		cli.errorf("shell: yard is not running - start it: %s start", cli.yardHint(yard))
 		return 1
 	}
@@ -866,6 +859,14 @@ func (cli *CLI) runShell(
 		commandArguments = append(commandArguments, guestCommand...)
 	}
 	return cli.runExternal(ctx, "incus", commandArguments)
+}
+
+func (cli *CLI) incusCLIYardRunning(ctx context.Context, yard domain.Context) bool {
+	command := exec.CommandContext(ctx, "incus", "list", yard.InstanceName,
+		"--project", yard.IncusProject, "-f", "csv", "-c", "s")
+	command.Env = environmentList(cli.env, nil)
+	state, err := command.Output()
+	return err == nil && strings.EqualFold(strings.TrimSpace(string(state)), "running")
 }
 
 func parseShellArguments(arguments []string) (root bool, selector string, command []string, help bool, err error) {
@@ -930,11 +931,6 @@ func (cli *CLI) yardHint(yard domain.Context) string {
 	return fmt.Sprintf("%s -Y %s", cli.options.Program, yard.YardName)
 }
 
-type remoteInfo struct {
-	State    string `json:"state"`
-	Projects *int   `json:"projects"`
-}
-
 func (cli *CLI) printRemoteStatus(ctx context.Context, yard domain.Context) error {
 	info, age, err := cli.observeRemoteInfo(ctx, yard)
 	if err != nil {
@@ -957,68 +953,13 @@ func (cli *CLI) printRemoteStatus(ctx context.Context, yard domain.Context) erro
 	return nil
 }
 
-func (cli *CLI) observeRemoteInfo(ctx context.Context, yard domain.Context) (remoteInfo, string, error) {
-	cachePath := filepath.Join(yard.Paths.DataHome, "remote-"+yard.YardName+".cache")
-	cached, cachedAt, _ := readRemoteStatusCache(cachePath)
-	remoteLine := "yard _info"
-	if yard.RemoteYard != "" {
-		if !domain.SafeName(yard.RemoteYard) {
-			return remoteInfo{}, "", errors.New("invalid remote owner yard")
-		}
-		remoteLine = "yard -Y " + shellQuote(yard.RemoteYard) + " _info"
+func (cli *CLI) observeRemoteInfo(ctx context.Context, yard domain.Context) (domain.RemoteInfo, string, error) {
+	info, cachedAt, err := cli.remoteControl(config.Loaded{Context: yard}, 2*time.Second).ObserveOwner(ctx,
+		domain.RemoteSpec{Name: yard.YardName, Destination: yard.RemoteDest, OwnerYard: yard.RemoteYard})
+	if err != nil || cachedAt.IsZero() {
+		return info, "", err
 	}
-	command := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
-		"-o", "StrictHostKeyChecking=accept-new", yard.RemoteDest, "--", "bash", "-lc", remoteLine)
-	payload, callErr := command.Output()
-	info := remoteInfo{}
-	age := ""
-	if callErr == nil && json.Unmarshal(payload, &info) == nil && info.State != "" {
-		if info.Projects == nil && cached.Projects != nil {
-			info.Projects = cached.Projects
-		}
-		_ = writeRemoteStatusCache(cachePath, info)
-	} else {
-		info = cached
-		if !cachedAt.IsZero() {
-			age = ageHuman(time.Since(cachedAt))
-		}
-	}
-	return info, age, nil
-}
-
-func readRemoteStatusCache(path string) (remoteInfo, time.Time, error) {
-	payload, err := os.ReadFile(path)
-	if err != nil {
-		return remoteInfo{}, time.Time{}, err
-	}
-	epochLine, jsonLine, ok := strings.Cut(string(payload), "\n")
-	if !ok {
-		return remoteInfo{}, time.Time{}, errors.New("invalid remote status cache")
-	}
-	epoch, err := strconv.ParseInt(strings.TrimSpace(epochLine), 10, 64)
-	if err != nil {
-		return remoteInfo{}, time.Time{}, err
-	}
-	var info remoteInfo
-	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonLine)), &info); err != nil {
-		return remoteInfo{}, time.Time{}, err
-	}
-	return info, time.Unix(epoch, 0), nil
-}
-
-func writeRemoteStatusCache(path string, info remoteInfo) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	payload, err := json.Marshal(info)
-	if err != nil {
-		return err
-	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, []byte(fmt.Sprintf("%d\n%s\n", time.Now().Unix(), payload)), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, path)
+	return info, ageHuman(time.Since(cachedAt)), nil
 }
 
 func ageHuman(age time.Duration) string {
@@ -1913,6 +1854,7 @@ func (cli *CLI) operationOrchestrator(
 			"SUBYARD_PROJECT_HOST_PATH", "SUBYARD_PROJECT_YARD_PATH", "SUBYARD_PROJECT_MODE",
 			"SUBYARD_PROJECT_SSH_HOST", "SUBYARD_PROJECT_TARGET", "SUBYARD_PROJECT_PROFILE",
 			"SUBYARD_PROJECT_DEVICE", "SUBYARD_PROJECT_EXISTS", "SUBYARD_PROJECT_PROFILES",
+			"SUBYARD_PROJECT_REMOVE_SOFT", "SUBYARD_PROJECT_REBUILD",
 			"SUBYARD_SUDO_PREAUTHORIZED",
 		} {
 			contextKeys[key] = struct{}{}
@@ -1921,8 +1863,7 @@ func (cli *CLI) operationOrchestrator(
 		if definition != nil {
 			actions["command"] = map[string]shelladapter.Action{
 				definition.Name: {
-					Path:   filepath.Join(cli.options.RepositoryRoot, "scripts", definition.Handler),
-					Result: shelladapter.ExitStatusResult, StreamVerbs: commandStreamVerbs(definition.Name),
+					Path: filepath.Join(cli.options.RepositoryRoot, "scripts", definition.Handler), Direct: true,
 				},
 			}
 		}
@@ -1948,17 +1889,6 @@ func (cli *CLI) operationOrchestrator(
 	return &application.Orchestrator{
 		Clock: clock, IDs: fixedIDSource{value: operationID}, Prompt: prompt,
 		Runner: runner, Audit: auditSink, Events: events,
-	}
-}
-
-func commandStreamVerbs(name string) []string {
-	switch name {
-	case "init":
-		return []string{""}
-	case "test-vms":
-		return []string{"up", "down"}
-	default:
-		return nil
 	}
 }
 
@@ -2072,18 +2002,24 @@ func commandPolicy(
 	yard domain.Context,
 	arguments []string,
 	project *projectExecution,
+	remote *domain.RemotePrepared,
 ) domain.CommandPolicy {
+	if remote != nil {
+		return application.RemotePolicy(*remote)
+	}
 	consequences := []string{
 		fmt.Sprintf("%s in yard %s", definition.Summary, yard.YardName),
 		fmt.Sprintf("execute the allowlisted physical adapter for %s", definition.Name),
 		"publish typed operation events and an audit result",
 	}
 	if len(arguments) != 0 {
-		consequences = append(consequences, "use validated arguments: "+strings.Join(arguments, " "))
+		consequences = append(consequences, "use validated command arguments")
 	}
 	if project != nil && project.Record.ProjectID != "" {
 		consequences = append(consequences, fmt.Sprintf("operate on project %s (%s)",
 			project.Record.Name, project.Record.ProjectID))
+		consequences = append(consequences, application.ProjectConsequences(definition.Name,
+			project.Record, project.Environment["SUBYARD_PROJECT_REMOVE_SOFT"] == "1")...)
 		switch project.Commit {
 		case projectCommitPut:
 			consequences = append(consequences, "publish project state only after the physical operation succeeds")
@@ -2123,6 +2059,7 @@ func (cli *CLI) runStructuredCommand(
 	arguments []string,
 	assumeYes bool,
 	project *projectExecution,
+	remote *domain.RemotePrepared,
 ) int {
 	for _, argument := range arguments {
 		if argument == "-y" || argument == "--yes" {
@@ -2131,7 +2068,7 @@ func (cli *CLI) runStructuredCommand(
 	}
 	orchestrator := cli.operationOrchestrator(cli.env["SUBYARD_OPERATION_ID"], loaded, nil, &definition)
 	plan, err := orchestrator.Plan(ctx, loaded.Context,
-		commandPolicy(definition, loaded.Context, arguments, project), assumeYes)
+		commandPolicy(definition, loaded.Context, arguments, project, remote), assumeYes)
 	if err != nil {
 		if errors.Is(err, application.ErrDeclined) {
 			cli.errorf("operation declined")
@@ -2152,7 +2089,7 @@ func (cli *CLI) runStructuredCommand(
 		return cli.forwardRemote(ctx, loaded.Context, definition.Name, remoteArguments)
 	}
 	result, err := cli.executeStructuredCommand(ctx, orchestrator, loaded, definition, arguments,
-		plan, project, cli.options.Stdout)
+		plan, project, remote, cli.options.Stdout)
 	if err != nil {
 		cli.errorf("%s: %v", definition.Name, err)
 		return 1
@@ -2167,6 +2104,9 @@ func (cli *CLI) runStructuredCommand(
 			return 1
 		}
 	}
+	if remote != nil {
+		cli.printRemoteResult(result)
+	}
 	return 0
 }
 
@@ -2178,8 +2118,34 @@ func (cli *CLI) executeStructuredCommand(
 	arguments []string,
 	plan domain.OperationPlan,
 	project *projectExecution,
+	remote *domain.RemotePrepared,
 	diagnostics io.Writer,
 ) (domain.AdapterResult, error) {
+	if remote != nil {
+		orchestrator.Runner = application.RemoteRunner{Control: cli.remoteService(loaded).Control, Prepared: *remote}
+		request := domain.AdapterRequest{
+			Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
+			Adapter: "remote", Action: string(remote.Action),
+		}
+		result, _, err := orchestrator.RunAdapter(ctx, plan, request, nil)
+		return result, err
+	}
+	if project != nil && definition.Handler == "@project" {
+		orchestrator.Runner = application.ProjectActionRunner{
+			Data: cli.projectDataPlane(), Devices: cli.projectDeviceManager(), Archive: cli.projectArchiver(),
+			Yard: loaded.Context, Project: project.Record,
+			SoftRemove: project.Environment["SUBYARD_PROJECT_REMOVE_SOFT"] == "1",
+		}
+		request := domain.AdapterRequest{
+			Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
+			Adapter: "project", Action: definition.Name,
+		}
+		result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
+		if stderr != "" {
+			_, _ = io.WriteString(diagnostics, stderr)
+		}
+		return result, err
+	}
 	handlerArguments := append([]string(nil), arguments...)
 	if definition.Arg0 != "" {
 		handlerArguments = append([]string{definition.Arg0}, handlerArguments...)
@@ -2656,6 +2622,7 @@ type rpcPlannedOperation struct {
 	Arguments  []string
 	Loaded     config.Loaded
 	Project    *projectExecution
+	Remote     *domain.RemotePrepared
 }
 
 type rpcProjectList struct {
@@ -2712,7 +2679,14 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			loaded = project.Loaded
 			arguments = project.Arguments
 		}
-		policy := commandPolicy(definition, loaded.Context, arguments, project)
+		var remote *domain.RemotePrepared
+		if definition.Name == "remote" {
+			remote, err = handler.cli.prepareRemoteExecution(ctx, loaded, arguments)
+			if err != nil {
+				return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
+			}
+		}
+		policy := commandPolicy(definition, loaded.Context, arguments, project, remote)
 		if definition.Name == "start" {
 			policy = startPolicy(definition, loaded.Context)
 		}
@@ -2734,7 +2708,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			return nil, &rpc.Error{Code: "too_many_plans", Message: "execute an existing plan or start a new RPC session"}
 		}
 		handler.plans[plan.OperationID] = rpcPlannedOperation{
-			Plan: plan, Definition: definition, Arguments: arguments, Loaded: loaded, Project: project,
+			Plan: plan, Definition: definition, Arguments: arguments, Loaded: loaded, Project: project, Remote: remote,
 		}
 		handler.plansMu.Unlock()
 		return plan, nil
@@ -2775,7 +2749,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		} else {
 			result, err = handler.cli.executeStructuredCommand(
 				ctx, orchestrator, planned.Loaded, planned.Definition, planned.Arguments,
-				plan, planned.Project, handler.cli.options.Stderr,
+				plan, planned.Project, planned.Remote, handler.cli.options.Stderr,
 			)
 		}
 		if err != nil {

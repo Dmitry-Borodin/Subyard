@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 )
 
 // YardNames returns the configured yard names without evaluating their files.
@@ -27,7 +29,7 @@ func YardNames(directories ...string) ([]string, error) {
 				continue
 			}
 			name := strings.TrimSuffix(entry.Name(), ".env")
-			if !domainSafeName(name) {
+			if !domain.SafeName(name) {
 				continue
 			}
 			if _, exists := seen[name]; exists {
@@ -46,16 +48,4 @@ func RegistryDirectories(configDir, configHome string) []string {
 		filepath.Join(configDir, "..", "private", "yards"),
 		filepath.Join(configHome, "yards"),
 	}
-}
-
-func domainSafeName(value string) bool {
-	if value == "" || !((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= '0' && value[0] <= '9')) {
-		return false
-	}
-	for _, char := range value {
-		if !(char >= 'a' && char <= 'z') && !(char >= '0' && char <= '9') && char != '_' && char != '-' {
-			return false
-		}
-	}
-	return true
 }

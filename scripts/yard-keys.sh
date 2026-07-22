@@ -18,12 +18,6 @@ case "${1:-}" in -h|--help) SUBYARD_CUSTOM_HELP=1 ;; esac
 # shellcheck source=scripts/lib/config.sh
 . "$SCRIPT_DIR/lib/config.sh"
 subyard_context_load
-# shellcheck source=scripts/lib/cache.sh
-. "$SCRIPT_DIR/lib/cache.sh"
-# shellcheck source=scripts/lib-power.sh
-. "$SCRIPT_DIR/lib-power.sh"
-# shellcheck source=scripts/lib/host.sh
-. "$SCRIPT_DIR/lib/host.sh"
 # shellcheck source=scripts/credentials/store.sh
 . "$SCRIPT_DIR/credentials/store.sh"
 # shellcheck source=scripts/credentials/crypto.sh

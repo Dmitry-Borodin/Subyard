@@ -5,7 +5,7 @@
 SUBYARD_UI_SOURCED=1
 
 subyard_help_and_exit() {
-  awk 'NR==1{next} /^#/{sub(/^#[ ]?/,""); print; next} {exit}' "$SUBYARD_SCRIPT_PATH"
+  awk 'NR==1{next} /^#/{sub(/^#[ ]?/,""); print; next} {exit}' "${SUBYARD_SCRIPT_PATH:-$0}"
   exit 0
 }
 

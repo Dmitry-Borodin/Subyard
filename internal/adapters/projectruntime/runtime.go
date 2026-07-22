@@ -7,19 +7,118 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/transport"
+	"github.com/Dmitry-Borodin/Subyard/internal/config"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
 )
 
-const metadataCommand = `for f in /srv/workspaces/*/.subyard-meta.json; do [ -e "$f" ] || continue; cat "$f"; printf "\n"; done`
+var metadataCommand = []string{
+	"find", "/srv/workspaces", "-mindepth", "2", "-maxdepth", "2",
+	"-type", "f", "-name", ".subyard-meta.json", "-exec", "cat", "{}", "+",
+}
 
 type Runtime struct {
-	Incus     ports.Incus
-	Executor  ports.InstanceExecutor
-	SSHBinary string
+	Incus       ports.Incus
+	Executor    ports.InstanceExecutor
+	Streamer    ports.InstanceStreamExecutor
+	SSHBinary   string
+	Environment []string
+	Timeout     time.Duration
+}
+
+func (runtime Runtime) Execute(
+	ctx context.Context,
+	yard domain.Context,
+	request ports.InstanceExecRequest,
+) (ports.InstanceExecResult, error) {
+	if yard.YardType != domain.YardRemote {
+		if runtime.Executor == nil {
+			return ports.InstanceExecResult{}, errors.New("Incus executor is required")
+		}
+		return runtime.Executor.Exec(ctx, yard.IncusProject, yard.InstanceName, request)
+	}
+	return runtime.executeSSH(ctx, yard.SSHHost, request)
+}
+
+func (runtime Runtime) Stream(
+	ctx context.Context,
+	yard domain.Context,
+	request ports.InstanceExecRequest,
+	stdin io.Reader,
+) (ports.InstanceExecResult, error) {
+	if yard.YardType != domain.YardRemote {
+		if runtime.Streamer == nil {
+			return ports.InstanceExecResult{}, errors.New("Incus stream executor is required")
+		}
+		return runtime.Streamer.StreamExec(ctx, yard.IncusProject, yard.InstanceName, request, stdin)
+	}
+	return runtime.executeSSHReader(ctx, yard.SSHHost, request, stdin)
+}
+
+func (runtime Runtime) executeSSH(
+	ctx context.Context,
+	host string,
+	request ports.InstanceExecRequest,
+) (ports.InstanceExecResult, error) {
+	return runtime.executeSSHReader(ctx, host, request, bytes.NewReader(request.Stdin))
+}
+
+func (runtime Runtime) executeSSHReader(
+	ctx context.Context,
+	host string,
+	request ports.InstanceExecRequest,
+	stdin io.Reader,
+) (ports.InstanceExecResult, error) {
+	if !domain.SafeSSHTarget(host) {
+		return ports.InstanceExecResult{}, errors.New("invalid yard SSH target")
+	}
+	command := make([]string, 0, len(request.Command)+len(request.Environment)+1)
+	if len(request.Environment) != 0 {
+		command = append(command, "env")
+		keys := make([]string, 0, len(request.Environment))
+		for key := range request.Environment {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if !config.ValidVariable(key) {
+				return ports.InstanceExecResult{}, fmt.Errorf("invalid environment key %q", key)
+			}
+			command = append(command, key+"="+request.Environment[key])
+		}
+	}
+	command = append(command, request.Command...)
+	binary := runtime.SSHBinary
+	if binary == "" {
+		binary = "ssh"
+	}
+	process := transport.Process{
+		Program: binary, Env: runtime.Environment, Timeout: runtime.Timeout,
+		Arguments: []string{
+			"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=yes",
+			host, "--", quoteCommand(command),
+		},
+	}
+	stdout, err := process.CallReader(ctx, stdin)
+	result := ports.InstanceExecResult{Stdout: stdout}
+	if err != nil {
+		result.ExitCode = 1
+	}
+	return result, err
+}
+
+func quoteCommand(arguments []string) string {
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		quoted[index] = "'" + strings.ReplaceAll(argument, "'", "'\\''") + "'"
+	}
+	return strings.Join(quoted, " ")
 }
 
 func (runtime Runtime) Observe(
@@ -43,10 +142,10 @@ func (runtime Runtime) Observe(
 
 	if yard.YardType == domain.YardRemote {
 		if live {
-			payload, err := runtime.readSSH(ctx, yard.SSHHost)
+			execution, err := runtime.Execute(ctx, yard, ports.InstanceExecRequest{Command: metadataCommand})
 			if err == nil {
 				result.Reached = true
-				result.Live, result.Warnings = parseMetadata(payload)
+				result.Live, result.Warnings = parseMetadata(execution.Stdout)
 				markLive(&result)
 			}
 		}
@@ -63,11 +162,11 @@ func (runtime Runtime) Observe(
 		observeProjects(ctx, runtime.Executor, yard, records, &result)
 	}
 	if live {
-		// Preserve the existing fast path: an SSH alias proves the same data-plane view as Incus
-		// and is also the only valid path for a remote yard.
-		payload, err := runtime.readSSH(ctx, yard.SSHHost)
+		execution, err := runtime.executeSSH(ctx, yard.SSHHost,
+			ports.InstanceExecRequest{Command: metadataCommand})
+		payload := execution.Stdout
 		if err != nil && result.Running && runtime.Executor != nil {
-			payload, err = execBytes(ctx, runtime.Executor, yard, []string{"sh", "-c", metadataCommand}, nil)
+			payload, err = execBytes(ctx, runtime.Executor, yard, metadataCommand, nil)
 		}
 		if err == nil {
 			result.Reached = true
@@ -85,16 +184,17 @@ func observeProjects(
 	records []domain.ProjectRecord,
 	result *domain.ProjectObservation,
 ) {
-	var input bytes.Buffer
-	for _, record := range records {
-		fmt.Fprintf(&input, "%s\t%s\n", record.ProjectID, record.YardPath)
-	}
-	payload, err := execBytes(ctx, executor, yard, []string{"sh", "-c", `while IFS='\t' read -r id path; do [ -n "$id" ] || continue; if [ -d "$path" ]; then printf '%s\tpresent\n' "$id"; else printf '%s\tmissing\n' "$id"; fi; done`}, input.Bytes())
+	payload, err := execBytes(ctx, executor, yard, []string{
+		"find", "/srv/workspaces", "-mindepth", "2", "-maxdepth", "2",
+		"-type", "d", "-name", "src", "-printf", "%h\n",
+	}, nil)
 	if err == nil {
+		for id := range result.Presence {
+			result.Presence[id] = domain.ProjectMissing
+		}
 		for _, line := range strings.Split(strings.TrimSpace(string(payload)), "\n") {
-			id, value, ok := strings.Cut(line, "\t")
-			if ok && (value == "present" || value == "missing") {
-				result.Presence[id] = domain.ProjectPresence(value)
+			if id := filepath.Base(strings.TrimSpace(line)); id != "." && id != "" {
+				result.Presence[id] = domain.ProjectPresent
 			}
 		}
 	}
@@ -132,16 +232,6 @@ func execBytes(
 		Command: command, Stdin: stdin,
 	})
 	return result.Stdout, err
-}
-
-func (runtime Runtime) readSSH(ctx context.Context, host string) ([]byte, error) {
-	binary := runtime.SSHBinary
-	if binary == "" {
-		binary = "ssh"
-	}
-	command := exec.CommandContext(ctx, binary,
-		"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, metadataCommand)
-	return command.Output()
 }
 
 func parseMetadata(payload []byte) ([]domain.ProjectRecord, []string) {

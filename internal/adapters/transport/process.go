@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 )
 
 const defaultLimit = 4 * 1024 * 1024
@@ -35,7 +38,7 @@ func SSH(program, target string, connectTimeout time.Duration) (Process, error) 
 	if program == "" {
 		program = "ssh"
 	}
-	if !safeTarget(target) {
+	if !domain.SafeSSHTarget(target) {
 		return Process{}, fmt.Errorf("invalid SSH target %q", target)
 	}
 	seconds := int(connectTimeout.Round(time.Second) / time.Second)
@@ -52,6 +55,10 @@ func SSH(program, target string, connectTimeout time.Duration) (Process, error) 
 }
 
 func (transport Process) Call(ctx context.Context, _ string, request []byte) ([]byte, error) {
+	return transport.CallReader(ctx, bytes.NewReader(request))
+}
+
+func (transport Process) CallReader(ctx context.Context, request io.Reader) ([]byte, error) {
 	if transport.Program == "" {
 		return nil, errors.New("transport program is required")
 	}
@@ -74,7 +81,7 @@ func (transport Process) Call(ctx context.Context, _ string, request []byte) ([]
 	if transport.Env != nil {
 		command.Env = transport.Env
 	}
-	command.Stdin = bytes.NewReader(request)
+	command.Stdin = request
 	limit := transport.MaxBytes
 	if limit <= 0 {
 		limit = defaultLimit
@@ -98,19 +105,6 @@ func (transport Process) Call(ctx context.Context, _ string, request []byte) ([]
 		return nil, fmt.Errorf("transport failed: %s", message)
 	}
 	return bytes.Clone(stdout.buffer.Bytes()), nil
-}
-
-func safeTarget(value string) bool {
-	if value == "" || strings.HasPrefix(value, "-") {
-		return false
-	}
-	for _, char := range value {
-		if !(char >= 'a' && char <= 'z') && !(char >= 'A' && char <= 'Z') &&
-			!(char >= '0' && char <= '9') && !strings.ContainsRune("._@:-", char) {
-			return false
-		}
-	}
-	return true
 }
 
 type limitedBuffer struct {

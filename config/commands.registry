@@ -18,18 +18,18 @@ provision||10-provision-profile.sh||forward|mutate|public|lifecycle|profiles|pro
 test-vms||e2e-lab/command.sh||forward|mutate|public|lifecycle|simple|test-vms <command>|manage two disposable nested VMs inside a trusted test yard|--yes --help|up status ssh exec down
 stop||yard-ctl.sh|stop|forward|mutate|public|lifecycle|stop|stop [--force]|stop the yard and protect active Remote-SSH sessions|--force --yes --help|
 teardown|uninstall|99-teardown.sh||forward|mutate|public|lifecycle|teardown|teardown|delete the yard; optionally keep persistent data|--keep-data --yes --help|
-sync||project-sync.sh|sync|local|mutate|public|projects|project-target|sync [path]|copy or refresh a project in the yard|--target --yes --help|
-bind||project-sync.sh|bind|deny|mutate|public|projects|project-target|bind [path]|explicitly mount a host project path into the yard|--target --yes --help|
-clone||project-clone.sh||local|mutate|public|projects|clone|clone <url>|clone a repository directly into the yard|--target --yes --help|
+sync||@project||local|mutate|public|projects|project-target|sync [path]|copy or refresh a project in the yard|--target --yes --help|
+bind||@project||deny|mutate|public|projects|project-target|bind [path]|explicitly mount a host project path into the yard|--target --yes --help|
+clone||@project||local|mutate|public|projects|clone|clone <url>|clone a repository directly into the yard|--target --yes --help|
 list||@list||local|read|public|projects|simple|list|list projects currently registered in yards|--live --help|
 code||project-code.sh||local|mutate|public|projects|project|code [project]|open a project with VS Code Remote-SSH|--yes --help|
 export||project-export.sh||local|mutate|public|projects|path|export [path]|copy changes from a synced yard project back to the host|--yes --help|
-remove||project-remove.sh||local|mutate|public|projects|remove|remove [project]|remove a project from the yard|--soft --yes --help|
+remove||@project||local|mutate|public|projects|remove|remove [project]|remove a project from the yard|--soft --yes --help|
 up||project-env.sh|up|forward|mutate|public|project_env|project-env-up|up [project]|build or start the optional project environment|--rebuild --yes --help|
 down||project-env.sh|down|forward|mutate|public|project_env|project-env|down [project]|stop the optional project environment|--yes --help|
 info||project-env.sh|info|forward|read|public|project_env|project-env|info [project]|show the optional project environment contract|--yes --help|
 yards||@yards||local|read|public|lifecycle|simple|yards|list registered local and remote yards|--help|
-remote||yard-remote.sh||local|mutate|public|remote|remote|remote <command>|register, repair, remove or list remote yards|--yard --yes --help|add repair-key remove list
+remote||@remote||local|mutate|public|remote|remote|remote <command>|register, repair, remove or list remote yards|--yard --yes --help|add repair-key remove list
 update||update-engine.sh||local|mutate|public|lifecycle|simple|update|check, install or roll back the release runtime|--check --version --offline --rollback --force --yes --help|
 help||@help||local|read|hidden|internal|none|help|show top-level help||
 rpc||@rpc||local|mutate|hidden|internal|none|rpc --stdio|serve the versioned local RPC protocol|--stdio|

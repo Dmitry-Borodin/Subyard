@@ -11,6 +11,14 @@ import (
 	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
 )
 
+func TestRemoteCommandQuotingKeepsEveryArgumentLiteral(t *testing.T) {
+	got := quoteCommand([]string{"git", "clone", "--", "x'; touch /tmp/escaped", "/srv/workspaces/id/src"})
+	want := "'git' 'clone' '--' 'x'\\''; touch /tmp/escaped' '/srv/workspaces/id/src'"
+	if got != want {
+		t.Fatalf("quoted command = %q, want %q", got, want)
+	}
+}
+
 func TestParseMetadataRejectsInvalidEntryAndTrailingJSON(t *testing.T) {
 	records, warnings := parseMetadata([]byte(
 		`{"schema":1,"projectId":"valid-12345678","name":"Valid","mode":"sync","target":"yard"}` + "\n" +
@@ -30,7 +38,7 @@ func TestObserveUsesInjectedIncusAndFallsBackFromSSH(t *testing.T) {
 	fake := &testkit.Incus{
 		Instances: map[string]ports.InstanceInfo{"subyard/yard": {Status: "Running"}},
 		ExecSteps: []testkit.IncusExecStep{
-			{Result: ports.InstanceExecResult{Stdout: []byte("known-12345678\tpresent\n")}},
+			{Result: ports.InstanceExecResult{Stdout: []byte("/srv/workspaces/known-12345678\n")}},
 			{Result: ports.InstanceExecResult{Stdout: []byte("box-12345678\trunning\n")}},
 			{Result: ports.InstanceExecResult{Stdout: []byte(`{"schema":1,"projectId":"live-12345678","name":"Live","mode":"sync","target":"yard"}`)}},
 		},

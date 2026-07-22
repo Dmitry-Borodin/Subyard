@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validated project input supplied by the Go control plane to physical project adapters.
+# Project input supplied by the Go control plane to physical adapters.
 # shellcheck disable=SC2034 # project_snapshot_load intentionally exports caller-visible fields.
 
 [ -n "${SUBYARD_PROJECT_SNAPSHOT_SOURCED:-}" ] && return 0
@@ -8,21 +8,11 @@ SUBYARD_PROJECT_SNAPSHOT_SOURCED=1
 project_snapshot_load() {
   [ "${SUBYARD_PROJECT_SNAPSHOT:-}" = 1 ] \
     || die "internal: project adapter requires a Go-owned project snapshot"
-  case "${SUBYARD_PROJECT_ID:-}" in
-    '' | -* | *[!A-Za-z0-9._-]*) die "internal: invalid project snapshot id" ;;
-  esac
-  case "${SUBYARD_PROJECT_MODE:-}" in sync | git | bind) ;; *) die "internal: invalid project snapshot mode" ;; esac
-  [ "${SUBYARD_PROJECT_YARD_PATH:-}" = "/srv/workspaces/$SUBYARD_PROJECT_ID/src" ] \
-    || die "internal: invalid project snapshot yard path"
-  case "${SUBYARD_PROJECT_DEVICE:-}" in
-    ws-* ) ;; *) die "internal: invalid project snapshot device" ;;
-  esac
-
-  id="$SUBYARD_PROJECT_ID"
+  id="${SUBYARD_PROJECT_ID:?internal: project snapshot has no id}"
   name="${SUBYARD_PROJECT_NAME:?internal: project snapshot has no name}"
   hostPath="${SUBYARD_PROJECT_HOST_PATH:-}"
-  yardPath="$SUBYARD_PROJECT_YARD_PATH"
-  mode="$SUBYARD_PROJECT_MODE"
+  yardPath="${SUBYARD_PROJECT_YARD_PATH:?internal: project snapshot has no yard path}"
+  mode="${SUBYARD_PROJECT_MODE:?internal: project snapshot has no mode}"
   target="${SUBYARD_PROJECT_TARGET:-}"
-  dev="$SUBYARD_PROJECT_DEVICE"
+  dev="${SUBYARD_PROJECT_DEVICE:?internal: project snapshot has no device}"
 }

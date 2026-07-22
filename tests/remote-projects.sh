@@ -59,12 +59,22 @@ if [[ "$joined" == *_info* ]]; then
   esac
   exit 0
 fi
-if [[ "$joined" == *'shell'*'--root'* ]]; then
-  [ "$(cat "$REMOTE_TEST_STATE/cleanup-mode" 2>/dev/null || printf ok)" != fail ] || exit 1
-  : > "$REMOTE_TEST_STATE/owner-cleanup"
+if [[ "$joined" == *'_project-state'* ]]; then
+  printf '%s\n' "$joined" >> "$REMOTE_TEST_STATE/owner-calls"
   exit 0
 fi
-if [[ "$joined" == *'yard-remote'*'rm -rf'* ]]; then
+if [[ "$joined" == *'yard-remote'*"'docker' 'info'"* ]]; then
+  [ "$(cat "$REMOTE_TEST_STATE/cleanup-mode" 2>/dev/null || printf ok)" != fail ] || exit 1
+  exit 0
+fi
+if [[ "$joined" == *'yard-remote'*"'docker' 'inspect'"* ]]; then
+  exit 0
+fi
+if [[ "$joined" == *'yard-remote'*"'docker' 'rm'"* || "$joined" == *'/srv/env-secrets/'* ]]; then
+  : > "$REMOTE_TEST_STATE/data-cleanup"
+  exit 0
+fi
+if [[ "$joined" == *'yard-remote'*'/srv/workspaces/demo-12345678'* ]]; then
   : > "$REMOTE_TEST_STATE/workspace-delete"
   exit 0
 fi
@@ -115,42 +125,36 @@ write_state() {
   chmod 0600 "$state_file"
 }
 run_remove() {
-  local target
-  target="$(jq -r '.target' "$state_file")"
-  SUBYARD_YARD=remote SUBYARD_YARD_EXPLICIT=1 SUBYARD_PROJECT_SNAPSHOT=1 \
-    SUBYARD_PROJECT_ID=demo-12345678 SUBYARD_PROJECT_NAME=demo \
-    SUBYARD_PROJECT_HOST_PATH=/controller/demo \
-    SUBYARD_PROJECT_YARD_PATH=/srv/workspaces/demo-12345678/src \
-    SUBYARD_PROJECT_MODE=sync SUBYARD_PROJECT_SSH_HOST=yard-remote \
-    SUBYARD_PROJECT_TARGET="$target" SUBYARD_PROJECT_DEVICE=ws-demo-12345678 \
-    SUBYARD_PROJECT_EXISTS=1 \
-    "$ROOT/scripts/project-remove.sh" demo-12345678 "$@" --yes
+  "$ROOT/bin/yard" -Y remote remove demo-12345678 "$@" --yes
 }
 
 # L1 removal has no L2 promise, warning, or owner-host cleanup call.
 write_state yard
-rm -f "$REMOTE_TEST_STATE/owner-cleanup" "$REMOTE_TEST_STATE/workspace-delete"
+rm -f "$REMOTE_TEST_STATE/data-cleanup" "$REMOTE_TEST_STATE/workspace-delete"
 output="$(run_remove --soft)"
 assert_not_contains "$output" 'L2'
 assert_not_contains "$output" 'box teardown'
-[ ! -e "$REMOTE_TEST_STATE/owner-cleanup" ] || fail 'L1 removal called owner-host L2 cleanup'
-[ -e "$state_file" ] || fail 'physical L1 adapter wrote controller state instead of leaving commit to Go'
+[ ! -e "$REMOTE_TEST_STATE/data-cleanup" ] || fail 'L1 removal called L2 cleanup'
+[ ! -e "$state_file" ] || fail 'native soft removal kept controller state'
 
-# An owner-host L2 teardown failure is fatal before either controller state or workspace deletion.
+# An in-yard L2 teardown failure is fatal before either controller state or workspace deletion.
 write_state openclaw
 printf 'fail\n' > "$REMOTE_TEST_STATE/cleanup-mode"
-rm -f "$REMOTE_TEST_STATE/owner-cleanup" "$REMOTE_TEST_STATE/workspace-delete"
-if output="$(run_remove 2>&1)"; then fail 'remote L2 removal ignored owner-host teardown failure'; fi
-assert_contains "$output" 'project state and workspace were kept'
+rm -f "$REMOTE_TEST_STATE/data-cleanup" "$REMOTE_TEST_STATE/workspace-delete" "$REMOTE_TEST_STATE/owner-calls"
+if output="$(run_remove 2>&1)"; then fail 'remote L2 removal ignored in-yard teardown failure'; fi
+assert_contains "$output" 'remove project environment before state'
 [ -e "$state_file" ] || fail 'failed L2 teardown removed controller state'
 [ ! -e "$REMOTE_TEST_STATE/workspace-delete" ] || fail 'failed L2 teardown deleted the workspace'
+[ ! -e "$REMOTE_TEST_STATE/owner-calls" ] || fail 'failed L2 teardown changed owner state'
 
-# Once owner cleanup succeeds, physical removal proceeds; Go owns the later state commit.
+# Once in-yard cleanup succeeds, native removal commits state after the workspace is gone.
 printf 'ok\n' > "$REMOTE_TEST_STATE/cleanup-mode"
+rm -f "$REMOTE_TEST_STATE/owner-calls"
 output="$(run_remove)"
-assert_contains "$output" 'removed remote L2 box/staged env'
-[ -e "$REMOTE_TEST_STATE/owner-cleanup" ] || fail 'successful L2 removal skipped owner cleanup'
+assert_contains "$output" 'removed demo'
+[ -e "$REMOTE_TEST_STATE/data-cleanup" ] || fail 'successful L2 removal skipped in-yard cleanup'
 [ -e "$REMOTE_TEST_STATE/workspace-delete" ] || fail 'successful L2 removal skipped workspace deletion'
-[ -e "$state_file" ] || fail 'physical L2 adapter wrote controller state instead of leaving commit to Go'
+[ ! -e "$state_file" ] || fail 'native L2 removal kept controller state'
+[ -s "$REMOTE_TEST_STATE/owner-calls" ] || fail 'native removal did not converge owner state'
 
-printf 'ok: remote project counts are live/cached and physical removal is target-aware and state-neutral\n'
+printf 'ok: remote project counts are cached and native removal is target-aware\n'

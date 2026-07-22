@@ -21,8 +21,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/config.sh
 . "$SCRIPT_DIR/lib/config.sh"
 subyard_context_load
-# shellcheck source=scripts/lib/cache.sh
-. "$SCRIPT_DIR/lib/cache.sh"
 # shellcheck source=scripts/lib-power.sh
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh

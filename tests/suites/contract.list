@@ -12,7 +12,6 @@ init-network-convergence.sh
 init-power-convergence.sh
 init-stage-registry.sh
 opencode-agent-defaults.sh
-project-bind-warning.sh
 prompt-contract.sh
 security-lint.sh
 test-vms.sh

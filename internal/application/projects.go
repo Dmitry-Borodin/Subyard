@@ -52,3 +52,26 @@ func (inventory ProjectInventory) Read(
 	}
 	return records, observation, nil
 }
+
+func ProjectConsequences(command string, record domain.ProjectRecord, soft bool) []string {
+	switch command {
+	case "sync":
+		return []string{fmt.Sprintf("copy %s to %s", record.HostPath, record.YardPath)}
+	case "bind":
+		return []string{fmt.Sprintf("expose %s at %s through an Incus disk", record.HostPath, record.YardPath)}
+	case "clone":
+		return []string{fmt.Sprintf("clone the repository inside the yard at %s", record.YardPath)}
+	case "remove":
+		if record.Mode == domain.ProjectBind {
+			return []string{"detach the Incus disk without deleting the host directory"}
+		}
+		if soft {
+			return []string{"keep the project workspace in the yard"}
+		}
+		return []string{"delete the project workspace from the yard"}
+	case "up":
+		return []string{fmt.Sprintf("build or start the %s project environment", record.Target)}
+	default:
+		return nil
+	}
+}

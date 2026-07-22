@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fail() { printf 'shell ownership: %s\n' "$*" >&2; exit 1; }
 
+[ ! -e "$ROOT/scripts/lib/cache.sh" ] || fail 'native remote control keeps the retired shell cache'
+[ ! -e "$ROOT/scripts/state/transport.sh" ] || fail 'shell still owns remote routing and reachability policy'
+
 production_roots=("$ROOT/scripts" "$ROOT/internal" "$ROOT/config" "$ROOT/bin" "$ROOT/dev" "$ROOT/.github" "$ROOT/Makefile")
 while IFS= read -r file; do
   basename="$(basename "$file")"
@@ -25,10 +28,12 @@ while IFS='|' read -r name _aliases handler _rest; do
 done < "$ROOT/config/commands.registry"
 
 while IFS='|' read -r name _aliases handler _rest; do
-  case "$name:$handler" in ''*':@'*) ;;
+  case "$handler" in @*) ;;
     *) continue ;;
   esac
-  for candidate in "$ROOT/scripts/$name.sh" "$ROOT/scripts/yard-$name.sh"; do
+  native="${handler#@}"
+  for candidate in "$ROOT/scripts/$name.sh" "$ROOT/scripts/yard-$name.sh" \
+    "$ROOT/scripts/$native.sh" "$ROOT/scripts/yard-$native.sh"; do
     [ ! -e "$candidate" ] || fail "native command keeps a replaced shell path: ${candidate#$ROOT/}"
   done
 done < "$ROOT/config/commands.registry"

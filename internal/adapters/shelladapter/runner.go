@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Dmitry-Borodin/Subyard/internal/config"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 )
 
@@ -37,17 +38,9 @@ type Runner struct {
 	MaxSecret      int64
 }
 
-type ResultMode uint8
-
-const (
-	StructuredResult ResultMode = iota
-	ExitStatusResult
-)
-
 type Action struct {
-	Path        string
-	Result      ResultMode
-	StreamVerbs []string
+	Path   string
+	Direct bool
 }
 
 func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, secret io.Reader) (domain.AdapterResult, string, error) {
@@ -77,7 +70,7 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 		callContext, cancel = context.WithTimeout(ctx, runner.Timeout)
 	}
 	defer cancel()
-	direct := action.Result == ExitStatusResult
+	direct := action.Direct
 	commandArguments := make([]string, 0, len(request.Arguments)+1)
 	if !direct {
 		commandArguments = append(commandArguments, request.Action)
@@ -118,18 +111,16 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 	limit := runner.outputLimit()
 	stdout := &limitedBuffer{limit: limit}
 	stderr := &limitedBuffer{limit: limit}
-	liveDiagnostics := runner.liveDiagnostics(request, action, secretBytes)
+	var liveDiagnostics io.Writer
+	if runner.Diagnostics != nil && len(secretBytes) == 0 && direct {
+		liveDiagnostics = &lockedWriter{writer: runner.Diagnostics}
+	}
 	if direct && liveDiagnostics != nil {
-		liveDiagnostics = &lockedWriter{writer: liveDiagnostics}
 		command.Stdout = io.MultiWriter(stdout, liveDiagnostics)
 		command.Stderr = io.MultiWriter(stderr, liveDiagnostics)
 	} else {
 		command.Stdout = stdout
-		if liveDiagnostics == nil {
-			command.Stderr = stderr
-		} else {
-			command.Stderr = io.MultiWriter(stderr, liveDiagnostics)
-		}
+		command.Stderr = stderr
 	}
 	if err := command.Start(); err != nil {
 		return domain.AdapterResult{}, "", fmt.Errorf("start adapter: %w", err)
@@ -185,32 +176,6 @@ func (runner Runner) Run(ctx context.Context, request domain.AdapterRequest, sec
 	return result, redactedStderr, nil
 }
 
-func (runner Runner) liveDiagnostics(request domain.AdapterRequest, action Action, secret []byte) io.Writer {
-	if runner.Diagnostics == nil || len(secret) != 0 {
-		return nil
-	}
-	if len(action.StreamVerbs) == 0 {
-		return nil
-	}
-	filtered := make([]string, 0, len(request.Arguments))
-	for _, argument := range request.Arguments {
-		if argument != "-y" && argument != "--yes" {
-			filtered = append(filtered, argument)
-		}
-	}
-	if len(filtered) > 1 {
-		return nil
-	}
-	verb := ""
-	if len(filtered) == 1 {
-		verb = filtered[0]
-	}
-	if !contains(action.StreamVerbs, verb) {
-		return nil
-	}
-	return runner.Diagnostics
-}
-
 func (runner Runner) validate(request domain.AdapterRequest) (Action, error) {
 	if request.Schema != ProtocolSchema {
 		return Action{}, fmt.Errorf("unsupported adapter schema %d", request.Schema)
@@ -225,9 +190,6 @@ func (runner Runner) validate(request domain.AdapterRequest) (Action, error) {
 	action, ok := actions[request.Action]
 	if !ok {
 		return Action{}, fmt.Errorf("adapter action %q/%q is not allowed", request.Adapter, request.Action)
-	}
-	if action.Result != StructuredResult && action.Result != ExitStatusResult {
-		return Action{}, errors.New("adapter action has invalid result mode")
 	}
 	root, err := filepath.Abs(runner.RepositoryRoot)
 	if err != nil {
@@ -252,7 +214,7 @@ func (runner Runner) validate(request domain.AdapterRequest) (Action, error) {
 		if _, ok := runner.ContextKeys[key]; !ok {
 			return Action{}, fmt.Errorf("adapter context key %q is not allowed", key)
 		}
-		if !validEnvironmentKey(key) || reservedEnvironmentKey(key) {
+		if !config.ValidVariable(key) || reservedEnvironmentKey(key) {
 			return Action{}, fmt.Errorf("adapter context key %q is not a safe environment key", key)
 		}
 		if sensitiveKey(key) {
@@ -275,30 +237,6 @@ func (runner Runner) validate(request domain.AdapterRequest) (Action, error) {
 	}
 	action.Path = path
 	return action, nil
-}
-
-func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func validEnvironmentKey(value string) bool {
-	if value == "" || !((value[0] >= 'A' && value[0] <= 'Z') ||
-		(value[0] >= 'a' && value[0] <= 'z') || value[0] == '_') {
-		return false
-	}
-	for index := 1; index < len(value); index++ {
-		char := value[index]
-		if !((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') ||
-			(char >= '0' && char <= '9') || char == '_') {
-			return false
-		}
-	}
-	return true
 }
 
 func reservedEnvironmentKey(value string) bool {

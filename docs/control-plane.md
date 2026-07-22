@@ -1,9 +1,8 @@
 # Control-plane architecture
 
-Subyard's production entrypoint and control-plane foundation are a native Go engine. Bash remains
-the system-adapter and safety layer for host mutations, reconciliation and protected credential
-materialization. There is one implementation path for each migrated operation: the Go registry
-selects an adapter, Go loads and validates the context once, and side effects stay behind explicit
+Subyard's production entrypoint and control plane are a native Go engine. Bash is limited to narrow
+physical adapters for platform mutations and protected payloads. There is one implementation path
+for each operation: Go owns the workflow and validated context; side effects stay behind explicit
 ports.
 
 ## Implementation map
@@ -20,7 +19,6 @@ internal/
   └── adapters/                          Incus, metadata, shell and local/SSH transports
 scripts/
   ├── lib/                              shared platform adapter contracts
-  ├── state/                            physical transport and portable yard metadata
   ├── reconcile/
   │     └── stages/                     one check/plan/apply/verify contract per init stage
   └── credentials/                      protected crypto/store/peer/materialization adapters
@@ -35,13 +33,10 @@ Incus calls and the versioned stdio RPC. The source launcher executes only an ex
 development candidate. Installed commands use an immutable, checksum/provenance-verified runtime
 containing its launcher, engine, scripts, registry and completion files; `current`/`previous` switch
 the whole runtime and production never reads a source checkout. Non-interactive mutations share the
-Go-owned plan, consequences, confirmation, operation
-ID, audit, events and cancellation path across CLI and RPC. The engine maps migrated actions directly
-to fixed leaf executables and synthesizes their typed result.
-`scripts/init.sh` remains the structured host-reconciliation adapter:
-it composes the ordered stage planner, owns the one top-level confirmation and keeps the separate
-desired-power finalization transaction. Profile process identity and platform facts remain in their
-owning Bash adapter; host-free tests inject facts and fake binaries.
+Go-owned plan, consequences, confirmation, operation ID, audit, events and cancellation path across
+CLI and RPC. Go owns reconciliation order, retries and transactions. A shell leaf may probe or
+mutate one physical boundary; it does not select stages, route operations or make policy decisions.
+The current init and credential shell workflows are migration debt.
 
 ## Recorded P0 baseline
 
@@ -146,14 +141,23 @@ fail-closed. The same repair is registered in `_migrate apply` for release upgra
 
 Before a project adapter starts, Go resolves paths/names/qualified selectors across yards, loads the
 owning context, validates the typed record and supplies a `SUBYARD_PROJECT_*` snapshot. Physical
-sync/clone/export/remove/L2 adapters never open project-state files or re-exec routing decisions.
+project adapters require that snapshot; they do not reload config, parse selectors or open state.
+Operation options such as remove mode and image rebuild are passed as validated fields.
 After a successful mutating adapter, Go atomically publishes or deletes controller state and, for a
 remote yard, converges the owner endpoint before publishing controller state.
 
-The remaining shell modules are intentionally physical: `state/transport.sh` contains bounded SSH
-owner/data-plane probes, `state/metadata.sh` reads and writes portable in-yard discovery records,
-`lib/project-snapshot.sh` validates the adapter envelope, and `lib/cache.sh` maintains the last-good
-remote `_info` cache. The retired `state/store.sh` and `state/resolver.sh` shims must not return.
+Shell project leaves may execute prepared SSH, Incus, tar or Docker operations. They do not probe the
+owner control plane, classify reachability, reload registry state or decide routes. The retired
+`state/store.sh`, `state/resolver.sh` and `state/transport.sh` shims must not return.
+Native project actions use `@project`; `clone`, `sync`, `bind` and `remove` have no shell handlers.
+
+Remote registration, trust repair, removal and listing are native. Preparation probes the trusted
+owner and scans the yard key without local mutation; old and new fingerprints enter the operation
+plan before confirmation. Apply consumes that prepared evidence and atomically rolls back local
+context, SSH config, trust and cache files if the data-plane verification fails.
+
+Project-environment profile validation, mount/device policy and lifecycle planning also belong to
+Go. A remaining shell hook may only execute the prepared Incus or Docker operation.
 
 ### Reconciliation stages
 
@@ -178,11 +182,10 @@ store.
 Native credential policy validates the revision graph and owns heads, terminal precedence, metadata
 compatibility, recipient intersection/rekey, peer trust merging, assignment epochs and freshness,
 and retry scheduling. Its RPC view
-projects only allowlisted metadata and never decodes encrypted payload or SOPS fields.
-`credentials/domain.sh` is the protected adapter coordinator: it consumes the native redacted merge
-decision and performs only signature/decrypt/payload-equality/publication observations. Production
-adapters separately own protected store I/O, crypto/signature observations, revision publication,
-consumer materialization, peer transport, retry-state persistence, verification/quarantine and sync.
+projects only allowlisted metadata and never decodes encrypted payload or SOPS fields. Protected
+adapters own only store I/O, cryptographic operations, consumer materialization and peer transport.
+They consume a Go-prepared decision and do not coordinate the workflow. The current shell credential
+coordinator is migration debt.
 Secret payload enters only through protected stdin or a mode-0400/0600 file and is never placed in
 command arguments, environment metadata, audit output, or a revision's unencrypted fields.
 

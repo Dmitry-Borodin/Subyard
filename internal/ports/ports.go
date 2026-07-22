@@ -47,6 +47,24 @@ type InstanceExecutor interface {
 	Exec(context.Context, string, string, InstanceExecRequest) (InstanceExecResult, error)
 }
 
+type InstanceStreamExecutor interface {
+	StreamExec(context.Context, string, string, InstanceExecRequest, io.Reader) (InstanceExecResult, error)
+}
+
+type YardExecutor interface {
+	Execute(context.Context, domain.Context, InstanceExecRequest) (InstanceExecResult, error)
+	Stream(context.Context, domain.Context, InstanceExecRequest, io.Reader) (InstanceExecResult, error)
+}
+
+type InstanceDeviceManager interface {
+	EnsureDiskDevice(context.Context, string, string, string, string, string) (bool, error)
+	RemoveDevice(context.Context, string, string, string) (bool, error)
+}
+
+type DirectoryArchiver interface {
+	Open(context.Context, string) (io.ReadCloser, error)
+}
+
 type ProjectStore interface {
 	List(context.Context) ([]domain.ProjectRecord, error)
 	Get(context.Context, string) (domain.ProjectRecord, error)
@@ -114,6 +132,16 @@ type AdapterRunner interface {
 
 type RemoteTransport interface {
 	Call(context.Context, string, []byte) ([]byte, error)
+}
+
+type RemoteControl interface {
+	Lookup(context.Context, string) (domain.RemoteRecord, bool, error)
+	List(context.Context) ([]domain.RemoteRecord, error)
+	ProbeOwner(context.Context, domain.RemoteSpec) (domain.RemoteInfo, error)
+	ObserveOwner(context.Context, domain.RemoteSpec) (domain.RemoteInfo, time.Time, error)
+	ScanYardKeys(context.Context, domain.RemoteSpec, int) ([]domain.RemoteKey, error)
+	RecordedYardKeys(context.Context, string) ([]domain.RemoteKey, error)
+	Apply(context.Context, domain.RemotePrepared) (domain.RemoteResult, error)
 }
 
 type AuditSink interface {

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/projectruntime"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
 )
@@ -66,6 +67,42 @@ func TestRealIncusConformance(t *testing.T) {
 	if err != nil || result.ExitCode != 0 || string(result.Stdout) != "subyard-real-incus" {
 		stopEvents()
 		t.Fatalf("exec contract: %#v err=%v", result, err)
+	}
+	result, err = client.StreamExec(ctx, project, instanceName, ports.InstanceExecRequest{
+		Command: []string{"cat"},
+	}, strings.NewReader("subyard-stream"))
+	if err != nil || string(result.Stdout) != "subyard-stream" {
+		stopEvents()
+		t.Fatalf("stream exec contract: %#v err=%v", result, err)
+	}
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "payload"), []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := (projectruntime.TarArchiver{}).Open(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := "/tmp/subyard-real-archive"
+	if _, err := client.Exec(ctx, project, instanceName, ports.InstanceExecRequest{
+		Command: []string{"install", "-d", destination},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = client.StreamExec(ctx, project, instanceName, ports.InstanceExecRequest{
+		Command: []string{"tar", "-C", destination, "-xf", "-"},
+	}, archive)
+	archiveErr := archive.Close()
+	if err != nil || archiveErr != nil {
+		stopEvents()
+		t.Fatalf("archive stream contract: %#v stream=%v archive=%v", result, err, archiveErr)
+	}
+	result, err = client.Exec(ctx, project, instanceName, ports.InstanceExecRequest{
+		Command: []string{"cat", filepath.Join(destination, "payload")},
+	})
+	if err != nil || string(result.Stdout) != "archive" {
+		stopEvents()
+		t.Fatalf("archive payload contract: %#v err=%v", result, err)
 	}
 	select {
 	case event, ok := <-events:

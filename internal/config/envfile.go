@@ -10,6 +10,18 @@ import (
 
 type environment map[string]string
 
+func ReadAssignments(path string) (map[string]string, error) {
+	values := make(environment)
+	if err := applyEnvFile(path, values); err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(values))
+	for name, value := range values {
+		result[name] = value
+	}
+	return result, nil
+}
+
 func applyEnvFile(path string, values environment) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -96,7 +108,7 @@ func applyRecord(record string, values environment) error {
 		return errors.New("only variable assignments are allowed")
 	}
 	name := strings.TrimSpace(record[:separator])
-	if !validVariable(name) {
+	if !ValidVariable(name) {
 		return fmt.Errorf("invalid variable name %q", name)
 	}
 	raw := strings.TrimSpace(record[separator+1:])
@@ -195,7 +207,7 @@ func parameterEnd(value string, start int) (int, error) {
 
 func expandParameter(expression string, values environment) (string, error) {
 	name, operator, fallback := splitParameter(expression)
-	if !validVariable(name) {
+	if !ValidVariable(name) {
 		return "", fmt.Errorf("invalid parameter name %q", name)
 	}
 	current := values[name]
@@ -245,7 +257,7 @@ func splitParameter(expression string) (string, string, string) {
 	return expression, "", ""
 }
 
-func validVariable(value string) bool {
+func ValidVariable(value string) bool {
 	if value == "" || !variableChar(value[0], true) {
 		return false
 	}

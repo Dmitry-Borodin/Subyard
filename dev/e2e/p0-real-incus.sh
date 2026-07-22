@@ -40,11 +40,12 @@ project_exists && cleanup
 incus project create "$PROJECT" \
   -c features.images=false -c features.profiles=false -c features.storage.volumes=false >/dev/null
 incus project set "$PROJECT" user.subyard.p0="$MARKER"
-incus launch images:debian/13/cloud p0-container --project "$PROJECT" \
-  -c user.subyard.p0="$MARKER" >/dev/null
+incus launch images:debian/13/cloud p0-container --project "$PROJECT" --storage default \
+	-c user.subyard.p0="$MARKER" >/dev/null
 incus launch images:debian/13/cloud p0-vm --vm --project "$PROJECT" \
-  -c limits.cpu=1 -c limits.memory=1GiB -c user.subyard.p0="$MARKER" \
-  -d root,size=5GiB >/dev/null
+	--storage default \
+	-c limits.cpu=1 -c limits.memory=1GiB -c user.subyard.p0="$MARKER" \
+	-d root,size=5GiB >/dev/null
 
 for name in p0-container p0-vm; do
   printf '  [ .. ] waiting for %s\n' "$name"

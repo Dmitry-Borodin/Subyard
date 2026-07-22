@@ -168,6 +168,10 @@ func (record ProjectRecord) Validate(expectedID string) error {
 	if record.Name == "" || record.YardPath == "" || record.SSHHost == "" {
 		return errors.New("project name, yard path and SSH host are required")
 	}
+	expectedPath := filepath.Join("/srv/workspaces", record.ProjectID, "src")
+	if record.YardPath != expectedPath {
+		return fmt.Errorf("project yard path must be %q", expectedPath)
+	}
 	if record.Mode != ProjectSync && record.Mode != ProjectGit && record.Mode != ProjectBind {
 		return fmt.Errorf("invalid project mode %q", record.Mode)
 	}
@@ -184,7 +188,7 @@ func (record ProjectRecord) Validate(expectedID string) error {
 }
 
 func SafeID(value string) bool {
-	if value == "" || strings.HasPrefix(value, "-") {
+	if value == "" || value == "." || value == ".." || strings.HasPrefix(value, "-") {
 		return false
 	}
 	for _, char := range value {
@@ -206,6 +210,13 @@ func SafeName(value string) bool {
 		}
 	}
 	return true
+}
+
+func SafeSSHTarget(value string) bool {
+	return value != "" && value[0] != '-' && strings.IndexFunc(value, func(char rune) bool {
+		return !(char >= 'a' && char <= 'z') && !(char >= 'A' && char <= 'Z') &&
+			!(char >= '0' && char <= '9') && !strings.ContainsRune("_.@:\u005b\u005d+-", char)
+	}) < 0
 }
 
 type CredentialMetadata struct {

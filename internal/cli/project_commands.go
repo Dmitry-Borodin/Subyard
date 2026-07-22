@@ -256,6 +256,13 @@ func (cli *CLI) prepareExistingProject(
 	}
 	if name == "remove" {
 		execution.Commit = projectCommitDelete
+		execution.Environment["SUBYARD_PROJECT_REMOVE_SOFT"] = argumentValue(arguments, "--soft")
+		if argumentValue(arguments, "--purge") == "1" {
+			fmt.Fprintln(cli.options.Stderr, "warning: --purge is deprecated; full removal is the default (--soft keeps the copy)")
+		}
+	}
+	if name == "up" {
+		execution.Environment["SUBYARD_PROJECT_REBUILD"] = argumentValue(arguments, "--rebuild")
 	}
 	// Owner-forwarded commands receive a stable ID, never a controller-only host path.
 	if selectedLoaded.Context.YardType == domain.YardRemote &&
@@ -263,6 +270,15 @@ func (cli *CLI) prepareExistingProject(
 		execution.Arguments = replaceProjectSelector(name, arguments, match.Record.ProjectID)
 	}
 	return execution, nil
+}
+
+func argumentValue(arguments []string, wanted string) string {
+	for _, argument := range arguments {
+		if argument == wanted {
+			return "1"
+		}
+	}
+	return "0"
 }
 
 func (cli *CLI) resolveProjectForCommand(

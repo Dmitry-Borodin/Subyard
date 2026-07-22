@@ -61,18 +61,6 @@ yard_valid_name() {
   case "$1" in '' | *[!a-z0-9_-]*) return 1 ;; [a-z0-9]*) return 0 ;; *) return 1 ;; esac
 }
 
-remote_hostkey_alias() {
-  local name="${1:-}"
-  yard_valid_name "$name" || return 1
-  printf 'subyard-remote-%s' "$name"
-}
-
-remote_add_hint() {
-  printf '%s remote add %s %s' "${PROG:-yard}" "$1" "$2"
-  [ -n "${3:-}" ] && printf ' --yard %s' "$3"
-  return 0
-}
-
 yard_apply_derivations() {
   local name="$1" config_home="${SUBYARD_CONFIG_HOME:-$SUBYARD_OPERATOR_HOME/.config/subyard}"
   YARD_NAME="$name"
@@ -101,23 +89,5 @@ yard_context_select() {
 yard_cmd_hint() {
   printf '%s' "${PROG:-yard}"
   [ -n "${YARD_NAME:-}" ] && printf ' -Y %s' "$YARD_NAME"
-  return 0
-}
-
-state_dir_for_yard() {
-  local name="${1:?state_dir_for_yard needs a name}"
-  local config_home="${SUBYARD_CONFIG_HOME:-$SUBYARD_OPERATOR_HOME/.config/subyard}"
-  case "$name" in '' | default) printf '%s/projects\n' "$config_home" ;; *) printf '%s/yards/%s/projects\n' "$config_home" "$name" ;; esac
-}
-
-yard_env_peek() {
-  local file template_file
-  file="$(yard_env_file "$1" 2>/dev/null)" || return 0
-  if grep -Eq "^[[:space:]]*$2=" "$file"; then
-    yard_env_val "$file" "$2"
-    return 0
-  fi
-  template_file="$(yard_template_file "$file" 2>/dev/null || true)"
-  [ -n "$template_file" ] && yard_env_val "$template_file" "$2"
   return 0
 }

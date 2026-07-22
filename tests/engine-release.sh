@@ -11,6 +11,7 @@ export SUBYARD_CONFIG_HOME="$TMP/config"
 export SUBYARD_HOME="$TMP/data"
 
 fail() { printf 'engine release: %s\n' "$*" >&2; exit 1; }
+yard_update() { YARD_ENGINE_PATH="$release_engine" "$ROOT/bin/yard" update --yes "$@"; }
 
 workflow="$ROOT/.github/workflows/release.yml"
 [ -r "$workflow" ] || fail 'tag release workflow is missing'
@@ -70,9 +71,13 @@ bundle_list="$TMP/runtime-bundle.list"
 tar -tzf "$bundle_one" > "$bundle_list"
 grep -Fxq './bin/yard' "$bundle_list" \
   && grep -Fxq './bin/yard-engine' "$bundle_list" \
-  && grep -Fxq './scripts/update-engine.sh' "$bundle_list" \
+  && grep -Fxq './scripts/install-runtime-release.sh' "$bundle_list" \
   && grep -Fxq './config/commands.registry' "$bundle_list" \
   || fail 'runtime bundle does not contain the complete launcher contract'
+for excluded in update-engine.sh power-state.sh bootstrap-runtime.sh build-engine.sh package-engine.sh install-cli.sh; do
+  ! grep -Fq "/$excluded" "$bundle_list" \
+    || fail "runtime bundle contains non-runtime script $excluded"
+done
 jq -e '.schemaVersion == 1 and .version == "1.0.0-test" and .rpc.min == 1 and .rpc.max == 1 and
   .projectStateSchema == 1 and .credentialSchema == 1' "$artifact_one.manifest.json" >/dev/null
 jq -e '.schemaVersion == 1 and .version == "1.0.0-test" and
@@ -94,6 +99,7 @@ chmod 0664 "$legacy_state"
 
 artifact_two="$("$ROOT/scripts/package-engine.sh" --output-dir "$release" --version 1.1.0-test)"
 bundle_two="$release/subyard-1.1.0-test-linux-amd64.tar.gz"
+release_engine="$artifact_two"
 jq -e '.version == "1.1.0-test" and .rpc.min == 1 and .rpc.max == 1' \
   "$artifact_two.manifest.json" >/dev/null
 rpc_negotiate "$artifact_two" 1.1.0-test 1 compatible artifact-two-v1
@@ -102,21 +108,21 @@ rpc_negotiate "$artifact_two" 1.1.0-test 1 compatible artifact-two-v1
 # its exact cache offline without touching a working current release.
 runtime_root="$TMP/update-runtime"
 YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
-  "$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --version 1.0.0-test >/dev/null
+  yard_update --runtime-root "$runtime_root" --version 1.0.0-test >/dev/null
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'yard update did not install the selected release'
 [ "$(stat -c '%a' "$legacy_state")" = 600 ] \
   || fail 'runtime install did not migrate legacy project permissions'
-[ -x "$runtime_root/current/scripts/update-engine.sh" ] \
+[ -x "$runtime_root/current/scripts/install-runtime-release.sh" ] \
   && [ -r "$runtime_root/current/config/commands.registry" ] \
   && [ -r "$runtime_root/current/completions/yard.bash" ] \
   || fail 'yard update installed an incomplete runtime'
-YARD_RELEASE_CACHE="$TMP/cache" "$ROOT/scripts/update-engine.sh" \
+YARD_RELEASE_CACHE="$TMP/cache" yard_update \
   --runtime-root "$runtime_root" --version 1.0.0-test --offline --check >/dev/null \
   || fail 'offline update check did not use the verified cache'
 cached_bundle="$TMP/cache/1.0.0-test/$(basename "$bundle_one")"
 printf 'truncated\n' >> "$cached_bundle"
-if YARD_RELEASE_CACHE="$TMP/cache" "$ROOT/scripts/update-engine.sh" \
+if YARD_RELEASE_CACHE="$TMP/cache" yard_update \
   --runtime-root "$runtime_root" --version 1.0.0-test --offline --check >/dev/null 2>&1; then
   fail 'offline update check accepted a corrupt cached bundle'
 fi
@@ -127,19 +133,19 @@ partial="$TMP/partial"; install -d "$partial"
 install -m 0644 "$bundle_two" "$partial/$(basename "$bundle_two")"
 install -m 0644 "$bundle_two.sha256" "$bundle_two.manifest.json" "$partial/"
 if YARD_RELEASE_BASE_URL="file://$partial" YARD_RELEASE_CACHE="$TMP/partial-cache" \
-  "$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null 2>&1; then
+  yard_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null 2>&1; then
   fail 'incomplete release unexpectedly installed'
 fi
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'interrupted/incomplete update replaced the current runtime'
 
 YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
-  "$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
+  yard_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \
   || fail 'runtime upgrade did not switch current'
 [ "$("$runtime_root/previous/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'runtime upgrade did not retain previous'
-"$ROOT/scripts/update-engine.sh" --runtime-root "$runtime_root" --rollback >/dev/null
+yard_update --runtime-root "$runtime_root" --rollback >/dev/null
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'runtime rollback did not restore previous'
 [ "$("$runtime_root/previous/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \

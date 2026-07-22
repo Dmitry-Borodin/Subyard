@@ -218,7 +218,7 @@ for feat in $OPTIONAL_FEATURES; do
       uid="$(id -u "$DEV_USER")"
       runuser -u "$DEV_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
         dockerd-rootless-setuptool.sh install --force >/dev/null 2>&1 || true
-      # setup flips dev's default context to rootless — restore default so shared rootful project-env.sh works.
+      # setup flips dev's default context to rootless — restore it for shared rootful project environments.
       runuser -u "$DEV_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
         docker context use default >/dev/null 2>&1 || true
       ;;

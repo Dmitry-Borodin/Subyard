@@ -10,11 +10,13 @@ import (
 
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
 )
 
 type projectDataStub struct {
 	requests []ports.InstanceExecRequest
 	failAt   int
+	run      func(ports.InstanceExecRequest) (ports.InstanceExecResult, error)
 }
 
 type projectDevicesStub struct {
@@ -44,6 +46,9 @@ func (stub *projectDataStub) Execute(
 	request ports.InstanceExecRequest,
 ) (ports.InstanceExecResult, error) {
 	stub.requests = append(stub.requests, request)
+	if stub.run != nil {
+		return stub.run(request)
+	}
 	if len(stub.requests) == stub.failAt {
 		return ports.InstanceExecResult{Stderr: []byte("fixture failure")}, errors.New("failed")
 	}
@@ -62,6 +67,25 @@ func (stub *projectDataStub) Stream(
 
 type projectArchiveStub struct {
 	payload string
+}
+
+type projectExportStub struct {
+	patch []byte
+	path  string
+}
+
+type vsCodeStub struct {
+	calls [][]string
+}
+
+func (stub *vsCodeStub) Run(_ context.Context, arguments ...string) ([]byte, error) {
+	stub.calls = append(stub.calls, append([]string(nil), arguments...))
+	return nil, nil
+}
+
+func (stub *projectExportStub) Publish(_ context.Context, _ string, patch []byte) (string, error) {
+	stub.patch = append([]byte(nil), patch...)
+	return stub.path, nil
 }
 
 func (stub projectArchiveStub) Open(context.Context, string) (io.ReadCloser, error) {
@@ -196,6 +220,88 @@ func TestProjectBindUsesIncusDeviceAndWritesMetadata(t *testing.T) {
 	if len(devices.ensured) != 1 || devices.ensured[0] != "ws-demo-12345678" ||
 		len(data.requests) != 2 || data.requests[1].Command[0] != "tee" {
 		t.Fatalf("unexpected bind sequence: calls=%#v devices=%#v", data.requests, devices.ensured)
+	}
+}
+
+func TestProjectExportUsesDataPlaneAndPublishesPortablePatch(t *testing.T) {
+	data := &projectDataStub{}
+	data.run = func(request ports.InstanceExecRequest) (ports.InstanceExecResult, error) {
+		if len(request.Command) > 0 && request.Command[0] == "diff" {
+			return ports.InstanceExecResult{ExitCode: 1, Stdout: []byte(
+				"diff -ruN /tmp/subyard-export-operation-export/a/file /srv/workspaces/demo-12345678/src/file\n" +
+					"--- /tmp/subyard-export-operation-export/a/file\n+++ /srv/workspaces/demo-12345678/src/file\n@@ -1 +1,2 @@\n-old\n+new\n+/srv/workspaces/demo-12345678/src stays content\n",
+			)}, errors.New("status 1")
+		}
+		return ports.InstanceExecResult{}, nil
+	}
+	record := cloneRecord()
+	record.Mode, record.HostPath = domain.ProjectSync, "/host/demo"
+	exports := &projectExportStub{path: "/data/exports/demo.patch"}
+	runner := ProjectActionRunner{
+		Data: data, Archive: projectArchiveStub{payload: "archive"}, Exports: exports,
+		Yard: domain.Context{YardType: domain.YardRemote}, Project: record,
+	}
+	result, message, err := runner.Run(context.Background(), domain.AdapterRequest{
+		Schema: 1, OperationID: "operation-export", Adapter: "project", Action: "export",
+	}, nil)
+	if err != nil || result.Output["patch"] != exports.path {
+		t.Fatalf("export failed: result=%#v message=%q err=%v", result, message, err)
+	}
+	if !strings.Contains(string(exports.patch), "--- a/file\n+++ b/file\n") ||
+		!strings.Contains(string(exports.patch), "+/srv/workspaces/demo-12345678/src stays content\n") {
+		t.Fatalf("patch is not portable: %q", exports.patch)
+	}
+	if len(data.requests) != 4 || data.requests[1].Command[0] != "tar" ||
+		data.requests[2].Command[0] != "diff" || data.requests[3].Command[0] != "rm" {
+		t.Fatalf("unexpected export sequence: %#v", data.requests)
+	}
+}
+
+func TestProjectExportRejectsProjectsWithoutHostCopy(t *testing.T) {
+	runner := ProjectActionRunner{Data: &projectDataStub{}, Project: cloneRecord()}
+	if _, _, err := runner.Run(context.Background(), domain.AdapterRequest{
+		Schema: 1, OperationID: "operation-export", Adapter: "project", Action: "export",
+	}, nil); err == nil || !strings.Contains(err.Error(), "cannot be exported") {
+		t.Fatalf("git export was accepted: %v", err)
+	}
+}
+
+func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
+	data := &projectDataStub{}
+	code := &vsCodeStub{}
+	record := cloneRecord()
+	record.Mode, record.HostPath, record.Target = domain.ProjectSync, "/host/demo", "yard"
+	incus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{
+		"subyard/yard": {Status: "Running", Devices: map[string]map[string]string{"ssh": {"type": "proxy"}}},
+	}}
+	runner := ProjectActionRunner{
+		Data: data, Instances: incus, VSCode: code,
+		Yard:    domain.Context{YardType: domain.YardLocal, IncusProject: "subyard", InstanceName: "yard", DevUser: "dev", DevUID: 1000},
+		Project: record, Extensions: []string{"anthropic.claude-code"},
+	}
+	_, message, err := runner.Run(context.Background(), domain.AdapterRequest{
+		Schema: 1, OperationID: "operation-code", Adapter: "project", Action: "code",
+	}, nil)
+	if err != nil || !strings.Contains(message, "opened Demo") {
+		t.Fatalf("code failed: message=%q err=%v", message, err)
+	}
+	if len(data.requests) != 2 || data.requests[0].Command[0] != "install" ||
+		data.requests[1].Command[0] != "tee" {
+		t.Fatalf("unexpected workspace sequence: %#v", data.requests)
+	}
+	var workspace struct {
+		Folders    []map[string]string `json:"folders"`
+		Extensions struct {
+			Recommendations []string `json:"recommendations"`
+		} `json:"extensions"`
+	}
+	if err := json.Unmarshal(data.requests[1].Stdin, &workspace); err != nil ||
+		workspace.Folders[0]["path"] != record.YardPath || len(workspace.Extensions.Recommendations) != 1 {
+		t.Fatalf("invalid workspace: %#v err=%v", workspace, err)
+	}
+	if len(code.calls) != 1 || code.calls[0][0] != "--file-uri" ||
+		!strings.Contains(code.calls[0][1], "Demo.code-workspace") {
+		t.Fatalf("VS Code URI was not opened: %#v", code.calls)
 	}
 }
 

@@ -3,6 +3,7 @@ package resource
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,18 @@ func TestLoadRepositoryResources(t *testing.T) {
 	for _, definition := range definitions {
 		if _, ok := registry.Lookup(definition.Command); !ok {
 			t.Fatalf("resource command is not indexed: %s", definition.Command)
+		}
+		if byName, ok := registry.Lookup(definition.Name); !ok || byName.HandlerPath() != definition.HandlerPath() {
+			t.Fatalf("resource name and command differ: %s", definition.Name)
+		}
+		content, err := os.ReadFile(definition.HandlerPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(content)
+		if !strings.Contains(source, "SUBYARD_ENGINE_CONTEXT") ||
+			strings.Contains(source, "subyard_context_load") || strings.Contains(source, "lib/config.sh") {
+			t.Errorf("resource handler does not consume only prepared context: %s", definition.HandlerPath())
 		}
 	}
 }

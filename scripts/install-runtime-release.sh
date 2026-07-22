@@ -110,7 +110,7 @@ if find "$candidate" -type l -print -quit | grep -q .; then
   printf 'install-runtime-release: bundle contains a symbolic link\n' >&2
   exit 1
 fi
-for required in bin/yard bin/yard-engine config/commands.registry scripts/update-engine.sh; do
+for required in bin/yard bin/yard-engine config/commands.registry scripts/install-runtime-release.sh; do
   [ -f "$candidate/$required" ] && [ ! -L "$candidate/$required" ] \
     || { printf 'install-runtime-release: bundle is missing %s\n' "$required" >&2; exit 1; }
 done

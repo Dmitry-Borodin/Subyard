@@ -11,7 +11,14 @@ import (
 type environment map[string]string
 
 func ReadAssignments(path string) (map[string]string, error) {
-	values := make(environment)
+	return ReadAssignmentsOver(path, nil)
+}
+
+func ReadAssignmentsOver(path string, base map[string]string) (map[string]string, error) {
+	values := make(environment, len(base))
+	for name, value := range base {
+		values[name] = value
+	}
 	if err := applyEnvFile(path, values); err != nil {
 		return nil, err
 	}

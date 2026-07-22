@@ -27,7 +27,7 @@ subyard_context_load
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
 
-USE_ZABBLY=0; UPGRADE_ONLY=0
+USE_ZABBLY=auto; UPGRADE_ONLY=0
 for _a in "$@"; do
   case "$_a" in
     --zabbly)       USE_ZABBLY=1 ;;
@@ -80,6 +80,20 @@ echo "Dependency: incus"
 _iver()    { incus --version 2>/dev/null || echo '?'; }
 _irecent() { local v; v="$(_iver)"; [ "$v" != '?' ] && command -v dpkg >/dev/null 2>&1 \
                && dpkg --compare-versions "$v" ge "$MIN_INCUS_VER"; }
+
+if [ "$USE_ZABBLY" = auto ]; then
+  USE_ZABBLY=0
+  if command -v incus >/dev/null 2>&1; then
+    _irecent || USE_ZABBLY=1
+  elif ! command -v apt-cache >/dev/null 2>&1 || ! command -v dpkg >/dev/null 2>&1; then
+    USE_ZABBLY=1
+  else
+    candidate="$(apt-cache policy incus 2>/dev/null | awk '/Candidate:/{print $2; exit}')"
+    [ -n "$candidate" ] && [ "$candidate" != '(none)' ] \
+      && dpkg --compare-versions "$candidate" ge "$MIN_INCUS_VER" \
+      || USE_ZABBLY=1
+  fi
+fi
 
 if command -v incus >/dev/null 2>&1; then
   if _irecent; then

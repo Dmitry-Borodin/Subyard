@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # context.sh — normalization and validation for an explicitly loaded Subyard context.
-# shellcheck disable=SC2034 # immutable context values are consumed through context_value.
 
 [ -n "${SUBYARD_CONTEXT_SOURCED:-}" ] && return 0
 SUBYARD_CONTEXT_SOURCED=1
 
-# shellcheck disable=SC2034 # out-parameter consumed by config.sh and direct contract tests
 CONTEXT_ERROR=""
-declare -A SUBYARD_CONTEXT_VALUES=()
 context_fail() { CONTEXT_ERROR="$*"; return 1; }
 
 e2e_vm_cpu_default() {
@@ -107,34 +104,4 @@ context_validate() {
   else
     [ -n "${REMOTE_DEST:-}" ] || { context_fail "remote yard context requires REMOTE_DEST"; return; }
   fi
-}
-
-# Capture the normalized, non-secret command context behind a read-only accessor. Compatibility
-# handlers still receive the original variables, but domain boundaries can consume this immutable
-# input without re-reading config or ambient environment.
-context_capture() {
-  SUBYARD_CONTEXT_VALUES=(
-    [yardName]="${YARD_NAME:-default}"
-    [yardType]="${YARD_TYPE:-local}"
-    [instanceType]="${INSTANCE_TYPE:-container}"
-    [nestedE2EVMs]="${NESTED_E2E_VMS:-0}"
-    [instanceName]="${INSTANCE_NAME:-yard}"
-    [incusProject]="${INCUS_PROJECT:-subyard}"
-    [sshHost]="${SSH_HOST:-yard}"
-    [sshPort]="${SSH_PORT:-}"
-    [remoteDest]="${REMOTE_DEST:-}"
-    [remoteYard]="${REMOTE_YARD:-}"
-    [configHome]="$SUBYARD_CONFIG_HOME"
-    [dataHome]="$SUBYARD_HOME"
-    [storagePath]="$STORAGE_PATH"
-    [hostBase]="$HOST_BASE"
-    [devUid]="$DEV_UID"
-  )
-  readonly -A SUBYARD_CONTEXT_VALUES
-}
-
-context_value() {
-  local key="${1:?context_value needs a key}"
-  [ -n "${SUBYARD_CONTEXT_VALUES[$key]+set}" ] || return 1
-  printf '%s\n' "${SUBYARD_CONTEXT_VALUES[$key]}"
 }

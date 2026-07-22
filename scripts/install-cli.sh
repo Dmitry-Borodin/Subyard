@@ -78,7 +78,7 @@ if [ ! -x "$YARD_SRC" ] || [ ! -x "$YARD_ENGINE" ]; then
   update_args=(--runtime-root "$RUNTIME_ROOT")
   [ -z "${YARD_RELEASE_VERSION:-}" ] || update_args+=(--version "$YARD_RELEASE_VERSION")
   [ "${YARD_RELEASE_OFFLINE:-0}" != 1 ] || update_args+=(--offline)
-  "$SCRIPT_DIR/update-engine.sh" "${update_args[@]}" \
+  "$SCRIPT_DIR/bootstrap-runtime.sh" "${update_args[@]}" \
     || die "release runtime installation failed; launcher links were not changed"
 fi
 [ -x "$YARD_SRC" ] && [ -x "$YARD_ENGINE" ] \

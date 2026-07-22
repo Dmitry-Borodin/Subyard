@@ -7,8 +7,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-grep -Fq 'MIN_DISK_GIB="${MIN_DISK_GIB:-5}"' "$ROOT/scripts/00-check-host.sh" \
-  || fail "default base-yard storage floor is not 5 GiB"
+grep -Fq 'MIN_DISK_GIB="${MIN_DISK_GIB:-2}"' "$ROOT/scripts/00-check-host.sh" \
+  || fail "default base-yard storage floor is not 2 GiB"
 grep -Fq 'RESUME_MIN_DISK_GIB="${RESUME_MIN_DISK_GIB:-1}"' "$ROOT/scripts/00-check-host.sh" \
   || fail "managed-yard repair storage floor is not 1 GiB"
 

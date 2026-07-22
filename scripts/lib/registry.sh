@@ -80,6 +80,7 @@ yard_valid_name() {
 
 yard_apply_derivations() {
   local name="$1" config_home="${SUBYARD_CONFIG_HOME:-$SUBYARD_OPERATOR_HOME/.config/subyard}"
+  # shellcheck disable=SC2034 # source-module output
   YARD_NAME="$name"
   : "${INSTANCE_NAME:=yard-$name}"
   : "${INCUS_PROJECT:=subyard-$name}"
@@ -101,10 +102,4 @@ yard_context_select() {
   if [ "${YARD_TYPE:-local}" != remote ] && [ -z "${SSH_PORT:-}" ]; then
     die "yard '$name' ($file) sets no SSH_PORT — a local yard needs a unique host loopback port (add e.g. SSH_PORT=2223)"
   fi
-}
-
-yard_cmd_hint() {
-  printf '%s' "${PROG:-yard}"
-  [ -n "${YARD_NAME:-}" ] && printf ' -Y %s' "$YARD_NAME"
-  return 0
 }

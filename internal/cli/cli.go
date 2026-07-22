@@ -27,6 +27,7 @@ import (
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/projectruntime"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/shelladapter"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/statusruntime"
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/transport"
 	"github.com/Dmitry-Borodin/Subyard/internal/application"
 	"github.com/Dmitry-Borodin/Subyard/internal/audit"
 	"github.com/Dmitry-Borodin/Subyard/internal/command"
@@ -59,10 +60,13 @@ type Options struct {
 	ProjectData     ports.YardExecutor
 	ProjectDevices  ports.InstanceDeviceManager
 	ProjectArchive  ports.DirectoryArchiver
+	ProjectExports  ports.ProjectExportStore
+	ProjectVSCode   ports.VSCode
 	ProjectObserver ports.ProjectObserver
 	StatusFacts     ports.StatusFactsReader
 	Credentials     ports.CredentialMetadataReader
 	AdapterRunner   ports.AdapterRunner
+	InitPlatform    ports.InitPlatform
 	RemoteControl   ports.RemoteControl
 	Prompt          ports.Prompter
 	Clock           ports.Clock
@@ -172,9 +176,6 @@ func (cli *CLI) Run(ctx context.Context) int {
 		}
 		return cli.serveRPC(ctx, yard, commandArguments)
 	}
-	if core && definition.Handler == "@credential-policy" {
-		return cli.runCredentialPolicy(commandArguments)
-	}
 	if core && definition.Handler == "@migrate" {
 		return cli.runMigration(ctx, commandArguments)
 	}
@@ -229,11 +230,7 @@ func (cli *CLI) Run(ctx context.Context) int {
 	if name != "_info" && cli.env["SUBYARD_NO_AUDIT"] == "" {
 		cli.audit(name, commandArguments, yard, remote)
 	}
-	if core && definition.Name == "start" {
-		return cli.runStructuredStart(ctx, loaded, definition, commandArguments,
-			yes || cli.env["ASSUME_YES"] == "1")
-	}
-	if core && definition.Effect == command.EffectMutate && structuredCommandSupported(definition.Name) &&
+	if core && structuredCommandSupported(definition.Name) &&
 		!commandHelpRequested(commandArguments) {
 		return cli.runStructuredCommand(ctx, loaded, definition, commandArguments,
 			yes || cli.env["ASSUME_YES"] == "1", projectRun, remoteRun)
@@ -251,6 +248,10 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return cli.forwardRemote(ctx, loadedContext, name, commandArguments)
 	}
 	switch definition.Handler {
+	case "@keys":
+		return cli.runKeys(ctx, loaded, definition, commandArguments)
+	case "@update":
+		return cli.runUpdate(ctx, loaded, definition, commandArguments)
 	case "@status":
 		return cli.runStatus(ctx, loaded, commandArguments)
 	case "@info":
@@ -274,7 +275,13 @@ func (cli *CLI) Run(ctx context.Context) int {
 	case "@remote":
 		fmt.Fprintf(cli.options.Stdout, "Usage: %s remote add <name> <user@host> [--yard <yard>] | repair-key <name> | remove <name> | list\n", cli.options.Program)
 		return 0
-	case "@project":
+	case "@project", "@project-env":
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s %s\n", cli.options.Program, definition.Display)
+		return 0
+	case "@init":
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s init [--configs | --reset] [--yes]\n", cli.options.Program)
+		return 0
+	case "@lifecycle":
 		fmt.Fprintf(cli.options.Stdout, "Usage: %s %s\n", cli.options.Program, definition.Display)
 		return 0
 	}
@@ -326,7 +333,7 @@ func (cli *CLI) projectDataPlane() ports.YardExecutor {
 	streamer, _ := executor.(ports.InstanceStreamExecutor)
 	return projectruntime.Runtime{
 		Executor: executor, Streamer: streamer,
-		Environment: environmentList(cli.env, nil), Timeout: 10 * time.Minute,
+		Environment: environmentList(cli.env, nil), Timeout: 10 * time.Minute, MaxBytes: 64 << 20,
 	}
 }
 
@@ -335,6 +342,24 @@ func (cli *CLI) projectArchiver() ports.DirectoryArchiver {
 		return cli.options.ProjectArchive
 	}
 	return projectruntime.TarArchiver{Environment: environmentList(cli.env, nil)}
+}
+
+func (cli *CLI) projectExportStore(loaded config.Loaded) ports.ProjectExportStore {
+	if cli.options.ProjectExports != nil {
+		return cli.options.ProjectExports
+	}
+	return projectruntime.PatchStore{Directory: filepath.Join(loaded.Context.Paths.DataHome, "exports")}
+}
+
+func (cli *CLI) projectVSCode() ports.VSCode {
+	if cli.options.ProjectVSCode != nil {
+		return cli.options.ProjectVSCode
+	}
+	program, err := exec.LookPath("code")
+	if err != nil {
+		return nil
+	}
+	return transport.Process{Program: program, Env: environmentList(cli.env, nil), MaxBytes: 4 << 20}
 }
 
 func (cli *CLI) projectDeviceManager() ports.InstanceDeviceManager {
@@ -384,7 +409,16 @@ func (cli *CLI) statusFacts(loaded config.Loaded) ports.StatusFactsReader {
 	environment["SUBYARD_ENGINE_CONTEXT"] = "1"
 	environment["SUBYARD_REPOSITORY_ROOT"] = cli.options.RepositoryRoot
 	environment["PROG"] = cli.options.Program
-	return statusruntime.Runtime{RepositoryRoot: cli.options.RepositoryRoot, Environment: environment}
+	definitions := cli.resources.Definitions()
+	if profiles := strings.Fields(loaded.Environment["YARD_PROFILES"]); len(profiles) != 0 {
+		definitions = slices.DeleteFunc(definitions, func(definition resource.Definition) bool {
+			return !slices.Contains(profiles, definition.Profile)
+		})
+	}
+	return statusruntime.Runtime{
+		RepositoryRoot: cli.options.RepositoryRoot, Environment: environment,
+		Resources: definitions, Program: cli.options.Program,
+	}
 }
 
 func (cli *CLI) runStatus(ctx context.Context, loaded config.Loaded, arguments []string) int {
@@ -1348,252 +1382,6 @@ func (cli *CLI) runProjectState(
 	return 0
 }
 
-func (cli *CLI) runCredentialPolicy(arguments []string) int {
-	if len(arguments) == 0 {
-		cli.errorf("internal: _credential-policy needs an action")
-		return 2
-	}
-	action := arguments[0]
-	arguments = arguments[1:]
-	writeJSON := func(value any) int {
-		encoder := json.NewEncoder(cli.options.Stdout)
-		encoder.SetEscapeHTML(false)
-		if err := encoder.Encode(value); err != nil {
-			cli.errorf("credential policy output: %v", err)
-			return 1
-		}
-		return 0
-	}
-	fail := func(err error) int {
-		cli.errorf("credential policy %s: %v", action, err)
-		return 1
-	}
-	decode := func(target any) error {
-		decoder := json.NewDecoder(io.LimitReader(cli.options.Stdin, rpc.MaxFrameSize+1))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(target); err != nil {
-			return err
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-			return errors.New("credential metadata input has trailing data")
-		}
-		return nil
-	}
-	switch action {
-	case "heads":
-		if len(arguments) != 1 {
-			return fail(errors.New("heads needs a credential ID"))
-		}
-		var revisions []domain.CredentialMetadata
-		if err := decode(&revisions); err != nil {
-			return fail(err)
-		}
-		if err := credential.ValidateRevisions(revisions); err != nil {
-			return fail(err)
-		}
-		return writeJSON(credential.Heads(revisions, arguments[0]))
-	case "parents":
-		if len(arguments) != 0 {
-			return fail(errors.New("parents takes no arguments"))
-		}
-		var heads []domain.CredentialMetadata
-		if err := decode(&heads); err != nil {
-			return fail(err)
-		}
-		parents := make([]string, 0, len(heads))
-		for _, head := range heads {
-			if err := credential.ValidateMetadata(head); err != nil {
-				return fail(err)
-			}
-			parents = append(parents, head.RevisionID)
-		}
-		sort.Strings(parents)
-		parents = slices.Compact(parents)
-		return writeJSON(parents)
-	case "recipients":
-		var heads []domain.CredentialMetadata
-		if err := decode(&heads); err != nil {
-			return fail(err)
-		}
-		for _, head := range heads {
-			if err := credential.ValidateMetadata(head); err != nil {
-				return fail(err)
-			}
-		}
-		return writeJSON(credential.RecipientIntersection(heads))
-	case "compatible":
-		var heads []domain.CredentialMetadata
-		if err := decode(&heads); err != nil {
-			return fail(err)
-		}
-		for _, head := range heads {
-			if err := credential.ValidateMetadata(head); err != nil {
-				return fail(err)
-			}
-		}
-		if !credential.MetadataCompatible(heads) {
-			return 1
-		}
-		return 0
-	case "decision":
-		if len(arguments) != 0 {
-			return fail(errors.New("decision takes no arguments"))
-		}
-		var heads []domain.CredentialMetadata
-		if err := decode(&heads); err != nil {
-			return fail(err)
-		}
-		decision, err := credential.AnalyzeMetadataHeads(heads)
-		if err != nil {
-			return fail(err)
-		}
-		return writeJSON(decision)
-	case "validate-incoming":
-		if len(arguments) != 0 {
-			return fail(errors.New("validate-incoming takes no arguments"))
-		}
-		var input struct {
-			Incoming []domain.CredentialMetadata `json:"incoming"`
-			Existing []domain.CredentialMetadata `json:"existing"`
-		}
-		if err := decode(&input); err != nil {
-			return fail(err)
-		}
-		if err := credential.ValidateIncomingRevisions(input.Incoming, input.Existing); err != nil {
-			return fail(err)
-		}
-		return 0
-	case "rekey":
-		if len(arguments) != 2 || (arguments[1] != "add" && arguments[1] != "remove") {
-			return fail(errors.New("rekey needs actor and add or remove"))
-		}
-		var recipients []string
-		if err := decode(&recipients); err != nil {
-			return fail(err)
-		}
-		updated, err := credential.RekeyRecipients(recipients, arguments[0], arguments[1] == "add")
-		if err != nil {
-			return fail(err)
-		}
-		return writeJSON(updated)
-	case "peer-merge":
-		if len(arguments) != 0 {
-			return fail(errors.New("peer-merge takes no arguments"))
-		}
-		var input struct {
-			Incoming domain.CredentialPeer  `json:"incoming"`
-			Existing *domain.CredentialPeer `json:"existing"`
-		}
-		if err := decode(&input); err != nil {
-			return fail(err)
-		}
-		merged, err := credential.MergePeer(input.Incoming, input.Existing)
-		if err != nil {
-			return fail(err)
-		}
-		return writeJSON(merged)
-	case "exclusive-access":
-		if len(arguments) != 0 {
-			return fail(errors.New("exclusive-access takes no arguments"))
-		}
-		var input struct {
-			Head              domain.CredentialMetadata `json:"head"`
-			Actor             string                    `json:"actor"`
-			Yard              string                    `json:"yard"`
-			AuthorityTrusted  bool                      `json:"authorityTrusted"`
-			LastSuccess       int64                     `json:"lastSuccess"`
-			Now               int64                     `json:"now"`
-			MaximumAgeSeconds int64                     `json:"maximumAgeSeconds"`
-		}
-		if err := decode(&input); err != nil {
-			return fail(err)
-		}
-		decision, err := credential.CheckExclusiveAccess(input.Head, input.Actor, input.Yard,
-			input.AuthorityTrusted, input.LastSuccess, input.Now,
-			time.Duration(input.MaximumAgeSeconds)*time.Second)
-		if err != nil {
-			return fail(err)
-		}
-		return writeJSON(decision)
-	case "move":
-		if len(arguments) != 3 {
-			return fail(errors.New("move needs authority, assignment and expected epoch"))
-		}
-		expected, err := strconv.ParseInt(arguments[2], 10, 64)
-		if err != nil {
-			return fail(err)
-		}
-		var head domain.CredentialMetadata
-		if err := decode(&head); err != nil {
-			return fail(err)
-		}
-		updated, err := credential.MoveAssignment(head, arguments[0], arguments[1], expected)
-		if err != nil {
-			return fail(err)
-		}
-		return writeJSON(updated)
-	case "retry":
-		if len(arguments) != 1 {
-			return fail(errors.New("retry needs a failure count"))
-		}
-		failures, err := strconv.Atoi(arguments[0])
-		if err != nil {
-			return fail(err)
-		}
-		fmt.Fprintln(cli.options.Stdout, int64(credential.RetryDelay(failures)/time.Second))
-		return 0
-	case "sync-next":
-		if len(arguments) != 0 {
-			return fail(errors.New("sync-next takes no arguments"))
-		}
-		var input struct {
-			Current             domain.CredentialSyncState `json:"current"`
-			Peer                string                     `json:"peer"`
-			Now                 int64                      `json:"now"`
-			Success             bool                       `json:"success"`
-			Error               string                     `json:"error"`
-			LastHead            string                     `json:"lastHead"`
-			SuccessRetrySeconds int64                      `json:"successRetrySeconds"`
-		}
-		if err := decode(&input); err != nil {
-			return fail(err)
-		}
-		next, err := credential.NextSyncState(input.Current, input.Peer, input.Now, input.Success,
-			input.Error, input.LastHead, time.Duration(input.SuccessRetrySeconds)*time.Second)
-		if err != nil {
-			return fail(err)
-		}
-		return writeJSON(next)
-	case "sync-due":
-		if len(arguments) != 2 {
-			return fail(errors.New("sync-due needs current epoch and minimum seconds"))
-		}
-		now, err := strconv.ParseInt(arguments[0], 10, 64)
-		if err != nil {
-			return fail(err)
-		}
-		minimum, err := strconv.ParseInt(arguments[1], 10, 64)
-		if err != nil {
-			return fail(err)
-		}
-		var state domain.CredentialSyncState
-		if err := decode(&state); err != nil {
-			return fail(err)
-		}
-		due, err := credential.SyncDue(state, now, time.Duration(minimum)*time.Second)
-		if err != nil {
-			return fail(err)
-		}
-		if !due {
-			return 1
-		}
-		return 0
-	default:
-		return fail(fmt.Errorf("unknown action %q", action))
-	}
-}
-
 func (cli *CLI) runMigration(ctx context.Context, arguments []string) int {
 	if len(arguments) != 1 || (arguments[0] != "check" && arguments[0] != "apply") {
 		cli.errorf("internal: _migrate expects check or apply")
@@ -1878,17 +1666,19 @@ func (cli *CLI) operationOrchestrator(
 			"SUBYARD_PROJECT_SSH_HOST", "SUBYARD_PROJECT_TARGET", "SUBYARD_PROJECT_PROFILE",
 			"SUBYARD_PROJECT_DEVICE", "SUBYARD_PROJECT_EXISTS", "SUBYARD_PROJECT_PROFILES",
 			"SUBYARD_PROJECT_REMOVE_SOFT", "SUBYARD_PROJECT_REBUILD",
-			"SUBYARD_SUDO_PREAUTHORIZED",
+			"SUBYARD_POWER_DESIRED", "SUBYARD_SUDO_PREAUTHORIZED",
 		} {
 			contextKeys[key] = struct{}{}
 		}
 		actions := map[string]map[string]shelladapter.Action{}
 		if definition != nil {
-			actions["command"] = map[string]shelladapter.Action{
-				definition.Name: {
-					Path: filepath.Join(cli.options.RepositoryRoot, "scripts", definition.Handler), Direct: true,
-				},
+			adapter, handler := "command", definition.Handler
+			if definition.Handler == "@lifecycle" {
+				adapter, handler = "lifecycle", "lifecycle-guard.sh"
 			}
+			actions[adapter] = map[string]shelladapter.Action{definition.Name: {
+				Path: filepath.Join(cli.options.RepositoryRoot, "scripts", handler), Direct: true,
+			}}
 		}
 		runner = shelladapter.Runner{
 			RepositoryRoot: cli.options.RepositoryRoot,
@@ -2009,18 +1799,6 @@ func structuredCommandContext(loaded config.Loaded) map[string]string {
 
 const cliProgramName = "yard"
 
-func startPolicy(definition command.Definition, yard domain.Context) domain.CommandPolicy {
-	return domain.CommandPolicy{
-		Name: definition.Name, Effect: domain.CommandEffect(definition.Effect),
-		RemotePolicy: domain.RemotePolicy(definition.Remote),
-		Consequences: []string{
-			fmt.Sprintf("start Incus instance %s in project %s", yard.InstanceName, yard.IncusProject),
-			"verify the host route before and after the start",
-			"record desired power as running only after the safety checks pass",
-		},
-	}
-}
-
 func commandPolicy(
 	definition command.Definition,
 	yard domain.Context,
@@ -2033,8 +1811,10 @@ func commandPolicy(
 	}
 	consequences := []string{
 		fmt.Sprintf("%s in yard %s", definition.Summary, yard.YardName),
-		fmt.Sprintf("execute the allowlisted physical adapter for %s", definition.Name),
 		"publish typed operation events and an audit result",
+	}
+	if !strings.HasPrefix(definition.Handler, "@") {
+		consequences = append(consequences, fmt.Sprintf("execute the allowlisted physical adapter for %s", definition.Name))
 	}
 	if len(arguments) != 0 {
 		consequences = append(consequences, "use validated command arguments")
@@ -2059,8 +1839,8 @@ func commandPolicy(
 
 func structuredCommandSupported(name string) bool {
 	switch name {
-	case "init", "provision", "test-vms", "stop", "teardown", "sync", "bind", "clone",
-		"export", "remove", "up", "down", "remote", "update":
+	case "init", "start", "provision", "test-vms", "stop", "teardown", "sync", "bind", "clone", "code",
+		"export", "remove", "up", "down", "info", "remote":
 		return true
 	default:
 		return false
@@ -2090,9 +1870,39 @@ func (cli *CLI) runStructuredCommand(
 			assumeYes = true
 		}
 	}
+	var initRun *initExecution
+	if definition.Handler == "@init" && loaded.Context.YardType != domain.YardRemote {
+		var err error
+		initRun, err = cli.prepareInitExecution(ctx, loaded, arguments)
+		if err != nil {
+			cli.errorf("prepare init: %v", err)
+			return 1
+		}
+		cli.printInitPlan(initRun)
+		if initRun.mode == initReconcile && initRun.plan.Pending() == 0 {
+			fmt.Fprintln(cli.options.Stdout, "  [ ok ] Everything is already set up")
+			return 0
+		}
+	}
+	var lifecycleRun *lifecycleExecution
+	if definition.Handler == "@lifecycle" {
+		var err error
+		lifecycleRun, err = prepareLifecycleExecution(definition, arguments)
+		if err != nil {
+			cli.errorf("prepare %s: %v", definition.Name, err)
+			return 2
+		}
+	}
 	orchestrator := cli.operationOrchestrator(cli.env["SUBYARD_OPERATION_ID"], loaded, nil, &definition)
+	policy := commandPolicy(definition, loaded.Context, arguments, project, remote)
+	if initRun != nil {
+		policy.Consequences = initRun.consequences()
+	}
+	if lifecycleRun != nil {
+		policy = lifecycleRun.policy(definition, loaded.Context)
+	}
 	plan, err := orchestrator.Plan(ctx, loaded.Context,
-		commandPolicy(definition, loaded.Context, arguments, project, remote), assumeYes)
+		policy, assumeYes)
 	if err != nil {
 		if errors.Is(err, application.ErrDeclined) {
 			cli.errorf("operation declined")
@@ -2113,7 +1923,7 @@ func (cli *CLI) runStructuredCommand(
 		return cli.forwardRemote(ctx, loaded.Context, definition.Name, remoteArguments)
 	}
 	result, err := cli.executeStructuredCommand(ctx, orchestrator, loaded, definition, arguments,
-		plan, project, remote, cli.options.Stdout)
+		plan, project, remote, initRun, lifecycleRun, assumeYes, cli.options.Stdout)
 	if err != nil {
 		cli.errorf("%s: %v", definition.Name, err)
 		return 1
@@ -2143,6 +1953,9 @@ func (cli *CLI) executeStructuredCommand(
 	plan domain.OperationPlan,
 	project *projectExecution,
 	remote *domain.RemotePrepared,
+	initRun *initExecution,
+	lifecycleRun *lifecycleExecution,
+	assumeYes bool,
 	diagnostics io.Writer,
 ) (domain.AdapterResult, error) {
 	if remote != nil {
@@ -2154,10 +1967,30 @@ func (cli *CLI) executeStructuredCommand(
 		result, _, err := orchestrator.RunAdapter(ctx, plan, request, nil)
 		return result, err
 	}
+	if initRun != nil && definition.Handler == "@init" {
+		orchestrator.Runner = initAdapter{
+			execution: initRun, cli: cli, assumeYes: assumeYes, output: diagnostics,
+		}
+		request := domain.AdapterRequest{
+			Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
+			Adapter: "init", Action: "reconcile",
+		}
+		result, _, err := orchestrator.RunAdapter(ctx, plan, request, nil)
+		return result, err
+	}
+	if lifecycleRun != nil && definition.Handler == "@lifecycle" {
+		return cli.executeLifecycle(ctx, orchestrator, loaded.Context, plan, lifecycleRun, diagnostics)
+	}
 	if project != nil && definition.Handler == "@project" {
+		if definition.Name == "code" {
+			cli.autoSyncCredentials(ctx, loaded)
+		}
+		incusPort, _ := cli.statusPorts()
 		orchestrator.Runner = application.ProjectActionRunner{
 			Data: cli.projectDataPlane(), Devices: cli.projectDeviceManager(), Archive: cli.projectArchiver(),
-			Yard: loaded.Context, Project: project.Record,
+			Exports: cli.projectExportStore(loaded), Instances: incusPort, VSCode: cli.projectVSCode(),
+			Extensions: strings.Fields(cli.env["CODE_RECOMMENDED_EXTENSIONS"]),
+			Yard:       loaded.Context, Project: project.Record,
 			SoftRemove: project.Environment["SUBYARD_PROJECT_REMOVE_SOFT"] == "1",
 		}
 		request := domain.AdapterRequest{
@@ -2167,6 +2000,35 @@ func (cli *CLI) executeStructuredCommand(
 		result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
 		if stderr != "" {
 			_, _ = io.WriteString(diagnostics, stderr)
+		}
+		return result, err
+	}
+	if project != nil && definition.Handler == "@project-env" {
+		var protected io.ReadCloser
+		if project.SecretPath != "" {
+			file, err := os.Open(project.SecretPath)
+			if err != nil {
+				return domain.AdapterResult{}, err
+			}
+			protected = file
+			defer protected.Close()
+		}
+		orchestrator.Runner = application.ProjectEnvironmentRunner{
+			Data: cli.projectDataPlane(), Yard: loaded.Context, Project: project.Record,
+			Profile: project.Profile, HostLinks: project.HostLinks,
+			Rebuild:   project.Environment["SUBYARD_PROJECT_REBUILD"] == "1",
+			HasSecret: project.SecretPath != "",
+		}
+		request := domain.AdapterRequest{
+			Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
+			Adapter: "project-env", Action: definition.Name,
+		}
+		result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, protected)
+		if stderr != "" {
+			_, _ = io.WriteString(diagnostics, stderr)
+			if !strings.HasSuffix(stderr, "\n") {
+				_, _ = io.WriteString(diagnostics, "\n")
+			}
 		}
 		return result, err
 	}
@@ -2184,6 +2046,13 @@ func (cli *CLI) executeStructuredCommand(
 			}
 		}
 		contextValues["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
+	}
+	if definition.Name == "provision" {
+		desired, err := cli.preparePowerIntent(ctx, loaded.Context)
+		if err != nil {
+			return domain.AdapterResult{}, err
+		}
+		contextValues["SUBYARD_POWER_DESIRED"] = desired
 	}
 	if project != nil {
 		for key, value := range project.Environment {
@@ -2439,9 +2308,7 @@ func (cli *CLI) usage() {
 		}
 		fmt.Fprintln(cli.options.Stdout)
 	}
-	fmt.Fprintf(cli.options.Stdout, `  (init runs the phases in scripts/00-05; run those directly only for debugging.)
-
-Named yards:
+	fmt.Fprintf(cli.options.Stdout, `Named yards:
   Run several independent yards on one host, each with its own instance, /srv, ssh port,
   personal-data mount root and projects. Pick one for a command with -Y/--yard (or the
   sugar '@<name>' as the first token); no selection = the default yard, unchanged. Define a
@@ -2703,6 +2570,9 @@ type rpcPlannedOperation struct {
 	Loaded     config.Loaded
 	Project    *projectExecution
 	Remote     *domain.RemotePrepared
+	Init       *initExecution
+	Lifecycle  *lifecycleExecution
+	Release    *releaseExecution
 }
 
 type rpcProjectList struct {
@@ -2741,11 +2611,8 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		if definition.Effect != command.EffectMutate {
 			return nil, &rpc.Error{Code: "command_not_mutating", Message: params.Command}
 		}
-		if definition.Name != "start" && !structuredCommandSupported(definition.Name) {
+		if definition.Name != "update" && !structuredCommandSupported(definition.Name) {
 			return nil, &rpc.Error{Code: "interactive_or_payload_command", Message: params.Command}
-		}
-		if definition.Name == "start" && len(params.Arguments) != 0 {
-			return nil, &rpc.Error{Code: "invalid_params", Message: "start does not accept RPC arguments"}
 		}
 		project, err := handler.cli.prepareProjectExecution(
 			ctx, handler.loaded, definition, params.Arguments, true,
@@ -2766,9 +2633,36 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 				return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
 			}
 		}
+		var initRun *initExecution
+		if definition.Handler == "@init" && loaded.Context.YardType != domain.YardRemote {
+			initRun, err = handler.cli.prepareInitExecution(ctx, loaded, arguments)
+			if err != nil {
+				return nil, &rpc.Error{Code: "plan_failed", Message: err.Error()}
+			}
+		}
+		var releaseRun *releaseExecution
+		if definition.Handler == "@update" {
+			releaseRun, err = handler.cli.prepareRelease(ctx, loaded, arguments)
+			if err != nil {
+				return nil, &rpc.Error{Code: "plan_failed", Message: err.Error()}
+			}
+		}
+		var lifecycleRun *lifecycleExecution
+		if definition.Handler == "@lifecycle" {
+			lifecycleRun, err = prepareLifecycleExecution(definition, arguments)
+			if err != nil {
+				return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
+			}
+		}
 		policy := commandPolicy(definition, loaded.Context, arguments, project, remote)
-		if definition.Name == "start" {
-			policy = startPolicy(definition, loaded.Context)
+		if initRun != nil {
+			policy.Consequences = initRun.consequences()
+		}
+		if lifecycleRun != nil {
+			policy = lifecycleRun.policy(definition, loaded.Context)
+		}
+		if releaseRun != nil {
+			policy = releaseRun.policy(definition)
 		}
 		orchestrator := handler.cli.operationOrchestrator(call.OperationID, loaded, nil, nil)
 		plan, err := orchestrator.Prepare(loaded.Context, policy)
@@ -2788,7 +2682,8 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			return nil, &rpc.Error{Code: "too_many_plans", Message: "execute an existing plan or start a new RPC session"}
 		}
 		handler.plans[plan.OperationID] = rpcPlannedOperation{
-			Plan: plan, Definition: definition, Arguments: arguments, Loaded: loaded, Project: project, Remote: remote,
+			Plan: plan, Definition: definition, Arguments: arguments, Loaded: loaded, Project: project,
+			Remote: remote, Init: initRun, Lifecycle: lifecycleRun, Release: releaseRun,
 		}
 		handler.plansMu.Unlock()
 		return plan, nil
@@ -2822,14 +2717,13 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			return nil, &rpc.Error{Code: "confirmation_failed", Message: err.Error()}
 		}
 		var result domain.AdapterResult
-		if planned.Definition.Name == "start" {
-			result, err = handler.cli.executeStructuredStart(
-				ctx, orchestrator, planned.Loaded.Context, plan, handler.cli.options.Stderr,
-			)
+		if planned.Release != nil {
+			result, err = handler.cli.executeRelease(ctx, orchestrator, plan, planned.Release)
 		} else {
 			result, err = handler.cli.executeStructuredCommand(
 				ctx, orchestrator, planned.Loaded, planned.Definition, planned.Arguments,
-				plan, planned.Project, planned.Remote, handler.cli.options.Stderr,
+				plan, planned.Project, planned.Remote, planned.Init, planned.Lifecycle,
+				true, handler.cli.options.Stderr,
 			)
 		}
 		if err != nil {

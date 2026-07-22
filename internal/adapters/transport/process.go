@@ -27,6 +27,13 @@ type Process struct {
 	MaxBytes  int64
 }
 
+type ProcessError struct {
+	ExitCode int
+	Message  string
+}
+
+func (err *ProcessError) Error() string { return "transport failed: " + err.Message }
+
 func Local(engine, repositoryRoot string) Process {
 	return Process{
 		Program: engine, Arguments: []string{"rpc", "--stdio"}, Directory: repositoryRoot,
@@ -56,6 +63,11 @@ func SSH(program, target string, connectTimeout time.Duration) (Process, error) 
 
 func (transport Process) Call(ctx context.Context, _ string, request []byte) ([]byte, error) {
 	return transport.CallReader(ctx, bytes.NewReader(request))
+}
+
+func (transport Process) Run(ctx context.Context, arguments ...string) ([]byte, error) {
+	transport.Arguments = append([]string(nil), arguments...)
+	return transport.CallReader(ctx, bytes.NewReader(nil))
 }
 
 func (transport Process) CallReader(ctx context.Context, request io.Reader) ([]byte, error) {
@@ -102,7 +114,12 @@ func (transport Process) CallReader(ctx context.Context, request io.Reader) ([]b
 		if message == "" {
 			message = err.Error()
 		}
-		return nil, fmt.Errorf("transport failed: %s", message)
+		exitCode := 1
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			exitCode = exitError.ExitCode()
+		}
+		return bytes.Clone(stdout.buffer.Bytes()), &ProcessError{ExitCode: exitCode, Message: message}
 	}
 	return bytes.Clone(stdout.buffer.Bytes()), nil
 }

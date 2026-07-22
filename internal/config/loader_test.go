@@ -147,6 +147,42 @@ func TestSingleQuotedValueIsLiteral(t *testing.T) {
 	}
 }
 
+func TestReadAssignmentsOverPreservesExplicitProfileOverrides(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "profile.conf")
+	writeFixture(t, file, "IMAGE_DOCKERFILE=\"${IMAGE_DOCKERFILE:-}\"\nBASE_IMAGE=ubuntu:24.04\n")
+	values, err := ReadAssignmentsOver(file, map[string]string{"IMAGE_DOCKERFILE": "docker/dev.Dockerfile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["IMAGE_DOCKERFILE"] != "docker/dev.Dockerfile" || values["BASE_IMAGE"] != "ubuntu:24.04" {
+		t.Fatalf("profile overlay changed precedence: %#v", values)
+	}
+}
+
+func TestE2EConfigValidation(t *testing.T) {
+	valid := environment{
+		"E2E_VM_IMAGE": "images:debian/13/cloud", "E2E_VM_CPU": "2",
+		"E2E_VM_MEMORY": "4GiB", "E2E_VM_DISK": "10GiB",
+		"E2E_VM_TTL_MINUTES": "1200", "E2E_VM_BOOT_TIMEOUT": "300",
+	}
+	if err := validateE2EConfig(valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"E2E_VM_IMAGE": "-unsafe", "E2E_VM_CPU": "0", "E2E_VM_MEMORY": "4GB",
+		"E2E_VM_DISK": "9GiB", "E2E_VM_TTL_MINUTES": "1441", "E2E_VM_BOOT_TIMEOUT": "29",
+	} {
+		values := make(environment, len(valid))
+		for key, current := range valid {
+			values[key] = current
+		}
+		values[name] = value
+		if err := validateE2EConfig(values); err == nil {
+			t.Errorf("%s=%q was accepted", name, value)
+		}
+	}
+}
+
 func TestEngineReexecDoesNotLeakPriorYardContext(t *testing.T) {
 	root := t.TempDir()
 	operatorHome := filepath.Join(root, "home")

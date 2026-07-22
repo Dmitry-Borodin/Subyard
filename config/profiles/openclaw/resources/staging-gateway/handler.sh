@@ -2,7 +2,7 @@
 # handler.sh — OpenClaw profile's shared staging gateway zones inside the yard,
 # isolated from production. A staging zone is identified by a ZONE NAME (default `canonical`),
 # NOT by a dev project — it is a shared service: dev-agents work in their own L2 boxes
-# (project-env.sh) and USE the zone; they do not each run their own gateway with the one test
+# Project environments use the zone; they do not each run their own gateway with the one test
 # bot. This is the O3 two-tier design (decisions-glossary "Staging design v2", 2026-06-27):
 #   * canonical — persistent, built from `master`, baseline/smoke/demo, never accrues dirty state;
 #   * ephemeral — a run of an agent's UNCOMMITTED worktree (test without committing). MVP = a LIVE BIND
@@ -40,20 +40,9 @@ set -euo pipefail
 RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBYARD_ROOT="$(cd "$RESOURCE_DIR/../../../../.." && pwd)"
 SCRIPT_DIR="$SUBYARD_ROOT/scripts"
-# Explicit control-plane module composition (config/context loads exactly once).
-# shellcheck source=scripts/lib/runtime.sh
-. "$SCRIPT_DIR/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] || { printf 'staging: prepared engine context required\n' >&2; exit 2; }
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
 # shellcheck source=scripts/lib-service.sh
@@ -345,7 +334,7 @@ MSG
 
     # A synced exclusive credential (for example one Telegram bot identity) carries a signed
     # authority assignment. Refuse a second/stale owner before touching the existing consumer.
-    "$SCRIPT_DIR/yard-keys.sh" check-exclusive "$zone"
+    "$SUBYARD_ROOT/bin/yard" keys check-exclusive "$zone"
 
     # --- prod-fingerprint GUARD (deny-by-default) ----------------------------
     prod_fps=""

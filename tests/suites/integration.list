@@ -6,12 +6,11 @@ engine-release.sh
 key-tools-install.sh
 opencode-agent-provision.sh
 profile-resource-lifecycle.sh
-project-code.sh
 project-registry-convergence.sh
 remote-projects.sh
 subyard-dev-provision.sh
 vscode-remote-maintenance.sh
-yard-ctl-stop.sh
+lifecycle-guard.sh
 yard-keys.sh
 yard-remote.sh
 yard-shell.sh

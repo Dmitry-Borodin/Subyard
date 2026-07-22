@@ -44,7 +44,7 @@ export PATH="$TMP/no-go:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:
 
 [ "$("$YARD_BIN_DIR/yard" --version)" = 'yard 0.1.0-dev' ] \
   || { printf 'installed-cli: installed engine version check failed\n' >&2; exit 1; }
-"$YARD_BIN_DIR/yard" --command-manifest | grep -Fq 'start||yard-ctl.sh'
+"$YARD_BIN_DIR/yard" --command-manifest | grep -Fq 'start||@lifecycle'
 "$YARD_BIN_DIR/yard" _migrate check >/dev/null
 [ ! -e "$TMP/go-invoked" ] \
   || { printf 'installed-cli: bootstrap unexpectedly invoked Go\n' >&2; exit 1; }
@@ -52,7 +52,7 @@ export PATH="$TMP/no-go:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:
   || { printf 'installed-cli: installer modified the release bundle\n' >&2; exit 1; }
 [ -x "$SUBYARD_HOME/runtime/current/bin/yard-engine" ] \
   || { printf 'installed-cli: verified engine was not installed in the runtime directory\n' >&2; exit 1; }
-[ -x "$SUBYARD_HOME/runtime/current/scripts/update-engine.sh" ] \
+[ -x "$SUBYARD_HOME/runtime/current/scripts/install-runtime-release.sh" ] \
   && [ -r "$SUBYARD_HOME/runtime/current/config/commands.registry" ] \
   || { printf 'installed-cli: release runtime is not self-contained\n' >&2; exit 1; }
 grep -Fq 'Subyard CLI login PATH' "$HOME/.profile" \

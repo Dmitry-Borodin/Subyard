@@ -1,5 +1,5 @@
 # config/profiles/openclaw/resources/staging-gateway.res — a profile shared-resource descriptor.
-# Sourced (plain KEY=VALUE) by the yard registry (scripts/lib-resources.sh). The mechanics live
+# Parsed as assignments by the Go resource registry. The mechanics live
 # in the profile-owned handler directory; the core only consults this descriptor.
 COMMAND=staging
 HANDLER=resources/staging-gateway/handler.sh

@@ -25,6 +25,5 @@ subyard_context_load() {
   [ -n "${SUBYARD_CONTEXT_READY:-}" ] && return 0
   load_config
   context_validate || die "invalid Subyard context: $CONTEXT_ERROR"
-  context_capture
   SUBYARD_CONTEXT_READY=1
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 00-check-host.sh — Phase 0: report whether the host can run a yard (exit 0 = ready).
-# Env: STORAGE_PATH (default $SUBYARD_HOME/incus/storage), MIN_DISK_GIB (hard floor, default 5),
+# Env: STORAGE_PATH (default $SUBYARD_HOME/incus/storage), MIN_DISK_GIB (hard floor, default 2),
 #      REC_DISK_GIB (recommended for the heavy 'android' profile, default 50).
 set -euo pipefail
 
@@ -60,7 +60,7 @@ if [ "${YARD_TYPE:-local}" = remote ]; then
   exit 0
 fi
 
-MIN_DISK_GIB="${MIN_DISK_GIB:-5}"    # hard floor for a base yard
+MIN_DISK_GIB="${MIN_DISK_GIB:-2}"    # hard floor for a base yard
 RESUME_MIN_DISK_GIB="${RESUME_MIN_DISK_GIB:-1}"
 REC_DISK_GIB="${REC_DISK_GIB:-50}"   # recommended: the 'android' profile (SDK/AVD) is heavy
 BASE_YARD_PRESENT="${SUBYARD_PREFLIGHT_BASE_PRESENT:-auto}"

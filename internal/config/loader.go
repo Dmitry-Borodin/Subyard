@@ -251,6 +251,12 @@ func contextFrom(root, yardName string, values environment) (domain.Context, err
 	setDefault(values, "SSH_HOST", "yard")
 	setDefault(values, "DEV_USER", "dev")
 	setDefault(values, "NESTED_E2E_VMS", "0")
+	setDefault(values, "E2E_VM_IMAGE", "images:debian/13/cloud")
+	setDefault(values, "E2E_VM_CPU", "2")
+	setDefault(values, "E2E_VM_MEMORY", "4GiB")
+	setDefault(values, "E2E_VM_DISK", "10GiB")
+	setDefault(values, "E2E_VM_TTL_MINUTES", "240")
+	setDefault(values, "E2E_VM_BOOT_TIMEOUT", "300")
 	configHome := values["SUBYARD_CONFIG_HOME"]
 	dataHome := values["SUBYARD_HOME"]
 	hostBase := filepath.Clean(values["HOST_BASE"])
@@ -287,6 +293,9 @@ func contextFrom(root, yardName string, values environment) (domain.Context, err
 		return domain.Context{}, err
 	}
 	values["E2E_VM_CPU"] = e2eVMCPU
+	if err := validateE2EConfig(values); err != nil {
+		return domain.Context{}, err
+	}
 	ctx := domain.Context{
 		YardName:        yardName,
 		YardType:        domain.YardType(values["YARD_TYPE"]),
@@ -358,4 +367,54 @@ func zeroOne(value, name string) (bool, error) {
 	default:
 		return false, fmt.Errorf("%s must be 0 or 1", name)
 	}
+}
+
+func validateE2EConfig(values environment) error {
+	positive := func(name string) (int, error) {
+		value, err := strconv.Atoi(values[name])
+		if err != nil || value < 1 {
+			return 0, fmt.Errorf("%s must be a positive integer", name)
+		}
+		return value, nil
+	}
+	if _, err := positive("E2E_VM_CPU"); err != nil {
+		return err
+	}
+	sizeMiB := func(name string) (int, error) {
+		value := values[name]
+		factor, raw := 1, strings.TrimSuffix(value, "MiB")
+		if strings.HasSuffix(value, "GiB") {
+			factor, raw = 1024, strings.TrimSuffix(value, "GiB")
+		} else if raw == value {
+			return 0, fmt.Errorf("%s must use a positive MiB or GiB value", name)
+		}
+		amount, err := strconv.Atoi(raw)
+		if err != nil || amount < 1 {
+			return 0, fmt.Errorf("%s must use a positive MiB or GiB value", name)
+		}
+		return amount * factor, nil
+	}
+	if _, err := sizeMiB("E2E_VM_MEMORY"); err != nil {
+		return err
+	}
+	if disk, err := sizeMiB("E2E_VM_DISK"); err != nil {
+		return err
+	} else if disk < 10*1024 {
+		return errors.New("E2E_VM_DISK must be at least 10GiB")
+	}
+	for name, bounds := range map[string][2]int{
+		"E2E_VM_TTL_MINUTES": {15, 1440}, "E2E_VM_BOOT_TIMEOUT": {30, 1800},
+	} {
+		value, err := strconv.Atoi(values[name])
+		if err != nil || value < bounds[0] || value > bounds[1] {
+			return fmt.Errorf("%s must be an integer from %d to %d", name, bounds[0], bounds[1])
+		}
+	}
+	image := values["E2E_VM_IMAGE"]
+	if image == "" || strings.HasPrefix(image, "-") || strings.ContainsFunc(image, func(char rune) bool {
+		return !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/@+-", char)
+	}) {
+		return errors.New("E2E_VM_IMAGE contains unsafe characters")
+	}
+	return nil
 }

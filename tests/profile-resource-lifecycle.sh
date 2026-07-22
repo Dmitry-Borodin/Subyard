@@ -45,26 +45,11 @@ chmod 755 "$TMP/bin/incus"
 export RESOURCE_TEST_LOG="$TMP/incus.log"
 export RESOURCE_TEST_LEGACY_STOPPED_FILE="$TMP/legacy-stopped"
 
-# shellcheck source=scripts/lib-resources.sh
-. "$ROOT/scripts/lib-resources.sh"
-res_registry_validate || fail 'profile resource registry validation failed'
-while IFS=$'\t' read -r _profile _name _command _handler bringup shutdown verbs _title; do
-  case " $verbs " in *" $bringup "*) ;; *) fail "$bringup is not a declared resource verb" ;; esac
-  case " $verbs " in *" $shutdown "*) ;; *) fail "$shutdown is not a declared resource verb" ;; esac
-done < <(res_rows)
-if res_handler_path android '../escape.sh' >/dev/null; then
-  fail 'profile resource handler escaped its owning profile'
-fi
 for command in emu staging qa-pool; do
-  handler="$(res_handler_for_command "$command")"
-  [ -x "$handler" ] || fail "$command descriptor did not resolve to an executable handler"
-  case "$handler" in "$ROOT"/config/profiles/*/resources/*/handler.sh) ;; *) fail "$command handler is not profile-owned: $handler" ;; esac
   output="$("$ROOT/bin/yard" "$command" is-up)"
   [ -z "$output" ] || fail "$command is-up probe was not silent"
 done
 
-[ "$(res_handler_for_name emulator)" = "$(res_handler_for_command emu)" ] \
-  || fail 'resource-name and command dispatch disagree'
 [ ! -e "$ROOT/scripts/yard-emu.sh" ] && [ ! -e "$ROOT/scripts/project-staging.sh" ] \
   && [ ! -e "$ROOT/scripts/qa-pool.sh" ] || fail 'legacy core-owned profile handlers remain'
 

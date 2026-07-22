@@ -1,9 +1,9 @@
 # Control-plane architecture
 
 Subyard's production entrypoint and control plane are a native Go engine. Bash is limited to narrow
-physical adapters for platform mutations and protected payloads. There is one implementation path
-for each operation: Go owns the workflow and validated context; side effects stay behind explicit
-ports.
+physical adapters for platform mutations. Each operation has one path: Go
+owns workflow and validated context, side effects stay behind explicit ports, and a migration slice
+deletes the replaced shell path without growing production code.
 
 ## Implementation map
 
@@ -14,14 +14,13 @@ bin/yard                                source-tree and release-runtime launcher
 cmd/yard                                native CLI/RPC entrypoint
 internal/
   ├── command, config, domain           manifest and immutable context
-  ├── application, credential           routing/events and credential DAG policy
+  ├── application, credential           routing/reconciliation and credential DAG policy
   ├── state, migration, rpc              atomic state, schema checks and framed sessions
-  └── adapters/                          Incus, metadata, shell and local/SSH transports
+  └── adapters/                          Incus, release, metadata and local/SSH transports
 scripts/
+  ├── NN-*.sh                           host/platform mutation leaves
   ├── lib/                              shared platform adapter contracts
-  ├── reconcile/
-  │     └── stages/                     one check/plan/apply/verify contract per init stage
-  └── credentials/                      protected crypto/store/peer/materialization adapters
+  └── e2e-lab/                          opt-in nested-VM physical backend
 config/profiles/<profile>/
   ├── provision.sh                      optional in-yard toolchain
   └── resources/<resource>/             profile-owned lifecycle mechanics
@@ -36,27 +35,8 @@ the whole runtime and production never reads a source checkout. Non-interactive 
 Go-owned plan, consequences, confirmation, operation ID, audit, events and cancellation path across
 CLI and RPC. Go owns reconciliation order, retries and transactions. A shell leaf may probe or
 mutate one physical boundary; it does not select stages, route operations or make policy decisions.
-The current init and credential shell workflows are migration debt.
-
-## Recorded P0 baseline
-
-The pre-consolidation baseline on 2026-07-20 was:
-
-| Surface | Baseline |
-|---|---:|
-| Production shell entrypoints/hooks | 56 files / 12,272 lines |
-| Host-free tests | 29 files / 3,159 lines |
-| Entrypoints sourcing the ambient `lib.sh` | 40 |
-| `lib.sh` | 519 lines |
-| `lib-state.sh` | 593 lines |
-| `lib-keys.sh` | 1,066 lines |
-| `init.sh` | 602 lines |
-
-The compatibility baseline includes top-level help/list, command aliases, exit status propagation,
-global yard selection, local/named/remote routing, config precedence, prompts, qualified project
-selectors, owner registry convergence, credential redaction/conflicts, init re-probe/verify, and
-deferred power finalization. The host-free tests characterize those behaviors before real host
-acceptance.
+Go owns release selection, download and CLI/RPC planning. The installer only verifies and activates
+a prepared bundle. A separate first-install bootstrap is excluded from release runtimes.
 
 ## Stable interfaces
 
@@ -108,8 +88,8 @@ RPC parameters, Incus event metadata is allowlisted, and stdout contains frames 
 The Go engine parses assignment-only config without executing shell, selects the local/named/remote
 yard, applies generic defaults, normalizes paths and validates the complete context before dispatch.
 It passes the validated environment to shell adapters with `SUBYARD_CONFIG_LOADED=1`; their existing
-boundary captures the immutable non-secret view without sourcing the files again. Direct execution
-of a system-adapter script retains the compatibility loader for diagnostics.
+boundary consumes that view without sourcing config again. Migrated leaves fail closed without
+`SUBYARD_ENGINE_CONTEXT=1`.
 
 The validated context contract includes:
 
@@ -146,10 +126,9 @@ Operation options such as remove mode and image rebuild are passed as validated 
 After a successful mutating adapter, Go atomically publishes or deletes controller state and, for a
 remote yard, converges the owner endpoint before publishing controller state.
 
-Shell project leaves may execute prepared SSH, Incus, tar or Docker operations. They do not probe the
-owner control plane, classify reachability, reload registry state or decide routes. The retired
-`state/store.sh`, `state/resolver.sh` and `state/transport.sh` shims must not return.
-Native project actions use `@project`; `clone`, `sync`, `bind` and `remove` have no shell handlers.
+Native `clone`, `sync`, `bind`, `remove`, `code` and `export` actions use `@project`; they have no
+shell handlers. The in-yard VS Code session probe is a lifecycle safety leaf. The retired project
+handlers and `state/*` shims must not return.
 
 Remote registration, trust repair, removal and listing are native. Preparation probes the trusted
 owner and scans the yard key without local mutation; old and new fingerprints enter the operation
@@ -161,17 +140,15 @@ Go. A remaining shell hook may only execute the prepared Incus or Docker operati
 
 ### Reconciliation stages
 
-The ordered registry contains one descriptor per stage:
+Go owns the typed stage registry, labels, order, live plan, resume behavior and finalization. It
+re-checks immediately before apply, verifies immediately afterward and stops on failure. A rerun
+skips converged stages; no completion marker replaces a live probe.
 
-```text
-stage-id|stage_function_prefix
-```
-
-Each module under `scripts/reconcile/stages/` must implement `<prefix>_check`, `_plan`, `_apply`, and
-`_verify`. The planner validates the registry, re-checks immediately before apply, verifies
-immediately after apply, and stops on failure. A rerun skips converged stages and resumes from live
-state; no completion marker replaces the probes. Desired-power finalization is a separate verified
-transaction after optional profile provisioning.
+No reconciliation dispatcher or sourceable stage modules remain. Native probes own Incus, project,
+instance, mount, provision, SSH and power state. Go invokes explicit package-manager, network,
+storage, systemd, credential and nested-VM leaves for physical checks or mutations.
+Registered-yard discovery and legacy power-metadata import are native. Shell only applies the
+selected yard's guarded start/stop boundary.
 
 ### Credential ledger
 
@@ -179,13 +156,8 @@ The host-scoped ledger is physically outside the checkout and every managed yard
 Git store contains signed SOPS/age ciphertext; local-only records and identity keys never enter that
 store.
 
-Native credential policy validates the revision graph and owns heads, terminal precedence, metadata
-compatibility, recipient intersection/rekey, peer trust merging, assignment epochs and freshness,
-and retry scheduling. Its RPC view
-projects only allowlisted metadata and never decodes encrypted payload or SOPS fields. Protected
-adapters own only store I/O, cryptographic operations, consumer materialization and peer transport.
-They consume a Go-prepared decision and do not coordinate the workflow. The current shell credential
-coordinator is migration debt.
+The native credential runtime owns revision policy, cryptography, storage, materialization and peer
+transport. Its RPC view projects only allowlisted metadata and never exposes encrypted payloads.
 Secret payload enters only through protected stdin or a mode-0400/0600 file and is never placed in
 command arguments, environment metadata, audit output, or a revision's unencrypted fields.
 
@@ -254,8 +226,8 @@ Capture results outside the public repository and never include credentials or p
 
 - Command: add one validated registry row and a Go use case. Add Shell only for a physical leaf, then
   extend a contract/integration test. Do not add another dispatch list.
-- Stage: add one stage module with all four methods and one registry descriptor; add no-op, drift,
-  failed-verify, and resume coverage.
+- Stage: add one Go descriptor and a typed probe/apply port; add no-op, drift, failed-verify, and
+  resume coverage. Add shell only for an unavoidable physical operation.
 - Profile resource: keep mechanics below its profile, add a `.res` descriptor and executable
   handler, implement silent `is-up`, and test at least probe plus reverse lifecycle behavior.
 

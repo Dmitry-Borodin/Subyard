@@ -21,30 +21,14 @@ cat > "$SUBYARD_UFW_RULES_FILE" <<'RULES'
 ### tuple ### route:allow any any 0.0.0.0/0 any 0.0.0.0/0 out_incusbr0
 RULES
 
-# shellcheck source=scripts/init.sh
-. "$ROOT/scripts/init.sh"
-reconcile_incus_reachable() { return 0; }
-power_host_safe() { return 0; }
-stage_instance_check() { return 1; }
-reconcile_power_stopped() { return 0; }
-ufw() { :; }
-systemctl() { return 0; }
+# shellcheck source=scripts/lib/host.sh
+. "$ROOT/scripts/lib/host.sh"
 
-stage_network_check || fail "matching active-UFW rules were not converged"
-stage_network_verify || fail "active UFW rejected a converged post-apply state"
-[ "$(reconcile_stage_prefix network)" = stage_network ] \
-  || fail "network registry does not own its full stage contract"
-
+ufw_yard_rules_present incusbr0 || fail "matching active-UFW rules were not converged"
 sed -i '/out_incusbr0/d' "$SUBYARD_UFW_RULES_FILE"
-! stage_network_check || fail "missing UFW route-out rule was accepted"
-! stage_network_verify || fail "post-apply verification ignored missing UFW rule"
+! ufw_yard_rules_present incusbr0 || fail "missing UFW route-out rule was accepted"
 printf '%s\n' '### tuple ### route:allow any any 0.0.0.0/0 any 0.0.0.0/0 out_incusbr0' \
   >> "$SUBYARD_UFW_RULES_FILE"
-
-# The guard is applied before a fresh yard instance exists, so post-apply verification must not
-# require a guest lease that the instance stage has not created yet.
-reconcile_power_stopped() { return 1; }
-stage_network_verify || fail "fresh-host network verify required a not-yet-created instance"
 
 access_log="$TMP/access.log"
 getent() { [ "${1:-}" = group ] && [ "${2:-}" = incus-admin ]; }
@@ -57,4 +41,4 @@ grep -Fqx "chgrp incus-admin $SUBYARD_UFW_RULES_FILE" "$access_log" \
 grep -Fqx "chgrp root $SUBYARD_UFW_RULES_FILE" "$access_log" \
   || fail "UFW teardown access did not restore root ownership"
 
-printf 'ok: network probe verifies persisted active-UFW policy\n'
+printf 'ok: network leaf parses persisted active-UFW policy\n'

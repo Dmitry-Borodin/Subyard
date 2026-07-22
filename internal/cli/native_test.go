@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -162,6 +163,7 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 		RepositoryRoot: root, Program: "yard", Arguments: []string{"start"},
 		Environment: append(environment, "SUBYARD_OPERATION_ID=operation-cli"), WorkingDir: root,
 		Stdout: &stdout, Stderr: &stderr, AdapterRunner: cliRunner, Prompt: prompt, Clock: clock,
+		Incus: lifecycleIncus(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +172,8 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 		t.Fatalf("structured CLI start failed: code=%d stderr=%q", code, stderr.String())
 	}
 	if len(prompt.Seen) != 1 || len(cliRunner.Requests) != 1 ||
-		cliRunner.Requests[0].Adapter != "command" || cliRunner.Requests[0].Action != "start" ||
+		cliRunner.Requests[0].Adapter != "lifecycle" || cliRunner.Requests[0].Action != "start" ||
+		!slices.Equal(cliRunner.Requests[0].Arguments, []string{"start"}) ||
 		cliRunner.Requests[0].Context["SUBYARD_CONFIG_LOADED"] != "1" ||
 		cliRunner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
 		t.Fatalf("CLI bypassed the structured operation: prompt=%#v requests=%#v", prompt.Seen, cliRunner.Requests)
@@ -181,7 +184,7 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 	}}}}
 	program, err = New(Options{
 		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
-		Stderr: &stderr, AdapterRunner: rpcRunner, Clock: clock,
+		Stderr: &stderr, AdapterRunner: rpcRunner, Clock: clock, Incus: lifecycleIncus(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -227,6 +230,70 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 		Params: json.RawMessage(`{"confirmed":true}`),
 	}, func(string, any) (uint64, error) { return 1, nil }); err == nil || err.(*rpc.Error).Code != "plan_not_found" {
 		t.Fatalf("RPC replayed an already executed plan: %v", err)
+	}
+}
+
+func TestUpdateUsesThePreparedReleaseAcrossRPCPlanAndExecute(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	assets := filepath.Join(root, "release")
+	cache := filepath.Join(root, "cache")
+	runtimeRoot := filepath.Join(root, "runtime")
+	capture := filepath.Join(root, "installer.args")
+	if err := os.MkdirAll(assets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := "subyard-1.2.3-linux-" + runtime.GOARCH + ".tar.gz"
+	for _, suffix := range []string{"", ".sha256", ".manifest.json", ".provenance.json"} {
+		writeCLIFile(t, filepath.Join(assets, name+suffix), "fixture", 0o600)
+	}
+	writeCLIFile(t, filepath.Join(root, "scripts", "install-runtime-release.sh"),
+		"#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > \"$RELEASE_CAPTURE\"\n", 0o700)
+	environment = append(environment,
+		"YARD_RELEASE_BASE_URL=file://"+assets,
+		"YARD_RELEASE_CACHE="+cache,
+		"RELEASE_CAPTURE="+capture,
+	)
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment,
+		Clock: testkit.NewManualClock(time.Unix(100, 0)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &rpcHandler{cli: program, loaded: loaded, plans: make(map[string]rpcPlannedOperation)}
+	params, _ := json.Marshal(map[string]any{
+		"command": "update", "arguments": []string{
+			"--version", "1.2.3", "--runtime-root", runtimeRoot, "--check",
+		},
+	})
+	result, err := handler.Handle(context.Background(), rpc.Call{
+		Method: "operation.plan", OperationID: "operation-update", Params: params,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := result.(domain.OperationPlan)
+	if plan.Effect != domain.CommandMutate || !strings.Contains(strings.Join(plan.Consequences, " "), "1.2.3") {
+		t.Fatalf("release plan lost prepared evidence: %#v", plan)
+	}
+	execute, _ := json.Marshal(map[string]bool{"confirmed": true})
+	events := make([]string, 0, 2)
+	if _, err := handler.Handle(context.Background(), rpc.Call{
+		Method: "operation.execute", OperationID: plan.OperationID, Params: execute,
+	}, func(event string, _ any) (uint64, error) {
+		events = append(events, event)
+		return uint64(len(events)), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := os.ReadFile(capture)
+	if err != nil || !strings.Contains(string(arguments), "--check") ||
+		!slices.Equal(events, []string{"operation.started", "operation.finished"}) {
+		t.Fatalf("release RPC bypassed its prepared operation: args=%q events=%q err=%v", arguments, events, err)
 	}
 }
 
@@ -397,6 +464,7 @@ func TestStructuredMutationSharesTypedAdapterAcrossCLIAndRPC(t *testing.T) {
 		RepositoryRoot: root, Program: "yard", Arguments: []string{"stop", "--force"},
 		Environment: append(environment, "SUBYARD_OPERATION_ID=operation-stop-cli"), WorkingDir: root,
 		Stderr: &stderr, AdapterRunner: cliRunner, Prompt: prompt, Clock: clock,
+		Incus: lifecycleIncus(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +472,7 @@ func TestStructuredMutationSharesTypedAdapterAcrossCLIAndRPC(t *testing.T) {
 	if code := program.Run(context.Background()); code != 0 {
 		t.Fatalf("structured CLI stop failed: code=%d stderr=%q", code, stderr.String())
 	}
-	if len(cliRunner.Requests) != 1 || cliRunner.Requests[0].Adapter != "command" ||
+	if len(cliRunner.Requests) != 1 || cliRunner.Requests[0].Adapter != "lifecycle" ||
 		cliRunner.Requests[0].Action != "stop" ||
 		!slices.Equal(cliRunner.Requests[0].Arguments, []string{"stop", "--force"}) {
 		t.Fatalf("CLI mutation bypassed the typed command adapter: %#v", cliRunner.Requests)
@@ -415,7 +483,7 @@ func TestStructuredMutationSharesTypedAdapterAcrossCLIAndRPC(t *testing.T) {
 	}}}}
 	program, err = New(Options{
 		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
-		Stderr: &stderr, AdapterRunner: rpcRunner, Clock: clock,
+		Stderr: &stderr, AdapterRunner: rpcRunner, Clock: clock, Incus: lifecycleIncus(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -466,6 +534,7 @@ func TestStructuredStartAutomationSkipsOnlyTheLocalPrompt(t *testing.T) {
 				RepositoryRoot: root, Program: "yard", Arguments: test.arguments,
 				Environment: append(environment, "SUBYARD_OPERATION_ID=operation-automation"),
 				WorkingDir:  root, Stderr: &stderr, AdapterRunner: runner, Prompt: prompt,
+				Incus: lifecycleIncus(),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -511,19 +580,6 @@ case "${1:-}" in
   info) exit 0 ;;
   list) cat "$state" ;;
   start) printf 'RUNNING\n' > "$state"; printf 'start\n' >> "$log" ;;
-  config)
-    case "${2:-}" in
-      get)
-        case "${4:-}" in
-          user.subyard.managed|user.subyard.initialized) printf 'true\n' ;;
-          user.subyard.desired_power) printf 'stopped\n' ;;
-          boot.autostart) printf 'false\n' ;;
-          user.subyard.bridge) printf 'incusbr0\n' ;;
-        esac
-        ;;
-      set) printf 'set:%%s=%%s\n' "$4" "$5" >> "$log" ;;
-    esac
-    ;;
   *) exit 90 ;;
 esac
 `, statePath, logPath), 0o700)
@@ -574,21 +630,26 @@ exit 90
 	for key := range contextValues {
 		contextKeys[key] = struct{}{}
 	}
-	runner := shelladapter.Runner{
+	physical := shelladapter.Runner{
 		RepositoryRoot: root,
-		Actions: map[string]map[string]shelladapter.Action{"command": {
+		Actions: map[string]map[string]shelladapter.Action{"lifecycle": {
 			"start": {
-				Path: filepath.Join(root, "scripts", "yard-ctl.sh"), Direct: true,
+				Path: filepath.Join(root, "scripts", "lifecycle-guard.sh"), Direct: true,
 			},
 		}},
 		ContextKeys: contextKeys, Path: bin + ":/usr/sbin:/usr/bin:/sbin:/bin", Timeout: time.Second,
 	}
+	power := lifecycleIncus()
+	runner := application.LifecycleRunner{
+		Power:    application.PowerService{Instances: power, Config: power},
+		Physical: physical, Yard: loaded.Context,
+	}
 	request := domain.AdapterRequest{
-		Schema: 1, OperationID: "operation-production", Adapter: "command", Action: "start",
-		Arguments: []string{"start", "--yes"}, Context: contextValues,
+		Schema: 1, OperationID: "operation-production", Adapter: "lifecycle", Action: "start",
+		Context: contextValues,
 	}
 	result, diagnostics, err := runner.Run(context.Background(), request, nil)
-	if err != nil || result.Status != "ok" || !strings.Contains(diagnostics, "started (desired=running") {
+	if err != nil || result.Status != "ok" || !strings.Contains(diagnostics, "starting yard") {
 		t.Fatalf("production adapter failed: result=%#v diagnostics=%q err=%v", result, diagnostics, err)
 	}
 	payload, err := os.ReadFile(logPath)
@@ -596,8 +657,8 @@ exit 90
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(payload), "start\n") ||
-		!strings.Contains(string(payload), "set:user.subyard.desired_power=running") {
-		t.Fatalf("guarded handler did not commit start: %s", payload)
+		power.Instances["subyard/yard"].LocalConfig["user.subyard.desired_power"] != "running" {
+		t.Fatalf("guarded start did not commit metadata: log=%s state=%#v", payload, power.Instances)
 	}
 }
 
@@ -616,6 +677,7 @@ func TestStructuredStartRunsOverFramedRPCSession(t *testing.T) {
 		RepositoryRoot: root, Program: "yard", Arguments: []string{"rpc", "--stdio"},
 		Environment: environment, WorkingDir: root, Stdin: server, Stdout: server, Stderr: &stderr,
 		AdapterRunner: runner, Clock: testkit.NewManualClock(time.Unix(100, 0)),
+		Incus: lifecycleIncus(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1036,9 +1098,9 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		}
 	}
 	manifest := strings.Join([]string{
-		"init|setup|init.sh||forward|mutate|public|lifecycle|simple|init|install or reconcile the yard|--configs --reset --yes --help|",
-		"start||yard-ctl.sh|start|forward|mutate|public|lifecycle|simple|start|start|--yes --help|",
-		"stop||yard-ctl.sh|stop|forward|mutate|public|lifecycle|simple|stop|stop|--force --yes --help|",
+		"init||@init||forward|mutate|public|lifecycle|simple|init|init|--configs --reset --yes --help|",
+		"start||@lifecycle||forward|mutate|public|lifecycle|simple|start|start|--yes --help|",
+		"stop||@lifecycle||forward|mutate|public|lifecycle|simple|stop|stop|--force --yes --help|",
 		"status||@status||forward|read|public|lifecycle|status|status|status|--all --help|",
 		"logs||@logs||forward|read|public|lifecycle|simple|logs|logs|-f -n --yes --help|",
 		"usage||@usage||forward|read|public|lifecycle|simple|usage|usage|--help|",
@@ -1047,6 +1109,7 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		"remove||@project||local|mutate|public|projects|remove|remove [project]|remove|--soft --yes --help|",
 		"yards||@yards||local|read|public|lifecycle|simple|yards|yards|--help|",
 		"remote||@remote||local|mutate|public|remote|remote|remote|remote|--yard --yes --help|add repair-key remove list",
+		"update||@update||local|mutate|public|lifecycle|simple|update|update|--check --version --offline --rollback --force --yes --help|",
 		"list||@list||local|read|public|projects|simple|list|list|--live --help|",
 		"_info||@info||local|read|hidden|internal|none|_info|info||",
 		"_authorize||@authorize||forward|mutate|hidden|internal|none|_authorize|authorize||",
@@ -1070,4 +1133,14 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		"DEV_USER=dev", "SSH_PORT=2222", "SUBYARD_NO_AUDIT=1",
 	}
 	return root, environment, stateDirectory
+}
+
+func lifecycleIncus() *testkit.Incus {
+	return &testkit.Incus{Instances: map[string]ports.InstanceInfo{"subyard/yard": {
+		Name: "yard", Project: "subyard", Status: "Stopped", LocalConfig: map[string]string{
+			"user.subyard.managed": "true", "user.subyard.initialized": "true",
+			"user.subyard.desired_power": "stopped", "user.subyard.name": "default",
+			"user.subyard.bridge": "incusbr0", "boot.autostart": "false",
+		},
+	}}}
 }

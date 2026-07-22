@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -55,20 +56,80 @@ func (client *Client) Instance(ctx context.Context, project, name string) (ports
 	}
 	instance, _, err := server.UseProject(project).GetInstance(name)
 	if err != nil {
+		if api.StatusErrorCheck(err, http.StatusNotFound) {
+			return ports.InstanceInfo{}, fmt.Errorf("%w: %s/%s", ports.ErrInstanceNotFound, project, name)
+		}
 		return ports.InstanceInfo{}, normalizeError("get instance", err)
 	}
-	instanceType := domain.InstanceType(instance.Type)
-	if instanceType == "virtual-machine" {
-		instanceType = domain.InstanceVM
+	return instanceInfo(project, instance), nil
+}
+
+func (client *Client) ReconcileState(
+	ctx context.Context,
+	projectName string,
+	instanceName string,
+	pool string,
+	volume string,
+	network string,
+) (ports.ReconcileState, error) {
+	server, err := client.reconcileServer(ctx)
+	if err != nil {
+		return ports.ReconcileState{}, err
 	}
-	return ports.InstanceInfo{
-		Name:    instance.Name,
-		Project: project,
-		Type:    instanceType,
-		Status:  instance.Status,
-		Config:  cloneMap(instance.ExpandedConfig),
-		Devices: cloneDevices(instance.ExpandedDevices),
-	}, nil
+	state := ports.ReconcileState{}
+	_, _, err = server.GetStoragePool(pool)
+	if err != nil {
+		if !api.StatusErrorCheck(err, http.StatusNotFound) {
+			return state, normalizeError("get storage pool", err)
+		}
+	} else {
+		state.HostPoolFound = true
+	}
+	_, _, err = server.GetNetwork(network)
+	if err != nil {
+		if !api.StatusErrorCheck(err, http.StatusNotFound) {
+			return state, normalizeError("get network", err)
+		}
+	} else {
+		state.HostNetworkFound = true
+	}
+	project, _, err := server.GetProject(projectName)
+	if err != nil {
+		if api.StatusErrorCheck(err, http.StatusNotFound) {
+			return state, nil
+		}
+		return state, normalizeError("get project", err)
+	}
+	state.ProjectFound = true
+	state.ProjectConfig = cloneMap(project.Config)
+	projectServer := server.UseProject(projectName)
+	profile, _, err := projectServer.GetProfile("default")
+	if err != nil {
+		if !api.StatusErrorCheck(err, http.StatusNotFound) {
+			return state, normalizeError("get profile", err)
+		}
+	} else {
+		state.ProfileFound = true
+		state.ProfileDevices = cloneDevices(profile.Devices)
+	}
+	instance, _, err := projectServer.GetInstance(instanceName)
+	if err != nil {
+		if !api.StatusErrorCheck(err, http.StatusNotFound) {
+			return state, normalizeError("get instance", err)
+		}
+	} else {
+		state.InstanceFound = true
+		state.Instance = instanceInfo(projectName, instance)
+	}
+	_, _, err = projectServer.GetStoragePoolVolume(pool, "custom", volume)
+	if err != nil {
+		if !api.StatusErrorCheck(err, http.StatusNotFound) {
+			return state, normalizeError("get storage volume", err)
+		}
+	} else {
+		state.VolumeFound = true
+	}
+	return state, nil
 }
 
 func (client *Client) Exec(
@@ -210,6 +271,47 @@ func (client *Client) RemoveDevice(
 		return false, err
 	}
 	return true, nil
+}
+
+func (client *Client) SetInstanceConfig(
+	ctx context.Context,
+	project string,
+	instanceName string,
+	values map[string]string,
+) error {
+	server, err := client.connect(ctx, true)
+	if err != nil {
+		return err
+	}
+	if err := client.validateServerExtensions(server); err != nil {
+		return err
+	}
+	projectServer := server.UseProject(project)
+	instance, etag, err := projectServer.GetInstance(instanceName)
+	if err != nil {
+		return normalizeError("get instance", err)
+	}
+	changed := false
+	if instance.Config == nil {
+		instance.Config = make(map[string]string)
+	}
+	for key, value := range values {
+		if instance.Config[key] != value {
+			instance.Config[key] = value
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	operation, err := projectServer.UpdateInstance(instanceName, instance.Writable(), etag)
+	if err != nil {
+		return normalizeError("update instance config", err)
+	}
+	if err := operation.Wait(); err != nil {
+		return normalizeError("wait for instance config update", err)
+	}
+	return nil
 }
 
 func updateInstanceDevices(
@@ -365,6 +467,17 @@ func (client *Client) connect(ctx context.Context, skipEvents bool) (incus.Insta
 	return server, nil
 }
 
+func (client *Client) reconcileServer(ctx context.Context) (incus.InstanceServer, error) {
+	server, err := client.connect(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.validateServerExtensions(server); err != nil {
+		return nil, err
+	}
+	return server, nil
+}
+
 func (client *Client) validateServerExtensions(server incus.InstanceServer) error {
 	if len(client.requiredExtensions) == 0 {
 		return nil
@@ -403,4 +516,16 @@ func cloneDevices(source map[string]map[string]string) map[string]map[string]str
 		result[name] = cloneMap(values)
 	}
 	return result
+}
+
+func instanceInfo(project string, instance *api.Instance) ports.InstanceInfo {
+	instanceType := domain.InstanceType(instance.Type)
+	if instanceType == "virtual-machine" {
+		instanceType = domain.InstanceVM
+	}
+	return ports.InstanceInfo{
+		Name: instance.Name, Project: project, Type: instanceType, Status: instance.Status,
+		Config: cloneMap(instance.ExpandedConfig), Devices: cloneDevices(instance.ExpandedDevices),
+		LocalConfig: cloneMap(instance.Config), LocalDevices: cloneDevices(instance.Devices),
+	}
 }

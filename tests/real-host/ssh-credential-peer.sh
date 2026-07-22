@@ -38,12 +38,7 @@ bootstrap_keys() { # context-root keys-root
   HOME="$1/home" SUBYARD_OPERATOR_HOME="$1/home" SUBYARD_CONFIG_HOME="$1/config" \
     SUBYARD_HOME="$1/data" HOST_BASE="$1/host-data" RESTRICTED_DISK_PATHS="$1/host-data" \
     SUBYARD_KEYS_ROOT="$2" SUBYARD_KEYS_TOOLS_DIR="$TOOLS_DIR" \
-    CONTROL_PLANE_ROOT="$ROOT" SCRIPT_DIR="$ROOT/scripts" bash -c '
-      set -euo pipefail
-      . "$CONTROL_PLANE_ROOT/tests/helpers/source-control-plane.sh"
-      . "$CONTROL_PLANE_ROOT/tests/helpers/source-credentials.sh"
-      keys_init_store
-    '
+    YARD_ENGINE_PATH="$ROOT/.build/yard" "$ROOT/bin/yard" _keys-init
 }
 bootstrap_keys "$local_root" "$local_keys" >/dev/null
 bootstrap_keys "$remote_root" "$remote_keys" >/dev/null
@@ -153,7 +148,7 @@ chmod 0600 "$expected"
   --file "$expected" --yes >/dev/null
 credential="$("$ROOT/.build/yard" keys list | awk -F '\t' '$8=="real-ssh" {print $1}')"
 [ -n "$credential" ] || fail 'synthetic SSH credential was not created'
-"$ROOT/.build/yard" keys sync @remote-two --now >/dev/null
+"$ROOT/.build/yard" keys sync @remote-two --now --yes >/dev/null
 ssh peer-two -- bash -lc "$(printf '%q' 'yard keys materialize real-ssh --yes')" >/dev/null
 cmp -s "$expected" "$remote_root/consumer/config/staging/real-ssh.env" \
   || fail 'real SSH peer did not decrypt the synchronized credential'
@@ -161,7 +156,7 @@ if grep -R -F -q -- 'subyard-synthetic-real-ssh-fixture' "$local_keys" "$remote_
   fail 'synthetic plaintext reached an SSH-synchronized ledger'
 fi
 "$ROOT/.build/yard" keys revoke "$credential" --yes >/dev/null
-"$ROOT/.build/yard" keys sync @remote-two --now >/dev/null
+"$ROOT/.build/yard" keys sync @remote-two --now --yes >/dev/null
 ssh peer-two -- bash -lc "$(printf '%q' 'yard keys materialize real-ssh --yes')" >/dev/null
 [ ! -e "$remote_root/consumer/config/staging/real-ssh.env" ] \
   || fail 'revoked SSH credential remained materialized'

@@ -3,43 +3,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib/runtime.sh
-. "$SCRIPT_DIR/lib/runtime.sh"
+[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] || { printf 'status-probe: prepared engine context required\n' >&2; exit 2; }
 # shellcheck source=scripts/lib/env.sh
 . "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
-# shellcheck source=scripts/lib-service.sh
-. "$SCRIPT_DIR/lib-service.sh"
-PROFILES_DIR="$SCRIPT_DIR/../config/profiles"
-
 case "${1:-}" in running) running=1 ;; stopped) running=0 ;; *) die "status probe expects running or stopped" ;; esac
-
-shared_file="$(mktemp "${TMPDIR:-/tmp}/subyard-status.XXXXXX")"
-trap 'rm -f "$shared_file"' EXIT
-mapfile -t active_profiles < <(yard_profiles_active)
-for profile in "${active_profiles[@]}"; do
-  [ -r "$PROFILES_DIR/$profile/profile.conf" ] || continue
-  for resource in $(svc_resources_for "$profile"); do
-    state='?'; hint=''
-    if [ "$running" = 1 ]; then
-      if svc_resource_up "$resource"; then
-        state=up; hint="$(svc_resource_stop_hint "$resource")"
-      else
-        state=down; hint="$(svc_resource_hint "$resource")"
-      fi
-    fi
-    jq -cn --arg profile "$profile" --arg name "$resource" --arg state "$state" --arg hint "$hint" \
-      '{profile:$profile,name:$name,state:$state,hint:$hint}' >> "$shared_file"
-  done
-done
 
 if "$SCRIPT_DIR/security-lint.sh" --quiet --require-live >/dev/null 2>&1; then
   security=live
@@ -75,5 +44,4 @@ else
   space="—  (yard stopped; on-host size: sudo du -sh $SUBYARD_HOME)"
 fi
 
-jq -cn --slurpfile shared "$shared_file" --arg security "$security" --arg space "$space" \
-  '{shared:$shared,security:$security,space:$space}'
+jq -cn --arg security "$security" --arg space "$space" '{security:$security,space:$space}'

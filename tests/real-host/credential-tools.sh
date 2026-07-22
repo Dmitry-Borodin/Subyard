@@ -38,15 +38,7 @@ EOF
 yard_one() { "$ROOT/bin/yard" -Y one "$@"; }
 yard_two() { "$ROOT/bin/yard" -Y two "$@"; }
 bootstrap_keys() {
-  SUBYARD_YARD="$1" bash -c '
-    set -euo pipefail
-    root="$1"
-    SCRIPT_DIR="$root/scripts"
-    CONTROL_PLANE_ROOT="$root"
-    . "$root/tests/helpers/source-control-plane.sh"
-    . "$root/tests/helpers/source-credentials.sh"
-    keys_init_store
-  ' _ "$ROOT"
+  "$ROOT/bin/yard" -Y "$1" _keys-init
 }
 
 bootstrap_keys one >/dev/null
@@ -67,12 +59,12 @@ if grep -R -F -q -- 'subyard-synthetic-real-crypto-fixture' "$SUBYARD_KEYS_ROOT"
   fail 'synthetic plaintext reached the credential ledger'
 fi
 
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 yard_two keys materialize real-crypto --yes >/dev/null
 cmp -s "$expected" "$TMP/consumer-two/config/staging/real-crypto.env" \
   || fail 'real age/SOPS payload did not decrypt on the trusted peer'
 yard_one keys revoke "$credential" --yes >/dev/null
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 yard_two keys materialize real-crypto --yes >/dev/null
 [ ! -e "$TMP/consumer-two/config/staging/real-crypto.env" ] \
   || fail 'revoked synthetic credential remained materialized'

@@ -1,12 +1,14 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
@@ -18,10 +20,17 @@ type ProjectActionRunner struct {
 	Data       ports.YardExecutor
 	Devices    ports.InstanceDeviceManager
 	Archive    ports.DirectoryArchiver
+	Exports    ports.ProjectExportStore
+	Instances  ports.Incus
+	VSCode     ports.VSCode
+	Extensions []string
 	Yard       domain.Context
 	Project    domain.ProjectRecord
 	SoftRemove bool
 }
+
+var workspaceUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+var extensionToken = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 func (runner ProjectActionRunner) Run(
 	ctx context.Context,
@@ -30,7 +39,8 @@ func (runner ProjectActionRunner) Run(
 ) (domain.AdapterResult, string, error) {
 	if request.Adapter != "project" ||
 		request.Action != "clone" && request.Action != "remove" &&
-			request.Action != "sync" && request.Action != "bind" {
+			request.Action != "sync" && request.Action != "bind" && request.Action != "export" &&
+			request.Action != "code" {
 		return domain.AdapterResult{}, "", errors.New("unsupported project action")
 	}
 	if runner.Data == nil {
@@ -40,6 +50,7 @@ func (runner ProjectActionRunner) Run(
 		return domain.AdapterResult{}, "", err
 	}
 	message := ""
+	output := map[string]any{"projectId": runner.Project.ProjectID, "yardPath": runner.Project.YardPath}
 	switch request.Action {
 	case "clone":
 		if runner.Project.Mode != domain.ProjectGit || runner.Project.HostPath == "" {
@@ -70,11 +81,147 @@ func (runner ProjectActionRunner) Run(
 			return domain.AdapterResult{}, "", err
 		}
 		message = fmt.Sprintf("bound %s -> %s\n", runner.Project.HostPath, runner.Project.YardPath)
+	case "export":
+		exportMessage, path, err := runner.export(ctx, request.OperationID)
+		if err != nil {
+			return domain.AdapterResult{}, "", err
+		}
+		message = exportMessage
+		if path != "" {
+			output["patch"] = path
+		}
+	case "code":
+		codeMessage, err := runner.code(ctx)
+		if err != nil {
+			return domain.AdapterResult{}, "", err
+		}
+		message = codeMessage
 	}
 	return domain.AdapterResult{
 		Schema: 1, OperationID: request.OperationID, Status: "ok",
-		Output: map[string]any{"projectId": runner.Project.ProjectID, "yardPath": runner.Project.YardPath},
+		Output: output,
 	}, message, nil
+}
+
+func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
+	if err := runner.codeTargetReady(ctx); err != nil {
+		return "", err
+	}
+	extensions := runner.Extensions
+	if len(extensions) == 0 {
+		extensions = []string{"anthropic.claude-code", "openai.chatgpt", "sst-dev.opencode"}
+	}
+	for _, extension := range extensions {
+		if !extensionToken.MatchString(extension) {
+			return "", fmt.Errorf("invalid recommended VS Code extension %q", extension)
+		}
+	}
+	workspaceName := workspaceUnsafe.ReplaceAllString(runner.Project.Name, "_")
+	workspace := filepath.Join("/home", runner.Yard.DevUser, ".subyard", "workspaces", workspaceName+".code-workspace")
+	payload, err := json.Marshal(map[string]any{
+		"folders":    []map[string]string{{"name": runner.Project.Name, "path": runner.Project.YardPath}},
+		"extensions": map[string]any{"recommendations": extensions},
+	})
+	if err != nil {
+		return "", err
+	}
+	dev := uint32(runner.Yard.DevUID)
+	if err := runner.execute(ctx, "create VS Code workspace directory", ports.InstanceExecRequest{
+		Command: []string{"install", "-d", "--", filepath.Dir(workspace)}, User: dev, Group: dev,
+	}); err != nil {
+		return "", err
+	}
+	if err := runner.execute(ctx, "write VS Code workspace", ports.InstanceExecRequest{
+		Command: []string{"tee", workspace}, Stdin: append(payload, '\n'), User: dev, Group: dev,
+	}); err != nil {
+		return "", err
+	}
+	uri := "vscode-remote://ssh-remote+" + runner.Project.SSHHost + workspace
+	message := ""
+	if runner.Project.Target != "" && runner.Project.Target != "yard" {
+		message = fmt.Sprintf("attach Dev Containers to subyard-box-%s at /workspace\n", runner.Project.ProjectID)
+	}
+	if runner.VSCode == nil {
+		return message + "VS Code CLI is unavailable; open manually:\n  code --file-uri " + uri + "\n", nil
+	}
+	if _, err := runner.VSCode.Run(ctx, "--file-uri", uri); err != nil {
+		return "", err
+	}
+	return message + fmt.Sprintf("opened %s (%s:%s) in VS Code\n", runner.Project.Name, runner.Project.SSHHost, runner.Project.YardPath), nil
+}
+
+func (runner ProjectActionRunner) codeTargetReady(ctx context.Context) error {
+	if runner.Yard.YardType == domain.YardRemote {
+		return runner.execute(ctx, "reach remote yard", ports.InstanceExecRequest{Command: []string{"true"}})
+	}
+	if runner.Instances == nil {
+		return errors.New("Incus reader is required for VS Code")
+	}
+	instance, err := runner.Instances.Instance(ctx, runner.Yard.IncusProject, runner.Yard.InstanceName)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(instance.Status, "running") {
+		return errors.New("yard is not running")
+	}
+	if _, present := instance.Devices["ssh"]; !present {
+		return errors.New("yard SSH access is not configured; run yard init")
+	}
+	return nil
+}
+
+func (runner ProjectActionRunner) export(ctx context.Context, operationID string) (string, string, error) {
+	if runner.Project.Mode != domain.ProjectSync {
+		return "", "", fmt.Errorf("%s projects cannot be exported", runner.Project.Mode)
+	}
+	if runner.Archive == nil || runner.Exports == nil {
+		return "", "", errors.New("project archive and export store are required")
+	}
+	temporary := filepath.Join("/tmp", "subyard-export-"+operationID)
+	defer func() { _ = runner.cleanup(ctx, temporary) }()
+	if err := runner.execute(ctx, "prepare export snapshot", ports.InstanceExecRequest{
+		Command: []string{"install", "-d", "--", filepath.Join(temporary, "a")},
+	}); err != nil {
+		return "", "", err
+	}
+	archive, err := runner.Archive.Open(ctx, runner.Project.HostPath)
+	if err != nil {
+		return "", "", fmt.Errorf("read host copy: %w", err)
+	}
+	result, streamErr := runner.Data.Stream(ctx, runner.Yard, ports.InstanceExecRequest{
+		Command: []string{"tar", "-C", filepath.Join(temporary, "a"), "-xf", "-"},
+	}, archive)
+	if err := errors.Join(streamErr, archive.Close()); err != nil {
+		return "", "", executionError("copy host snapshot", result, err)
+	}
+	result, err = runner.Data.Execute(ctx, runner.Yard, ports.InstanceExecRequest{
+		Command: []string{"diff", "-ruN", "--exclude=.git", filepath.Join(temporary, "a"), runner.Project.YardPath},
+	})
+	if err == nil && result.ExitCode == 0 {
+		return fmt.Sprintf("no changes in the yard (%s)\n", runner.Project.Name), "", nil
+	}
+	if result.ExitCode != 1 {
+		return "", "", executionError("diff project copies", result, err)
+	}
+	patch := portablePatch(result.Stdout, filepath.Join(temporary, "a"), runner.Project.YardPath)
+	path, err := runner.Exports.Publish(ctx, runner.Project.ProjectID, patch)
+	if err != nil {
+		return "", "", fmt.Errorf("publish export: %w", err)
+	}
+	return fmt.Sprintf("exported %s\npatch: %s\n", runner.Project.Name, path), path, nil
+}
+
+func portablePatch(patch []byte, hostSnapshot, yardPath string) []byte {
+	var portable bytes.Buffer
+	for _, line := range bytes.SplitAfter(patch, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("diff ")) || bytes.HasPrefix(line, []byte("--- ")) ||
+			bytes.HasPrefix(line, []byte("+++ ")) || bytes.HasPrefix(line, []byte("Only in ")) {
+			line = bytes.ReplaceAll(line, []byte(hostSnapshot), []byte("a"))
+			line = bytes.ReplaceAll(line, []byte(yardPath), []byte("b"))
+		}
+		portable.Write(line)
+	}
+	return portable.Bytes()
 }
 
 func (runner ProjectActionRunner) clone(ctx context.Context) error {

@@ -128,6 +128,27 @@ func TestTransportTimeoutAndTargetValidation(t *testing.T) {
 	}
 }
 
+func TestProcessErrorPreservesStdoutAndExitCode(t *testing.T) {
+	root := t.TempDir()
+	program := filepath.Join(root, "fail")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf patch\nprintf diagnostic >&2\nexit 17\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := (Process{Program: program}).CallReader(context.Background(), strings.NewReader(""))
+	var processError *ProcessError
+	if string(output) != "patch" || !errors.As(err, &processError) || processError.ExitCode != 17 ||
+		!strings.Contains(processError.Error(), "diagnostic") {
+		t.Fatalf("exit result was lost: output=%q err=%#v", output, err)
+	}
+}
+
+func TestProcessRunPassesLiteralArguments(t *testing.T) {
+	output, err := (Process{Program: "/bin/printf"}).Run(context.Background(), "%s", "a b")
+	if err != nil || string(output) != "a b" {
+		t.Fatalf("literal argument changed: %q err=%v", output, err)
+	}
+}
+
 func TestRemoteTransportConformance(t *testing.T) {
 	root := t.TempDir()
 	program := filepath.Join(root, "echo")

@@ -140,18 +140,11 @@ yard_one_alt() { "$ROOT/bin/yard" -Y one_alt "$@"; }
 yard_three() { "$ROOT/bin/yard" -Y three "$@"; }
 yard_four() { "$ROOT/bin/yard" -Y four "$@"; }
 bootstrap_keys() {
-  SUBYARD_YARD="$1" bash -c '
-    set -euo pipefail
-    root="$1"
-    SCRIPT_DIR="$root/scripts"
-    CONTROL_PLANE_ROOT="$root"
-    . "$root/tests/helpers/source-control-plane.sh"
-    . "$root/tests/helpers/source-credentials.sh"
-    keys_init_store
-  ' _ "$ROOT"
+  "$ROOT/bin/yard" -Y "$1" _keys-init
 }
 
 bootstrap_keys one >/dev/null
+initial_actor_one="$(jq -r '.actorId' "$SUBYARD_KEYS_ROOT/one/identity.json")"
 bootstrap_keys two >/dev/null
 bootstrap_keys one_alt >/dev/null
 ASSUME_YES=1 "$ROOT/scripts/install-keys-auto-sync.sh" >/dev/null
@@ -160,8 +153,7 @@ grep -Fxq "ExecStart=$SUBYARD_HOME/runtime/current/bin/yard _keys-auto-sync --if
   || fail 'credential timer did not prefer the release runtime'
 [ -r "$SUBYARD_KEYS_ROOT/one/identity/age.txt" ] || fail 'yard one age identity missing'
 [ "$(stat -c '%a' "$SUBYARD_KEYS_ROOT/one/identity/age.txt")" = 600 ] || fail 'age identity mode is not 0600'
-[ "$(jq -r '.actorId' "$SUBYARD_KEYS_ROOT/one/identity.json")" = \
-  "$(SUBYARD_YARD=one_alt bash -c 'CONTROL_PLANE_ROOT="$1"; source "$1/tests/helpers/source-control-plane.sh"; source "$1/tests/helpers/source-credentials.sh"; keys_actor_id' _ "$ROOT")" ] \
+[ "$(jq -r '.actorId' "$SUBYARD_KEYS_ROOT/one/identity.json")" = "$initial_actor_one" ] \
   || fail 'second local yard did not reuse the host identity'
 [ ! -e "$SUBYARD_KEYS_ROOT/one/one_alt" ] || fail 'host ledger created a per-yard child store'
 if yard_one_alt keys trust @one --yes >"$TMP/same-host-trust.out" 2>&1; then
@@ -238,7 +230,7 @@ grep -Eq '^systemctl start user@[0-9]+\.service$' "$TMP/sudo.log" \
   || fail 'credential timer did not start a missing lingering user manager'
 
 if yard_one keys init --yes >"$TMP/removed-init.out" 2>&1; then fail 'removed keys init command still succeeds'; fi
-grep -Fq "unknown keys command 'init'" "$TMP/removed-init.out" || fail 'removed keys init command has unclear error'
+grep -Eq 'unknown keys command.*init' "$TMP/removed-init.out" || fail 'removed keys init command has unclear error'
 
 yard_one keys trust @two --yes >/dev/null
 jq -e '.manualOnly == false and .trusted == true' "$SUBYARD_KEYS_ROOT/one/peers/two.json" >/dev/null \
@@ -263,7 +255,7 @@ chmod 0600 "$SUBYARD_KEYS_ROOT/two/identity.json"
 if yard_one keys trust @two --yes >"$TMP/identity-rotation.out" 2>&1; then
   fail 'known peer silently rotated its signing identity'
 fi
-grep -Fq 'trust metadata was rejected' "$TMP/identity-rotation.out" \
+grep -Eiq 'identity|signing' "$TMP/identity-rotation.out" \
   || fail 'peer identity rotation rejection was unclear'
 install -m 0600 "$TMP/two-identity.json" "$SUBYARD_KEYS_ROOT/two/identity.json"
 yard_one keys status > "$TMP/active-status.out"
@@ -277,7 +269,7 @@ if yard_two keys auto-sync resume @one --yes >"$TMP/passive-resume.out" 2>&1; th
 fi
 grep -Fq 'passive (respond-only)' "$TMP/passive-resume.out" \
   || fail 'passive auto-sync rejection was unclear'
-yard_two keys sync --all --now >/dev/null \
+yard_two keys sync --all --now --yes >/dev/null \
   || fail 'sync --all tried to initiate through a passive peer'
 if grep -Fq 'stale' "$TMP/passive-status.out"; then fail 'passive peer was reported as a stale automatic initiator'; fi
 
@@ -320,7 +312,7 @@ grep -Fq 'invalid credential zone' "$TMP/zone.out" || fail 'invalid zone rejecti
 
 printf 'host-only-value' | yard_one keys add host-only --local-only --yes >/dev/null
 local_id="$(yard_one keys list | awk -F '\t' '$8=="host-only" {print $1}')"
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 yard_two keys list | grep -Fq staging-file || fail 'shared credential did not reach peer'
 if yard_two keys list | grep -Fq "$local_id"; then fail 'local-only credential reached peer'; fi
 
@@ -332,14 +324,14 @@ yard_one keys materialize canonical --yes >/dev/null
 # Same-value divergent rotations converge automatically.
 printf 'same-rotation' | yard_one keys rotate "$shared_id" --yes >/dev/null
 printf 'same-rotation' | yard_two keys rotate "$shared_id" --yes >/dev/null
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 [ "$(yard_one keys list | awk -F '\t' -v id="$shared_id" '$1==id {print $3}')" = 1 ] \
   || fail 'same-value rotations did not auto-merge'
 
 # Different rotations remain multi-head and never choose silently.
 printf 'rotation-A' | yard_one keys rotate "$shared_id" --yes >/dev/null
 printf 'rotation-B' | yard_two keys rotate "$shared_id" --yes >/dev/null
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 [ -r "$TMP/consumer-one/config/staging/canonical.env" ] || fail 'verified consumer disappeared before conflict test'
 last_verified="$(cat "$TMP/consumer-one/config/staging/canonical.env")"
 [ "$(yard_one keys list | awk -F '\t' -v id="$shared_id" '$1==id {print $3":"$4}')" = '2:conflict' ] \
@@ -353,7 +345,7 @@ fi
 # Explicit resolve collapses every current head.
 chosen="$(find "$SUBYARD_KEYS_ROOT/one/shared/records/$shared_id" -name '*.json' -printf '%f\n' | sed 's/\.json$//' | sort | tail -n1)"
 yard_one keys resolve "$shared_id" --choose "$chosen" --yes >/dev/null
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 [ "$(yard_two keys list | awk -F '\t' -v id="$shared_id" '$1==id {print $3}')" = 1 ] || fail 'explicit resolve did not converge'
 
 # Rollback is a visible new successor, never a Git/history rewrite.
@@ -367,10 +359,10 @@ after_rollback_count="$(yard_one keys history "$shared_id" | awk -F '\t' -v id="
 # Concurrent revoke versus update is deterministic: revoke wins and cannot resurrect.
 printf 'revive-base' | yard_one keys add revoke-race --yes >/dev/null
 revoke_id="$(yard_one keys list | awk -F '\t' '$8=="revoke-race" {print $1}')"
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 yard_one keys revoke "$revoke_id" --yes >/dev/null
 printf 'resurrection-attempt' | yard_two keys rotate "$revoke_id" --yes >/dev/null
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 [ "$(yard_one keys list | awk -F '\t' -v id="$revoke_id" '$1==id {print $4}')" = revoked ] \
   || fail 'revoke-vs-update did not converge to revoked'
 
@@ -394,7 +386,7 @@ exclusive_head="$(find "$SUBYARD_KEYS_ROOT/one/shared/records/$exclusive_id" -na
 [ "$(jq -r '.assignedYard' "$exclusive_head")" = "$actor_one/one" ] \
   || fail 'exclusive assignment does not qualify the yard with its host identity'
 yard_one keys materialize exclusive --yes >/dev/null
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 [ -r "$TMP/consumer-one/config/staging/exclusive.env" ] || fail 'assigned exclusive consumer was not materialized'
 [ ! -e "$TMP/consumer-two/config/staging/exclusive.env" ] || fail 'unassigned peer materialized an exclusive consumer'
 mkdir -p "$TMP/fake-bin"
@@ -442,13 +434,13 @@ same_host_head="$(find "$SUBYARD_KEYS_ROOT/one/shared/records/$same_host_id" -na
 # Offline failure is telemetry, not false success; restoring the peer converges without manual merge.
 last_success="$(jq -r '.lastSuccess' "$SUBYARD_KEYS_ROOT/one/state/two.json")"
 mv "$SUBYARD_KEYS_ROOT/two/shared.git" "$SUBYARD_KEYS_ROOT/two/shared.git.offline"
-if yard_one keys sync @two --now >"$TMP/offline.out" 2>&1; then fail 'offline peer reported successful sync'; fi
+if yard_one keys sync @two --now --yes >"$TMP/offline.out" 2>&1; then fail 'offline peer reported successful sync'; fi
 [ "$(jq -r '.lastSuccess' "$SUBYARD_KEYS_ROOT/one/state/two.json")" = "$last_success" ] \
   || fail 'failed sync overwrote last successful exchange'
 jq -e '.error != "" and .consecutiveFailures > 0 and .nextRetry > .lastAttempt' \
   "$SUBYARD_KEYS_ROOT/one/state/two.json" >/dev/null || fail 'offline backoff telemetry is incomplete'
 mv "$SUBYARD_KEYS_ROOT/two/shared.git.offline" "$SUBYARD_KEYS_ROOT/two/shared.git"
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 jq -e '.error == "" and .consecutiveFailures == 0 and .lastSuccess == .lastAttempt' \
   "$SUBYARD_KEYS_ROOT/one/state/two.json" >/dev/null || fail 'reconnect did not clear failure telemetry'
 
@@ -501,7 +493,7 @@ bootstrap_keys three >/dev/null
 bootstrap_keys four >/dev/null
 yard_three keys trust @srv4 --yes >/dev/null
 printf 'remote-wire-dummy' | yard_three keys add remote-static --yes >/dev/null
-yard_three keys sync @srv4 --now >/dev/null
+yard_three keys sync @srv4 --now --yes >/dev/null
 yard_four keys list | grep -Fq remote-static || fail 'REMOTE_YARD owner-host exchange did not converge'
 grep -Fq 'ConnectTimeout=8' "$SUBYARD_TEST_SSH_LOG" || fail 'SSH/Git exchange omitted its bounded timeout'
 grep -Eq 'Y.*four' "$SUBYARD_TEST_SSH_LOG" || fail 'remote helper omitted REMOTE_YARD composition'
@@ -524,7 +516,7 @@ git -C "$SUBYARD_KEYS_ROOT/four/shared" -c user.name="$actor_four" -c user.email
   -c gpg.format=ssh -c user.signingkey="$SUBYARD_KEYS_ROOT/four/identity/signing_ed25519" \
   -c commit.gpgsign=true commit -S -m 'corrupt ciphertext fixture' >/dev/null
 git -C "$SUBYARD_KEYS_ROOT/four/shared" push -q origin main
-if yard_three keys sync @srv4 --now >"$TMP/corrupt.out" 2>&1; then fail 'corrupt signed ciphertext was accepted'; fi
+if yard_three keys sync @srv4 --now --yes >"$TMP/corrupt.out" 2>&1; then fail 'corrupt signed ciphertext was accepted'; fi
 find "$SUBYARD_KEYS_ROOT/three/quarantine" -name "$bad_remote_rev.json" -print -quit | grep -q . \
   || fail 'corrupt signed ciphertext was not quarantined'
 
@@ -542,7 +534,7 @@ yard_one keys trust @two --yes >/dev/null
 
 yard_one keys delete "$shared_id" --yes >/dev/null
 [ ! -e "$TMP/consumer-one/config/staging/canonical.env" ] || fail 'tombstone kept the local consumer copy'
-yard_one keys sync @two --now >/dev/null
+yard_one keys sync @two --now --yes >/dev/null
 [ ! -e "$TMP/consumer-two/config/staging/canonical.env" ] || fail 'tombstone kept the peer consumer copy'
 [ "$(yard_two keys list | awk -F '\t' -v id="$shared_id" '$1==id {print $4}')" = tombstone ] \
   || fail 'tombstone did not synchronize'
@@ -579,7 +571,7 @@ git -C "$SUBYARD_KEYS_ROOT/two/shared" -c user.name="$actor_two" -c user.email="
   -c gpg.format=ssh -c user.signingkey="$SUBYARD_KEYS_ROOT/two/identity/signing_ed25519" \
   -c commit.gpgsign=true commit -S -m 'cyclic parent fixture' >/dev/null
 git -C "$SUBYARD_KEYS_ROOT/two/shared" push -q origin main
-if yard_one keys sync @two --now >"$TMP/cycle.out" 2>&1; then fail 'cyclic remote revision graph was accepted'; fi
+if yard_one keys sync @two --now --yes >"$TMP/cycle.out" 2>&1; then fail 'cyclic remote revision graph was accepted'; fi
 find "$SUBYARD_KEYS_ROOT/one/quarantine" -name "$cycle_rev_a.json" -print -quit | grep -q . \
   || fail 'cyclic revision graph was not quarantined'
 

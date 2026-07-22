@@ -5,21 +5,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-# shellcheck source=scripts/lib/runtime.sh
-. "$ROOT/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$ROOT/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$ROOT/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$ROOT/lib/context.sh"
 # shellcheck source=scripts/lib/ui.sh
 . "$ROOT/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$ROOT/lib/config.sh"
-subyard_context_load
-# shellcheck source=scripts/lib/host.sh
-. "$ROOT/lib/host.sh"
 
 WORKER=/usr/local/libexec/subyard/test-vms-inner
 action="${1:-}"
@@ -32,6 +19,11 @@ if [ -x "$WORKER" ]; then
     || die "the privileged L1 worker is operator-only; agents must use dev/agent-e2e.sh from their controller environment"
   exec "$WORKER" "$@"
 fi
+
+[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] \
+  || die "test-vms: prepared engine context required"
+# shellcheck source=scripts/lib/host.sh
+. "$ROOT/lib/host.sh"
 
 [ "${NESTED_E2E_VMS:-0}" = 1 ] \
   || die "nested E2E VMs are disabled for this yard (set NESTED_E2E_VMS=1, then run '$(yard_cmd_hint) init')"

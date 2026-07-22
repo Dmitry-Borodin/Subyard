@@ -6,20 +6,10 @@
 # Usage: yard provision [<profile>]   (no arg → all provisionable profiles; -l lists them)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Explicit control-plane module composition (config/context loads exactly once).
-# shellcheck source=scripts/lib/runtime.sh
-. "$SCRIPT_DIR/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] \
+  || { printf 'provision: prepared engine context required\n' >&2; exit 2; }
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
 # shellcheck source=scripts/lib-power.sh
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
@@ -96,10 +86,8 @@ incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
 # A named yard is stopped by default. Provision may start it technically, but that must not opt it
 # into boot restoration: preserve desired_power and stop it again on success or failure.
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
-YARD_LABEL="${YARD_NAME:-default}"
-power_import_instance "$INCUS_PROJECT" "$INSTANCE_NAME" "$YARD_LABEL" "$BRIDGE" \
-  || die "$POWER_ERROR"
-desired_power="$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
+desired_power="${SUBYARD_POWER_DESIRED:-}"
+case "$desired_power" in running | stopped) ;; *) die "prepared desired power is required" ;; esac
 temporary_start=0
 current_power="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
 if [ "$current_power" != RUNNING ]; then

@@ -11,6 +11,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 . "$ROOT/tests/helpers/test-context.sh"
 setup_test_context "$TMP"
 export HOME="$TMP/home"
+export SUBYARD_ENGINE_CONTEXT=1
 export SUBYARD_PROFILES_DIR="$TMP/profiles"
 export SUBYARD_SECURITY_SKIP_LIVE=1
 mkdir -p "$TMP/home" "$TMP/profiles/safe" "$TMP/profiles/bad"

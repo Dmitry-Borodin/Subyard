@@ -30,6 +30,7 @@ type Runtime struct {
 	SSHBinary   string
 	Environment []string
 	Timeout     time.Duration
+	MaxBytes    int64
 }
 
 func (runtime Runtime) Execute(
@@ -99,7 +100,7 @@ func (runtime Runtime) executeSSHReader(
 		binary = "ssh"
 	}
 	process := transport.Process{
-		Program: binary, Env: runtime.Environment, Timeout: runtime.Timeout,
+		Program: binary, Env: runtime.Environment, Timeout: runtime.Timeout, MaxBytes: runtime.MaxBytes,
 		Arguments: []string{
 			"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=yes",
 			host, "--", quoteCommand(command),
@@ -109,6 +110,10 @@ func (runtime Runtime) executeSSHReader(
 	result := ports.InstanceExecResult{Stdout: stdout}
 	if err != nil {
 		result.ExitCode = 1
+		var processError *transport.ProcessError
+		if errors.As(err, &processError) {
+			result.ExitCode = processError.ExitCode
+		}
 	}
 	return result, err
 }

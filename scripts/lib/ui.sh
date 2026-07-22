@@ -30,6 +30,11 @@ ok() { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
 warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
 die() { printf '  %s[fail]%s %s\n' "$C_BAD" "$C_OFF" "$*" >&2; exit 1; }
 
+yard_cmd_hint() {
+  printf '%s' "${PROG:-yard}"
+  [ -z "${YARD_NAME:-}" ] || printf ' -Y %s' "$YARD_NAME"
+}
+
 confirm() {
   [ "$ASSUME_YES" = 1 ] && return 0
   local question="$1" default="${2:-n}" answer hint

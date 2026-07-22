@@ -193,13 +193,21 @@ func (adapter *ScriptedAdapter) Run(_ context.Context, request domain.AdapterReq
 }
 
 type Incus struct {
-	ServerInfo ports.ServerInfo
-	Instances  map[string]ports.InstanceInfo
-	EventsOut  chan domain.OperationEvent
-	ErrorsOut  chan error
-	Err        error
-	ExecSteps  []IncusExecStep
-	ExecCalls  []IncusExecCall
+	ServerInfo    ports.ServerInfo
+	Instances     map[string]ports.InstanceInfo
+	Reconcile     ports.ReconcileState
+	EventsOut     chan domain.OperationEvent
+	ErrorsOut     chan error
+	Err           error
+	ExecSteps     []IncusExecStep
+	ExecCalls     []IncusExecCall
+	ConfigUpdates []InstanceConfigUpdate
+}
+
+type InstanceConfigUpdate struct {
+	Project string
+	Name    string
+	Values  map[string]string
 }
 
 type IncusExecStep struct {
@@ -223,9 +231,53 @@ func (fake *Incus) Instance(_ context.Context, project, name string) (ports.Inst
 	}
 	instance, ok := fake.Instances[project+"/"+name]
 	if !ok {
-		return ports.InstanceInfo{}, errors.New("instance not found")
+		return ports.InstanceInfo{}, ports.ErrInstanceNotFound
 	}
 	return instance, nil
+}
+
+func (fake *Incus) ReconcileState(
+	context.Context, string, string, string, string, string,
+) (ports.ReconcileState, error) {
+	return fake.Reconcile, fake.Err
+}
+
+func (fake *Incus) SetInstanceConfig(
+	_ context.Context,
+	project string,
+	name string,
+	values map[string]string,
+) error {
+	if fake.Err != nil {
+		return fake.Err
+	}
+	copyValues := make(map[string]string, len(values))
+	for key, value := range values {
+		copyValues[key] = value
+	}
+	fake.ConfigUpdates = append(fake.ConfigUpdates, InstanceConfigUpdate{
+		Project: project, Name: name, Values: copyValues,
+	})
+	key := project + "/" + name
+	instance, exists := fake.Instances[key]
+	if !exists {
+		return errors.New("instance not found")
+	}
+	if instance.LocalConfig == nil {
+		instance.LocalConfig = make(map[string]string)
+	}
+	if instance.Config == nil {
+		instance.Config = make(map[string]string)
+	}
+	for field, value := range values {
+		instance.LocalConfig[field] = value
+		instance.Config[field] = value
+	}
+	fake.Instances[key] = instance
+	if fake.Reconcile.Instance.Name == name && fake.Reconcile.Instance.Project == project {
+		fake.Reconcile.Instance = instance
+	}
+	return nil
 }
 
 func (fake *Incus) Events(context.Context, []string) (<-chan domain.OperationEvent, <-chan error) {

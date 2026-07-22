@@ -1,5 +1,5 @@
 # config/profiles/android/resources/emulator.res — a profile shared-resource descriptor.
-# Sourced (plain KEY=VALUE) by the yard registry (scripts/lib-resources.sh). It declares how the
+# Parsed as assignments by the Go resource registry. It declares how the
 # yard core discovers/dispatches/probes this resource; the resource's mechanics live entirely in
 # its profile-owned handler directory, which the core never has to know about.
 COMMAND=emu

@@ -25,20 +25,9 @@ set -euo pipefail
 RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBYARD_ROOT="$(cd "$RESOURCE_DIR/../../../../.." && pwd)"
 SCRIPT_DIR="$SUBYARD_ROOT/scripts"
-# Explicit control-plane module composition (config/context loads exactly once).
-# shellcheck source=scripts/lib/runtime.sh
-. "$SCRIPT_DIR/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] || { printf 'emulator: prepared engine context required\n' >&2; exit 2; }
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
 # shellcheck source=scripts/lib-service.sh

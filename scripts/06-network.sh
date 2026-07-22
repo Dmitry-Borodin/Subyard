@@ -27,9 +27,31 @@ subyard_context_load
 . "$SCRIPT_DIR/lib/host.sh"
 
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
+mode=apply
+for arg in "$@"; do
+  case "$arg" in
+    --check) mode=check ;;
+    --verify) mode=verify ;;
+  esac
+done
 
 ufw_active=0
 command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null && ufw_active=1
+
+if [ "$mode" != apply ]; then
+  command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1 || exit 1
+  power_host_safe "$BRIDGE" || exit 1
+  [ "$ufw_active" = 0 ] || ufw_yard_rules_present "$BRIDGE" || exit 1
+  instance_exists=0
+  incus info "$INSTANCE_NAME" --project "$INCUS_PROJECT" >/dev/null 2>&1 && instance_exists=1
+  [ "$mode" != verify ] || [ "$instance_exists" = 1 ] || exit 0
+  [ "$instance_exists" = 1 ] || exit 1
+  instance_state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
+  [ "$instance_state" != STOPPED ] || [ "${SUBYARD_POWER_DESIRED:-}" != stopped ] || exit 0
+  [ "$instance_state" = RUNNING ] || exit 1
+  [ -n "$(incus list "$INSTANCE_NAME" --project "$INCUS_PROJECT" -c4 -fcsv 2>/dev/null)" ]
+  exit
+fi
 
 ann=("Keep NetworkManager off '$BRIDGE' + veth*/tap* — prevents a rogue DHCP default route that breaks host internet.")
 title="Subyard — host networking guard ($BRIDGE)"

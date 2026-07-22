@@ -35,7 +35,11 @@ owner_project_contract() {
   install -d -m 0700 "$source"
   printf '%s\n' "$MARKER" > "$source/.subyard-p0-marker"
   printf '%s\nbase\n' "$MARKER" > "$source/result.txt"
-  ./bin/yard -Y test-yard sync "$source" --yes >/dev/null
+  ./bin/yard -Y test-yard sync "$source" --target openclaw --yes >/dev/null
+  ./bin/yard -Y test-yard up "$source" --yes >/dev/null
+  ./bin/yard -Y test-yard info "$source" | grep -Fq '"profile": "openclaw"'
+  ./bin/yard -Y test-yard down "$source" --yes >/dev/null
+  env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y test-yard code "$source" --yes >/dev/null
   ./bin/yard -Y test-yard shell "$source" --yes -- sh -c 'printf "mutated\n" >> result.txt'
   ./bin/yard -Y test-yard export "$source" --yes >/dev/null
   patch="$(grep -RIl -- 'mutated' "${SUBYARD_HOME:-$HOME/.subyard}/exports" | head -n1)"
@@ -266,12 +270,7 @@ bootstrap_peer_keys() {
     SUBYARD_CONFIG_HOME="$PEER_ROOT/config" SUBYARD_HOME="$PEER_ROOT/data" \
     HOST_BASE="$PEER_ROOT/host-data" RESTRICTED_DISK_PATHS="$PEER_ROOT/host-data" \
     SUBYARD_KEYS_ROOT="$PEER_ROOT/keys" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
-    CONTROL_PLANE_ROOT="$PEER_ROOT/src" SCRIPT_DIR="$PEER_ROOT/src/scripts" bash -c '
-      set -euo pipefail
-      . "$CONTROL_PLANE_ROOT/tests/helpers/source-control-plane.sh"
-      . "$CONTROL_PLANE_ROOT/tests/helpers/source-credentials.sh"
-      keys_init_store
-    ' >/dev/null
+    YARD_ENGINE_PATH="$PEER_ROOT/yard-engine" "$PEER_ROOT/src/bin/yard" _keys-init >/dev/null
 }
 
 reexec_with_incus_group() {
@@ -474,7 +473,7 @@ peer_credentials() {
     --consumer staging-env --file "$expected" --yes >/dev/null
   credential="$(/usr/local/bin/yard keys list | awk -F '\t' '$8=="p0-cross-owner" {print $1}')"
   [ -n "$credential" ] || die 'cross-owner credential was not created'
-  /usr/local/bin/yard keys sync @peer --now >/dev/null
+  /usr/local/bin/yard keys sync @peer --now --yes >/dev/null
   ssh -o BatchMode=yes "dev@$PEER_IP" -- bash -lc \
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   source_hash="$(sha256sum "$expected" | awk '{print $1}')"
@@ -482,7 +481,7 @@ peer_credentials() {
     "/tmp/subyard-p0-peer-$TOKEN/consumer/config/staging/p0-cross-owner.env" | awk '{print $1}')"
   [ "$source_hash" = "$remote_hash" ] || die 'cross-owner credential materialization differs'
   /usr/local/bin/yard keys revoke "$credential" --yes >/dev/null
-  /usr/local/bin/yard keys sync @peer --now >/dev/null
+  /usr/local/bin/yard keys sync @peer --now --yes >/dev/null
   ssh -o BatchMode=yes "dev@$PEER_IP" -- bash -lc \
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   ! ssh -o BatchMode=yes "dev@$PEER_IP" -- test -e \

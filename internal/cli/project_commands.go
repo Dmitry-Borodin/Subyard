@@ -33,6 +33,9 @@ type projectExecution struct {
 	Record      domain.ProjectRecord
 	Store       ports.ProjectStore
 	Commit      projectCommit
+	Profile     application.ProjectEnvironmentProfile
+	SecretPath  string
+	HostLinks   []string
 }
 
 func (cli *CLI) prepareProjectExecution(
@@ -263,6 +266,15 @@ func (cli *CLI) prepareExistingProject(
 	}
 	if name == "up" {
 		execution.Environment["SUBYARD_PROJECT_REBUILD"] = argumentValue(arguments, "--rebuild")
+		if match.Record.Target != "" && match.Record.Target != "yard" {
+			execution.Profile, execution.SecretPath, err = loadProjectEnvironmentProfile(
+				cli.options.RepositoryRoot, match.Record.Target, selectedLoaded.Environment,
+			)
+			if err != nil {
+				return nil, err
+			}
+			execution.HostLinks = strings.Split(selectedLoaded.Environment["HOST_LINKS"], "\n")
+		}
 	}
 	// Owner-forwarded commands receive a stable ID, never a controller-only host path.
 	if selectedLoaded.Context.YardType == domain.YardRemote &&
@@ -270,6 +282,57 @@ func (cli *CLI) prepareExistingProject(
 		execution.Arguments = replaceProjectSelector(name, arguments, match.Record.ProjectID)
 	}
 	return execution, nil
+}
+
+var projectEnvironmentControlKeys = map[string]struct{}{
+	"PROFILE_NAME": {}, "BASE_IMAGE": {}, "CACHES": {}, "DEVICES": {}, "OPTIONAL_FEATURES": {},
+	"IMAGE_DOCKERFILE": {}, "IMAGE_CONTEXT": {}, "IMAGE_TAG": {}, "ENV_MOUNTS": {},
+	"YARD_MOUNTS": {}, "YARD_CAPS": {}, "YARD_DEVICES": {},
+}
+
+func loadProjectEnvironmentProfile(
+	root string,
+	name string,
+	base map[string]string,
+) (application.ProjectEnvironmentProfile, string, error) {
+	if !domain.SafeName(name) {
+		return application.ProjectEnvironmentProfile{}, "", fmt.Errorf("invalid project profile %q", name)
+	}
+	path := filepath.Join(root, "config", "profiles", name, "profile.conf")
+	declared, err := config.ReadAssignments(path)
+	if err != nil {
+		return application.ProjectEnvironmentProfile{}, "", err
+	}
+	values, err := config.ReadAssignmentsOver(path, base)
+	if err != nil {
+		return application.ProjectEnvironmentProfile{}, "", err
+	}
+	public := make(map[string]string)
+	for key := range declared {
+		if _, control := projectEnvironmentControlKeys[key]; !control {
+			public[key] = values[key]
+		}
+	}
+	profile := application.ProjectEnvironmentProfile{
+		BaseImage: values["BASE_IMAGE"], Dockerfile: values["IMAGE_DOCKERFILE"],
+		Context: values["IMAGE_CONTEXT"], Image: values["IMAGE_TAG"],
+		Caches: strings.Fields(values["CACHES"]), Features: strings.Fields(values["OPTIONAL_FEATURES"]),
+		Devices: strings.Fields(values["DEVICES"]), Mounts: strings.Fields(values["ENV_MOUNTS"]),
+		Environment: public,
+	}
+	if profile.Dockerfile != "" && profile.Context == "" {
+		profile.Context = filepath.Dir(profile.Dockerfile)
+	}
+	secret := filepath.Join(filepath.Dir(path), "profile.env")
+	info, statErr := os.Lstat(secret)
+	if errors.Is(statErr, os.ErrNotExist) {
+		secret = ""
+	} else if statErr != nil {
+		return application.ProjectEnvironmentProfile{}, "", statErr
+	} else if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return application.ProjectEnvironmentProfile{}, "", errors.New("profile.env must be a regular non-symlink file")
+	}
+	return profile, secret, nil
 }
 
 func argumentValue(arguments []string, wanted string) string {

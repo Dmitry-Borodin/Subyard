@@ -2,11 +2,14 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 )
+
+var ErrInstanceNotFound = errors.New("instance not found")
 
 type ServerInfo struct {
 	Environment   string   `json:"environment"`
@@ -15,18 +18,37 @@ type ServerInfo struct {
 }
 
 type InstanceInfo struct {
-	Name    string                       `json:"name"`
-	Project string                       `json:"project"`
-	Type    domain.InstanceType          `json:"type"`
-	Status  string                       `json:"status"`
-	Config  map[string]string            `json:"config"`
-	Devices map[string]map[string]string `json:"devices"`
+	Name         string                       `json:"name"`
+	Project      string                       `json:"project"`
+	Type         domain.InstanceType          `json:"type"`
+	Status       string                       `json:"status"`
+	Config       map[string]string            `json:"config"`
+	Devices      map[string]map[string]string `json:"devices"`
+	LocalConfig  map[string]string            `json:"localConfig,omitempty"`
+	LocalDevices map[string]map[string]string `json:"localDevices,omitempty"`
+}
+
+type ReconcileState struct {
+	ProjectConfig    map[string]string
+	ProfileDevices   map[string]map[string]string
+	Instance         InstanceInfo
+	HostPoolFound    bool
+	HostNetworkFound bool
+	ProjectFound     bool
+	ProfileFound     bool
+	InstanceFound    bool
+	VolumeFound      bool
 }
 
 type Incus interface {
 	Server(context.Context) (ServerInfo, error)
 	Instance(context.Context, string, string) (InstanceInfo, error)
+	ReconcileState(context.Context, string, string, string, string, string) (ReconcileState, error)
 	Events(context.Context, []string) (<-chan domain.OperationEvent, <-chan error)
+}
+
+type InstanceConfigWriter interface {
+	SetInstanceConfig(context.Context, string, string, map[string]string) error
 }
 
 type InstanceExecRequest struct {
@@ -63,6 +85,14 @@ type InstanceDeviceManager interface {
 
 type DirectoryArchiver interface {
 	Open(context.Context, string) (io.ReadCloser, error)
+}
+
+type ProjectExportStore interface {
+	Publish(context.Context, string, []byte) (string, error)
+}
+
+type VSCode interface {
+	Run(context.Context, ...string) ([]byte, error)
 }
 
 type ProjectStore interface {
@@ -128,6 +158,20 @@ type Prompter interface {
 
 type AdapterRunner interface {
 	Run(context.Context, domain.AdapterRequest, io.Reader) (domain.AdapterResult, string, error)
+}
+
+type ReconcileStageRunner interface {
+	CheckStage(context.Context, string) (bool, error)
+	ApplyStage(context.Context, string) error
+	VerifyStage(context.Context, string) (bool, error)
+}
+
+type InitPlatform interface {
+	ReconcileStageRunner
+	Preflight(context.Context, bool) error
+	RefreshConfigs(context.Context) error
+	Teardown(context.Context) error
+	Provision(context.Context) error
 }
 
 type RemoteTransport interface {

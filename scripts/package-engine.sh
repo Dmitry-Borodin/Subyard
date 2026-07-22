@@ -51,6 +51,8 @@ install -d "$bundle_stage/bin"
 install -m 0755 "$artifact" "$bundle_stage/bin/yard-engine"
 install -m 0755 "$REPO/bin/yard" "$bundle_stage/bin/yard"
 cp -a "$REPO/scripts" "$REPO/config" "$REPO/completions" "$bundle_stage/"
+rm -f "$bundle_stage/scripts/build-engine.sh" "$bundle_stage/scripts/package-engine.sh" \
+  "$bundle_stage/scripts/install-cli.sh" "$bundle_stage/scripts/bootstrap-runtime.sh"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$bundle_stage" -cf - . \
   | gzip -n > "$bundle"
 chmod 0644 "$bundle"

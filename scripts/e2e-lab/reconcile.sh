@@ -34,6 +34,14 @@ WORKER_DST=/usr/local/libexec/subyard/test-vms-inner
 STATUS_DST=/usr/local/libexec/subyard/test-vms-status
 CLIENT_EXPORT_DIR="${SUBYARD_E2E_CLIENT_EXPORT_DIR:-$ROOT/../temp/agent-e2e/${YARD_NAME:-default}}"
 desired="${NESTED_E2E_VMS:-0}"
+outer_desired="${SUBYARD_POWER_DESIRED:-}"
+mode=apply
+for arg in "$@"; do
+  case "$arg" in
+    --check) mode=check ;;
+    --verify) mode=verify ;;
+  esac
+done
 agent_public_key=''
 agent_fingerprint=''
 if e2e_agent_enrollment_read "$CLIENT_EXPORT_DIR"; then
@@ -49,6 +57,8 @@ revision="$(sha256sum "$WORKER_SRC" "$STATUS_SRC" "$PROVISION_SRC" "$RECONCILE_S
   "$ROOT/lib/e2e-agent-enrollment.sh" \
   | sha256sum | awk '{print $1}')"
 marker="$desired:$revision:$agent_key_hash:${E2E_VM_CPU:-4}"
+worker_hash="$(sha256sum "$WORKER_SRC" | awk '{print $1}')"
+status_hash="$(sha256sum "$STATUS_SRC" | awk '{print $1}')"
 agent_summary="Keep agent SSH ingress disabled (no machine-scoped public key is enrolled)."
 if [ -n "$agent_public_key" ]; then
   agent_summary="Enroll the requested agent/controller key ($agent_fingerprint) without copying its private half."
@@ -89,9 +99,57 @@ remove_agent_client_route() {
   rm -f "$CLIENT_EXPORT_DIR/route.tsv" "$CLIENT_EXPORT_DIR/known_hosts"
 }
 
-incus_preflight
-incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
-  || die "yard instance '$INSTANCE_NAME' is missing"
+check_fail() {
+  [ "$mode" != verify ] || printf '  [fail] test-vms convergence: %s\n' "$*" >&2
+  return 1
+}
+
+if [ "$mode" = apply ]; then
+  incus_preflight
+  incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
+    || die "yard instance '$INSTANCE_NAME' is missing"
+else
+  command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1 \
+    || { check_fail "outer Incus is not reachable"; exit 1; }
+  incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1 \
+    || { check_fail "yard instance is missing"; exit 1; }
+fi
+
+check_backend() {
+  local current_marker inner_output agent_configured=0
+  [ -z "$agent_public_key" ] || agent_configured=1
+  current_marker="$(incus config get "$INSTANCE_NAME" user.subyard.test_vms_revision "${PROJ[@]}" 2>/dev/null || true)"
+  [ "$current_marker" = "$marker" ] \
+    || { check_fail "revision marker differs from the requested backend/key/CPU"; return; }
+  if [ "$desired" = 1 ] && [ "$agent_configured" = 1 ]; then
+    [ -r "$CLIENT_EXPORT_DIR/route.tsv" ] && [ -r "$CLIENT_EXPORT_DIR/known_hosts" ] \
+      || { check_fail "published agent route or bastion host-key pin is missing"; return; }
+    [ "$(sed -n '1p' "$CLIENT_EXPORT_DIR/route.tsv")" = subyard-e2e-route-v1 ] \
+      || { check_fail "published agent route has an unknown format"; return; }
+    ssh-keygen -F subyard-e2e-bastion -f "$CLIENT_EXPORT_DIR/known_hosts" >/dev/null \
+      || { check_fail "published bastion host-key pin is invalid"; return; }
+  else
+    [ ! -e "$CLIENT_EXPORT_DIR/route.tsv" ] && [ ! -e "$CLIENT_EXPORT_DIR/known_hosts" ] \
+      || { check_fail "agent route remains published while enrollment is disabled"; return; }
+  fi
+  outer_state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
+  if [ "$outer_state" != RUNNING ]; then
+    [ "$outer_state" = STOPPED ] && [ "$outer_desired" = stopped ] \
+      || check_fail "yard instance is neither running nor prepared as stopped"
+    return
+  fi
+  inner_output="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
+    --env WANT_ENABLED="$desired" --env WANT_WORKER_HASH="$worker_hash" \
+    --env WANT_STATUS_HASH="$status_hash" --env WANT_AGENT_CONFIGURED="$agent_configured" \
+    --env WANT_AGENT_KEY_HASH="$agent_key_hash" \
+    -- "$WORKER_DST" doctor 2>&1)" \
+    || check_fail "${inner_output:-inner-yard validation failed without details}"
+}
+
+if [ "$mode" != apply ]; then
+  check_backend
+  exit
+fi
 
 if [ "$desired" = 1 ]; then
   summary=(
@@ -112,10 +170,8 @@ proceed_or_die
 # starts as desired=stopped, so bring it up just for this stage and restore that state even if the
 # streamed inner provisioner fails.
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
-YARD_LABEL="${YARD_NAME:-default}"
-power_import_instance "$INCUS_PROJECT" "$INSTANCE_NAME" "$YARD_LABEL" "$BRIDGE" \
-  || die "$POWER_ERROR"
-desired_power="$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
+desired_power="$outer_desired"
+case "$desired_power" in running | stopped) ;; *) die "prepared desired power is required" ;; esac
 temporary_start=0
 current_power="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
 if [ "$current_power" != RUNNING ]; then

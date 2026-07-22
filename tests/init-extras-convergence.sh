@@ -51,17 +51,16 @@ esac
 MOCK
 chmod +x "$TMP/bin/incus"
 
-# shellcheck source=scripts/init.sh
-. "$ROOT/scripts/init.sh"
+extras_check() { "$ROOT/scripts/09-yard-extras.sh" --check >/dev/null 2>&1; }
 
-stage_extras_check || fail "matching extras rejected"
+extras_check || fail "matching extras rejected"
 MOCK_DEVICES='yx-cache yx-stale'
-! stage_extras_check || fail "stale yx-* device accepted"
+! extras_check || fail "stale yx-* device accepted"
 MOCK_DEVICES=''
-! stage_extras_check || fail "missing desired extra accepted"
+! extras_check || fail "missing desired extra accepted"
 MOCK_DEVICES=yx-cache
 MOCK_PATH=/wrong
-! stage_extras_check || fail "drifted extra mount accepted"
+! extras_check || fail "drifted extra mount accepted"
 
 # No declarations is still a desired state: stale devices and extras-owned capability keys must
 # keep the stage pending until the reconciler removes the final extra.
@@ -70,11 +69,11 @@ MOCK_DEVICES=yx-last
 MOCK_IDMAP=1000000
 MOCK_MKNOD=true
 MOCK_SETXATTR=true
-! stage_extras_check || fail "stale final extra accepted with an empty desired set"
+! extras_check || fail "stale final extra accepted with an empty desired set"
 MOCK_DEVICES=''
 MOCK_IDMAP=''
 MOCK_MKNOD=''
 MOCK_SETXATTR=''
-stage_extras_check || fail "empty desired/live extras state rejected"
+extras_check || fail "empty desired/live extras state rejected"
 
 printf 'ok: init extras probe detects desired/live drift\n'

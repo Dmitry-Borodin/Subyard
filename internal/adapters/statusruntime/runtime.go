@@ -10,11 +10,14 @@ import (
 	"sort"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Dmitry-Borodin/Subyard/internal/resource"
 )
 
 type Runtime struct {
 	RepositoryRoot string
 	Environment    map[string]string
+	Resources      []resource.Definition
+	Program        string
 }
 
 func (runtime Runtime) ReadStatusFacts(
@@ -42,7 +45,34 @@ func (runtime Runtime) ReadStatusFacts(
 	if err := decoder.Decode(&result); err != nil {
 		return domain.StatusFacts{}, fmt.Errorf("decode status facts: %w", err)
 	}
+	result.Shared = runtime.resourceStatus(ctx, running)
 	return result, nil
+}
+
+func (runtime Runtime) resourceStatus(ctx context.Context, running bool) []domain.SharedResourceStatus {
+	result := make([]domain.SharedResourceStatus, 0, len(runtime.Resources))
+	program := runtime.Program
+	if program == "" {
+		program = "yard"
+	}
+	for _, definition := range runtime.Resources {
+		status := domain.SharedResourceStatus{
+			Profile: definition.Profile, Name: definition.Name, State: "?",
+		}
+		if running {
+			probe := exec.CommandContext(ctx, definition.HandlerPath(), "is-up")
+			probe.Env = environment(runtime.Environment)
+			if probe.Run() == nil {
+				status.State = "up"
+				status.Hint = program + " " + definition.Command + " " + definition.Shutdown
+			} else {
+				status.State = "down"
+				status.Hint = program + " " + definition.Command + " " + definition.BringUp
+			}
+		}
+		result = append(result, status)
+	}
+	return result
 }
 
 func environment(values map[string]string) []string {

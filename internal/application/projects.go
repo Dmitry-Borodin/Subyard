@@ -71,6 +71,10 @@ func ProjectConsequences(command string, record domain.ProjectRecord, soft bool)
 		return []string{"delete the project workspace from the yard"}
 	case "up":
 		return []string{fmt.Sprintf("build or start the %s project environment", record.Target)}
+	case "code":
+		return []string{"write the remote workspace descriptor and open VS Code"}
+	case "export":
+		return []string{"compare the host and yard copies", "write a protected patch under the Subyard data directory"}
 	default:
 		return nil
 	}

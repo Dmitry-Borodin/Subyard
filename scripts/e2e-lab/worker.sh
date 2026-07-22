@@ -828,6 +828,62 @@ cmd_reconcile_access() {
   reconcile_existing_agent_access
 }
 
+cmd_doctor() {
+  local actual account_status agent_group agent_groups dev_groups sshd_config
+  [ "${WANT_ENABLED:-}" = "$ENABLED" ] || die "backend enabled state differs"
+  [ -r "$CONFIG_FILE" ] || die "backend config is missing"
+  [ -x "$STATUS_COMMAND" ] || die "status worker is missing"
+  actual="$(sha256sum "$0" | awk '{print $1}')"
+  [ "$actual" = "${WANT_WORKER_HASH:-}" ] || die "installed lifecycle worker hash differs"
+  actual="$(sha256sum "$STATUS_COMMAND" | awk '{print $1}')"
+  [ "$actual" = "${WANT_STATUS_HASH:-}" ] || die "installed status worker hash differs"
+  actual="$(printf '%s' "$AGENT_PUBLIC_KEY" | sha256sum | awk '{print $1}')"
+  [ "$actual" = "${WANT_AGENT_KEY_HASH:-}" ] || die "installed agent key differs"
+  if [ "$ENABLED" = 0 ]; then
+    ! systemctl is-active --quiet subyard-test-vms-gc.timer || die "TTL timer remains active"
+    ! systemctl is-active --quiet subyard-test-vms-firewall.service || die "firewall remains active"
+    [ ! -e /etc/systemd/system/incus.service.d/subyard-nested-e2e.conf ] || die "Incus drop-in remains"
+    [ ! -e /etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf ] || die "agent SSH policy remains"
+    ! id -u "$AGENT_USER" >/dev/null 2>&1 || die "agent account remains"
+    return
+  fi
+  for command_name in incus qemu-system-x86_64 nft; do
+    command -v "$command_name" >/dev/null || die "required command is missing: $command_name"
+  done
+  dpkg --compare-versions "$(incus --version)" ge 6.0.6 || die "inner Incus is too old"
+  systemctl is-active --quiet incus.service || die "inner Incus is inactive"
+  grep -Fxq 'Environment=INCUS_SECURITY_APPARMOR=false' \
+    /etc/systemd/system/incus.service.d/subyard-nested-e2e.conf || die "Incus drop-in differs"
+  systemctl is-enabled --quiet subyard-test-vms-gc.timer || die "TTL timer is disabled"
+  systemctl is-active --quiet subyard-test-vms-firewall.service || die "firewall is inactive"
+  nft list table inet subyard_e2e >/dev/null || die "firewall table is missing"
+  sshd_config="$(sshd -T)" || die "cannot render sshd config"
+  grep -Fxq 'passwordauthentication no' <<<"$sshd_config" || die "SSH password login is enabled"
+  grep -Fxq 'kbdinteractiveauthentication no' <<<"$sshd_config" || die "SSH interactive login is enabled"
+  for node in /dev/kvm /dev/vsock /dev/vhost-vsock /dev/net/tun; do
+    [ -c "$node" ] || die "required device is missing: $node"
+  done
+  [ "$(stat -c '%U:%G:%a' "$STATE_DIR")" = root:root:700 ] || die "state directory mode differs"
+  dev_groups="$(id -nG "$DEV_USER")" || die "yard developer account is missing"
+  case " $dev_groups " in *' incus-admin '* | *' yard '*) die "yard developer has inner privileges" ;; esac
+  if [ "${WANT_AGENT_CONFIGURED:-0}" = 0 ]; then
+    ! id -u "$AGENT_USER" >/dev/null 2>&1 || die "agent account remains without enrollment"
+    return
+  fi
+  id -u "$AGENT_USER" >/dev/null || die "agent account is missing"
+  account_status="$(passwd --status "$AGENT_USER")" || die "cannot inspect agent account"
+  case "$account_status" in "$AGENT_USER P "*) ;; *) die "agent account cannot use key login" ;; esac
+  agent_groups="$(id -nG "$AGENT_USER")" || die "cannot inspect agent groups"
+  [ "$(wc -w <<<"$agent_groups")" -eq 1 ] || die "agent has supplementary groups"
+  agent_group="$(id -gn "$AGENT_USER")" || die "cannot inspect agent group"
+  [ "$(stat -c '%U:%G:%a' "$AGENT_HOME/.ssh")" = "root:$agent_group:750" ] \
+    || die "agent SSH directory mode differs"
+  [ "$(stat -c '%U:%G:%a' "$AGENT_AUTHORIZED_KEYS")" = "root:$agent_group:640" ] \
+    || die "agent authorized_keys mode differs"
+  grep -q '^restrict,' "$AGENT_AUTHORIZED_KEYS" || die "agent key restrictions are missing"
+  grep -Fq "command=\"$STATUS_COMMAND\"" "$AGENT_AUTHORIZED_KEYS" || die "agent forced command differs"
+}
+
 main() {
   local -a args=(); local arg
   while [ "$#" -gt 0 ]; do
@@ -840,6 +896,13 @@ main() {
     esac
   done
   set -- "${args[@]}"
+  if [ "${1:-}" = doctor ]; then
+    shift
+    [ "$#" -eq 0 ] || die "doctor takes no positional arguments"
+    case "$ENABLED" in 0 | 1) ;; *) die "invalid NESTED_E2E_VMS" ;; esac
+    cmd_doctor
+    return
+  fi
   validate_config
   command -v "$INCUS" >/dev/null 2>&1 || die "inner Incus is not installed"
   command -v jq >/dev/null 2>&1 || die "jq is required"

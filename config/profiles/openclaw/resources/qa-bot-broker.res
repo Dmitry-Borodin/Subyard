@@ -1,5 +1,5 @@
 # config/profiles/openclaw/resources/qa-bot-broker.res — a profile shared-resource descriptor.
-# Sourced (plain KEY=VALUE) by the yard registry (scripts/lib-resources.sh). The mechanics live
+# Parsed as assignments by the Go resource registry. The mechanics live
 # in the profile-owned handler directory; the core only consults this descriptor.
 COMMAND=qa-pool
 HANDLER=resources/qa-bot-broker/handler.sh

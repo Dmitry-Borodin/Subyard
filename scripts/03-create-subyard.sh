@@ -33,6 +33,8 @@ SRV_VOLUME="${SRV_VOLUME:-yard-srv}"
 DEV_USER="${DEV_USER:-dev}"
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
 YARD_LABEL="${YARD_NAME:-default}"
+desired_power="${SUBYARD_POWER_DESIRED:-}"
+case "$desired_power" in running | stopped) ;; *) die "prepared desired power is required" ;; esac
 
 PROJ=(--project "$INCUS_PROJECT")
 device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx "$1"; }
@@ -78,17 +80,13 @@ if incus info "$INSTANCE_NAME" "${PROJ[@]}" >/dev/null 2>&1; then
     incus config set "$INSTANCE_NAME" security.nesting true "${PROJ[@]}"
     ok "reconciled security.nesting=true"
   fi
-  power_import_instance "$INCUS_PROJECT" "$INSTANCE_NAME" "$YARD_LABEL" "$BRIDGE" \
-    || die "$POWER_ERROR"
-  [ "$POWER_IMPORTED" = 0 ] || ok "imported existing power state as desired=$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
 else
-  initial_desired="$(power_initial_desired "$YARD_LABEL")"
   LAUNCH_FLAGS+=(
     -c boot.autostart=false
     -c "$POWER_KEY_MANAGED=true"
     -c "$POWER_KEY_NAME=$YARD_LABEL"
     -c "$POWER_KEY_BRIDGE=$BRIDGE"
-    -c "$POWER_KEY_DESIRED=$initial_desired"
+    -c "$POWER_KEY_DESIRED=$desired_power"
     -c "$POWER_KEY_INITIALIZED=false"
   )
   info "creating $INSTANCE_NAME from $BASE_IMAGE"
@@ -161,14 +159,9 @@ fi
 
 if [ "$nested_drift" = 1 ] \
   && [ "$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")" = RUNNING ]; then
-  prior_desired="$(power_get "$INCUS_PROJECT" "$INSTANCE_NAME" "$POWER_KEY_DESIRED")"
   warn "nested E2E VM boundary changed — a guarded yard restart is required"
-  "$SCRIPT_DIR/yard-ctl.sh" stop --yes \
+  "$SCRIPT_DIR/lifecycle-guard.sh" stop --reconcile \
     || die "could not safely stop the yard; close active SSH/VS Code sessions and re-run '$(yard_cmd_hint) init'"
-  case "$prior_desired" in running | stopped)
-    power_set_desired "$INCUS_PROJECT" "$INSTANCE_NAME" "$prior_desired" \
-      || die "could not restore desired power after capability restart" ;;
-  esac
 fi
 
 if [ "${NESTED_E2E_VMS:-0}" = 1 ]; then
@@ -193,7 +186,6 @@ fi
 state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
 [ "$state" = RUNNING ] || info "starting $INSTANCE_NAME temporarily (was: ${state:-unknown})"
 power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
-power_enforce_autostart_false "$INCUS_PROJECT" "$INSTANCE_NAME" || die "could not disable Incus boot.autostart"
 
 # --- 3. /dev/kvm passthrough (container only) --------------------------------
 echo "KVM:"

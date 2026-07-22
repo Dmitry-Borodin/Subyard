@@ -46,6 +46,8 @@ chmod +x "$TMP/fake-go-bin/go"
   "$ROOT/scripts/build-engine.sh" --force --output "$TMP/yard")
 [ -x "$TMP/yard" ] \
   || { printf 'build-engine: invocation outside the repository did not produce an engine\n' >&2; exit 1; }
+[ "$(stat -c '%a' "$TMP")" = 700 ] \
+  || { printf 'build-engine: output parent permissions changed\n' >&2; exit 1; }
 
 install -m 0755 "$ROOT/.build/yard" "$TMP/release-engine"
 [ "$(PATH="$no_go_path" YARD_ENGINE_PATH="$TMP/release-engine" "$ROOT/bin/yard" --version)" = 'yard 0.1.0-dev' ] \

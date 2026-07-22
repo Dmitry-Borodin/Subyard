@@ -9,6 +9,8 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 grep -Fq 'MIN_DISK_GIB="${MIN_DISK_GIB:-5}"' "$ROOT/scripts/00-check-host.sh" \
   || fail "default base-yard storage floor is not 5 GiB"
+grep -Fq 'RESUME_MIN_DISK_GIB="${RESUME_MIN_DISK_GIB:-1}"' "$ROOT/scripts/00-check-host.sh" \
+  || fail "managed-yard repair storage floor is not 1 GiB"
 
 # shellcheck source=tests/helpers/test-context.sh
 . "$ROOT/tests/helpers/test-context.sh"
@@ -32,14 +34,14 @@ if SUBYARD_PREFLIGHT_BASE_PRESENT=0 MIN_DISK_GIB=999999 REC_DISK_GIB=999999 \
 fi
 SUBYARD_PREFLIGHT_BASE_PRESENT=1 MIN_DISK_GIB=999999 REC_DISK_GIB=999999 \
   "$ROOT/scripts/00-check-host.sh" >"$TMP/existing-low-space"
-grep -Fq 'the base yard already exists, but new projects and profiles may need more space' \
+grep -Fq 'enough to repair this managed yard; a new yard needs >= 999999 GiB' \
   "$TMP/existing-low-space" || fail "resume preflight did not downgrade the base-yard floor"
 
 mkdir -p "$TMP/fake-bin"
 cat > "$TMP/fake-bin/incus" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
-  'info yard --project subyard') exit 0 ;;
+  'config get yard user.subyard.managed --project subyard') printf 'true\n' ;;
   '--version') printf '6.0.6\n' ;;
   *) exit 1 ;;
 esac
@@ -47,7 +49,7 @@ SH
 chmod +x "$TMP/fake-bin/incus"
 PATH="$TMP/fake-bin:$PATH" MIN_DISK_GIB=999999 REC_DISK_GIB=999999 \
   "$ROOT/scripts/00-check-host.sh" >"$TMP/auto-existing-low-space"
-grep -Fq 'the base yard already exists, but new projects and profiles may need more space' \
+grep -Fq 'enough to repair this managed yard; a new yard needs >= 999999 GiB' \
   "$TMP/auto-existing-low-space" || fail "yard check did not detect its existing base yard"
 
 printf 'ok: yard check uses the Incus storage path and init can resume an existing base yard\n'

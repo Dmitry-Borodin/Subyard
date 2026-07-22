@@ -138,4 +138,8 @@ stage_ssh_check || fail "matching SSH state rejected"
 MOCK_SSH_LISTEN=tcp:127.0.0.1:2299
 ! stage_ssh_check || fail "drifted SSH proxy accepted"
 
+[ "$(grep -c 'apt-get install -y -qq --no-install-recommends incus' \
+  "$ROOT/scripts/01-install-incus.sh")" -eq 2 ] \
+  || fail "Incus install paths still pull optional QEMU desktop packages"
+
 printf 'ok: init project, instance and SSH probes detect reconcilable drift\n'

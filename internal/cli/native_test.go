@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/shelladapter"
+	"github.com/Dmitry-Borodin/Subyard/internal/config"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
 	"github.com/Dmitry-Borodin/Subyard/internal/rpc"
@@ -387,6 +388,28 @@ exit 90
 	remoteValues := structuredAdapterContext(remoteContext)
 	if remoteValues["REMOTE_DEST"] != remoteContext.RemoteDest || remoteValues["REMOTE_YARD"] != remoteContext.RemoteYard {
 		t.Fatalf("structured adapter context lost remote route: %#v", remoteValues)
+	}
+	commandValues := structuredCommandContext(config.Loaded{Context: loaded.Context, Environment: map[string]string{
+		"CCUSAGE_PROVISION":       "/config/agents/ccusage/provision.sh",
+		"E2E_VM_TTL_MINUTES":      "1200",
+		"AGENT_codex_CONFIG":      "/config/agents/codex/config.toml",
+		"AGENT_codex_TOKEN":       "must-not-cross",
+		"AWS_SECRET_ACCESS_KEY":   "must-not-cross",
+		"UNRELATED_AMBIENT_VALUE": "must-not-cross",
+	}})
+	for name, expected := range map[string]string{
+		"CCUSAGE_PROVISION":  "/config/agents/ccusage/provision.sh",
+		"E2E_VM_TTL_MINUTES": "1200",
+		"AGENT_codex_CONFIG": "/config/agents/codex/config.toml",
+	} {
+		if commandValues[name] != expected {
+			t.Fatalf("structured command context lost %s: %#v", name, commandValues)
+		}
+	}
+	for _, name := range []string{"AGENT_codex_TOKEN", "AWS_SECRET_ACCESS_KEY", "UNRELATED_AMBIENT_VALUE"} {
+		if _, ok := commandValues[name]; ok {
+			t.Fatalf("structured command context leaked %s", name)
+		}
 	}
 	contextKeys := make(map[string]struct{}, len(contextValues))
 	for key := range contextValues {

@@ -31,7 +31,7 @@ command -v go >/dev/null 2>&1 || {
   exit 2
 }
 
-install -d "$(dirname "$OUTPUT")"
+mkdir -p "$(dirname "$OUTPUT")"
 lock="$(dirname "$OUTPUT")/.build.lock"
 (
   flock 9

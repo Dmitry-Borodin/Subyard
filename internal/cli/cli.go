@@ -1428,7 +1428,7 @@ func (cli *CLI) operationOrchestrator(
 	}
 	runner := cli.options.AdapterRunner
 	if runner == nil {
-		contextValues := structuredAdapterContext(loaded.Context)
+		contextValues := structuredCommandContext(loaded)
 		contextKeys := make(map[string]struct{}, len(contextValues))
 		for key := range contextValues {
 			contextKeys[key] = struct{}{}
@@ -1520,6 +1520,49 @@ func structuredAdapterContext(yard domain.Context) map[string]string {
 		"ASSUME_YES":             "1",
 		"PROG":                   cliProgramName,
 	}
+}
+
+var structuredCommandConfigKeys = map[string]struct{}{
+	"ADB_CONSOLE_EMULATOR_PORT": {}, "ADB_CONSOLE_PROXY_PORT": {},
+	"ADB_EMULATOR_PORT": {}, "ADB_PROXY_PORT": {},
+	"AGENTS": {}, "BASE_IMAGE": {}, "BASE_IMAGE_FALLBACK": {},
+	"CCUSAGE_PROVISION": {}, "CCUSAGE_SHA256_AMD64": {}, "CCUSAGE_SHA256_ARM64": {},
+	"CCUSAGE_VERSION": {}, "E2E_VM_BOOT_TIMEOUT": {}, "E2E_VM_CPU": {}, "E2E_VM_DISK": {},
+	"E2E_VM_IMAGE": {}, "E2E_VM_MEMORY": {}, "E2E_VM_TTL_MINUTES": {},
+	"HOST_CLAUDE_MD": {}, "HOST_CODEX_AGENTS_MD": {}, "HOST_LINKS": {}, "HOST_MOUNTS": {},
+	"LIMITS_CPU": {}, "LIMITS_MEMORY": {}, "SRV_POOL": {}, "SRV_VOLUME": {},
+	"SUBYARD_AGE_SHA256_AMD64": {}, "SUBYARD_AGE_SHA256_ARM64": {}, "SUBYARD_AGE_VERSION": {},
+	"SUBYARD_KEYS_CONSUMER_ROOT": {}, "SUBYARD_KEYS_ROOT": {}, "SUBYARD_KEYS_SYSTEMD_DIR": {},
+	"SUBYARD_KEYS_TOOLS_DIR": {}, "SUBYARD_POWER_LIBEXEC_DIR": {}, "SUBYARD_POWER_LIB_PATH": {},
+	"SUBYARD_POWER_RECONCILER_PATH": {}, "SUBYARD_POWER_UNIT_PATH": {},
+	"SUBYARD_SOPS_SHA256_AMD64": {}, "SUBYARD_SOPS_SHA256_ARM64": {}, "SUBYARD_SOPS_VERSION": {},
+	"YARD_CAPABILITIES": {}, "YARD_DEVICES": {}, "YARD_MOUNTS": {}, "YARD_PROFILES": {},
+	"YARD_TEMPLATE": {},
+}
+
+func structuredAgentConfigKey(name string) bool {
+	if !strings.HasPrefix(name, "AGENT_") {
+		return false
+	}
+	for _, suffix := range []string{
+		"_COMMAND", "_CONFIG", "_CONFIG_DEST", "_PERSIST", "_PROVISION", "_RULES", "_RULES_DEST",
+	} {
+		agent, found := strings.CutSuffix(strings.TrimPrefix(name, "AGENT_"), suffix)
+		if found && domain.SafeName(agent) {
+			return true
+		}
+	}
+	return false
+}
+
+func structuredCommandContext(loaded config.Loaded) map[string]string {
+	values := structuredAdapterContext(loaded.Context)
+	for name, value := range loaded.Environment {
+		if _, ok := structuredCommandConfigKeys[name]; ok || structuredAgentConfigKey(name) {
+			values[name] = value
+		}
+	}
+	return values
 }
 
 const cliProgramName = "yard"
@@ -1653,7 +1696,7 @@ func (cli *CLI) executeStructuredCommand(
 	if definition.Arg0 != "" {
 		handlerArguments = append([]string{definition.Arg0}, handlerArguments...)
 	}
-	contextValues := structuredAdapterContext(loaded.Context)
+	contextValues := structuredCommandContext(loaded)
 	if project != nil {
 		for key, value := range project.Environment {
 			contextValues[key] = value

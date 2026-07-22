@@ -90,7 +90,9 @@ if command -v incus >/dev/null 2>&1; then
     warn "incus $(_iver) < $MIN_INCUS_VER — upgrading from the Zabbly LTS-6.0 repo"
     add_zabbly_lts_repo || die "could not set up the Zabbly LTS-6.0 repo"
     info "apt-get install incus (Zabbly)"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus || die "incus upgrade failed"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends incus \
+      || die "incus upgrade failed"
+    apt-get clean
     systemctl try-restart incus.service 2>/dev/null || true
     if _irecent; then ok "incus upgraded ($(_iver))"
     else warn "incus is still $(_iver) after upgrade — check 'apt-cache policy incus'"; fi
@@ -109,8 +111,9 @@ else
     apt-get update -qq
   fi
   info "installing incus"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq incus \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends incus \
     || die "incus install failed (the distro repos may carry it; Zabbly LTS-6.0 is the >= $MIN_INCUS_VER source)"
+  apt-get clean
   ok "incus installed ($(_iver))"
   _irecent || warn "installed incus $(_iver) < $MIN_INCUS_VER — nested Docker will fail until you upgrade (re-run with --zabbly)"
 fi

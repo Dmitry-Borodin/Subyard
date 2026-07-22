@@ -160,6 +160,68 @@ grep -Fq '_keys-auto-sync --if-due' "$SUBYARD_KEYS_SYSTEMD_DIR/subyard-keys-sync
 if grep -Fq -- '--all-contexts' "$SUBYARD_KEYS_SYSTEMD_DIR/subyard-keys-sync.service"; then
   fail 'timer still assumes one ledger per yard context'
 fi
+
+# Recover XDG_RUNTIME_DIR for a lingering user manager.
+mkdir -m 0700 "$TMP/runtime"
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/loginctl" <<'SH'
+#!/usr/bin/env bash
+case "$*" in *'show-user'*'-p Linger --value'*) printf 'yes\n' ;; *) exit 2 ;; esac
+SH
+cat > "$TMP/bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${XDG_RUNTIME_DIR:-}" = "$EXPECTED_RUNTIME_DIR" ] || exit 80
+[ -d "$EXPECTED_RUNTIME_DIR" ] || exit 79
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+case "$*" in
+  *'is-enabled'*) [ -e "$SYSTEMCTL_ENABLED" ] ;;
+  *'enable --now'*) touch "$SYSTEMCTL_ENABLED" ;;
+esac
+SH
+chmod +x "$TMP/bin/loginctl" "$TMP/bin/systemctl"
+unset XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE=0 \
+SUBYARD_KEYS_RUNTIME_DIR="$TMP/runtime" \
+EXPECTED_RUNTIME_DIR="$TMP/runtime" \
+SYSTEMCTL_LOG="$TMP/systemctl.log" \
+SYSTEMCTL_ENABLED="$TMP/systemctl-enabled" \
+PATH="$TMP/bin:$PATH" \
+ASSUME_YES=1 "$ROOT/scripts/install-keys-auto-sync.sh" >/dev/null
+grep -Fxq -- '--user daemon-reload' "$TMP/systemctl.log" \
+  || fail 'credential timer did not rediscover the user systemd runtime'
+grep -Fxq -- '--user enable --now subyard-keys-sync.timer' "$TMP/systemctl.log" \
+  || fail 'credential timer was not enabled through the rediscovered user systemd runtime'
+SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE=0 \
+SUBYARD_KEYS_RUNTIME_DIR="$TMP/runtime" \
+EXPECTED_RUNTIME_DIR="$TMP/runtime" \
+SYSTEMCTL_LOG="$TMP/systemctl.log" \
+SYSTEMCTL_ENABLED="$TMP/systemctl-enabled" \
+PATH="$TMP/bin:$PATH" \
+"$ROOT/scripts/install-keys-auto-sync.sh" --check \
+  || fail 'credential timer convergence check did not rediscover the user systemd runtime'
+
+cat > "$TMP/bin/sudo" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1 $2" = 'systemctl start' ] || exit 81
+mkdir -m 0700 "$EXPECTED_RUNTIME_DIR"
+printf '%s\n' "$*" >> "$SUDO_LOG"
+SH
+chmod +x "$TMP/bin/sudo"
+find "$TMP/runtime" -depth -delete
+unset XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE=0 \
+SUBYARD_KEYS_RUNTIME_DIR="$TMP/runtime" \
+EXPECTED_RUNTIME_DIR="$TMP/runtime" \
+SYSTEMCTL_LOG="$TMP/systemctl.log" \
+SYSTEMCTL_ENABLED="$TMP/systemctl-enabled" \
+SUDO_LOG="$TMP/sudo.log" \
+PATH="$TMP/bin:$PATH" \
+ASSUME_YES=1 "$ROOT/scripts/install-keys-auto-sync.sh" >/dev/null
+grep -Eq '^systemctl start user@[0-9]+\.service$' "$TMP/sudo.log" \
+  || fail 'credential timer did not start a missing lingering user manager'
+
 if yard_one keys init --yes >"$TMP/removed-init.out" 2>&1; then fail 'removed keys init command still succeeds'; fi
 grep -Fq "unknown keys command 'init'" "$TMP/removed-init.out" || fail 'removed keys init command has unclear error'
 

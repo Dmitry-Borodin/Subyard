@@ -67,15 +67,9 @@ if [ "${YARD_TYPE:-local}" = remote ]; then
 fi
 
 MIN_DISK_GIB="${MIN_DISK_GIB:-5}"    # hard floor for a base yard
+RESUME_MIN_DISK_GIB="${RESUME_MIN_DISK_GIB:-1}"
 REC_DISK_GIB="${REC_DISK_GIB:-50}"   # recommended: the 'android' profile (SDK/AVD) is heavy
 BASE_YARD_PRESENT="${SUBYARD_PREFLIGHT_BASE_PRESENT:-auto}"
-if [ "$BASE_YARD_PRESENT" = auto ]; then
-  BASE_YARD_PRESENT=0
-  if command -v incus >/dev/null 2>&1 \
-    && incus info "${INSTANCE_NAME:-yard}" --project "${INCUS_PROJECT:-subyard}" >/dev/null 2>&1; then
-    BASE_YARD_PRESENT=1
-  fi
-fi
 # Nested Docker (project-env boxes) needs the Incus AppArmor fix for CVE-2025-52881
 # (runc fd-reopen vs the nesting profile); landed in Incus 6.0.6 LTS / 6.19.
 MIN_INCUS_VER="${MIN_INCUS_VER:-6.0.6}"
@@ -147,6 +141,20 @@ fi
 
 echo "Storage (${STORAGE_PATH}):"
 probe="$STORAGE_PATH"
+disk_floor="$MIN_DISK_GIB"
+resume_yard=0
+if [ "$BASE_YARD_PRESENT" = auto ]; then
+  BASE_YARD_PRESENT=0
+  if command -v incus >/dev/null 2>&1 \
+      && [ "$(incus config get "$INSTANCE_NAME" user.subyard.managed \
+        --project "$INCUS_PROJECT" 2>/dev/null || true)" = true ]; then
+    BASE_YARD_PRESENT=1
+  fi
+fi
+if [ "$BASE_YARD_PRESENT" = 1 ] && [ "$RESUME_MIN_DISK_GIB" -lt "$MIN_DISK_GIB" ]; then
+  disk_floor="$RESUME_MIN_DISK_GIB"
+  resume_yard=1
+fi
 while [ ! -d "$probe" ] && [ "$probe" != "/" ]; do
   probe=$(dirname "$probe")
 done
@@ -157,12 +165,14 @@ EOF
   avail_gib=${avail%G}
   if [ "${avail_gib:-0}" -ge "$REC_DISK_GIB" ]; then
     pass "${avail_gib} GiB free on ${probe} (fs: ${fstype})"
-  elif [ "${avail_gib:-0}" -ge "$MIN_DISK_GIB" ]; then
-    warn "${avail_gib} GiB free on ${probe} — ok for a base yard, but the heavy 'android' profile wants >= ${REC_DISK_GIB} GiB (fs: ${fstype})"
-  elif [ "$BASE_YARD_PRESENT" = 1 ]; then
-    warn "only ${avail_gib} GiB free on ${probe}; the base yard already exists, but new projects and profiles may need more space (fs: ${fstype})"
+  elif [ "${avail_gib:-0}" -ge "$disk_floor" ]; then
+    if [ "$resume_yard" = 1 ] && [ "${avail_gib:-0}" -lt "$MIN_DISK_GIB" ]; then
+      warn "${avail_gib} GiB free on ${probe} — enough to repair this managed yard; a new yard needs >= ${MIN_DISK_GIB} GiB (fs: ${fstype})"
+    else
+      warn "${avail_gib} GiB free on ${probe} — ok for a base yard, but the heavy 'android' profile wants >= ${REC_DISK_GIB} GiB (fs: ${fstype})"
+    fi
   else
-    fail "only ${avail_gib} GiB free on ${probe}; need >= ${MIN_DISK_GIB} GiB for a base yard (fs: ${fstype})"
+    fail "only ${avail_gib} GiB free on ${probe}; need >= ${disk_floor} GiB (fs: ${fstype})"
   fi
 else
   warn "cannot determine free space for ${probe}"

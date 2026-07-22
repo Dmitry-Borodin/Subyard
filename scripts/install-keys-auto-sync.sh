@@ -43,7 +43,7 @@ render_service() {
 
 user_systemctl() {
   local runtime_dir bus_address
-  runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  runtime_dir="${XDG_RUNTIME_DIR:-${SUBYARD_KEYS_RUNTIME_DIR:-/run/user/$(id -u)}}"
   bus_address="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$runtime_dir/bus}"
   XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$bus_address" systemctl --user "$@"
 }
@@ -56,6 +56,22 @@ wait_for_user_manager() {
     sleep 0.1
   done
   return 1
+}
+
+ensure_user_systemd_manager() {
+  local uid user unit
+  wait_for_user_manager && return 0
+  uid="$(id -u)"
+  user="$(id -un)"
+  unit="user@$uid.service"
+  if [ "$uid" -eq 0 ]; then
+    systemctl start "$unit" || die "could not start the user systemd manager for $user"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo systemctl start "$unit" || die "could not start the user systemd manager for $user"
+  else
+    die "the user systemd manager is unavailable and sudo is missing"
+  fi
+  wait_for_user_manager || die "the user systemd manager for $user has no runtime bus"
 }
 
 units_current() {
@@ -113,7 +129,8 @@ if [ "$linger" != yes ]; then
     die "systemd lingering is disabled and sudo is unavailable; the 24-hour sync bound cannot be installed"
   fi
 fi
-wait_for_user_manager || die "could not connect to the user systemd manager after enabling lingering"
+# Linger may be enabled while user@UID.service is still stopped.
+ensure_user_systemd_manager
 user_systemctl daemon-reload || die "could not reload the user systemd manager"
 user_systemctl enable --now subyard-keys-sync.timer \
   || die "could not enable subyard-keys-sync.timer"

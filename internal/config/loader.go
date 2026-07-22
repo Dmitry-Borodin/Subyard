@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -252,6 +253,11 @@ func contextFrom(root, yardName string, values environment) (domain.Context, err
 	if err != nil {
 		return domain.Context{}, err
 	}
+	e2eVMCPU, err := resolveE2EVMCPU(values["E2E_VM_CPU"], runtime.NumCPU())
+	if err != nil {
+		return domain.Context{}, err
+	}
+	values["E2E_VM_CPU"] = e2eVMCPU
 	ctx := domain.Context{
 		YardName:        yardName,
 		YardType:        domain.YardType(values["YARD_TYPE"]),
@@ -281,6 +287,30 @@ func contextFrom(root, yardName string, values environment) (domain.Context, err
 		},
 	}
 	return domain.NormalizeContext(ctx)
+}
+
+func resolveE2EVMCPU(value string, hostCPUs int) (string, error) {
+	if value != "" && value != "auto" {
+		if strings.Trim(value, "0123456789") != "" {
+			return "", errors.New("E2E_VM_CPU must be auto or a positive integer")
+		}
+		count, err := strconv.Atoi(value)
+		if err != nil || count < 1 {
+			return "", errors.New("E2E_VM_CPU must be auto or a positive integer")
+		}
+		return strconv.Itoa(count), nil
+	}
+	if hostCPUs < 1 {
+		return "", errors.New("cannot resolve E2E_VM_CPU: host CPU count is unavailable")
+	}
+	count := hostCPUs * 2 / 3
+	if count < 1 {
+		count = 1
+	}
+	if count > 4 {
+		count = 4
+	}
+	return strconv.Itoa(count), nil
 }
 
 func optionalInt(value string) (int, error) {

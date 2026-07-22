@@ -168,10 +168,14 @@ bootstrap_peer_keys() {
 }
 
 reexec_with_incus_group() {
-	local resume_mode="$1" command
+	local resume_mode="$1" command resume_script="$ROOT/dev/e2e/p0-guest.sh"
 	command -v sg >/dev/null 2>&1 || die 'sg is required to activate incus-admin membership'
+	if [ "$resume_mode" = peer-prepare-resume ]; then
+		resume_script="$PEER_ROOT/src/dev/e2e/p0-guest.sh"
+		[ -r "$resume_script" ] || die 'stable peer source is unavailable for incus-admin resume'
+	fi
 	printf -v command 'exec env SUBYARD_E2E_VM=%q bash %q %q %q %q' \
-		"$SUBYARD_E2E_VM" "$ROOT/dev/e2e/p0-guest.sh" "$resume_mode" "$TOKEN" "$PEER_IP"
+		"$SUBYARD_E2E_VM" "$resume_script" "$resume_mode" "$TOKEN" "$PEER_IP"
 	exec sg incus-admin -c "$command"
 }
 
@@ -255,13 +259,15 @@ peer_prepare() {
   peer_clean
   install -d -m 0700 "$PEER_ROOT/src" "$PEER_ROOT/home" "$PEER_ROOT/config/yards"
 	printf '%s\n' "$MARKER" > "$PEER_ROOT/.subyard-p0-marker"
+	cp -a "$ROOT/." "$PEER_ROOT/src/"
 	ensure_peer_incus
 	peer_prepare_finish
 }
 
 peer_prepare_finish() {
+	[ -r "$PEER_ROOT/src/tests/helpers/source-control-plane.sh" ] \
+		|| die 'stable peer source is incomplete after incus-admin resume'
 	ensure_peer_snapshot_fixture
-  cp -a "$ROOT/." "$PEER_ROOT/src/"
   YARD_BUILD_VERSION="p0-vm-$SUBYARD_E2E_VM" \
     "$PEER_ROOT/src/scripts/build-engine.sh" --force --output "$PEER_ROOT/yard-engine" >/dev/null
   SUBYARD_HOME="$PEER_ROOT/data" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \

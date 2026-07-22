@@ -427,6 +427,30 @@ printf '%s\n' "$verbose_diagnostic" \
   | grep -Fq 'test-vms convergence: outer Incus is not reachable' \
   || fail "post-apply test-vms verification omitted its failing invariant"
 
+# The resolved per-VM CPU count is part of convergence, so changing an explicit override (or moving
+# an automatic context to a differently sized host) must reapply the backend config.
+reconcile_incus_reachable() { return 0; }
+reconcile_instance_running() { return 1; }
+reconcile_power_stopped() { return 0; }
+SUBYARD_E2E_CLIENT_EXPORT_DIR="$TMP/no-enrollment"
+INSTANCE_NAME=yard-fixture
+PROJ=(--project fixture)
+NESTED_E2E_VMS=1
+E2E_VM_CPU=2
+revision="$(stage_test_vms_revision)"
+empty_key_hash="$(printf '' | sha256sum | awk '{print $1}')"
+installed_marker="$NESTED_E2E_VMS:$revision:$empty_key_hash:$E2E_VM_CPU"
+incus() {
+  case "$*" in
+    'config get yard-fixture user.subyard.test_vms_revision --project fixture')
+      printf '%s\n' "$installed_marker" ;;
+    *) return 1 ;;
+  esac
+}
+stage_test_vms_check || fail "matching backend CPU convergence marker was rejected"
+E2E_VM_CPU=3
+! stage_test_vms_check || fail "backend CPU drift was not detected"
+
 if SUBYARD_E2E_LEGACY_FIXTURE=1 \
   bash "$ROOT/dev/e2e/seed-test-vms-legacy-state.sh" fixture-project fixture-instance \
   >/dev/null 2>&1; then

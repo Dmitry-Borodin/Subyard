@@ -48,7 +48,7 @@ agent_key_hash="$(printf '%s' "$agent_public_key" | sha256sum | awk '{print $1}'
 revision="$(sha256sum "$WORKER_SRC" "$STATUS_SRC" "$PROVISION_SRC" "$RECONCILE_SRC" \
   "$ROOT/lib/e2e-agent-enrollment.sh" \
   | sha256sum | awk '{print $1}')"
-marker="$desired:$revision:$agent_key_hash"
+marker="$desired:$revision:$agent_key_hash:${E2E_VM_CPU:-4}"
 agent_summary="Keep agent SSH ingress disabled (no machine-scoped public key is enrolled)."
 if [ -n "$agent_public_key" ]; then
   agent_summary="Enroll the requested agent/controller key ($agent_fingerprint) without copying its private half."
@@ -147,7 +147,7 @@ incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
   --env NESTED_E2E_VMS="$desired" \
   --env DEV_USER="${DEV_USER:-dev}" \
   --env E2E_VM_IMAGE="${E2E_VM_IMAGE:-images:debian/13/cloud}" \
-  --env E2E_VM_CPU="${E2E_VM_CPU:-2}" \
+  --env E2E_VM_CPU="${E2E_VM_CPU:-4}" \
   --env E2E_VM_MEMORY="${E2E_VM_MEMORY:-4GiB}" \
   --env E2E_VM_DISK="${E2E_VM_DISK:-10GiB}" \
   --env E2E_VM_TTL_MINUTES="${E2E_VM_TTL_MINUTES:-240}" \

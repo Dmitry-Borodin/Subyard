@@ -189,9 +189,8 @@ ssh_config_value() {
   printf '"%s"' "$value"
 }
 
-write_client_config() {
-  local temp selector alias
-  temp="$(mktemp "$STATE_ROOT/.ssh-config.XXXXXX")"
+render_client_config() {
+  local selector alias
   {
     printf 'Host subyard-e2e-bastion\n'
     printf '    HostName %s\n' "$BASTION_HOSTNAME"
@@ -223,7 +222,13 @@ write_client_config() {
         printf '    UserKnownHostsFile '; ssh_config_value "$GUEST_KNOWN_HOSTS"; printf '\n'
       done
     fi
-  } > "$temp"
+  }
+}
+
+write_client_config() {
+  local temp
+  temp="$(mktemp "$STATE_ROOT/.ssh-config.XXXXXX")"
+  render_client_config > "$temp"
   chmod 0600 "$temp"
   mv -f "$temp" "$CLIENT_CONFIG"
 }
@@ -274,15 +279,20 @@ parse_allocation_manifest() {
 }
 
 prepare_client() {
-  local manifest
+  local manifest bootstrap_config
   command -v ssh >/dev/null 2>&1 || die "ssh is required"
   command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required"
   ensure_identity
   resolve_bastion_route
   VM_IP=(); VM_HOST_KEY=()
-  write_client_config
-  manifest="$(ssh -F "$CLIENT_CONFIG" -T subyard-e2e-bastion </dev/null)" \
-    || die "cannot read allocation status with the enrolled agent identity; run 'dev/agent-e2e.sh --prepare', then ask the operator to re-run 'yard -Y e2e-yard init'"
+  bootstrap_config="$(mktemp "$STATE_ROOT/.bootstrap-config.XXXXXX")"
+  render_client_config > "$bootstrap_config"
+  chmod 0600 "$bootstrap_config"
+  if ! manifest="$(ssh -F "$bootstrap_config" -T subyard-e2e-bastion </dev/null)"; then
+    rm -f "$bootstrap_config"
+    die "cannot read allocation status with the enrolled agent identity; run 'dev/agent-e2e.sh --prepare', then ask the operator to re-run 'yard -Y e2e-yard init'"
+  fi
+  rm -f "$bootstrap_config"
   parse_allocation_manifest "$manifest"
   ALLOCATION_MANIFEST="$manifest"
   write_client_config

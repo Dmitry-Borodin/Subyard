@@ -10,6 +10,33 @@ CONTEXT_ERROR=""
 declare -A SUBYARD_CONTEXT_VALUES=()
 context_fail() { CONTEXT_ERROR="$*"; return 1; }
 
+e2e_vm_cpu_default() {
+  local host_cpus="${1:?host CPU count is required}" count
+  [[ "$host_cpus" =~ ^[1-9][0-9]*$ ]] || return 1
+  count=$((host_cpus * 2 / 3))
+  [ "$count" -ge 1 ] || count=1
+  [ "$count" -le 4 ] || count=4
+  printf '%s\n' "$count"
+}
+
+context_resolve_e2e_vm_cpu() {
+  local host_cpus configured="${E2E_VM_CPU:-auto}"
+  case "$configured" in
+    auto)
+      host_cpus="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+      E2E_VM_CPU="$(e2e_vm_cpu_default "$host_cpus")" \
+        || { context_fail "cannot resolve E2E_VM_CPU: host CPU count is unavailable"; return; }
+      ;;
+    *[!0-9]* | '') context_fail "E2E_VM_CPU must be auto or a positive integer"; return ;;
+    *)
+      while [[ "$configured" == 0* && "$configured" != 0 ]]; do configured="${configured#0}"; done
+      [ "$configured" != 0 ] \
+        || { context_fail "E2E_VM_CPU must be auto or a positive integer"; return; }
+      E2E_VM_CPU="$configured"
+      ;;
+  esac
+}
+
 path_is_within() { local path="$1" root="$2"; [ "$path" = "$root" ] || [[ "$path" == "$root"/* ]]; }
 
 path_is_broad_host_root() {
@@ -40,8 +67,7 @@ context_validate() {
     context_fail "NESTED_E2E_VMS currently requires INSTANCE_TYPE=container"
     return
   fi
-  [[ "${E2E_VM_CPU:-2}" =~ ^[1-9][0-9]*$ ]] \
-    || { context_fail "E2E_VM_CPU must be a positive integer"; return; }
+  context_resolve_e2e_vm_cpu || return
   [[ "${E2E_VM_MEMORY:-4GiB}" =~ ^[1-9][0-9]*(MiB|GiB)$ ]] \
     || { context_fail "E2E_VM_MEMORY must use a positive MiB or GiB value"; return; }
   [[ "${E2E_VM_DISK:-10GiB}" =~ ^[1-9][0-9]*(MiB|GiB)$ ]] \

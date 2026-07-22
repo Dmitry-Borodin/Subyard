@@ -67,6 +67,37 @@ func TestLoadNamedContext(t *testing.T) {
 	}
 }
 
+func TestResolveE2EVMCPU(t *testing.T) {
+	for _, test := range []struct {
+		value    string
+		hostCPUs int
+		want     string
+	}{
+		{value: "auto", hostCPUs: 1, want: "1"},
+		{value: "auto", hostCPUs: 2, want: "1"},
+		{value: "auto", hostCPUs: 3, want: "2"},
+		{value: "auto", hostCPUs: 4, want: "2"},
+		{value: "auto", hostCPUs: 5, want: "3"},
+		{value: "auto", hostCPUs: 6, want: "4"},
+		{value: "auto", hostCPUs: 64, want: "4"},
+		{value: "7", hostCPUs: 3, want: "7"},
+	} {
+		got, err := resolveE2EVMCPU(test.value, test.hostCPUs)
+		if err != nil || got != test.want {
+			t.Fatalf("resolveE2EVMCPU(%q, %d) = %q, %v; want %q",
+				test.value, test.hostCPUs, got, err, test.want)
+		}
+	}
+	for _, value := range []string{"0", "-1", "invalid"} {
+		if _, err := resolveE2EVMCPU(value, 8); err == nil {
+			t.Fatalf("invalid E2E_VM_CPU %q was accepted", value)
+		}
+	}
+	if _, err := resolveE2EVMCPU("auto", 0); err == nil {
+		t.Fatal("automatic E2E_VM_CPU accepted an unavailable host CPU count")
+	}
+}
+
 func TestEnvFileRejectsCommands(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "unsafe.env")
 	writeFixture(t, file, "VALUE=$(id)\n")

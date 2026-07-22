@@ -26,9 +26,10 @@ stage_test_vms_check_fail() {
 stage_test_vms_check() {
   reconcile_incus_reachable \
     || { stage_test_vms_check_fail "outer Incus is not reachable"; return 1; }
-  local desired revision worker_hash status_hash marker agent_key_hash agent_configured=0 client_dir
+  local desired desired_cpu revision worker_hash status_hash marker agent_key_hash agent_configured=0 client_dir
   local agent_public_key='' enrollment_rc inner_output
   desired="${NESTED_E2E_VMS:-0}"
+  desired_cpu="${E2E_VM_CPU:-4}"
   revision="$(stage_test_vms_revision)"
   worker_hash="$(stage_test_vms_worker_hash)"
   status_hash="$(stage_test_vms_status_hash)"
@@ -43,8 +44,8 @@ stage_test_vms_check() {
   fi
   agent_key_hash="$(printf '%s' "$agent_public_key" | sha256sum | awk '{print $1}')"
   marker="$(incus config get "$INSTANCE_NAME" user.subyard.test_vms_revision "${PROJ[@]}" 2>/dev/null || true)"
-  [ "$marker" = "$desired:$revision:$agent_key_hash" ] \
-    || { stage_test_vms_check_fail "outer instance revision marker differs from the requested backend/key"; return 1; }
+  [ "$marker" = "$desired:$revision:$agent_key_hash:$desired_cpu" ] \
+    || { stage_test_vms_check_fail "outer instance revision marker differs from the requested backend/key/CPU"; return 1; }
   if [ "$desired" = 1 ] && [ "$agent_configured" = 1 ]; then
     [ -r "$client_dir/route.tsv" ] && [ -r "$client_dir/known_hosts" ] \
       || { stage_test_vms_check_fail "published agent route or bastion host-key pin is missing"; return 1; }
@@ -64,7 +65,7 @@ stage_test_vms_check() {
   if ! inner_output="$(incus exec "$INSTANCE_NAME" "${PROJ[@]}" \
     --env WANT_ENABLED="$desired" --env WANT_WORKER_HASH="$worker_hash" \
     --env WANT_STATUS_HASH="$status_hash" --env WANT_AGENT_CONFIGURED="$agent_configured" \
-    --env WANT_AGENT_KEY_HASH="$agent_key_hash" \
+    --env WANT_AGENT_KEY_HASH="$agent_key_hash" --env WANT_CPU="$desired_cpu" \
     -- sh -eu -s 2>&1 <<'CHECK'
 check_fail() { printf 'inner yard: %s\n' "$*" >&2; exit 1; }
 worker=/usr/local/libexec/subyard/test-vms-inner
@@ -82,6 +83,8 @@ actual="$(sha256sum "$status" | awk '{print $1}')" \
 . "$config" || check_fail "could not load the backend config"
 [ "${NESTED_E2E_VMS:-0}" = "$WANT_ENABLED" ] \
   || check_fail "backend enabled state differs"
+[ "${E2E_VM_CPU:-}" = "$WANT_CPU" ] \
+  || check_fail "backend CPU limit differs"
 [ "$(printf '%s' "${E2E_AGENT_PUBLIC_KEY:-}" | sha256sum | awk '{print $1}')" = "$WANT_AGENT_KEY_HASH" ] \
   || check_fail "installed agent public key differs from the enrollment request"
 if [ "$WANT_ENABLED" = 1 ]; then

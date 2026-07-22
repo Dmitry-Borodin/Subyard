@@ -26,6 +26,16 @@ DEV_SUDO=0
 DEV_UID=1000
 SSH_PORT=2222
 
+for fixture in '1 1' '2 1' '3 2' '4 2' '5 3' '6 4' '64 4'; do
+  read -r host_cpus expected <<<"$fixture"
+  [ "$(e2e_vm_cpu_default "$host_cpus")" = "$expected" ] \
+    || fail "adaptive E2E CPU default failed for $host_cpus host CPUs"
+done
+E2E_VM_CPU=7
+context_resolve_e2e_vm_cpu || fail "$CONTEXT_ERROR"
+[ "$E2E_VM_CPU" = 7 ] || fail "explicit E2E CPU override was changed"
+E2E_VM_CPU=auto
+
 context_validate || fail "$CONTEXT_ERROR"
 
 NESTED_E2E_VMS=wat

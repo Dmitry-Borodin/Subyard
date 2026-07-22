@@ -236,7 +236,7 @@ reconcile_inner_incus() {
 : "${NESTED_E2E_VMS:=0}"
 : "${DEV_USER:=dev}"
 : "${E2E_VM_IMAGE:=images:debian/13/cloud}"
-: "${E2E_VM_CPU:=2}"
+: "${E2E_VM_CPU:=4}"
 : "${E2E_VM_MEMORY:=4GiB}"
 : "${E2E_VM_DISK:=10GiB}"
 : "${E2E_VM_TTL_MINUTES:=240}"

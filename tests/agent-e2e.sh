@@ -131,6 +131,24 @@ resolve_bastion_route
 [ "$BASTION_KNOWN_HOSTS" = "$SHARED_ROUTE_DIR/known_hosts" ] \
   || fail "shared bastion route lost its pinned host key"
 
+# Refresh through a private bootstrap config. The shared config must keep both VM aliases while the
+# manifest probe is in flight, otherwise concurrent cleanup can fall back to DNS for e2e-vm-*.
+write_client_config
+mkdir -p "$TMP/fake-bin"
+cat > "$TMP/fake-bin/ssh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+grep -Fxq 'Host e2e-vm-1' "$EXPECTED_CLIENT_CONFIG"
+grep -Fxq 'Host e2e-vm-2' "$EXPECTED_CLIENT_CONFIG"
+cat "$FAKE_ALLOCATION_MANIFEST"
+SH
+chmod 0700 "$TMP/fake-bin/ssh"
+printf '%s\n' "$manifest" > "$TMP/allocation.tsv"
+EXPECTED_CLIENT_CONFIG="$CLIENT_CONFIG" FAKE_ALLOCATION_MANIFEST="$TMP/allocation.tsv" \
+PATH="$TMP/fake-bin:$PATH" prepare_client
+[ "$(grep -c '^Host e2e-vm-' "$CLIENT_CONFIG")" -eq 2 ] \
+  || fail "manifest refresh did not publish a complete VM client config"
+
 # Model direct guest SSH and cleanup locally.
 guest() {
   shift

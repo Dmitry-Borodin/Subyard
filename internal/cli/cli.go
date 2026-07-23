@@ -2152,9 +2152,11 @@ func (cli *CLI) executeStructuredCommand(
 		handlerArguments = append([]string{definition.Arg0}, handlerArguments...)
 	}
 	contextValues := structuredCommandContext(loaded)
-	if definition.Name == "init" {
+	if structuredCommandNeedsSudo(definition.Name) {
 		if cli.options.AdapterRunner == nil {
-			if err := cli.prepareNetworkManagerPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
+			if err := cli.prepareSudoPrivileges(
+				ctx, diagnostics, os.Geteuid(), definition.Name,
+			); err != nil {
 				return domain.AdapterResult{}, err
 			}
 		}
@@ -2177,6 +2179,10 @@ func (cli *CLI) executeStructuredCommand(
 		}
 	}
 	return result, err
+}
+
+func structuredCommandNeedsSudo(name string) bool {
+	return name == "init" || name == "teardown"
 }
 
 func parseStructuredStartArguments(arguments []string, inheritedYes bool) (assumeYes, help bool, err error) {
@@ -2266,6 +2272,42 @@ func (cli *CLI) executeStructuredStart(
 	return result, err
 }
 
+func (cli *CLI) prepareSudoPrivileges(
+	ctx context.Context,
+	diagnostics io.Writer,
+	effectiveUID int,
+	operation string,
+) error {
+	if effectiveUID == 0 {
+		return nil
+	}
+	if cli.sudoAvailableWithoutPrompt(ctx) {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("authorize root steps for %s: %w", operation, err)
+	}
+	fmt.Fprintf(diagnostics, "  [ .. ] authorizing root steps for %s\n", operation)
+	command := exec.CommandContext(ctx, "sudo", "-v")
+	command.Env = environmentList(cli.env, nil)
+	command.Stdin = cli.options.Stdin
+	command.Stdout = cli.options.Stdout
+	command.Stderr = cli.options.Stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("authorize root steps for %s: %w", operation, err)
+	}
+	return nil
+}
+
+func (cli *CLI) sudoAvailableWithoutPrompt(ctx context.Context) bool {
+	command := exec.CommandContext(ctx, "sudo", "-n", "true")
+	command.Env = environmentList(cli.env, nil)
+	command.Stdin = nil
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	return command.Run() == nil
+}
+
 func (cli *CLI) prepareNetworkManagerPrivileges(ctx context.Context, diagnostics io.Writer, effectiveUID int) error {
 	if effectiveUID == 0 {
 		return nil
@@ -2285,6 +2327,12 @@ func (cli *CLI) prepareNetworkManagerPrivileges(ctx context.Context, diagnostics
 		return errors.New("inspect NetworkManager before host network check: empty service state")
 	default:
 		return fmt.Errorf("inspect NetworkManager before host network check: unexpected state %q", state)
+	}
+	if cli.sudoAvailableWithoutPrompt(ctx) {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("authorize the NetworkManager safety check: %w", err)
 	}
 	fmt.Fprintln(diagnostics, "  [ .. ] authorizing the NetworkManager safety check")
 	command := exec.CommandContext(ctx, "sudo", "-v")

@@ -238,9 +238,14 @@ func TestNetworkManagerPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
 	}
 	logPath := filepath.Join(root, "sudo.log")
 	writeCLIFile(t, filepath.Join(bin, "systemctl"), "#!/bin/sh\nprintf 'active\\n'\n", 0o700)
-	writeCLIFile(t, filepath.Join(bin, "sudo"), "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$SUDO_LOG\"\n", 0o700)
+	writeCLIFile(t, filepath.Join(bin, "sudo"), `#!/bin/sh
+printf '%s\n' "$*" >> "$SUDO_LOG"
+if [ "$*" = "-n true" ]; then
+	exit "${SUDO_NONINTERACTIVE_RC:-0}"
+fi
+`, 0o700)
 	t.Setenv("PATH", bin)
-	environment = append(environment, "PATH="+bin, "SUDO_LOG="+logPath)
+	environment = append(environment, "PATH="+bin, "SUDO_LOG="+logPath, "SUDO_NONINTERACTIVE_RC=1")
 	var diagnostics bytes.Buffer
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
@@ -256,7 +261,7 @@ func TestNetworkManagerPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(payload) != "-v\n" || !strings.Contains(diagnostics.String(), "authorizing") {
+	if string(payload) != "-n true\n-v\n" || !strings.Contains(diagnostics.String(), "authorizing") {
 		t.Fatalf("sudo authorization was not explicit: log=%q diagnostics=%q", payload, diagnostics.String())
 	}
 
@@ -269,6 +274,88 @@ func TestNetworkManagerPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("inactive NetworkManager invoked sudo: %v", err)
+	}
+}
+
+func TestRootStepPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "sudo.log")
+	writeCLIFile(t, filepath.Join(bin, "sudo"), `#!/bin/sh
+printf '%s\n' "$*" >> "$SUDO_LOG"
+if [ "$*" = "-n true" ]; then
+	exit "${SUDO_NONINTERACTIVE_RC:-0}"
+fi
+IFS= read -r input
+printf 'input=%s\n' "$input" >> "$SUDO_LOG"
+`, 0o700)
+	t.Setenv("PATH", bin)
+	environment = append(environment, "PATH="+bin, "SUDO_LOG="+logPath, "SUDO_NONINTERACTIVE_RC=1")
+	var diagnostics bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+		Stdin: strings.NewReader("operator-terminal-input\n"), Stdout: &diagnostics, Stderr: &diagnostics,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := program.prepareSudoPrivileges(
+		context.Background(), &diagnostics, 1000, "teardown",
+	); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "-n true\n-v\ninput=operator-terminal-input\n" ||
+		!strings.Contains(diagnostics.String(), "authorizing root steps for teardown") {
+		t.Fatalf("root-step sudo authorization did not retain operator stdio: log=%q diagnostics=%q",
+			payload, diagnostics.String())
+	}
+
+	if err := os.Remove(logPath); err != nil {
+		t.Fatal(err)
+	}
+	noninteractiveEnvironment := append([]string(nil), environment...)
+	for index, value := range noninteractiveEnvironment {
+		if value == "SUDO_NONINTERACTIVE_RC=1" {
+			noninteractiveEnvironment[index] = "SUDO_NONINTERACTIVE_RC=0"
+		}
+	}
+	noninteractive, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: noninteractiveEnvironment, WorkingDir: root,
+		Stdin: strings.NewReader("must-not-be-read\n"), Stdout: &diagnostics, Stderr: &diagnostics,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := noninteractive.prepareSudoPrivileges(
+		context.Background(), &diagnostics, 1000, "teardown",
+	); err != nil {
+		t.Fatal(err)
+	}
+	payload, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "-n true\n" {
+		t.Fatalf("passwordless sudo unexpectedly fell back to terminal authorization: %q", payload)
+	}
+
+	if err := os.Remove(logPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := program.prepareSudoPrivileges(
+		context.Background(), &diagnostics, 0, "teardown",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("root execution invoked sudo: %v", err)
 	}
 }
 

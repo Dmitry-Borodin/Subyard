@@ -7,7 +7,7 @@ SUBYARD_HOST_SOURCED=1
 require_root() {
   [ "$(id -u)" -eq 0 ] && return 0
   local why="${1:-it changes the host system}" operator_user operator_home name
-  local -a elevated_env
+  local -a elevated_env sudo_args=()
   if command -v sudo >/dev/null 2>&1; then
     operator_user="${SUBYARD_USER:-${SUDO_USER:-$(id -un)}}"
     operator_home="${SUBYARD_OPERATOR_HOME:-$(subyard_operator_home)}"
@@ -23,8 +23,13 @@ require_root() {
       [ -z "${!name:-}" ] || elevated_env+=("$name=${!name}")
     done
     warn "this needs root: $why"
-    info "re-running under sudo (you'll be asked for your password)…"
-    exec sudo -- env "${elevated_env[@]}" \
+    if [ "${SUBYARD_SUDO_PREAUTHORIZED:-0}" = 1 ]; then
+      info "re-running under pre-authorized sudo…"
+      sudo_args=(-n)
+    else
+      info "re-running under sudo (you'll be asked for your password)…"
+    fi
+    exec sudo "${sudo_args[@]}" -- env "${elevated_env[@]}" \
       "$SUBYARD_SCRIPT_PATH" ${SUBYARD_SCRIPT_ARGV[@]+"${SUBYARD_SCRIPT_ARGV[@]}"}
   fi
   printf '\n%sNeeds root and sudo is not installed — run as root:%s\n    %s%s %s%s\n\n' \

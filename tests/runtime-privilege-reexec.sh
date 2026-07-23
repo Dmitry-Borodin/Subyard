@@ -53,6 +53,7 @@ export MOCK_SUDO_LOG="$TMP/sudo.argv"
   SUBYARD_HOME="$TMP/operator home/.subyard"
   SUBYARD_YARD=e2e-yard
   SUBYARD_YARD_EXPLICIT=1
+  SUBYARD_SUDO_PREAUTHORIZED=1
   SUBYARD_SCRIPT_PATH="$TMP/phase.sh"
   SUBYARD_SCRIPT_ARGV=(--yes)
   warn() { :; }
@@ -77,5 +78,7 @@ for expected in \
     || fail "sudo re-entry omitted argument: $expected"
 done
 grep -Fxq -- env "$MOCK_SUDO_LOG" || fail 'sudo re-entry did not use an explicit environment'
+grep -Fxq -- -n "$MOCK_SUDO_LOG" \
+  || fail 'preauthorized sudo re-entry attempted an interactive password prompt'
 
-printf 'ok: child phases own re-exec identity and sudo preserves operator roots\n'
+printf 'ok: child phases own re-exec identity and preauthorized sudo preserves operator roots\n'

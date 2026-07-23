@@ -21,11 +21,14 @@ yard's encapsulation.
 
 Subyard targets a Linux amd64 or arm64 host with Incus. The installer downloads a verified,
 self-contained release runtime, so the operator CLI does not require Go or compile source at runtime.
-It links `yard` and `sy` into `~/.local/bin` and enables shell completion.
+The host needs `curl`, `jq`, `sha256sum`, `tar`, and `gzip`. The installer shows every local change
+and asks once before it links `yard` and `sy` into `~/.local/bin`, configures new-shell PATH, and
+enables shell completion.
 
 ```bash
 curl -fsSL --proto '=https' --tlsv1.2 \
   https://github.com/Dmitry-Borodin/Subyard/releases/latest/download/subyard-install.sh | bash
+exec "$SHELL" -l
 yard check
 yard init
 

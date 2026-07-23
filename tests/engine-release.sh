@@ -17,6 +17,7 @@ workflow="$ROOT/.github/workflows/release.yml"
 [ -r "$workflow" ] || fail 'tag release workflow is missing'
 grep -Fq 'contents: write' "$workflow" \
   && grep -Fq 'for arch in amd64 arm64' "$workflow" \
+  && grep -Fq 'dev/release-assets.sh --release-dir .build/release' "$workflow" \
   && grep -Fq 'gh release create "$GITHUB_REF_NAME"' "$workflow" \
   || fail 'tag workflow does not publish both supported runtime architectures'
 
@@ -100,31 +101,70 @@ touch '$TMP/standalone-go-invoked'
 exit 99
 EOF
 chmod 0700 "$standalone_no_go/go"
+if HOME="$TMP/unconfirmed-home" YARD_RUNTIME_ROOT="$TMP/unconfirmed-runtime" \
+  YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_VERSION=1.0.0-test \
+  "$release/subyard-install.sh" </dev/null >/dev/null 2>&1; then
+  fail 'standalone bootstrap changed the host without confirmation'
+fi
+[ ! -e "$TMP/unconfirmed-runtime" ] \
+  || fail 'declined standalone bootstrap created a runtime'
 HOME="$standalone_home" SUBYARD_HOME="$standalone_home/.subyard" \
   SUBYARD_CONFIG_HOME="$standalone_home/.config/subyard" YARD_BIN_DIR="$standalone_bin" \
+  YARD_SHELL_RC="$standalone_home/.bashrc" YARD_LOGIN_RC="$standalone_home/.profile" \
   YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_VERSION=1.0.0-test \
   PATH="$standalone_no_go:$PATH" \
-  "$release/subyard-install.sh" >/dev/null
+  "$release/subyard-install.sh" --yes >/dev/null
 [ "$($standalone_bin/yard --version)" = 'yard 1.0.0-test' ] \
   && [ -L "$standalone_bin/sy" ] && [ ! -e "$TMP/standalone-go-invoked" ] \
   || fail 'standalone installer did not publish a usable runtime without a checkout'
+grep -Fq 'Subyard CLI login PATH' "$standalone_home/.profile" \
+  && grep -Fq 'Subyard CLI interactive PATH' "$standalone_home/.bashrc" \
+  && grep -Fq 'Subyard CLI completion' "$standalone_home/.bashrc" \
+  || fail 'standalone installer did not configure new login and interactive shells'
+HOME="$standalone_home" PATH=/usr/bin:/bin SHELL=/bin/bash bash -lc \
+  'command -v yard >/dev/null && yard --version >/dev/null' \
+  || fail 'standalone installer is not available to a new login shell'
+HOME="$standalone_home" PATH=/usr/bin:/bin SHELL=/bin/bash \
+  bash --noprofile --rcfile "$standalone_home/.bashrc" -ic \
+  'command -v yard >/dev/null && complete -p yard >/dev/null' >/dev/null 2>&1 \
+  || fail 'standalone installer did not activate Bash completion'
+HOME="$standalone_home" SUBYARD_HOME="$standalone_home/.subyard" \
+  SUBYARD_CONFIG_HOME="$standalone_home/.config/subyard" YARD_BIN_DIR="$standalone_bin" \
+  YARD_SHELL_RC="$standalone_home/.bashrc" YARD_LOGIN_RC="$standalone_home/.profile" \
+  YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_VERSION=1.0.0-test \
+  PATH="$standalone_no_go:$PATH" \
+  "$release/subyard-install.sh" --yes >/dev/null
+[ "$(grep -cF 'Subyard CLI login PATH' "$standalone_home/.profile")" -eq 1 ] \
+  && [ "$(grep -cF 'Subyard CLI interactive PATH' "$standalone_home/.bashrc")" -eq 1 ] \
+  && [ "$(grep -cF 'Subyard CLI completion' "$standalone_home/.bashrc")" -eq 1 ] \
+  || fail 'standalone shell integration is not idempotent'
 
 bad_release="$TMP/bad-standalone-release"
 cp -a "$release" "$bad_release"
 printf 'corrupt\n' >> "$bad_release/subyard-install-runtime-release.sh"
 if HOME="$TMP/bad-standalone-home" YARD_RUNTIME_ROOT="$TMP/bad-standalone-runtime" \
   YARD_RELEASE_BASE_URL="file://$bad_release" YARD_RELEASE_VERSION=1.0.0-test \
-  "$bad_release/subyard-install.sh" >/dev/null 2>&1; then
+  "$bad_release/subyard-install.sh" --yes >/dev/null 2>&1; then
   fail 'standalone bootstrap accepted a corrupt installer'
 fi
 [ ! -e "$TMP/bad-standalone-runtime/current" ] \
   || fail 'corrupt standalone installer changed the current runtime'
 
-arm_release="$TMP/release-arm64"
-artifact_arm="$("$ROOT/dev/package-engine.sh" --output-dir "$arm_release" --version 1.0.0-test --arch arm64)"
+artifact_arm="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.0.0-test --arch arm64)"
 jq -e '.os == "linux" and .arch == "arm64" and .version == "1.0.0-test"' \
   "$artifact_arm.manifest.json" >/dev/null \
   || fail 'arm64 release contract was not published'
+printf 'must not be published\n' > "$release/unexpected-build-note"
+publish_list="$TMP/publish-assets.list"
+"$ROOT/dev/release-assets.sh" --release-dir "$release" --version 1.0.0-test > "$publish_list"
+[ "$(wc -l < "$publish_list")" -eq 19 ] \
+  && ! grep -Fq '.build.lock' "$publish_list" \
+  && ! grep -Fq 'unexpected-build-note' "$publish_list" \
+  || fail 'release publishing does not use the exact 19-asset allowlist'
+while IFS= read -r publish_asset; do
+  [ -f "$publish_asset" ] && [ ! -L "$publish_asset" ] \
+    || fail "release allowlist contains an invalid asset: $publish_asset"
+done < "$publish_list"
 
 legacy_state="$SUBYARD_CONFIG_HOME/projects/legacy-12345678.json"
 install -d -m 0700 "$(dirname "$legacy_state")"

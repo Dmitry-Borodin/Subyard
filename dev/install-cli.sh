@@ -79,7 +79,7 @@ if [ ! -x "$YARD_SRC" ] || [ ! -x "$YARD_ENGINE" ]; then
   update_args=(--runtime-root "$RUNTIME_ROOT")
   [ -z "${YARD_RELEASE_VERSION:-}" ] || update_args+=(--version "$YARD_RELEASE_VERSION")
   [ "${YARD_RELEASE_OFFLINE:-0}" != 1 ] || update_args+=(--offline)
-  "$SCRIPT_DIR/bootstrap-runtime.sh" "${update_args[@]}" \
+  "$SCRIPT_DIR/bootstrap-runtime.sh" "${update_args[@]}" --yes \
     || die "release runtime installation failed; launcher links were not changed"
 fi
 [ -x "$YARD_SRC" ] && [ -x "$YARD_ENGINE" ] \
@@ -98,10 +98,10 @@ else
 fi
 
 if [ "$need_path_line" = 1 ]; then
-  if [ -f "$RC" ] && grep -qF 'Subyard CLI' "$RC"; then
+  if [ -f "$RC" ] && grep -qxF '# Subyard CLI interactive PATH' "$RC"; then
     ok "PATH line already present in $RC"
   else
-    printf '\n# Subyard CLI\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
+    printf '\n# Subyard CLI interactive PATH\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
     ok "added $BIN_DIR to PATH in $RC"
   fi
 fi

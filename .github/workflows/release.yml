@@ -40,7 +40,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mapfile -t assets < <(find .build/release -maxdepth 1 -type f -print | sort)
-          ((${#assets[@]} > 0)) || { printf 'no release assets found\n' >&2; exit 1; }
+          version="${GITHUB_REF_NAME#v}"
+          asset_list="$(mktemp)"
+          dev/release-assets.sh --release-dir .build/release --version "$version" > "$asset_list"
+          mapfile -t assets < "$asset_list"
           gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
             --verify-tag --generate-notes --title "Subyard ${GITHUB_REF_NAME#v}"

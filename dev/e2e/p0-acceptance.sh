@@ -10,6 +10,8 @@ PROBE_PID=''
 PROBE_MARKER=''
 PROBE_NAME=''
 PROBE_LOG=''
+VM1_YARD_ENTRY=''
+VM2_YARD_ENTRY=''
 
 die() { printf 'p0-acceptance: %s\n' "$*" >&2; exit 2; }
 run_vm() {
@@ -50,6 +52,23 @@ assert_no_worktrees() {
       find /tmp -maxdepth 1 -type d -name 'subyard-worktree.*' -print -quit)"
     [ -z "$leftover" ] || die "VM$vm retained an agent worktree"
   done
+}
+
+yard_entry_state() {
+  local vm="$1"
+  "$AGENT" --ssh "$vm" -- sh -c '
+    path="$HOME/.local/bin/yard"
+    if [ -L "$path" ]; then
+      printf "link\t%s\n" "$(readlink "$path")"
+    elif [ -f "$path" ]; then
+      printf "file\t%s\t%s\n" \
+        "$(stat -c "%a:%u:%g" "$path")" "$(sha256sum "$path" | awk "{print \\$1}")"
+    elif [ -e "$path" ]; then
+      printf "other\t%s\n" "$(stat -c "%f:%u:%g" "$path")"
+    else
+      printf "absent\n"
+    fi
+  '
 }
 
 transport_probes() {
@@ -127,6 +146,8 @@ vm2_ip="$(ssh -F "$CONFIG" -G e2e-vm-2 | awk '$1=="hostname" {print $2; exit}')"
 "$AGENT" --verify-boundary
 transport_probes
 run_lanes
+VM1_YARD_ENTRY="$(yard_entry_state 1)"
+VM2_YARD_ENTRY="$(yard_entry_state 2)"
 PEERS_READY=1
 run_vm 1 peer-prepare "$vm2_ip"
 run_vm 2 peer-prepare "$vm1_ip"
@@ -153,12 +174,14 @@ PEERS_READY=0
 for vm in 1 2; do
   ssh -F "$CONFIG" -T "e2e-vm-$vm" -- test ! -e "/tmp/subyard-p0-peer-$TOKEN" \
     || die "VM$vm retained its peer fixture"
-  ssh -F "$CONFIG" -T "e2e-vm-$vm" -- sudo -n test ! -e /usr/local/bin/yard \
-    || die "VM$vm retained the peer yard wrapper"
   "$AGENT" --ssh "$vm" -- \
     sh -c '! grep -Fq "$1" "$HOME/.ssh/authorized_keys" 2>/dev/null' _ "subyard-p0-$TOKEN" \
     || die "VM$vm retained a synthetic peer authorization"
 done
+[ "$(yard_entry_state 1)" = "$VM1_YARD_ENTRY" ] \
+  || die 'VM1 user yard entry was not restored exactly'
+[ "$(yard_entry_state 2)" = "$VM2_YARD_ENTRY" ] \
+  || die 'VM2 user yard entry was not restored exactly'
 assert_no_worktrees
 "$AGENT" --verify-boundary
 after="$(ssh -F "$CONFIG" -T subyard-e2e-bastion </dev/null)" || die 'final allocation status failed'

@@ -191,6 +191,44 @@ func TestShellTestsStayOutsideProductionTrees(t *testing.T) {
 	}
 }
 
+func TestProjectStateAndRoutingStayGoOwned(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	for _, retired := range []string{
+		"scripts/state/store.sh",
+		"scripts/state/resolver.sh",
+		"scripts/state/transport.sh",
+		"scripts/project-clone.sh",
+		"scripts/project-remove.sh",
+		"scripts/project-sync.sh",
+		"scripts/project-code.sh",
+		"scripts/project-export.sh",
+		"scripts/lib/project-snapshot.sh",
+		"scripts/state/metadata.sh",
+	} {
+		if _, err := os.Lstat(filepath.Join(root, retired)); err == nil {
+			t.Errorf("retired project state or routing shim returned: %s", retired)
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	for _, relative := range []string{"scripts/09-yard-extras.sh"} {
+		payload, err := os.ReadFile(filepath.Join(root, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{
+			"state_engine", "state_get", "state_write", "state_set", "state_remove",
+			"state_exists", "state_ids", "state_validate", "resolve_project",
+			"route_sync_target", "maybe_reconcile", "_project-state",
+		} {
+			if strings.Contains(string(payload), forbidden) {
+				t.Errorf("Go-owned project state or routing returned to %s through %q",
+					relative, forbidden)
+			}
+		}
+	}
+}
+
 type shellContract struct {
 	kind      string
 	owner     string

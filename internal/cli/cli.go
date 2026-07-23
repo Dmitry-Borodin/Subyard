@@ -828,16 +828,10 @@ func parseLogArguments(arguments []string) ([]string, bool, error) {
 }
 
 func (cli *CLI) runUsage(ctx context.Context, loaded config.Loaded, arguments []string) int {
-	filtered := make([]string, 0, len(arguments))
-	for _, argument := range arguments {
-		switch argument {
-		case "-y", "--yes":
-		case "-h", "--help":
-			fmt.Fprintf(cli.options.Stdout, "Usage: %s usage [CCUSAGE ARG...]\n", cli.options.Program)
-			return 0
-		default:
-			filtered = append(filtered, argument)
-		}
+	filtered, help := parseUsageArguments(arguments)
+	if help {
+		fmt.Fprintf(cli.options.Stdout, "Usage: %s usage [CCUSAGE ARG...]\n", cli.options.Program)
+		return 0
 	}
 	yard := loaded.Context
 	if !cli.incusCLIYardRunning(ctx, yard) {
@@ -855,15 +849,32 @@ func (cli *CLI) runUsage(ctx context.Context, loaded config.Loaded, arguments []
 		cli.errorf("usage: /usr/local/bin/ccusage is missing or not executable; repair with: %s", hint)
 		return 1
 	}
+	return cli.runExternal(ctx, "incus", usageExecArguments(yard, filtered))
+}
+
+func parseUsageArguments(arguments []string) ([]string, bool) {
+	filtered := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		switch argument {
+		case "-y", "--yes":
+		case "-h", "--help":
+			return nil, true
+		default:
+			filtered = append(filtered, argument)
+		}
+	}
+	return filtered, false
+}
+
+func usageExecArguments(yard domain.Context, arguments []string) []string {
 	home := "/home/" + yard.DevUser
-	commandArguments := []string{
+	result := []string{
 		"exec", yard.InstanceName, "--project", yard.IncusProject,
 		"--user", strconv.Itoa(yard.DevUID), "--group", strconv.Itoa(yard.DevUID),
 		"--cwd", home, "--env", "HOME=" + home, "--env", "USER=" + yard.DevUser,
 		"--", "/usr/local/bin/ccusage",
 	}
-	commandArguments = append(commandArguments, filtered...)
-	return cli.runExternal(ctx, "incus", commandArguments)
+	return append(result, arguments...)
 }
 
 func (cli *CLI) runShell(
@@ -897,23 +908,26 @@ func (cli *CLI) runShell(
 		return 1
 	}
 	cli.autoSyncCredentials(ctx, loaded)
+	return cli.runExternal(ctx, "incus", shellExecArguments(yard, root, cwd, guestCommand))
+}
+
+func shellExecArguments(yard domain.Context, root bool, cwd string, guestCommand []string) []string {
 	uid := yard.DevUID
 	userArguments := []string{
-		"--user", strconv.Itoa(uid), "--group", strconv.Itoa(uid), "--env", "HOME=" + home,
+		"--user", strconv.Itoa(uid), "--group", strconv.Itoa(uid),
+		"--env", "HOME=/home/" + yard.DevUser,
 	}
 	if root {
 		userArguments = []string{"--user", "0", "--group", "0", "--env", "HOME=/root"}
 	}
-	commandArguments := []string{"exec", yard.InstanceName, "--project", yard.IncusProject}
-	commandArguments = append(commandArguments, userArguments...)
-	commandArguments = append(commandArguments, "--cwd", cwd)
+	result := []string{"exec", yard.InstanceName, "--project", yard.IncusProject}
+	result = append(result, userArguments...)
+	result = append(result, "--cwd", cwd)
 	if len(guestCommand) == 0 {
-		commandArguments = append(commandArguments, "-t", "--", "bash", "-l")
-	} else {
-		commandArguments = append(commandArguments, "--")
-		commandArguments = append(commandArguments, guestCommand...)
+		return append(result, "-t", "--", "bash", "-l")
 	}
-	return cli.runExternal(ctx, "incus", commandArguments)
+	result = append(result, "--")
+	return append(result, guestCommand...)
 }
 
 func (cli *CLI) incusCLIYardRunning(ctx context.Context, yard domain.Context) bool {

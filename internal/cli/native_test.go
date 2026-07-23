@@ -1091,6 +1091,63 @@ func TestParseShellArguments(t *testing.T) {
 	}
 }
 
+func TestUsageAndShellExecArgumentsPreserveTypedBoundaries(t *testing.T) {
+	yard := domain.Context{
+		InstanceName: "yard", IncusProject: "subyard", DevUser: "dev", DevUID: 1000,
+	}
+	usageInput := []string{"daily", "--json", "space arg", "", "$(touch should-not-run)"}
+	filtered, help := parseUsageArguments(append([]string{"--yes"}, usageInput...))
+	if help || !slices.Equal(filtered, usageInput) {
+		t.Fatalf("usage arguments changed during parsing: %#v help=%v", filtered, help)
+	}
+	if filtered, help := parseUsageArguments([]string{"daily", "--help", "ignored"}); !help || filtered != nil {
+		t.Fatalf("usage help was not terminal: %#v help=%v", filtered, help)
+	}
+	usage := usageExecArguments(yard, usageInput)
+	wantPrefix := []string{
+		"exec", "yard", "--project", "subyard",
+		"--user", "1000", "--group", "1000",
+		"--cwd", "/home/dev", "--env", "HOME=/home/dev", "--env", "USER=dev",
+		"--", "/usr/local/bin/ccusage",
+	}
+	if len(usage) != len(wantPrefix)+len(usageInput) ||
+		!slices.Equal(usage[:len(wantPrefix)], wantPrefix) ||
+		!slices.Equal(usage[len(wantPrefix):], usageInput) {
+		t.Fatalf("usage exec boundary drifted: %#v", usage)
+	}
+
+	devShell := shellExecArguments(yard, false, "/srv/workspaces/demo/src", []string{"sh", "-lc", "pwd"})
+	for _, expected := range [][]string{
+		{"--user", "1000"}, {"--group", "1000"}, {"--env", "HOME=/home/dev"},
+		{"--cwd", "/srv/workspaces/demo/src"}, {"--", "sh", "-lc", "pwd"},
+	} {
+		if !containsSequence(devShell, expected) {
+			t.Fatalf("dev shell omitted %#v: %#v", expected, devShell)
+		}
+	}
+	rootShell := shellExecArguments(yard, true, "/home/dev", nil)
+	for _, expected := range [][]string{
+		{"--user", "0"}, {"--group", "0"}, {"--env", "HOME=/root"},
+		{"--cwd", "/home/dev"}, {"-t", "--", "bash", "-l"},
+	} {
+		if !containsSequence(rootShell, expected) {
+			t.Fatalf("root shell omitted %#v: %#v", expected, rootShell)
+		}
+	}
+}
+
+func containsSequence(values, sequence []string) bool {
+	if len(sequence) == 0 {
+		return true
+	}
+	for index := 0; index+len(sequence) <= len(values); index++ {
+		if slices.Equal(values[index:index+len(sequence)], sequence) {
+			return true
+		}
+	}
+	return false
+}
+
 func nativeFixture(t *testing.T) (string, []string, string) {
 	t.Helper()
 	root := t.TempDir()

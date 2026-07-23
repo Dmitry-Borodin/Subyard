@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# `yard usage` dispatch, argument, exit-status, and repair-hint checks.
+# Process smoke for `yard usage` exit status, repair hints, and remote forwarding.
+# Exact argv and dev-identity construction belong to internal/cli Go tests.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,8 +17,6 @@ export SUBYARD_CONFIG_DIR="$tmp/public-config"
 export SUBYARD_CONFIG_HOME="$tmp/config-home"
 export SUBYARD_HOME="$tmp/subyard-home"
 export SUBYARD_NO_AUDIT=1
-export INCUS_LOG="$tmp/incus.log"
-export MOCK_ARGS_LOG="$tmp/args.log"
 export MOCK_CCUSAGE_BIN="$tmp/mock-ccusage"
 export FALLBACK_LOG="$tmp/fallback.log"
 
@@ -28,7 +27,6 @@ case "${1:-}" in
   info) exit 0 ;;
   list) printf 'RUNNING\n' ;;
   exec)
-    printf '%s\n' "$@" > "$INCUS_LOG"
     shift
     while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
     [ "${1:-}" = -- ] && shift
@@ -49,8 +47,6 @@ SH
 cat > "$MOCK_CCUSAGE_BIN" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-: > "$MOCK_ARGS_LOG"
-for arg in "$@"; do printf '%s\0' "$arg" >> "$MOCK_ARGS_LOG"; done
 exit "${MOCK_CCUSAGE_EXIT:-0}"
 SH
 for command in npx bunx; do
@@ -71,21 +67,6 @@ set +e
 rc=$?
 set -e
 [ "$rc" -eq 23 ] || fail "ccusage exit status was not preserved (got $rc)"
-
-mapfile -d '' -t got < "$MOCK_ARGS_LOG"
-[ "${#got[@]}" -eq "${#args[@]}" ] || fail "argument count changed across dispatch"
-for i in "${!args[@]}"; do
-  [ "${got[$i]}" = "${args[$i]}" ] || fail "argument $i changed across dispatch"
-done
-mapfile -t incus_args < "$INCUS_LOG"
-if [ "${incus_args[4]:-}" != --user ] \
-  || [ "${incus_args[5]:-}" != 1000 ] \
-  || [ "${incus_args[6]:-}" != --group ] \
-  || [ "${incus_args[7]:-}" != 1000 ] \
-  || [ "${incus_args[8]:-}" != --cwd ] \
-  || [ "${incus_args[9]:-}" != /home/dev ]; then
-  fail "ccusage was not launched through the dev UID and home"
-fi
 
 # Preserve named context in the repair hint.
 cat > "$SUBYARD_CONFIG_HOME/yards/usage-test.env" <<'ENV'

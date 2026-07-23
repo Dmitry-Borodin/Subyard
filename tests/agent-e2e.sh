@@ -233,6 +233,9 @@ grep -Fq 'write_owner_registration e2e-yard e2e-vms' "$ROOT/dev/e2e/p0-guest.sh"
   || fail "P0 owner lane does not exercise the retired registration"
 grep -Fq './bin/yard -Y e2e-yard teardown --yes' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not teardown the migrated old yard"
+grep -Fq 'features.images=false -c user.subyard.p0-image-cache="$MARKER"' \
+  "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not attach its test-owned image cache before fresh reconciliation"
 owner_bootstrap_line="$(grep -n $'^\tensure_owner_incus$' "$ROOT/dev/e2e/p0-guest.sh" | head -n1 | cut -d: -f1)"
 owner_incus_line="$(grep -n 'OWNER_BASELINE_IMAGES=.*incus image list' "$ROOT/dev/e2e/p0-guest.sh" | head -n1 | cut -d: -f1)"
 [ -n "$owner_bootstrap_line" ] && [ -n "$owner_incus_line" ] \
@@ -246,6 +249,10 @@ grep -Fq 'export "$source" --yes' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not confirm export automation"
 grep -Fq 'YARD_ENGINE_PATH=%q' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer wrapper does not select its explicit candidate engine"
+grep -Fq 'PEER_YARD_ENTRY="$HOME/.local/bin/yard"' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'VM1 user yard entry was not restored exactly' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && ! grep -Fq '/usr/local/bin/yard' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 peer wrapper does not preserve the login-PATH user entrypoint"
 grep -Fq 'UserKnownHostsFile="$PEER_SSH_DIR/known_hosts"' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'ConnectTimeout=8' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'id_ed25519"' "$ROOT/dev/e2e/p0-guest.sh" \
@@ -254,6 +261,7 @@ grep -Fq 'remove_peer_authorization' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer cleanup does not revoke its synthetic SSH authorization"
 grep -Fq 'incus "$@" </dev/null; }' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'real_incus_quiet launch "$VM_IMAGE" p0-vm' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'CONTAINER_CACHE_ALIAS="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'VM_CACHE_ALIAS="${P0_REAL_INCUS_VM_CACHE_ALIAS:-' "$ROOT/dev/e2e/p0-real-incus.sh" \
   || fail "P0 real-Incus lane leaves YAML-reading control-plane stdin open"
 grep -Fq '"$AGENT" --ssh "$vm" --' "$ROOT/dev/e2e/p0-acceptance.sh" \

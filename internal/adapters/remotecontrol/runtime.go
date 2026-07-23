@@ -24,6 +24,7 @@ type Runtime struct {
 	SSH, Home, ConfigHome, ConfigDir, DataHome, PublicKey string
 	Environment                                           []string
 	Timeout                                               time.Duration
+	processCall                                           func(context.Context, string, []string, []byte) ([]byte, error)
 }
 
 func (runtime Runtime) Lookup(_ context.Context, name string) (domain.RemoteRecord, bool, error) {
@@ -290,6 +291,9 @@ func (runtime Runtime) call(ctx context.Context, arguments []string, stdin []byt
 	program := runtime.SSH
 	if program == "" {
 		program = "ssh"
+	}
+	if runtime.processCall != nil {
+		return runtime.processCall(ctx, program, arguments, stdin)
 	}
 	return (transport.Process{Program: program, Arguments: arguments, Env: runtime.Environment, Timeout: runtime.timeout()}).Call(ctx, "", stdin)
 }

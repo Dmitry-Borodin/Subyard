@@ -6,6 +6,7 @@ PROJECT=subyard-p0-real-incus
 MARKER=agent-e2e-p0
 CONTAINER_IMAGE="${P0_REAL_INCUS_CONTAINER_IMAGE:-images:debian/13/cloud}"
 VM_IMAGE="${P0_REAL_INCUS_VM_IMAGE:-images:debian/13/cloud}"
+CONTAINER_CACHE_ALIAS="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
 VM_CACHE_ALIAS="${P0_REAL_INCUS_VM_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-vm}"
 TMP=''
 
@@ -59,6 +60,12 @@ for command in go incus sudo; do command -v "$command" >/dev/null || die "$comma
 sudo -n true || die 'passwordless sudo is required in a disposable test VM'
 [ -S /var/lib/incus/unix.socket ] || die 'Incus socket is unavailable'
 project_exists && cleanup
+if cache_info="$(real_incus image info "$CONTAINER_CACHE_ALIAS" --project default 2>/dev/null)"; then
+  printf '%s\n' "$cache_info" | grep -Fqx 'Type: container' \
+    || die "provisioned image alias $CONTAINER_CACHE_ALIAS is not a container image"
+  CONTAINER_IMAGE="$CONTAINER_CACHE_ALIAS"
+  printf '  [ ok ] using provisioned real-Incus container image %s\n' "$CONTAINER_CACHE_ALIAS"
+fi
 if cache_info="$(real_incus image info "$VM_CACHE_ALIAS" --project default 2>/dev/null)"; then
   printf '%s\n' "$cache_info" | grep -Fqx 'Type: virtual-machine' \
     || die "provisioned image alias $VM_CACHE_ALIAS is not a VM image"
@@ -72,6 +79,13 @@ real_incus project set "$PROJECT" user.subyard.p0="$MARKER"
 run_with_progress "launching real Incus container (first use may download an image)" \
   real_incus_quiet launch "$CONTAINER_IMAGE" p0-container --project "$PROJECT" --storage default \
   -c user.subyard.p0="$MARKER"
+if ! real_incus image info "$CONTAINER_CACHE_ALIAS" --project default >/dev/null 2>&1; then
+  container_fingerprint="$(real_incus config get p0-container volatile.base_image --project "$PROJECT")"
+  [[ "$container_fingerprint" =~ ^[0-9a-f]{64}$ ]] \
+    || die 'real-Incus container base image fingerprint is invalid'
+  real_incus image alias create "$CONTAINER_CACHE_ALIAS" "$container_fingerprint" --project default
+  printf '  [ ok ] retained test-owned container image alias %s\n' "$CONTAINER_CACHE_ALIAS"
+fi
 run_with_progress "launching real Incus VM (a clean allocation may download an image)" \
   real_incus_quiet launch "$VM_IMAGE" p0-vm --vm --project "$PROJECT" \
   --storage default \

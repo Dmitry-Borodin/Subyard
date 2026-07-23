@@ -15,8 +15,12 @@ OWNER_YARD_DIR="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}/yards"
 RENAME_BASE_REVISION="7c67ee3f423cf9f1596c2f5191f462d2b70adcdc"
 RENAME_BASE_ROOT="/tmp/subyard-p0-rename-base-$TOKEN"
 PEER_SSH_DIR="$PEER_ROOT/ssh"
+PEER_YARD_ENTRY="$HOME/.local/bin/yard"
+PEER_YARD_BACKUP="$PEER_ROOT/user-yard-entry.backup"
+PEER_YARD_STATE="$PEER_ROOT/.user-yard-entry-state"
 OWNER_BASELINE_IMAGES=''
 OWNER_BASELINE_CAPTURED=0
+OWNER_BASE_IMAGE="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
 
 die() { printf 'p0-guest: %s\n' "$*" >&2; exit 2; }
 valid_token() { [[ "$1" =~ ^[0-9]+$ ]]; }
@@ -103,8 +107,8 @@ write_owner_registration() { # <yard> <template> <ssh-port>
     grep -Fqx "# $MARKER" "$registration" \
       || die "refusing to replace unrelated registration $registration"
   fi
-  printf '# %s\nYARD_TEMPLATE=%s\nSSH_PORT=%s\nAGENTS=none\n' \
-    "$MARKER" "$template" "$port" \
+  printf '# %s\nYARD_TEMPLATE=%s\nSSH_PORT=%s\nAGENTS=none\nDEV_UID=1001\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n' \
+    "$MARKER" "$template" "$port" "$OWNER_BASE_IMAGE" "$OWNER_BASE_IMAGE" \
     > "$registration"
 }
 
@@ -204,6 +208,16 @@ owner_profile_migration_contract() {
   printf 'ok: pre-rename runtime upgraded, coexisted and retired e2e-yard explicitly\n'
 }
 
+prepare_owner_image_cache_project() {
+  local project=subyard-e2e-yard
+  incus project show "$project" >/dev/null 2>&1 \
+    && die "refusing to replace existing owner project $project"
+  incus image info "$OWNER_BASE_IMAGE" --project default >/dev/null 2>&1 \
+    || die "test-owned base image alias $OWNER_BASE_IMAGE is unavailable"
+  incus project create "$project" \
+    -c features.images=false -c user.subyard.p0-image-cache="$MARKER" >/dev/null
+}
+
 owner() (
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner lane requires VM1'
 	trap owner_cleanup EXIT
@@ -211,6 +225,8 @@ owner() (
 	ensure_owner_incus
 	OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
   OWNER_BASELINE_CAPTURED=1
+	bash dev/e2e/p0-real-incus.sh
+  prepare_owner_image_cache_project
   owner_profile_migration_contract
   ./bin/yard -Y test-yard start --yes
   SUBYARD_E2E_LEGACY_FIXTURE=1 \
@@ -226,7 +242,6 @@ owner() (
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard --version >/dev/null
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y test-yard list >/dev/null
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y test-yard status >/dev/null
-  bash dev/e2e/p0-real-incus.sh
   bash tests/engine-release.sh
   ./bin/yard -Y test-yard teardown --yes
   ! incus project show subyard-test-yard >/dev/null 2>&1 || die 'candidate project remains after teardown'
@@ -259,10 +274,16 @@ controller() (
 
 install_peer_wrapper() {
   local wrapper="$PEER_ROOT/yard-wrapper"
-  if sudo -n test -e /usr/local/bin/yard; then
-    sudo -n grep -Fqx "# $MARKER" /usr/local/bin/yard \
-      || die '/usr/local/bin/yard already exists and is not this fixture'
-    return
+  [ ! -e "$PEER_YARD_STATE" ] && [ ! -e "$PEER_YARD_BACKUP" ] \
+    && [ ! -L "$PEER_YARD_BACKUP" ] || die 'peer yard entry backup is already staged'
+  [ ! -d "$PEER_YARD_ENTRY" ] || die 'peer yard entry is a directory'
+  install -d -m 0755 "$(dirname "$PEER_YARD_ENTRY")"
+  if [ -e "$PEER_YARD_ENTRY" ] || [ -L "$PEER_YARD_ENTRY" ]; then
+    printf 'saving\n' > "$PEER_YARD_STATE"
+    mv "$PEER_YARD_ENTRY" "$PEER_YARD_BACKUP"
+    printf 'saved\n' > "$PEER_YARD_STATE"
+  else
+    printf 'absent\n' > "$PEER_YARD_STATE"
   fi
   {
     printf '#!/usr/bin/env bash\n# %s\n' "$MARKER"
@@ -277,7 +298,41 @@ install_peer_wrapper() {
     printf 'exec %q/bin/yard "$@"\n' "$PEER_ROOT/src"
   } > "$wrapper"
   chmod 0755 "$wrapper"
-  sudo -n install -m 0755 "$wrapper" /usr/local/bin/yard
+  install -m 0755 "$wrapper" "$PEER_YARD_ENTRY"
+  [ "$(bash -lc 'command -v yard')" = "$PEER_YARD_ENTRY" ] \
+    || die "login shell does not resolve the peer CLI through $PEER_YARD_ENTRY"
+}
+
+remove_peer_wrapper() {
+  local state
+  [ -e "$PEER_YARD_STATE" ] || return 0
+  state="$(cat "$PEER_YARD_STATE")"
+  case "$state" in
+    saving)
+      if [ -e "$PEER_YARD_BACKUP" ] || [ -L "$PEER_YARD_BACKUP" ]; then
+        [ ! -e "$PEER_YARD_ENTRY" ] && [ ! -L "$PEER_YARD_ENTRY" ] \
+          || die 'refusing to overwrite the user yard entry during interrupted restore'
+        mv "$PEER_YARD_BACKUP" "$PEER_YARD_ENTRY"
+      fi
+      ;;
+    saved|absent)
+      if [ -e "$PEER_YARD_ENTRY" ] || [ -L "$PEER_YARD_ENTRY" ]; then
+        [ -f "$PEER_YARD_ENTRY" ] && grep -Fqx "# $MARKER" "$PEER_YARD_ENTRY" \
+          || die 'refusing to remove a non-fixture user yard entry'
+        find "$PEER_YARD_ENTRY" -delete
+      fi
+      if [ "$state" = saved ]; then
+        [ -e "$PEER_YARD_BACKUP" ] || [ -L "$PEER_YARD_BACKUP" ] \
+          || die 'saved user yard entry is missing'
+        mv "$PEER_YARD_BACKUP" "$PEER_YARD_ENTRY"
+      else
+        [ ! -e "$PEER_YARD_BACKUP" ] && [ ! -L "$PEER_YARD_BACKUP" ] \
+          || die 'unexpected user yard entry backup exists'
+      fi
+      ;;
+    *) die 'peer yard entry backup state is invalid' ;;
+  esac
+  find "$PEER_YARD_STATE" -delete
 }
 
 bootstrap_peer_keys() {
@@ -570,20 +625,20 @@ peer_credentials() {
   valid_ip "$PEER_IP" || die 'peer IP is invalid'
   expected="$PEER_ROOT/synthetic-credential"
   printf 'subyard-synthetic-p0-cross-owner\n' > "$expected"; chmod 0600 "$expected"
-  /usr/local/bin/yard keys trust @peer --yes >/dev/null
-  /usr/local/bin/yard keys add p0-cross-owner --kind file --zone p0-cross-owner \
+  "$PEER_YARD_ENTRY" keys trust @peer --yes >/dev/null
+  "$PEER_YARD_ENTRY" keys add p0-cross-owner --kind file --zone p0-cross-owner \
     --consumer staging-env --file "$expected" --yes >/dev/null
-  credential="$(/usr/local/bin/yard keys list | awk -F '\t' '$8=="p0-cross-owner" {print $1}')"
+  credential="$("$PEER_YARD_ENTRY" keys list | awk -F '\t' '$8=="p0-cross-owner" {print $1}')"
   [ -n "$credential" ] || die 'cross-owner credential was not created'
-  /usr/local/bin/yard keys sync @peer --now --yes >/dev/null
+  "$PEER_YARD_ENTRY" keys sync @peer --now --yes >/dev/null
   peer_ssh "dev@$PEER_IP" -- bash -lc \
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   source_hash="$(sha256sum "$expected" | awk '{print $1}')"
   remote_hash="$(peer_ssh "dev@$PEER_IP" -- sha256sum \
     "/tmp/subyard-p0-peer-$TOKEN/consumer/config/staging/p0-cross-owner.env" | awk '{print $1}')"
   [ "$source_hash" = "$remote_hash" ] || die 'cross-owner credential materialization differs'
-  /usr/local/bin/yard keys revoke "$credential" --yes >/dev/null
-  /usr/local/bin/yard keys sync @peer --now --yes >/dev/null
+  "$PEER_YARD_ENTRY" keys revoke "$credential" --yes >/dev/null
+  "$PEER_YARD_ENTRY" keys sync @peer --now --yes >/dev/null
   peer_ssh "dev@$PEER_IP" -- bash -lc \
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   ! peer_ssh "dev@$PEER_IP" -- test -e \
@@ -594,9 +649,7 @@ peer_credentials() {
 
 peer_clean() {
   remove_peer_authorization
-  if sudo -n test -e /usr/local/bin/yard && sudo -n grep -Fqx "# $MARKER" /usr/local/bin/yard; then
-    sudo -n find /usr/local/bin/yard -delete
-  fi
+  remove_peer_wrapper
   cleanup_peer_snapshot_fixture
   cleanup_peer_incus
   clean_tree "$PEER_ROOT" "$MARKER"

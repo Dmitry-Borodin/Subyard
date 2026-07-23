@@ -89,13 +89,16 @@ case "$RC" in
 esac
 need_path_line=1
 case ":$PATH:" in *":$BIN_DIR:"*) need_path_line=0 ;; esac
+if [ -f "$RC" ] && grep -qF "export PATH=\"$BIN_DIR:" "$RC"; then
+  need_path_line=0
+fi
 
 printf 'Install the yard CLI\nThis will:\n'
 printf '  - download and verify Subyard %s for %s/%s;\n' "$VERSION" "$os" "$arch"
 printf '  - install the immutable runtime under %s;\n' "$RUNTIME_ROOT"
 printf '  - link yard and sy under %s;\n' "$BIN_DIR"
 printf '  - configure login PATH and shell completion.\n'
-printf '  - migrate a recognized pre-Go install and retain recovery.\n'
+printf '  - migrate a recognized source install and retain recovery.\n'
 if [ "$ASSUME_YES" != 1 ]; then
   if [ ! -t 1 ] || [ ! -r /dev/tty ]; then
     printf 'bootstrap-runtime: confirmation requires a terminal; rerun with --yes for automation\n' >&2
@@ -166,7 +169,7 @@ if "$RUNTIME_ROOT/current/scripts/migrate-source-install.sh" \
 else
   migration_status=$?
   [ "$migration_status" = 3 ] \
-    || { printf 'bootstrap-runtime: pre-Go source migration failed; legacy entrypoints were preserved\n' >&2; exit "$migration_status"; }
+    || { printf 'bootstrap-runtime: source migration failed; existing entrypoints were preserved\n' >&2; exit "$migration_status"; }
 fi
 
 if [ "$migrated_source" = 0 ]; then

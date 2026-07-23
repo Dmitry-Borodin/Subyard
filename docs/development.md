@@ -45,7 +45,6 @@ exec "$SHELL" -l
 
 This requires `curl`, `jq`, `sha256sum`, `tar`, and `gzip`; it asks once before changing the host,
 links `~/.local/bin/{yard,sy}` to the verified runtime, and configures login PATH and completion.
-The source-only `dev/install-cli.sh` provides the equivalent development-host flow.
 
 `make package VERSION=<version>` writes amd64 or arm64 Linux engine artifacts and a complete
 `subyard-<version>-linux-<arch>.tar.gz` runtime under `.build/release/`, each with a detached SHA-256,

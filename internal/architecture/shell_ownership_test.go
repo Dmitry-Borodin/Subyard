@@ -13,9 +13,11 @@ import (
 func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	for _, retired := range []string{
+		"dev/install-cli.sh",
 		"scripts/lib/cache.sh", "scripts/state/transport.sh", "scripts/yard-boot-reconcile.sh",
 		"scripts/sy-stage.sh", "scripts/build-engine.sh", "scripts/package-engine.sh",
 		"scripts/bootstrap-runtime.sh", "scripts/install-cli.sh",
+		"tests/legacy-source-install.sh", "tests/real-host/installed-cli.sh",
 	} {
 		if _, err := os.Lstat(filepath.Join(root, retired)); err == nil {
 			t.Errorf("retired shell path returned: %s", retired)

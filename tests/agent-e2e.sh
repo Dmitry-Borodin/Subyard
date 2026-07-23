@@ -247,8 +247,10 @@ grep -Fq 'shell "$source" --yes --' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not confirm shell automation"
 grep -Fq 'export "$source" --yes' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not confirm export automation"
-grep -Fq 'YARD_ENGINE_PATH=%q' "$ROOT/dev/e2e/p0-guest.sh" \
-  || fail "P0 peer wrapper does not select its explicit candidate engine"
+grep -Fq 'exec %q/yard "$@"' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq '"$release/subyard-install.sh" --yes' "$ROOT/dev/e2e/p0-guest.sh" \
+  && ! grep -Fq 'YARD_ENGINE_PATH=%q' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 peer wrapper does not use its release-installed runtime"
 grep -Fq 'PEER_YARD_ENTRY="$HOME/.local/bin/yard"' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'VM1 user yard entry was not restored exactly' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && ! grep -Fq '/usr/local/bin/yard' "$ROOT/dev/e2e/p0-guest.sh" \
@@ -259,6 +261,13 @@ grep -Fq 'UserKnownHostsFile="$PEER_SSH_DIR/known_hosts"' "$ROOT/dev/e2e/p0-gues
   || fail "P0 cross-owner SSH lacks its synthetic identity, strict pin or bounded timeout"
 grep -Fq 'remove_peer_authorization' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer cleanup does not revoke its synthetic SSH authorization"
+credentials_line="$(grep -n '^peer_credentials()' "$ROOT/dev/e2e/p0-guest.sh" | cut -d: -f1)"
+projects_line="$(grep -n '^peer_projects()' "$ROOT/dev/e2e/p0-guest.sh" | cut -d: -f1)"
+remote_remove_line="$(grep -n 'remote remove peer --yes' "$ROOT/dev/e2e/p0-guest.sh" | cut -d: -f1)"
+[ -n "$credentials_line" ] && [ -n "$projects_line" ] && [ -n "$remote_remove_line" ] \
+  && [ "$remote_remove_line" -gt "$credentials_line" ] \
+  && [ "$remote_remove_line" -lt "$projects_line" ] \
+  || fail "P0 peer alias is removed before its credentials consumer finishes"
 grep -Fq 'incus "$@" </dev/null; }' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'real_incus_quiet launch "$VM_IMAGE" p0-vm' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'CONTAINER_CACHE_ALIAS="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-' "$ROOT/dev/e2e/p0-real-incus.sh" \

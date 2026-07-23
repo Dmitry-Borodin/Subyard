@@ -38,7 +38,7 @@ yard status
 ```
 
 The runtime contains the engine, public profiles/config, completions and host adapters, but no
-source checkout, toolchain or private data. Recognized pre-Go installs are migrated in place; the
+source checkout, toolchain or private data. Recognized source installs are migrated in place; the
 old checkout and one-time recovery under `~/.subyard/recovery/pre-go-source/` are retained.
 
 Run `yard --help` or `yard <command> --help` for complete command usage.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time migration from the historical source-linked CLI to an immutable runtime.
+# One-time migration from a recognized source-linked CLI to an immutable runtime.
 set -euo pipefail
 
 RUNTIME_ROOT=''; BIN_DIR=''; RC=''; LOGIN_RC=''; DATA_HOME=''
@@ -56,16 +56,22 @@ case "$DATA_HOME" in "$HOME"/*) ;; *) fail "Subyard data home must be inside the
 source_launcher="$yard_target"
 source_root="$(cd "$(dirname "$source_launcher")/.." && pwd -P)"
 [ "$source_launcher" = "$source_root/bin/yard" ] \
-  || fail "legacy launcher does not resolve to a source checkout bin/yard"
+  || fail "launcher does not resolve to a source checkout bin/yard"
 for required in \
   "$source_root/bin/yard" \
   "$source_root/scripts/install-cli.sh" \
   "$source_root/config/commands.registry" \
   "$source_root/completions/yard.bash"; do
-  owned_regular "$required" || fail "legacy checkout file is missing or not operator-owned: $required"
+  owned_regular "$required" || fail "source checkout file is missing or not operator-owned: $required"
 done
-grep -Fq 'thin dispatcher over scripts/' "$source_launcher" \
-  || fail "linked checkout is not a recognized pre-Go Subyard installation"
+if grep -Fq 'thin dispatcher over scripts/' "$source_launcher"; then
+  :
+elif grep -Fq 'Stable launcher for a release-installed native Go control-plane engine.' \
+  "$source_launcher"; then
+  :
+else
+  fail "linked checkout is not a recognized source-installed Subyard version"
+fi
 
 candidate_yard="$RUNTIME_ROOT/current/bin/yard"
 candidate_engine="$RUNTIME_ROOT/current/bin/yard-engine"
@@ -302,5 +308,5 @@ mv "$work" "$recovery_root"
 published=1
 trap - EXIT
 
-printf 'migrated pre-Go source installation from %s\n' "$source_root"
+printf 'migrated source installation from %s\n' "$source_root"
 printf 'one-time source recovery: %s/restore.sh\n' "$recovery_root"

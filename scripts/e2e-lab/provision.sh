@@ -28,6 +28,35 @@ inner_apparmor_dropin() {
   printf '%s\n' "${SUBYARD_INNER_INCUS_APPARMOR_DROPIN:-/etc/systemd/system/incus.service.d/subyard-nested-e2e.conf}"
 }
 
+wait_inner_incus_active() {
+  local _
+  for _ in $(seq 1 30); do
+    systemctl is-active --quiet incus.service && return 0
+    sleep 1
+  done
+  return 1
+}
+
+reconcile_inner_incus_service() {
+  local action="$1" attempt
+  for attempt in 1 2 3; do
+    if systemctl "$action" incus.service; then
+      wait_inner_incus_active && return 0
+    elif wait_inner_incus_active; then
+      printf '  [warn] inner Incus recovered through systemd automatic restart\n' >&2
+      return 0
+    fi
+    [ "$attempt" -lt 3 ] || break
+    printf '  [warn] inner Incus %s failed; retrying start (%s/3)\n' \
+      "$action" "$((attempt + 1))" >&2
+    systemctl reset-failed incus.service >/dev/null 2>&1 || true
+    action=start
+  done
+  systemctl --no-pager --full status incus.service >&2 || true
+  journalctl -u incus.service -b --no-pager -n 120 >&2 || true
+  return 1
+}
+
 reconcile_inner_apparmor_compat() {
   local dropin temp changed=0
   dropin="$(inner_apparmor_dropin)"
@@ -36,7 +65,8 @@ reconcile_inner_apparmor_compat() {
   printf '%s\n' \
     '# Managed by Subyard: the outer yard profile remains the L0 security boundary.' \
     '[Service]' \
-    'Environment=INCUS_SECURITY_APPARMOR=false' > "$temp"
+    'Environment=INCUS_SECURITY_APPARMOR=false' \
+    'TimeoutStartSec=45s' > "$temp"
   if ! cmp -s "$temp" "$dropin"; then
     install -m 0644 "$temp" "$dropin"
     changed=1
@@ -48,9 +78,9 @@ reconcile_inner_apparmor_compat() {
   if [ "$changed" = 1 ] && systemctl is-active --quiet incus.service; then
     # Incus reads INCUS_SECURITY_APPARMOR only at daemon startup. QEMU processes are independent
     # of the daemon, so this does not stop an already-running VM during an idempotent init rerun.
-    systemctl restart incus.service
+    reconcile_inner_incus_service restart
   else
-    systemctl start incus.service
+    reconcile_inner_incus_service start
   fi
 }
 

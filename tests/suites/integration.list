@@ -4,7 +4,6 @@ check-host-storage.sh
 emulator-process-control.sh
 engine-release.sh
 key-tools-install.sh
-legacy-source-install.sh
 opencode-agent-provision.sh
 profile-resource-lifecycle.sh
 project-registry-convergence.sh

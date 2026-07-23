@@ -454,9 +454,38 @@ reconcile_inner_apparmor_compat
 reconcile_inner_apparmor_compat
 grep -Fxq 'Environment=INCUS_SECURITY_APPARMOR=false' "$SUBYARD_INNER_INCUS_APPARMOR_DROPIN" \
   || fail "inner Incus AppArmor compatibility drop-in was not installed"
+grep -Fxq 'TimeoutStartSec=45s' "$SUBYARD_INNER_INCUS_APPARMOR_DROPIN" \
+  || fail "inner Incus start can wait for its ten-minute default"
 [ "$(grep -c '^restart incus.service$' "$TMP/systemctl-calls")" -eq 1 ] \
   || fail "idempotent AppArmor compatibility reconciliation restarted Incus more than once"
 unset -f systemctl
+
+# A post-reboot daemon can lose its first restart while systemd is still reconciling the nested
+# service. Retry only after a bounded active-state wait, then preserve the normal idempotent path.
+rm -f "$SUBYARD_INNER_INCUS_APPARMOR_DROPIN"
+: > "$TMP/systemctl-calls"
+: > "$TMP/systemctl-active-calls"
+sleep() { :; }
+systemctl() {
+  local active_calls
+  printf '%s\n' "$*" >> "$TMP/systemctl-calls"
+  case "$*" in
+    'restart incus.service') return 1 ;;
+    'is-active --quiet incus.service')
+      active_calls="$(wc -l < "$TMP/systemctl-active-calls")"
+      printf '.\n' >> "$TMP/systemctl-active-calls"
+      [ "$active_calls" -eq 0 ] && return 0
+      [ "$active_calls" -ge 31 ]
+      ;;
+    'start incus.service') return 0 ;;
+  esac
+}
+reconcile_inner_apparmor_compat
+[ "$(grep -c '^restart incus.service$' "$TMP/systemctl-calls")" -eq 1 ] \
+  && [ "$(grep -c '^start incus.service$' "$TMP/systemctl-calls")" -eq 1 ] \
+  && [ "$(grep -c '^reset-failed incus.service$' "$TMP/systemctl-calls")" -eq 1 ] \
+  || fail "inner Incus transient restart was not retried through bounded start"
+unset -f systemctl sleep
 
 install() {
   [ "${*: -1}" = /srv/incus-e2e/storage ] || command install "$@"

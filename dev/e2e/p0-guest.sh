@@ -8,6 +8,7 @@ PEER_IP="${3:-}"
 PEER_PUBLIC_KEY="${4:-}"
 PEER_HOST_KEY="${5:-}"
 PEER_ROOT="/tmp/subyard-p0-peer-$TOKEN"
+PEER_DATA_ROOT="$HOME/.cache/subyard-p0-peer-$TOKEN"
 MARKER="subyard-p0-$TOKEN"
 PEER_INCUS_MARKER="$PEER_ROOT/.subyard-p0-incus-init"
 PEER_INCUS_POOL="subyard-p0-$TOKEN"
@@ -18,6 +19,9 @@ PEER_SSH_DIR="$PEER_ROOT/ssh"
 PEER_YARD_ENTRY="$HOME/.local/bin/yard"
 PEER_YARD_BACKUP="$PEER_ROOT/user-yard-entry.backup"
 PEER_YARD_STATE="$PEER_ROOT/.user-yard-entry-state"
+PEER_AUTH_STATE="$PEER_ROOT/.authorized-keys-state"
+PEER_CONFIG_STATE="$PEER_ROOT/.ssh-config-state"
+PEER_REAL_YARD_MARKER="$PEER_ROOT/.subyard-p0-real-yard"
 OWNER_BASELINE_IMAGES=''
 OWNER_BASELINE_CAPTURED=0
 OWNER_BASE_IMAGE="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
@@ -41,6 +45,16 @@ clean_tree() { # guarded path marker
   [ ! -e "$path" ] || [ "$(cat "$path/.subyard-p0-marker" 2>/dev/null)" = "$marker" ] \
     || die "refusing to clean unmarked path $path"
   [ ! -e "$path" ] || sudo -n find "$path" -depth -delete
+}
+
+clean_peer_data() {
+  case "$PEER_DATA_ROOT" in "$HOME/.cache/subyard-p0-"*) ;;
+    *) die "unsafe peer data path $PEER_DATA_ROOT" ;;
+  esac
+  [ ! -e "$PEER_DATA_ROOT" ] \
+    || [ "$(cat "$PEER_ROOT/.subyard-p0-marker" 2>/dev/null)" = "$MARKER" ] \
+    || die "refusing to clean unmarked peer data $PEER_DATA_ROOT"
+  [ ! -e "$PEER_DATA_ROOT" ] || sudo -n find "$PEER_DATA_ROOT" -depth -delete
 }
 
 owner_project_contract() {
@@ -210,8 +224,11 @@ owner_profile_migration_contract() {
 
 prepare_owner_image_cache_project() {
   local project=subyard-e2e-yard
-  incus project show "$project" >/dev/null 2>&1 \
-    && die "refusing to replace existing owner project $project"
+  if incus project show "$project" >/dev/null 2>&1; then
+    incus project delete "$project" >/dev/null 2>&1 \
+      || die "refusing to replace non-empty owner project $project"
+    printf '  [ ok ] removed empty owner project residue %s\n' "$project"
+  fi
   incus image info "$OWNER_BASE_IMAGE" --project default >/dev/null 2>&1 \
     || die "test-owned base image alias $OWNER_BASE_IMAGE is unavailable"
   incus project create "$project" \
@@ -257,7 +274,8 @@ controller() (
   local temp
   [ "$SUBYARD_E2E_VM" = 2 ] || die 'controller lane requires VM2'
   shellcheck -x -S warning dev/e2e/p0-acceptance.sh dev/e2e/p0-guest.sh \
-    dev/e2e/p0-real-incus.sh dev/build-engine.sh tests/build-engine.sh \
+    dev/e2e/p0-real-incus.sh dev/e2e/p0-source-upgrade.sh \
+    dev/build-engine.sh tests/build-engine.sh \
     tests/agent-e2e.sh tests/real-host/incus-contract.sh
   ./tests/run.sh
   bash tests/real-host/ssh-rpc.sh
@@ -290,12 +308,11 @@ install_peer_wrapper() {
     printf 'export HOME=%q SUBYARD_OPERATOR_HOME=%q SUBYARD_CONFIG_HOME=%q\n' \
       "$PEER_ROOT/home" "$PEER_ROOT/home" "$PEER_ROOT/config"
     printf 'export SUBYARD_HOME=%q HOST_BASE=%q RESTRICTED_DISK_PATHS=%q\n' \
-      "$PEER_ROOT/data" "$PEER_ROOT/host-data" "$PEER_ROOT/host-data"
+      "$PEER_DATA_ROOT" "$PEER_ROOT/host-data" "$PEER_ROOT/host-data"
     printf 'export SUBYARD_KEYS_ROOT=%q SUBYARD_KEYS_TOOLS_DIR=%q SUBYARD_KEYS_CONSUMER_ROOT=%q\n' \
       "$PEER_ROOT/keys" "$PEER_ROOT/tools" "$PEER_ROOT/consumer"
-    printf 'export SUBYARD_REPOSITORY_ROOT=%q YARD_ENGINE_PATH=%q SUBYARD_NO_AUDIT=1\n' \
-      "$PEER_ROOT/src" "$PEER_ROOT/yard-engine"
-    printf 'exec %q/bin/yard "$@"\n' "$PEER_ROOT/src"
+    printf 'export SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE=1 SUBYARD_NO_AUDIT=1\n'
+    printf 'exec %q/yard "$@"\n' "$PEER_ROOT/bin"
   } > "$wrapper"
   chmod 0755 "$wrapper"
   install -m 0755 "$wrapper" "$PEER_YARD_ENTRY"
@@ -337,10 +354,10 @@ remove_peer_wrapper() {
 
 bootstrap_peer_keys() {
   HOME="$PEER_ROOT/home" SUBYARD_OPERATOR_HOME="$PEER_ROOT/home" \
-    SUBYARD_CONFIG_HOME="$PEER_ROOT/config" SUBYARD_HOME="$PEER_ROOT/data" \
+    SUBYARD_CONFIG_HOME="$PEER_ROOT/config" SUBYARD_HOME="$PEER_DATA_ROOT" \
     HOST_BASE="$PEER_ROOT/host-data" RESTRICTED_DISK_PATHS="$PEER_ROOT/host-data" \
     SUBYARD_KEYS_ROOT="$PEER_ROOT/keys" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
-    YARD_ENGINE_PATH="$PEER_ROOT/yard-engine" "$PEER_ROOT/src/bin/yard" _keys-init >/dev/null
+    "$PEER_ROOT/bin/yard" _keys-init >/dev/null
 }
 
 reexec_with_incus_group() {
@@ -380,7 +397,12 @@ ensure_incus() {
     return
   fi
   if command -v incus >/dev/null 2>&1 || [ -S /var/lib/incus/unix.socket ]; then
-    die 'Incus exists but is unavailable to the peer user'
+    [ -z "$install_marker" ] || printf '%s\n' "$MARKER" > "$install_marker"
+    printf '  [ .. ] VM%s: reconciling a partial Incus installation\n' "$SUBYARD_E2E_VM"
+    SUBYARD_USER="$(id -un)" SUBYARD_HOME="$state_root" \
+      bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
+    id -nG | tr ' ' '\n' | grep -qx incus-admin || reexec_with_incus_group "$resume_mode"
+    return
   fi
 	[ -z "$install_marker" ] || printf '%s\n' "$MARKER" > "$install_marker"
 	printf '  [ .. ] VM%s: initializing the Incus owner API\n' "$SUBYARD_E2E_VM"
@@ -390,7 +412,7 @@ ensure_incus() {
 }
 
 ensure_owner_incus() { ensure_incus "$HOME/.subyard" '' owner; }
-ensure_peer_incus() { ensure_incus "$PEER_ROOT/incus-home" "$PEER_INCUS_MARKER" peer-prepare-resume; }
+ensure_peer_incus() { ensure_incus "$PEER_DATA_ROOT/incus-home" "$PEER_INCUS_MARKER" peer-prepare-resume; }
 
 ensure_peer_snapshot_fixture() {
   if incus project show subyard >/dev/null 2>&1; then
@@ -435,7 +457,7 @@ cleanup_peer_incus() {
 	if incus storage show default --project default >/dev/null 2>&1; then
 		source="$(incus storage get default source --project default)"
 		case "$source" in
-			"$PEER_ROOT/incus-home/storage"|"$PEER_ROOT/incus-home/incus/storage") ;;
+			"$PEER_DATA_ROOT/incus-home/storage"|"$PEER_DATA_ROOT/incus-home/incus/storage") ;;
 			*) die "refusing to clean non-peer storage pool at $source" ;;
 		esac
 		while IFS= read -r fingerprint; do
@@ -446,7 +468,8 @@ cleanup_peer_incus() {
 			&& incus network delete incusbr0 --project default >/dev/null
 		incus storage delete default --project default >/dev/null
 	fi
-	sudo -n find "$PEER_ROOT/incus-home" -depth -delete
+	[ ! -e "$PEER_DATA_ROOT/incus-home" ] \
+		|| sudo -n find "$PEER_DATA_ROOT/incus-home" -depth -delete
 }
 
 peer_prepare() {
@@ -454,6 +477,7 @@ peer_prepare() {
   peer_clean
   install -d -m 0700 "$PEER_ROOT/src" "$PEER_ROOT/home" "$PEER_ROOT/config/yards"
 	printf '%s\n' "$MARKER" > "$PEER_ROOT/.subyard-p0-marker"
+  install -d -m 0700 "$PEER_DATA_ROOT"
 	cp -a "$ROOT/." "$PEER_ROOT/src/"
 	ensure_peer_incus
 	peer_prepare_finish
@@ -468,6 +492,7 @@ peer_ssh() {
 }
 
 peer_prepare_finish() {
+  local release="$PEER_ROOT/release" version="p0-peer-vm-$SUBYARD_E2E_VM"
 	[ -r "$PEER_ROOT/src/tests/helpers/source-control-plane.sh" ] \
 		|| die 'stable peer source is incomplete after incus-admin resume'
 	ensure_peer_snapshot_fixture
@@ -478,15 +503,38 @@ peer_prepare_finish() {
   fi
   [ -s "$PEER_SSH_DIR/id_ed25519" ] && [ -s "$PEER_SSH_DIR/id_ed25519.pub" ] \
     || die 'synthetic peer SSH identity is incomplete'
-  YARD_BUILD_VERSION="p0-vm-$SUBYARD_E2E_VM" \
-    "$PEER_ROOT/src/dev/build-engine.sh" --force --output "$PEER_ROOT/yard-engine" >/dev/null
-  SUBYARD_HOME="$PEER_ROOT/data" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
-    bash "$PEER_ROOT/src/scripts/install-key-tools.sh" -y >/dev/null
+  install -d -m 0700 "$release" "$PEER_ROOT/bin"
+  "$PEER_ROOT/src/dev/package-engine.sh" --output-dir "$release" --version "$version" >/dev/null
+  HOME="$PEER_ROOT/home" SUBYARD_HOME="$PEER_DATA_ROOT" \
+    SUBYARD_CONFIG_HOME="$PEER_ROOT/config" YARD_BIN_DIR="$PEER_ROOT/bin" \
+    YARD_SHELL_RC="$PEER_ROOT/home/.bashrc" YARD_LOGIN_RC="$PEER_ROOT/home/.profile" \
+    YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_VERSION="$version" \
+    PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+    "$release/subyard-install.sh" --yes >/dev/null
+  [ "$(readlink "$PEER_ROOT/bin/yard")" = "$PEER_DATA_ROOT/runtime/current/bin/yard" ] \
+    && [ "$("$PEER_ROOT/bin/yard" --version)" = "yard $version" ] \
+    || die 'peer standalone release is not active'
+  SUBYARD_HOME="$PEER_DATA_ROOT" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
+    bash "$PEER_DATA_ROOT/runtime/current/scripts/install-key-tools.sh" -y >/dev/null
   bootstrap_peer_keys
-  printf 'YARD_TYPE=remote\nREMOTE_DEST=dev@%s\nSSH_PORT=3222\n' "$PEER_IP" \
-    > "$PEER_ROOT/config/yards/peer.env"
   install_peer_wrapper
   printf 'ok: VM%s local cross-owner fixture staged\n' "$SUBYARD_E2E_VM"
+}
+
+peer_yard_start() {
+  [ "$SUBYARD_E2E_VM" = 2 ] || die 'remote project target requires VM2'
+  if [ -e "$PEER_REAL_YARD_MARKER" ]; then
+    [ "$(cat "$PEER_REAL_YARD_MARKER" 2>/dev/null)" = "$MARKER" ] \
+      || die 'real peer yard resume marker is invalid'
+  else
+    cleanup_peer_snapshot_fixture
+    printf '%s\n' "$MARKER" > "$PEER_REAL_YARD_MARKER"
+  fi
+  printf 'SSH_PORT=3222\nDEV_UID=1001\nBASE_IMAGE=images:debian/13/cloud\nBASE_IMAGE_FALLBACK=images:debian/13/cloud\nE2E_VM_ENABLED=0\n' \
+    > "$PEER_DATA_ROOT/config.env"
+  "$PEER_YARD_ENTRY" init --yes
+  "$PEER_YARD_ENTRY" start --yes
+  printf 'ok: VM2 release-installed remote yard is running\n'
 }
 
 peer_info() {
@@ -515,12 +563,25 @@ peer_authorize() {
   [ ! -L "$HOME/.ssh" ] && [ ! -L "$authorized" ] \
     || die 'refusing symlinked SSH authorization paths'
   install -d -m 0700 "$HOME/.ssh" "$PEER_SSH_DIR"
+  if [ ! -e "$PEER_AUTH_STATE" ]; then
+    if [ -e "$authorized" ]; then
+      [ -f "$authorized" ] || die 'SSH authorization target is not a regular file'
+      printf 'file\t%s\n' "$(stat -c '%a' "$authorized")" > "$PEER_AUTH_STATE"
+    else
+      printf 'absent\n' > "$PEER_AUTH_STATE"
+    fi
+  fi
   touch "$authorized"
   chmod 0600 "$authorized"
   grep -Fqx "$PEER_PUBLIC_KEY" "$authorized" || printf '%s\n' "$PEER_PUBLIC_KEY" >> "$authorized"
   printf '%s\n' "$PEER_PUBLIC_KEY" > "$PEER_SSH_DIR/authorized-peer.pub"
   printf '%s %s\n' "$PEER_IP" "$normalized_host" > "$PEER_SSH_DIR/known_hosts"
   chmod 0600 "$PEER_SSH_DIR/authorized-peer.pub" "$PEER_SSH_DIR/known_hosts"
+  install -d -m 0700 "$PEER_ROOT/home/.ssh"
+  install -m 0600 "$PEER_SSH_DIR/id_ed25519" "$PEER_ROOT/home/.ssh/id_ed25519"
+  install -m 0644 "$PEER_SSH_DIR/id_ed25519.pub" "$PEER_ROOT/home/.ssh/id_ed25519.pub"
+  printf '%s %s\n' "$PEER_IP" "$normalized_host" > "$PEER_ROOT/home/.ssh/known_hosts"
+  chmod 0600 "$PEER_ROOT/home/.ssh/known_hosts"
 }
 
 peer_probe() {
@@ -532,8 +593,16 @@ peer_probe() {
 }
 
 remove_peer_authorization() {
-  local authorized="$HOME/.ssh/authorized_keys" peer_key temp
+  local authorized="$HOME/.ssh/authorized_keys" peer_key state mode extra temp
   [ -r "$PEER_SSH_DIR/authorized-peer.pub" ] || return 0
+  read -r state mode extra < "$PEER_AUTH_STATE" \
+    || die 'SSH authorization restore state is missing'
+  [ -z "$extra" ] || die 'SSH authorization restore state is invalid'
+  case "$state" in
+    absent) [ -z "$mode" ] || die 'SSH authorization restore state is invalid' ;;
+    file) [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die 'SSH authorization restore mode is invalid' ;;
+    *) die 'SSH authorization restore state is invalid' ;;
+  esac
   peer_key="$(cat "$PEER_SSH_DIR/authorized-peer.pub")"
   [ -f "$authorized" ] && [ ! -L "$authorized" ] \
     || die 'synthetic peer authorization target is unavailable or unsafe'
@@ -541,6 +610,11 @@ remove_peer_authorization() {
   awk -v key="$peer_key" '$0 != key' "$authorized" > "$temp"
   chmod 0600 "$temp"
   mv -f "$temp" "$authorized"
+  if [ "$state" = absent ] && [ ! -s "$authorized" ]; then
+    find "$authorized" -delete
+  elif [ "$state" = file ]; then
+    chmod "$mode" "$authorized"
+  fi
 }
 
 append_frame() { # json file
@@ -563,25 +637,24 @@ decode_frames() { # framed-input json-lines-output
 }
 
 peer_rpc() {
-  local request response body remote_root remote_engine
+  local request response body remote_engine
   valid_ip "$PEER_IP" || die 'peer IP is invalid'
-  remote_root="/tmp/subyard-p0-peer-$TOKEN"
-  remote_engine="$remote_root/yard-engine"
+  remote_engine="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current/bin/yard-engine"
   request="$PEER_ROOT/rpc-request"; response="$PEER_ROOT/rpc-response"; body="$PEER_ROOT/rpc-body"
   : > "$request"
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
-  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
-  jq -e --arg version "p0-vm-$((3 - SUBYARD_E2E_VM))" \
+  jq -e --arg version "p0-peer-vm-$((3 - SUBYARD_E2E_VM))" \
     'select(.id=="negotiate" and .error==null and .result.version==1 and .result.engineVersion==$version)' \
     "$body" >/dev/null \
     || die 'cross-owner negotiation failed'
 
   : > "$request"
   append_frame '{"version":2,"type":"request","id":"bad","method":"rpc.negotiate"}' "$request"
-  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
@@ -592,7 +665,7 @@ peer_rpc() {
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
   append_frame '{"version":1,"type":"request","id":"events","operationId":"operation-events","method":"incus.events"}' "$request"
   append_frame '{"version":1,"type":"cancel","id":"cancel","operationId":"operation-events"}' "$request"
-  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" \
     "$remote_engine" rpc --stdio < "$request" > "$response"
   decode_frames "$response" "$body"
   jq -s -e 'any(.[]; .id=="cancel" and .result.cancelled=="operation-events") and
@@ -600,11 +673,11 @@ peer_rpc() {
     "$body" >/dev/null || die 'live RPC cancellation failed'
 
   printf '\0\0\0\20broken' | peer_ssh "dev@$PEER_IP" -- \
-    env SUBYARD_REPOSITORY_ROOT="$remote_root/src" "$remote_engine" rpc --stdio >/dev/null 2>&1 || true
+    env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" "$remote_engine" rpc --stdio >/dev/null 2>&1 || true
   : > "$request"
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
   append_frame '{"version":1,"type":"request","id":"snapshot","method":"system.snapshot"}' "$request"
-  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
@@ -644,14 +717,87 @@ peer_credentials() {
   ! peer_ssh "dev@$PEER_IP" -- test -e \
     "/tmp/subyard-p0-peer-$TOKEN/consumer/config/staging/p0-cross-owner.env" \
     || die 'revoked cross-owner credential remains materialized'
+  "$PEER_YARD_ENTRY" remote remove peer --yes >/dev/null
   printf 'ok: real cross-owner credential trust, sync and revoke\n'
+}
+
+peer_projects() {
+  local source="$PEER_ROOT/project" remote_pwd
+  local ssh_config="$HOME/.ssh/config"
+  local include="Include $PEER_ROOT/home/.ssh/subyard-peer.config"
+  [ "$SUBYARD_E2E_VM" = 1 ] || die 'remote project controller requires VM1'
+  valid_ip "$PEER_IP" || die 'peer IP is invalid'
+  install -d -m 0700 "$source"
+  printf '%s\nbase\n' "$MARKER" > "$source/result.txt"
+  [ ! -L "$HOME/.ssh" ] && [ ! -L "$ssh_config" ] \
+    || die 'refusing symlinked SSH config paths'
+  install -d -m 0700 "$HOME/.ssh"
+  if [ ! -e "$PEER_CONFIG_STATE" ]; then
+    if [ -e "$ssh_config" ]; then
+      [ -f "$ssh_config" ] || die 'SSH config target is not a regular file'
+      printf 'file\t%s\n' "$(stat -c '%a' "$ssh_config")" > "$PEER_CONFIG_STATE"
+    else
+      printf 'absent\n' > "$PEER_CONFIG_STATE"
+    fi
+  fi
+  touch "$ssh_config"
+  chmod 0600 "$ssh_config"
+  grep -Fqx "$include" "$ssh_config" || printf '%s\n' "$include" >> "$ssh_config"
+  "$PEER_YARD_ENTRY" remote add peer "dev@$PEER_IP" --yes >/dev/null
+  "$PEER_YARD_ENTRY" -Y peer sync "$source" --yes >/dev/null
+  remote_pwd="$("$PEER_YARD_ENTRY" -Y peer shell "$source" --yes -- pwd)"
+  case "$remote_pwd" in /srv/workspaces/*/src) ;; *) die 'remote shell did not enter the synced project' ;; esac
+  "$PEER_YARD_ENTRY" -Y peer shell "$source" --yes -- \
+    sh -c 'printf "remote-mutated\n" >> result.txt'
+  "$PEER_YARD_ENTRY" -Y peer shell "$source" --yes -- \
+    grep -Fqx remote-mutated result.txt
+  "$PEER_YARD_ENTRY" -Y peer remove "$source" --yes >/dev/null
+  printf 'ok: release-installed remote add, sync and two project shells\n'
+}
+
+remove_peer_ssh_include() {
+  local ssh_config="$HOME/.ssh/config"
+  local include="Include $PEER_ROOT/home/.ssh/subyard-peer.config"
+  local state mode extra temporary
+  [ -e "$PEER_CONFIG_STATE" ] || return 0
+  read -r state mode extra < "$PEER_CONFIG_STATE" \
+    || die 'SSH config restore state is missing'
+  [ -z "$extra" ] || die 'SSH config restore state is invalid'
+  case "$state" in
+    absent) [ -z "$mode" ] || die 'SSH config restore state is invalid' ;;
+    file) [[ "$mode" =~ ^[0-7]{3,4}$ ]] || die 'SSH config restore mode is invalid' ;;
+    *) die 'SSH config restore state is invalid' ;;
+  esac
+  [ "$state" != absent ] || [ -e "$ssh_config" ] || return 0
+  [ -f "$ssh_config" ] && [ ! -L "$ssh_config" ] \
+    || die 'SSH config restore target is unavailable or unsafe'
+  temporary="$(mktemp "$HOME/.ssh/.config.XXXXXX")"
+  grep -vxF "$include" "$ssh_config" > "$temporary" || true
+  chmod 0600 "$temporary"
+  mv -f "$temporary" "$ssh_config"
+  if [ "$state" = absent ] && [ ! -s "$ssh_config" ]; then
+    find "$ssh_config" -delete
+  elif [ "$state" = file ]; then
+    chmod "$mode" "$ssh_config"
+  fi
+}
+
+cleanup_peer_yard() {
+  [ -e "$PEER_REAL_YARD_MARKER" ] || return 0
+  [ "$(cat "$PEER_REAL_YARD_MARKER" 2>/dev/null)" = "$MARKER" ] \
+    || die 'refusing to clean unmarked real peer yard'
+  "$PEER_YARD_ENTRY" teardown --yes >/dev/null
+  find "$PEER_REAL_YARD_MARKER" -delete
 }
 
 peer_clean() {
   remove_peer_authorization
+  remove_peer_ssh_include
+  cleanup_peer_yard
   remove_peer_wrapper
   cleanup_peer_snapshot_fixture
   cleanup_peer_incus
+  clean_peer_data
   clean_tree "$PEER_ROOT" "$MARKER"
 }
 
@@ -663,6 +809,8 @@ case "$MODE" in
   peer-info) peer_info ;;
   peer-authorize) peer_authorize ;;
   peer-probe) peer_probe ;;
+  peer-yard-start) peer_yard_start ;;
+  peer-projects) peer_projects ;;
   peer-rpc) peer_rpc ;;
   peer-credentials) peer_credentials ;;
   peer-clean) peer_clean ;;

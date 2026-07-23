@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODE="${1:-}"
 TOKEN="${2:-}"
 PEER_IP="${3:-}"
+PEER_PUBLIC_KEY="${4:-}"
+PEER_HOST_KEY="${5:-}"
 PEER_ROOT="/tmp/subyard-p0-peer-$TOKEN"
 MARKER="subyard-p0-$TOKEN"
 PEER_INCUS_MARKER="$PEER_ROOT/.subyard-p0-incus-init"
@@ -12,12 +14,20 @@ PEER_INCUS_POOL="subyard-p0-$TOKEN"
 OWNER_YARD_DIR="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}/yards"
 RENAME_BASE_REVISION="7c67ee3f423cf9f1596c2f5191f462d2b70adcdc"
 RENAME_BASE_ROOT="/tmp/subyard-p0-rename-base-$TOKEN"
+PEER_SSH_DIR="$PEER_ROOT/ssh"
 OWNER_BASELINE_IMAGES=''
 OWNER_BASELINE_CAPTURED=0
 
 die() { printf 'p0-guest: %s\n' "$*" >&2; exit 2; }
 valid_token() { [[ "$1" =~ ^[0-9]+$ ]]; }
 valid_ip() { [[ "$1" =~ ^[0-9a-fA-F:.]+$ ]]; }
+normalized_ed25519() {
+  local value="$1" type blob rest
+  read -r type blob rest <<<"$value"
+  [ "$type" = ssh-ed25519 ] && [[ "$blob" =~ ^[A-Za-z0-9+/=]+$ ]] \
+    || return 1
+  printf '%s %s\n' "$type" "$blob"
+}
 valid_token "$TOKEN" || die 'allocation token must be numeric'
 [ -n "${SUBYARD_E2E_VM:-}" ] || die 'run through dev/agent-e2e.sh'
 
@@ -26,7 +36,7 @@ clean_tree() { # guarded path marker
   case "$path" in /tmp/subyard-p0-*) ;; *) die "unsafe cleanup path $path" ;; esac
   [ ! -e "$path" ] || [ "$(cat "$path/.subyard-p0-marker" 2>/dev/null)" = "$marker" ] \
     || die "refusing to clean unmarked path $path"
-  [ ! -e "$path" ] || find "$path" -depth -delete
+  [ ! -e "$path" ] || sudo -n find "$path" -depth -delete
 }
 
 owner_project_contract() {
@@ -126,7 +136,7 @@ install_owner_runtime() {
   arch="$(go env GOARCH)"
   release="$ROOT/.build/p0-owner-release"
   artifact="$release/subyard-p0-owner-linux-$arch"
-  scripts/package-engine.sh --output-dir "$release" --version p0-owner --arch "$arch" >/dev/null
+  dev/package-engine.sh --output-dir "$release" --version p0-owner --arch "$arch" >/dev/null
   scripts/install-runtime-release.sh \
     --bundle "$artifact.tar.gz" \
     --checksum "$artifact.tar.gz.sha256" \
@@ -197,7 +207,7 @@ owner_profile_migration_contract() {
 owner() (
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner lane requires VM1'
 	trap owner_cleanup EXIT
-	YARD_BUILD_VERSION=p0-owner scripts/build-engine.sh --force >/dev/null
+	YARD_BUILD_VERSION=p0-owner dev/build-engine.sh --force >/dev/null
 	ensure_owner_incus
 	OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
   OWNER_BASELINE_CAPTURED=1
@@ -220,6 +230,11 @@ owner() (
   bash tests/engine-release.sh
   ./bin/yard -Y test-yard teardown --yes
   ! incus project show subyard-test-yard >/dev/null 2>&1 || die 'candidate project remains after teardown'
+  [ -x "$HOME/.subyard/runtime/current/bin/yard" ] \
+    || die 'last-yard teardown removed the installed candidate runtime'
+  env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+    "$HOME/.subyard/runtime/current/bin/yard" --version >/dev/null \
+    || die 'installed candidate runtime is unusable after last-yard teardown'
   printf 'ok: VM1 owner, legacy upgrade, lifecycle, Incus and rollback\n'
 )
 
@@ -227,7 +242,7 @@ controller() (
   local temp
   [ "$SUBYARD_E2E_VM" = 2 ] || die 'controller lane requires VM2'
   shellcheck -x -S warning dev/e2e/p0-acceptance.sh dev/e2e/p0-guest.sh \
-    dev/e2e/p0-real-incus.sh scripts/build-engine.sh tests/build-engine.sh \
+    dev/e2e/p0-real-incus.sh dev/build-engine.sh tests/build-engine.sh \
     tests/agent-e2e.sh tests/real-host/incus-contract.sh
   ./tests/run.sh
   bash tests/real-host/ssh-rpc.sh
@@ -293,11 +308,20 @@ ensure_incus() {
 		reexec_with_incus_group "$resume_mode"
 	fi
 	if incus info >/dev/null 2>&1; then
-    if dpkg --compare-versions "$(incus --version)" ge 6.0.6; then return 0; fi
-    printf '  [ .. ] VM%s: upgrading Incus to the supported LTS\n' "$SUBYARD_E2E_VM"
-    bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly --upgrade-only
-    dpkg --compare-versions "$(incus --version)" ge 6.0.6 \
-      || die 'Incus upgrade did not reach 6.0.6'
+    if ! dpkg --compare-versions "$(incus --version)" ge 6.0.6; then
+      printf '  [ .. ] VM%s: upgrading Incus to the supported LTS\n' "$SUBYARD_E2E_VM"
+      bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly --upgrade-only
+      dpkg --compare-versions "$(incus --version)" ge 6.0.6 \
+        || die 'Incus upgrade did not reach 6.0.6'
+    fi
+    if incus storage show default --project default >/dev/null 2>&1 \
+      && incus network show incusbr0 --project default >/dev/null 2>&1; then
+      return 0
+    fi
+		[ -z "$install_marker" ] || printf '%s\n' "$MARKER" > "$install_marker"
+    printf '  [ .. ] VM%s: restoring the Incus owner API\n' "$SUBYARD_E2E_VM"
+    SUBYARD_USER="$(id -un)" SUBYARD_HOME="$state_root" \
+      bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
     return
   fi
   if command -v incus >/dev/null 2>&1 || [ -S /var/lib/incus/unix.socket ]; then
@@ -306,12 +330,11 @@ ensure_incus() {
 	[ -z "$install_marker" ] || printf '%s\n' "$MARKER" > "$install_marker"
 	printf '  [ .. ] VM%s: initializing the Incus owner API\n' "$SUBYARD_E2E_VM"
 	SUBYARD_USER="$(id -un)" SUBYARD_HOME="$state_root" \
-		STORAGE_PATH="$state_root/storage" \
 		bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
 	id -nG | tr ' ' '\n' | grep -qx incus-admin || reexec_with_incus_group "$resume_mode"
 }
 
-ensure_owner_incus() { ensure_incus "$HOME/.subyard/incus" '' owner; }
+ensure_owner_incus() { ensure_incus "$HOME/.subyard" '' owner; }
 ensure_peer_incus() { ensure_incus "$PEER_ROOT/incus-home" "$PEER_INCUS_MARKER" peer-prepare-resume; }
 
 ensure_peer_snapshot_fixture() {
@@ -342,6 +365,7 @@ cleanup_peer_snapshot_fixture() {
 }
 
 cleanup_peer_incus() {
+	local fingerprint source
   [ -e "$PEER_INCUS_MARKER" ] || return 0
   [ "$(cat "$PEER_INCUS_MARKER" 2>/dev/null)" = "$MARKER" ] \
     || die 'refusing to clean unmarked peer Incus state'
@@ -353,11 +377,21 @@ cleanup_peer_incus() {
   if incus profile device list default --project default 2>/dev/null | grep -qx root; then
     incus profile device remove default root --project default >/dev/null
   fi
-  incus network show incusbr0 --project default >/dev/null 2>&1 \
-    && incus network delete incusbr0 --project default >/dev/null
-  incus storage show default --project default >/dev/null 2>&1 \
-    && incus storage delete default --project default >/dev/null
-  sudo -n find "$PEER_ROOT/incus-home" -depth -delete 2>/dev/null || true
+	if incus storage show default --project default >/dev/null 2>&1; then
+		source="$(incus storage get default source --project default)"
+		case "$source" in
+			"$PEER_ROOT/incus-home/storage"|"$PEER_ROOT/incus-home/incus/storage") ;;
+			*) die "refusing to clean non-peer storage pool at $source" ;;
+		esac
+		while IFS= read -r fingerprint; do
+			[ -n "$fingerprint" ] || continue
+			incus image delete "$fingerprint" --project default >/dev/null
+		done < <(incus image list --project default --format csv -c f)
+		incus network show incusbr0 --project default >/dev/null 2>&1 \
+			&& incus network delete incusbr0 --project default >/dev/null
+		incus storage delete default --project default >/dev/null
+	fi
+	sudo -n find "$PEER_ROOT/incus-home" -depth -delete
 }
 
 peer_prepare() {
@@ -370,20 +404,88 @@ peer_prepare() {
 	peer_prepare_finish
 }
 
+peer_ssh() {
+	ssh -i "$PEER_SSH_DIR/id_ed25519" \
+		-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+		-o UserKnownHostsFile="$PEER_SSH_DIR/known_hosts" -o GlobalKnownHostsFile=/dev/null \
+		-o ConnectTimeout=8 -o ConnectionAttempts=3 \
+		-o ServerAliveInterval=5 -o ServerAliveCountMax=2 "$@"
+}
+
 peer_prepare_finish() {
 	[ -r "$PEER_ROOT/src/tests/helpers/source-control-plane.sh" ] \
 		|| die 'stable peer source is incomplete after incus-admin resume'
 	ensure_peer_snapshot_fixture
+  install -d -m 0700 "$PEER_SSH_DIR"
+  if [ ! -e "$PEER_SSH_DIR/id_ed25519" ] && [ ! -e "$PEER_SSH_DIR/id_ed25519.pub" ]; then
+    ssh-keygen -q -t ed25519 -N '' -C "$MARKER-vm$SUBYARD_E2E_VM" \
+      -f "$PEER_SSH_DIR/id_ed25519"
+  fi
+  [ -s "$PEER_SSH_DIR/id_ed25519" ] && [ -s "$PEER_SSH_DIR/id_ed25519.pub" ] \
+    || die 'synthetic peer SSH identity is incomplete'
   YARD_BUILD_VERSION="p0-vm-$SUBYARD_E2E_VM" \
-    "$PEER_ROOT/src/scripts/build-engine.sh" --force --output "$PEER_ROOT/yard-engine" >/dev/null
+    "$PEER_ROOT/src/dev/build-engine.sh" --force --output "$PEER_ROOT/yard-engine" >/dev/null
   SUBYARD_HOME="$PEER_ROOT/data" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
     bash "$PEER_ROOT/src/scripts/install-key-tools.sh" -y >/dev/null
   bootstrap_peer_keys
   printf 'YARD_TYPE=remote\nREMOTE_DEST=dev@%s\nSSH_PORT=3222\n' "$PEER_IP" \
     > "$PEER_ROOT/config/yards/peer.env"
   install_peer_wrapper
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "dev@$PEER_IP" -- true
-  printf 'ok: VM%s cross-owner fixture ready\n' "$SUBYARD_E2E_VM"
+  printf 'ok: VM%s local cross-owner fixture staged\n' "$SUBYARD_E2E_VM"
+}
+
+peer_info() {
+  local identity host type blob comment extra
+  [ "$(cat "$PEER_ROOT/.subyard-p0-marker" 2>/dev/null)" = "$MARKER" ] \
+    || die 'cross-owner fixture marker is missing'
+  read -r type blob comment extra < "$PEER_SSH_DIR/id_ed25519.pub"
+  [ "$type" = ssh-ed25519 ] && [[ "$blob" =~ ^[A-Za-z0-9+/=]+$ ]] \
+    && [ "$comment" = "$MARKER-vm$SUBYARD_E2E_VM" ] && [ -z "$extra" ] \
+    || die 'synthetic peer public key is invalid'
+  identity="$type $blob $comment"
+  host="$(normalized_ed25519 "$(sudo -n cat /etc/ssh/ssh_host_ed25519_key.pub)")" \
+    || die 'VM SSH host key is unavailable or invalid'
+  printf 'identity\t%s\nhost\t%s\n' "$identity" "$host"
+}
+
+peer_authorize() {
+  local type blob comment extra normalized_host authorized="$HOME/.ssh/authorized_keys"
+  valid_ip "$PEER_IP" || die 'peer IP is invalid'
+  read -r type blob comment extra <<<"$PEER_PUBLIC_KEY"
+  [ "$type" = ssh-ed25519 ] && [[ "$blob" =~ ^[A-Za-z0-9+/=]+$ ]] \
+    && [[ "$comment" =~ ^$MARKER-vm[12]$ ]] && [ -z "$extra" ] \
+    || die 'peer synthetic public key is invalid'
+  normalized_host="$(normalized_ed25519 "$PEER_HOST_KEY")" \
+    || die 'peer SSH host key is invalid'
+  [ ! -L "$HOME/.ssh" ] && [ ! -L "$authorized" ] \
+    || die 'refusing symlinked SSH authorization paths'
+  install -d -m 0700 "$HOME/.ssh" "$PEER_SSH_DIR"
+  touch "$authorized"
+  chmod 0600 "$authorized"
+  grep -Fqx "$PEER_PUBLIC_KEY" "$authorized" || printf '%s\n' "$PEER_PUBLIC_KEY" >> "$authorized"
+  printf '%s\n' "$PEER_PUBLIC_KEY" > "$PEER_SSH_DIR/authorized-peer.pub"
+  printf '%s %s\n' "$PEER_IP" "$normalized_host" > "$PEER_SSH_DIR/known_hosts"
+  chmod 0600 "$PEER_SSH_DIR/authorized-peer.pub" "$PEER_SSH_DIR/known_hosts"
+}
+
+peer_probe() {
+  valid_ip "$PEER_IP" || die 'peer IP is invalid'
+  printf '  [ .. ] VM%s: probing synthetic SSH path to %s\n' "$SUBYARD_E2E_VM" "$PEER_IP"
+  peer_ssh "dev@$PEER_IP" -- true \
+    || die "synthetic SSH path to $PEER_IP failed"
+  printf 'ok: VM%s synthetic cross-owner SSH path verified\n' "$SUBYARD_E2E_VM"
+}
+
+remove_peer_authorization() {
+  local authorized="$HOME/.ssh/authorized_keys" peer_key temp
+  [ -r "$PEER_SSH_DIR/authorized-peer.pub" ] || return 0
+  peer_key="$(cat "$PEER_SSH_DIR/authorized-peer.pub")"
+  [ -f "$authorized" ] && [ ! -L "$authorized" ] \
+    || die 'synthetic peer authorization target is unavailable or unsafe'
+  temp="$(mktemp "$HOME/.ssh/.authorized-keys.XXXXXX")"
+  awk -v key="$peer_key" '$0 != key' "$authorized" > "$temp"
+  chmod 0600 "$temp"
+  mv -f "$temp" "$authorized"
 }
 
 append_frame() { # json file
@@ -413,7 +515,7 @@ peer_rpc() {
   request="$PEER_ROOT/rpc-request"; response="$PEER_ROOT/rpc-response"; body="$PEER_ROOT/rpc-body"
   : > "$request"
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
-  ssh -o BatchMode=yes "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
@@ -424,7 +526,7 @@ peer_rpc() {
 
   : > "$request"
   append_frame '{"version":2,"type":"request","id":"bad","method":"rpc.negotiate"}' "$request"
-  ssh -o BatchMode=yes "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
@@ -435,19 +537,19 @@ peer_rpc() {
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
   append_frame '{"version":1,"type":"request","id":"events","operationId":"operation-events","method":"incus.events"}' "$request"
   append_frame '{"version":1,"type":"cancel","id":"cancel","operationId":"operation-events"}' "$request"
-  ssh -o BatchMode=yes "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
     "$remote_engine" rpc --stdio < "$request" > "$response"
   decode_frames "$response" "$body"
   jq -s -e 'any(.[]; .id=="cancel" and .result.cancelled=="operation-events") and
     any(.[]; .id=="events" and .operationId=="operation-events" and .error.code=="cancelled")' \
     "$body" >/dev/null || die 'live RPC cancellation failed'
 
-  printf '\0\0\0\20broken' | ssh -o BatchMode=yes "dev@$PEER_IP" -- \
+  printf '\0\0\0\20broken' | peer_ssh "dev@$PEER_IP" -- \
     env SUBYARD_REPOSITORY_ROOT="$remote_root/src" "$remote_engine" rpc --stdio >/dev/null 2>&1 || true
   : > "$request"
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
   append_frame '{"version":1,"type":"request","id":"snapshot","method":"system.snapshot"}' "$request"
-  ssh -o BatchMode=yes "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root/src" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
@@ -474,23 +576,24 @@ peer_credentials() {
   credential="$(/usr/local/bin/yard keys list | awk -F '\t' '$8=="p0-cross-owner" {print $1}')"
   [ -n "$credential" ] || die 'cross-owner credential was not created'
   /usr/local/bin/yard keys sync @peer --now --yes >/dev/null
-  ssh -o BatchMode=yes "dev@$PEER_IP" -- bash -lc \
+  peer_ssh "dev@$PEER_IP" -- bash -lc \
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   source_hash="$(sha256sum "$expected" | awk '{print $1}')"
-  remote_hash="$(ssh -o BatchMode=yes "dev@$PEER_IP" -- sha256sum \
+  remote_hash="$(peer_ssh "dev@$PEER_IP" -- sha256sum \
     "/tmp/subyard-p0-peer-$TOKEN/consumer/config/staging/p0-cross-owner.env" | awk '{print $1}')"
   [ "$source_hash" = "$remote_hash" ] || die 'cross-owner credential materialization differs'
   /usr/local/bin/yard keys revoke "$credential" --yes >/dev/null
   /usr/local/bin/yard keys sync @peer --now --yes >/dev/null
-  ssh -o BatchMode=yes "dev@$PEER_IP" -- bash -lc \
+  peer_ssh "dev@$PEER_IP" -- bash -lc \
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
-  ! ssh -o BatchMode=yes "dev@$PEER_IP" -- test -e \
+  ! peer_ssh "dev@$PEER_IP" -- test -e \
     "/tmp/subyard-p0-peer-$TOKEN/consumer/config/staging/p0-cross-owner.env" \
     || die 'revoked cross-owner credential remains materialized'
   printf 'ok: real cross-owner credential trust, sync and revoke\n'
 }
 
 peer_clean() {
+  remove_peer_authorization
   if sudo -n test -e /usr/local/bin/yard && sudo -n grep -Fqx "# $MARKER" /usr/local/bin/yard; then
     sudo -n find /usr/local/bin/yard -delete
   fi
@@ -504,8 +607,11 @@ case "$MODE" in
   controller) controller ;;
   peer-prepare) peer_prepare ;;
   peer-prepare-resume) peer_prepare_finish ;;
+  peer-info) peer_info ;;
+  peer-authorize) peer_authorize ;;
+  peer-probe) peer_probe ;;
   peer-rpc) peer_rpc ;;
   peer-credentials) peer_credentials ;;
   peer-clean) peer_clean ;;
-  *) die 'mode must be owner, controller, peer-prepare, peer-rpc, peer-credentials or peer-clean' ;;
+  *) die 'unknown P0 guest mode' ;;
 esac

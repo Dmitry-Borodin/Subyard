@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Build the native Linux control-plane engine atomically. This is a build/install
-# step; the packaged CLI never downloads a toolchain or modules at runtime.
+# Build the native Linux control-plane engine atomically.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

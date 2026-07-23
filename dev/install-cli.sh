@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
-# install-cli.sh — install a verified runtime and link its stable `yard`/`sy` entrypoint.
+# Install a verified runtime and link stable `yard`/`sy` entrypoints.
 # Operator, no sudo. A child can't change the current shell's PATH — it prints the
 # one activation command. Env: YARD_BIN_DIR, YARD_SHELL_RC, YARD_LOGIN_RC; flag -y.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+RUNTIME_SCRIPTS="$REPO/scripts"
 # Explicit control-plane module composition (config/context loads exactly once).
 # shellcheck source=scripts/lib/runtime.sh
-. "$SCRIPT_DIR/lib/runtime.sh"
+. "$RUNTIME_SCRIPTS/lib/runtime.sh"
 # shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
+. "$RUNTIME_SCRIPTS/lib/env.sh"
 # shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
+. "$RUNTIME_SCRIPTS/lib/registry.sh"
 # shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+. "$RUNTIME_SCRIPTS/lib/context.sh"
 # shellcheck source=scripts/lib/ui.sh
-. "$SCRIPT_DIR/lib/ui.sh"
+. "$RUNTIME_SCRIPTS/lib/ui.sh"
 # shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
+. "$RUNTIME_SCRIPTS/lib/config.sh"
 subyard_context_load
 
-REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOURCE_LAUNCHER="$REPO/bin/yard"
 RUNTIME_ROOT="${YARD_RUNTIME_ROOT:-$SUBYARD_HOME/runtime}"
 YARD_SRC="$RUNTIME_ROOT/current/bin/yard"

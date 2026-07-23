@@ -24,7 +24,8 @@ self-contained release runtime, so the operator CLI does not require Go or compi
 It links `yard` and `sy` into `~/.local/bin` and enables shell completion.
 
 ```bash
-./scripts/install-cli.sh
+curl -fsSL --proto '=https' --tlsv1.2 \
+  https://github.com/Dmitry-Borodin/Subyard/releases/latest/download/subyard-install.sh | bash
 yard check
 yard init
 

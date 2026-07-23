@@ -4,26 +4,49 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROJECT=subyard-p0-real-incus
 MARKER=agent-e2e-p0
+CONTAINER_IMAGE="${P0_REAL_INCUS_CONTAINER_IMAGE:-images:debian/13/cloud}"
+VM_IMAGE="${P0_REAL_INCUS_VM_IMAGE:-images:debian/13/cloud}"
+VM_CACHE_ALIAS="${P0_REAL_INCUS_VM_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-vm}"
 TMP=''
 
 die() { printf 'p0-real-incus: %s\n' "$*" >&2; exit 2; }
-project_exists() { incus project show "$PROJECT" >/dev/null 2>&1; }
+# Incus create/init/launch may consume YAML from stdin. The P0 lane is reached through SSH, so an
+# inherited non-TTY stream can stay open forever after the operation itself succeeds.
+real_incus() { timeout --foreground "${P0_REAL_INCUS_COMMAND_TIMEOUT:-900}" incus "$@" </dev/null; }
+real_incus_quiet() { real_incus "$@" >/dev/null; }
+project_exists() { real_incus project show "$PROJECT" >/dev/null 2>&1; }
+
+run_with_progress() {
+  local label="$1" interval="${E2E_PROGRESS_INTERVAL:-10}" ticker rc started=$SECONDS
+  shift
+  printf '  [ .. ] %s\n' "$label"
+  (
+    while sleep "$interval"; do
+      printf '  [ .. ] %s (still working, %ss elapsed)\n' "$label" "$((SECONDS - started))"
+    done
+  ) &
+  ticker=$!
+  if "$@"; then rc=0; else rc=$?; fi
+  kill "$ticker" 2>/dev/null || true
+  wait "$ticker" 2>/dev/null || true
+  return "$rc"
+}
 
 cleanup() {
   local name
   if project_exists; then
-    [ "$(incus project get "$PROJECT" user.subyard.p0 2>/dev/null)" = "$MARKER" ] \
+    [ "$(real_incus project get "$PROJECT" user.subyard.p0 2>/dev/null)" = "$MARKER" ] \
       || die "refusing to clean unmarked project $PROJECT"
     for name in p0-container p0-vm; do
-      if incus config show "$name" --project "$PROJECT" >/dev/null 2>&1; then
-        [ "$(incus config get "$name" user.subyard.p0 --project "$PROJECT")" = "$MARKER" ] \
+      if real_incus config show "$name" --project "$PROJECT" >/dev/null 2>&1; then
+        [ "$(real_incus config get "$name" user.subyard.p0 --project "$PROJECT")" = "$MARKER" ] \
           || die "refusing to clean unmarked instance $name"
-        incus delete "$name" --project "$PROJECT" --force >/dev/null
+        real_incus delete "$name" --project "$PROJECT" --force >/dev/null
       fi
     done
-    [ -z "$(incus list --project "$PROJECT" -f csv -c n)" ] \
+    [ -z "$(real_incus list --project "$PROJECT" -f csv -c n)" ] \
       || die "unexpected instance remains in $PROJECT"
-    incus project delete "$PROJECT" >/dev/null
+    real_incus project delete "$PROJECT" >/dev/null
   fi
   if [ -n "$TMP" ] && [[ "$TMP" = /tmp/subyard-p0-incus.* ]] && [ -d "$TMP" ]; then
     find "$TMP" -depth -delete
@@ -36,24 +59,32 @@ for command in go incus sudo; do command -v "$command" >/dev/null || die "$comma
 sudo -n true || die 'passwordless sudo is required in a disposable test VM'
 [ -S /var/lib/incus/unix.socket ] || die 'Incus socket is unavailable'
 project_exists && cleanup
+if cache_info="$(real_incus image info "$VM_CACHE_ALIAS" --project default 2>/dev/null)"; then
+  printf '%s\n' "$cache_info" | grep -Fqx 'Type: virtual-machine' \
+    || die "provisioned image alias $VM_CACHE_ALIAS is not a VM image"
+  VM_IMAGE="$VM_CACHE_ALIAS"
+  printf '  [ ok ] using provisioned real-Incus VM image %s\n' "$VM_CACHE_ALIAS"
+fi
 
-incus project create "$PROJECT" \
+real_incus project create "$PROJECT" \
   -c features.images=false -c features.profiles=false -c features.storage.volumes=false >/dev/null
-incus project set "$PROJECT" user.subyard.p0="$MARKER"
-incus launch images:debian/13/cloud p0-container --project "$PROJECT" --storage default \
-	-c user.subyard.p0="$MARKER" >/dev/null
-incus launch images:debian/13/cloud p0-vm --vm --project "$PROJECT" \
-	--storage default \
-	-c limits.cpu=1 -c limits.memory=1GiB -c user.subyard.p0="$MARKER" \
-	-d root,size=5GiB >/dev/null
+real_incus project set "$PROJECT" user.subyard.p0="$MARKER"
+run_with_progress "launching real Incus container (first use may download an image)" \
+  real_incus_quiet launch "$CONTAINER_IMAGE" p0-container --project "$PROJECT" --storage default \
+  -c user.subyard.p0="$MARKER"
+run_with_progress "launching real Incus VM (a clean allocation may download an image)" \
+  real_incus_quiet launch "$VM_IMAGE" p0-vm --vm --project "$PROJECT" \
+  --storage default \
+  -c limits.cpu=1 -c limits.memory=1GiB -c user.subyard.p0="$MARKER" \
+  -d root,size=5GiB
 
 for name in p0-container p0-vm; do
   printf '  [ .. ] waiting for %s\n' "$name"
   for _ in $(seq 1 120); do
-    incus exec "$name" --project "$PROJECT" -- true >/dev/null 2>&1 && break
+    real_incus exec "$name" --project "$PROJECT" -- true >/dev/null 2>&1 && break
     sleep 2
   done
-  incus exec "$name" --project "$PROJECT" -- true >/dev/null 2>&1 \
+  real_incus exec "$name" --project "$PROJECT" -- true >/dev/null 2>&1 \
     || die "$name did not become ready"
 done
 

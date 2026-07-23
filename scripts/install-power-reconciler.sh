@@ -17,14 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/config.sh
 . "$SCRIPT_DIR/lib/config.sh"
 subyard_context_load
-# shellcheck source=scripts/lib-power.sh
-. "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
 
 LIBEXEC_DIR="${SUBYARD_POWER_LIBEXEC_DIR:-/usr/local/libexec/subyard}"
 RECONCILER_PATH="${SUBYARD_POWER_RECONCILER_PATH:-$LIBEXEC_DIR/yard-boot-reconcile}"
-POWER_LIB_PATH="${SUBYARD_POWER_LIB_PATH:-$LIBEXEC_DIR/lib-power.sh}"
+ENGINE_SOURCE="${SUBYARD_POWER_ENGINE_SOURCE:-}"
 UNIT_PATH="${SUBYARD_POWER_UNIT_PATH:-/etc/systemd/system/subyard-power-reconcile.service}"
 UNIT_NAME="$(basename "$UNIT_PATH")"
 TEMPLATE="$SCRIPT_DIR/../config/systemd/subyard-power-reconcile.service.in"
@@ -50,18 +48,26 @@ proceed_or_die
 require_root "installing a host systemd unit and root-owned reconciler needs root"
 
 if [ "$action" = remove-if-unused ]; then
-  if command -v incus >/dev/null 2>&1; then
-    if ! incus info >/dev/null 2>&1; then
-      warn "Incus is unreachable — retaining the boot reconciler fail-closed"
+  if [ ! -x "$RECONCILER_PATH" ]; then
+    if [ ! -e "$UNIT_PATH" ]; then
+      ok "$UNIT_NAME already absent"
       exit 0
     fi
-    if power_any_managed_instance; then
-      ok "managed yards remain — keeping $UNIT_NAME"
+    warn "boot reconciler is unavailable — retaining $UNIT_NAME fail-closed"
+    exit 0
+  fi
+  if "$RECONCILER_PATH" _power-reconcile has-managed; then
+    ok "managed yards remain — keeping $UNIT_NAME"
+    exit 0
+  else
+    rc=$?
+    if [ "$rc" -ne 1 ]; then
+      warn "managed-yard inventory failed — retaining $UNIT_NAME fail-closed"
       exit 0
     fi
   fi
   systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
-  rm -f "$UNIT_PATH" "$RECONCILER_PATH" "$POWER_LIB_PATH"
+  rm -f "$UNIT_PATH" "$RECONCILER_PATH"
   rmdir "$LIBEXEC_DIR" 2>/dev/null || true
   systemctl daemon-reload
   ok "removed unused $UNIT_NAME"
@@ -69,9 +75,11 @@ if [ "$action" = remove-if-unused ]; then
 fi
 
 [ -r "$TEMPLATE" ] || die "systemd template missing: $TEMPLATE"
+[ -n "$ENGINE_SOURCE" ] || die "SUBYARD_POWER_ENGINE_SOURCE is required"
+[ -f "$ENGINE_SOURCE" ] && [ -x "$ENGINE_SOURCE" ] \
+  || die "power engine source must be an executable regular file: $ENGINE_SOURCE"
 install -d -o root -g root -m 0755 "$LIBEXEC_DIR" "$(dirname "$UNIT_PATH")"
-install -o root -g root -m 0755 "$SCRIPT_DIR/yard-boot-reconcile.sh" "$RECONCILER_PATH"
-install -o root -g root -m 0644 "$SCRIPT_DIR/lib-power.sh" "$POWER_LIB_PATH"
+install -o root -g root -m 0755 "$ENGINE_SOURCE" "$RECONCILER_PATH"
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT

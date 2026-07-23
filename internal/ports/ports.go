@@ -51,6 +51,18 @@ type InstanceConfigWriter interface {
 	SetInstanceConfig(context.Context, string, string, map[string]string) error
 }
 
+type InstanceInventory interface {
+	ListInstances(context.Context) ([]InstanceInfo, error)
+}
+
+type InstancePowerManager interface {
+	SetInstancePower(context.Context, string, string, string, bool) error
+}
+
+type HostNetworkGuard interface {
+	Check(context.Context, []string) error
+}
+
 type InstanceExecRequest struct {
 	Command     []string
 	Environment map[string]string

@@ -51,9 +51,14 @@ export MOCK_SUDO_LOG="$TMP/sudo.argv"
   SUBYARD_CONFIG_DIR="$TMP/repository/config"
   SUBYARD_CONFIG_HOME="$TMP/operator home/.config/subyard"
   SUBYARD_HOME="$TMP/operator home/.subyard"
+  YARD_RUNTIME_ROOT="$TMP/operator home/.subyard/runtime"
+  STORAGE_PATH="$TMP/operator home/.subyard/incus/storage"
+  HOST_BASE="$TMP/host data"
+  RESTRICTED_DISK_PATHS="$TMP/host data"
   SUBYARD_YARD=e2e-yard
   SUBYARD_YARD_EXPLICIT=1
   SUBYARD_SUDO_PREAUTHORIZED=1
+  SUBYARD_POWER_ENGINE_SOURCE="$TMP/runtime/yard-engine"
   SUBYARD_SCRIPT_PATH="$TMP/phase.sh"
   SUBYARD_SCRIPT_ARGV=(--yes)
   warn() { :; }
@@ -70,8 +75,13 @@ for expected in \
   "SUBYARD_CONFIG_DIR=$TMP/repository/config" \
   "SUBYARD_CONFIG_HOME=$TMP/operator home/.config/subyard" \
   "SUBYARD_HOME=$TMP/operator home/.subyard" \
+  "YARD_RUNTIME_ROOT=$TMP/operator home/.subyard/runtime" \
+  "STORAGE_PATH=$TMP/operator home/.subyard/incus/storage" \
+  "HOST_BASE=$TMP/host data" \
+  "RESTRICTED_DISK_PATHS=$TMP/host data" \
   SUBYARD_YARD=e2e-yard \
   SUBYARD_YARD_EXPLICIT=1 \
+  "SUBYARD_POWER_ENGINE_SOURCE=$TMP/runtime/yard-engine" \
   "$TMP/phase.sh" \
   --yes; do
   grep -Fxq -- "$expected" "$MOCK_SUDO_LOG" \

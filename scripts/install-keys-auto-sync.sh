@@ -35,7 +35,7 @@ if [ "$SKIP_ENABLE" = 1 ] && [ ! -x "$YARD_BIN" ]; then
   YARD_BIN="$REPO/bin/yard"
 fi
 [ -x "$YARD_BIN" ] \
-  || die "yard runtime is missing — run: $REPO/scripts/install-cli.sh (or build the development candidate)"
+  || die "yard runtime is missing — run the Subyard release installer (or build the development candidate)"
 
 render_service() {
   sed -e "s|@YARD_BIN@|$YARD_BIN|g" "$SERVICE_TEMPLATE"

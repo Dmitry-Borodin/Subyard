@@ -11,7 +11,7 @@ cleanup() {
 trap cleanup EXIT
 
 release="$TMP/release"
-artifact="$("$ROOT/scripts/package-engine.sh" --output-dir "$release" --version 0.1.0-dev)"
+artifact="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 0.1.0-dev)"
 bundle="${artifact/\/yard-/\/subyard-}.tar.gz"
 bundle_before="$(sha256sum "$bundle" | cut -d' ' -f1)"
 
@@ -34,7 +34,7 @@ export YARD_RELEASE_BASE_URL="file://$release"
 export YARD_RELEASE_VERSION=0.1.0-dev
 export PATH="$TMP/no-go:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-"$ROOT/scripts/install-cli.sh" >/dev/null
+"$ROOT/dev/install-cli.sh" >/dev/null
 [ -L "$YARD_BIN_DIR/yard" ] && [ -L "$YARD_BIN_DIR/sy" ] \
   || { printf 'installed-cli: installer did not create both launchers\n' >&2; exit 1; }
 [ "$(readlink -f "$YARD_BIN_DIR/yard")" = "$(readlink -f "$SUBYARD_HOME/runtime/current/bin/yard")" ] \

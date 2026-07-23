@@ -27,6 +27,36 @@ func TestOfficialClientMapsServerAndInstance(t *testing.T) {
 	contracttest.IncusRead(t, New(server.SocketPath, "projects"))
 }
 
+func TestOfficialClientListsAndChangesInstancePower(t *testing.T) {
+	server, err := testkit.NewIncusServer(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	server.SetInstance("subyard-a", "yard-a", map[string]any{
+		"name": "yard-a", "project": "subyard-a", "type": "container", "status": "Stopped",
+	})
+	server.SetInstance("subyard-b", "yard-b", map[string]any{
+		"name": "yard-b", "project": "subyard-b", "type": "virtual-machine", "status": "Running",
+	})
+	client := New(server.SocketPath, "projects")
+	instances, err := client.ListInstances(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 2 {
+		t.Fatalf("unexpected inventory: %#v", instances)
+	}
+	if err := client.SetInstancePower(context.Background(), "subyard-a", "yard-a", "start", false); err != nil {
+		t.Fatal(err)
+	}
+	calls := server.PowerCalls()
+	if len(calls) != 1 || calls[0].Project != "subyard-a" || calls[0].Name != "yard-a" ||
+		calls[0].Action != "start" || calls[0].Force {
+		t.Fatalf("unexpected power call: %#v", calls)
+	}
+}
+
 func TestRequiredExtensionFailsClosed(t *testing.T) {
 	server, err := testkit.NewIncusServer(t.TempDir())
 	if err != nil {

@@ -12,10 +12,14 @@ PROBE_NAME=''
 PROBE_LOG=''
 
 die() { printf 'p0-acceptance: %s\n' "$*" >&2; exit 2; }
-run_vm() { "$AGENT" --vm "$1" -- bash dev/e2e/p0-guest.sh "$2" "$TOKEN" "${3:-}"; }
+run_vm() {
+  local vm="$1" mode="$2"; shift 2
+  "$AGENT" --vm "$vm" -- bash dev/e2e/p0-guest.sh "$mode" "$TOKEN" "$@"
+}
 direct_vm() {
-  "$AGENT" --ssh "$1" -- env SUBYARD_E2E_VM="$1" \
-    bash "/tmp/subyard-p0-peer-$TOKEN/src/dev/e2e/p0-guest.sh" "$2" "$TOKEN" "${3:-}"
+  local vm="$1" mode="$2"; shift 2
+  "$AGENT" --ssh "$vm" -- env SUBYARD_E2E_VM="$vm" \
+    bash "/tmp/subyard-p0-peer-$TOKEN/src/dev/e2e/p0-guest.sh" "$mode" "$TOKEN" "$@"
 }
 clean_peers() { "$AGENT" --vm both -- bash dev/e2e/p0-guest.sh peer-clean "$TOKEN"; }
 cleanup() {
@@ -123,9 +127,23 @@ vm2_ip="$(ssh -F "$CONFIG" -G e2e-vm-2 | awk '$1=="hostname" {print $2; exit}')"
 "$AGENT" --verify-boundary
 transport_probes
 run_lanes
-run_vm 1 peer-prepare "$vm2_ip"
 PEERS_READY=1
+run_vm 1 peer-prepare "$vm2_ip"
 run_vm 2 peer-prepare "$vm1_ip"
+peer1_info="$(direct_vm 1 peer-info)"
+peer2_info="$(direct_vm 2 peer-info)"
+peer1_key="$(awk -F '\t' '$1=="identity" {print $2; exit}' <<<"$peer1_info")"
+peer2_key="$(awk -F '\t' '$1=="identity" {print $2; exit}' <<<"$peer2_info")"
+vm1_host_key="$(awk -F '\t' '$1=="host" {print $2; exit}' <<<"$peer1_info")"
+vm2_host_key="$(awk -F '\t' '$1=="host" {print $2; exit}' <<<"$peer2_info")"
+[ -n "$peer1_key" ] && [ -n "$peer2_key" ] \
+  && [ -n "$vm1_host_key" ] && [ -n "$vm2_host_key" ] \
+  || die 'cross-owner synthetic SSH evidence is incomplete'
+printf '  [ .. ] installing synthetic cross-owner SSH identities and host-key pins\n'
+direct_vm 1 peer-authorize "$vm2_ip" "$peer2_key" "$vm2_host_key"
+direct_vm 2 peer-authorize "$vm1_ip" "$peer1_key" "$vm1_host_key"
+direct_vm 1 peer-probe "$vm2_ip"
+direct_vm 2 peer-probe "$vm1_ip"
 direct_vm 1 peer-rpc "$vm2_ip"
 direct_vm 2 peer-rpc "$vm1_ip"
 direct_vm 1 peer-credentials "$vm2_ip"
@@ -137,6 +155,9 @@ for vm in 1 2; do
     || die "VM$vm retained its peer fixture"
   ssh -F "$CONFIG" -T "e2e-vm-$vm" -- sudo -n test ! -e /usr/local/bin/yard \
     || die "VM$vm retained the peer yard wrapper"
+  "$AGENT" --ssh "$vm" -- \
+    sh -c '! grep -Fq "$1" "$HOME/.ssh/authorized_keys" 2>/dev/null' _ "subyard-p0-$TOKEN" \
+    || die "VM$vm retained a synthetic peer authorization"
 done
 assert_no_worktrees
 "$AGENT" --verify-boundary

@@ -607,6 +607,7 @@ exit 90
 		"E2E_VM_TTL_MINUTES":      "1200",
 		"AGENT_codex_CONFIG":      "/config/agents/codex/config.toml",
 		"HOST_OPENCODE_AGENTS_MD": "/home/operator/.config/opencode/AGENTS.md",
+		"YARD_RUNTIME_ROOT":       "/opt/subyard/runtime",
 		"AGENT_codex_TOKEN":       "must-not-cross",
 		"AWS_SECRET_ACCESS_KEY":   "must-not-cross",
 		"UNRELATED_AMBIENT_VALUE": "must-not-cross",
@@ -616,6 +617,7 @@ exit 90
 		"E2E_VM_TTL_MINUTES":      "1200",
 		"AGENT_codex_CONFIG":      "/config/agents/codex/config.toml",
 		"HOST_OPENCODE_AGENTS_MD": "/home/operator/.config/opencode/AGENTS.md",
+		"YARD_RUNTIME_ROOT":       "/opt/subyard/runtime",
 	} {
 		if commandValues[name] != expected {
 			t.Fatalf("structured command context lost %s: %#v", name, commandValues)

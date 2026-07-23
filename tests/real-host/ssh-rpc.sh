@@ -9,7 +9,7 @@ for tool in ssh ssh-keygen ssh-keyscan jq od dd; do
   command -v "$tool" >/dev/null 2>&1 || { printf 'ssh-rpc: %s is required\n' "$tool" >&2; exit 2; }
 done
 command -v go >/dev/null 2>&1 || { printf 'ssh-rpc: Go is required to build the acceptance engine\n' >&2; exit 2; }
-"$ROOT/scripts/build-engine.sh" >/dev/null
+"$ROOT/dev/build-engine.sh" >/dev/null
 ENGINE="$ROOT/.build/yard"
 
 TMP="$(mktemp -d)"

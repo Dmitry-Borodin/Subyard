@@ -87,10 +87,9 @@ func TestGitIdentityProbeUsesTypedInstanceState(t *testing.T) {
 
 func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 	root := t.TempDir()
-	scripts := filepath.Join(root, "scripts")
 	bin := filepath.Join(root, "bin")
 	installed := filepath.Join(root, "installed")
-	for _, directory := range []string{scripts, bin, installed} {
+	for _, directory := range []string{bin, installed} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -101,16 +100,12 @@ func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	reconcilerSource := filepath.Join(scripts, "yard-boot-reconcile.sh")
-	powerSource := filepath.Join(scripts, "lib-power.sh")
+	reconcilerSource := filepath.Join(root, "yard-engine")
 	reconciler := filepath.Join(installed, "yard-boot-reconcile")
-	powerLibrary := filepath.Join(installed, "lib-power.sh")
 	unit := filepath.Join(installed, "subyard-power-reconcile.service")
 	write(reconcilerSource, "reconciler\n", 0o700)
 	write(reconciler, "reconciler\n", 0o700)
-	write(powerSource, "library\n", 0o600)
-	write(powerLibrary, "library\n", 0o600)
-	write(unit, "[Service]\nExecStart="+reconciler+"\n", 0o600)
+	write(unit, "[Service]\nExecStart="+reconciler+" _power-reconcile\n", 0o600)
 	write(filepath.Join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", 0o700)
 
 	incus := &testkit.Incus{
@@ -125,7 +120,7 @@ func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 	}
 	runtime := Runtime{RepositoryRoot: root, Incus: incus, Environment: []string{
 		"PATH=" + bin, "SUBYARD_POWER_RECONCILER_PATH=" + reconciler,
-		"SUBYARD_POWER_LIB_PATH=" + powerLibrary, "SUBYARD_POWER_UNIT_PATH=" + unit,
+		"SUBYARD_POWER_ENGINE_SOURCE=" + reconcilerSource, "SUBYARD_POWER_UNIT_PATH=" + unit,
 	}}
 	assertStage(t, runtime, "power", true, "installed and finalized power state")
 	incus.Reconcile.Instance.LocalConfig["user.subyard.initialized"] = "false"
@@ -228,7 +223,8 @@ func TestSSHProbeOwnsProxyAndClientConfig(t *testing.T) {
 	runtime := Runtime{
 		Incus: incus, Executor: incus,
 		Yard: domain.Context{
-			IncusProject: "subyard", InstanceName: "yard", SSHHost: "yard", SSHPort: 2222,
+			YardName: "default", IncusProject: "subyard", InstanceName: "yard",
+			SSHHost: "yard", SSHPort: 2222,
 			Paths: domain.RuntimePaths{OperatorHome: home, DataHome: subyardHome},
 		},
 		Environment: []string{"PATH=" + bin},
@@ -236,6 +232,20 @@ func TestSSHProbeOwnsProxyAndClientConfig(t *testing.T) {
 	assertStage(t, runtime, "ssh", true, "matching SSH state")
 	incus.Reconcile.Instance.LocalDevices["ssh"]["listen"] = "tcp:127.0.0.1:2299"
 	assertStage(t, runtime, "ssh", false, "drifted SSH proxy")
+	incus.Reconcile.Instance.LocalDevices["ssh"]["listen"] = "tcp:127.0.0.1:2222"
+	if err := os.Rename(
+		filepath.Join(home, ".ssh", "subyard.config"),
+		filepath.Join(home, ".ssh", "subyard-demo.config"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(home, ".ssh", "config"), []byte("Include subyard-demo.config\n"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime.Yard.YardName = "demo"
+	assertStage(t, runtime, "ssh", true, "matching named-yard SSH state")
 }
 
 func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {

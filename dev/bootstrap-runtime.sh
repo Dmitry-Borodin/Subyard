@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# First-install bootstrap for hosts that do not have a Subyard engine yet.
+# Bootstrap a host from release assets.
 set -euo pipefail
 
 REPOSITORY="${YARD_RELEASE_REPOSITORY:-Dmitry-Borodin/Subyard}"

@@ -28,6 +28,11 @@ SRV_POOL="${SRV_POOL:-default}"
 SRV_VOLUME="${SRV_VOLUME:-yard-srv}"
 STORAGE_POOL="${STORAGE_POOL:-default}"
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
+RUNTIME_ROOT_RAW="${YARD_RUNTIME_ROOT:-$SUBYARD_HOME/runtime}"
+case "$RUNTIME_ROOT_RAW" in
+  /*) RUNTIME_ROOT="$(realpath -m -- "$RUNTIME_ROOT_RAW")" ;;
+  *) die "YARD_RUNTIME_ROOT must be an absolute path" ;;
+esac
 
 YARD_SNIP="subyard${YARD_NAME:+-$YARD_NAME}.config"
 YARD_STATE_DIR="${SUBYARD_STATE_DIR:-$SUBYARD_CONFIG_HOME/projects}"
@@ -151,7 +156,13 @@ rm -f "$YARD_SPACE_CACHE" "$YARD_SPACE_CACHE.lock" "$YARD_SPACE_CACHE.tmp" 2>/de
 if [ "$KEEP_DATA" = 1 ]; then
   ok "kept data: $STORAGE_PATH (and $SUBYARD_HOME)"
 elif [ "$pool_gone" = 1 ]; then
-  rm -rf "$SUBYARD_HOME" && ok "removed $SUBYARD_HOME (storage data, ssh keys, logs)"
+  subyard_home_remove_preserving_runtime "$SUBYARD_HOME" "$RUNTIME_ROOT" \
+    || die "refusing to remove unsafe Subyard data root: $SUBYARD_HOME"
+  if [ -n "$SUBYARD_PRESERVED_RUNTIME" ]; then
+    ok "removed $SUBYARD_HOME yard data; kept installed runtime $SUBYARD_PRESERVED_RUNTIME"
+  else
+    ok "removed $SUBYARD_HOME (storage data, ssh keys, logs)"
+  fi
 else
   warn "kept $STORAGE_PATH and shared $SUBYARD_HOME/{ssh,logs} — another yard still uses the pool"
 fi

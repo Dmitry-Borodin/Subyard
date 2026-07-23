@@ -64,6 +64,57 @@ func (client *Client) Instance(ctx context.Context, project, name string) (ports
 	return instanceInfo(project, instance), nil
 }
 
+func (client *Client) ListInstances(ctx context.Context) ([]ports.InstanceInfo, error) {
+	server, err := client.connect(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.validateServerExtensions(server); err != nil {
+		return nil, err
+	}
+	instances, err := server.GetInstancesAllProjects(api.InstanceTypeAny)
+	if err != nil {
+		return nil, normalizeError("list instances", err)
+	}
+	result := make([]ports.InstanceInfo, 0, len(instances))
+	for index := range instances {
+		result = append(result, instanceInfo(instances[index].Project, &instances[index]))
+	}
+	return result, nil
+}
+
+func (client *Client) SetInstancePower(
+	ctx context.Context,
+	project string,
+	name string,
+	action string,
+	force bool,
+) error {
+	if action != "start" && action != "stop" {
+		return fmt.Errorf("invalid instance power action %q", action)
+	}
+	if force && action != "stop" {
+		return errors.New("forced instance power is valid only for stop")
+	}
+	server, err := client.connect(ctx, true)
+	if err != nil {
+		return err
+	}
+	if err := client.validateServerExtensions(server); err != nil {
+		return err
+	}
+	operation, err := server.UseProject(project).UpdateInstanceState(name, api.InstanceStatePut{
+		Action: action, Timeout: -1, Force: force,
+	}, "")
+	if err != nil {
+		return normalizeError(action+" instance", err)
+	}
+	if err := operation.Wait(); err != nil {
+		return normalizeError("wait for "+action+" instance", err)
+	}
+	return nil
+}
+
 func (client *Client) ReconcileState(
 	ctx context.Context,
 	projectName string,

@@ -18,8 +18,10 @@ require_root() {
     )
     # Preserve the normalized operator-owned roots and selected named yard across sudo's clean
     # environment. Do not pass arbitrary ambient variables or credentials to the root process.
-    for name in SUBYARD_CONFIG_DIR SUBYARD_CONFIG_HOME SUBYARD_HOME \
-      SUBYARD_YARD SUBYARD_YARD_EXPLICIT SUBYARD_TEARDOWN_KEEP_DATA; do
+    for name in SUBYARD_CONFIG_DIR SUBYARD_CONFIG_HOME SUBYARD_HOME YARD_RUNTIME_ROOT STORAGE_PATH \
+      HOST_BASE RESTRICTED_DISK_PATHS \
+      SUBYARD_YARD SUBYARD_YARD_EXPLICIT SUBYARD_TEARDOWN_KEEP_DATA \
+      SUBYARD_POWER_ENGINE_SOURCE; do
       [ -z "${!name:-}" ] || elevated_env+=("$name=${!name}")
     done
     warn "this needs root: $why"
@@ -35,6 +37,41 @@ require_root() {
   printf '\n%sNeeds root and sudo is not installed — run as root:%s\n    %s%s %s%s\n\n' \
     "$C_WARN" "$C_OFF" "$C_HEAD" "$SUBYARD_SCRIPT_PATH" "${SUBYARD_SCRIPT_ARGV[*]:-}" "$C_OFF" >&2
   exit 1
+}
+
+subyard_home_remove_preserving_runtime() {
+  local data_home="${1:-}" runtime_root="${2:-}" relative preserve_path entry
+  SUBYARD_PRESERVED_RUNTIME=""
+  case "$data_home:$runtime_root" in
+    /*:/*) ;;
+    *) return 2 ;;
+  esac
+  data_home="$(realpath -m -- "$data_home")"
+  runtime_root="$(realpath -m -- "$runtime_root")"
+  [ "$data_home" != / ] && ! path_is_broad_host_root "$data_home" || return 2
+
+  if [ -x "$runtime_root/current/bin/yard" ]; then
+    case "$runtime_root" in
+      "$data_home")
+        SUBYARD_PRESERVED_RUNTIME="$runtime_root"
+        return 0
+        ;;
+      "$data_home"/*)
+        relative="${runtime_root#"$data_home"/}"
+        preserve_path="$data_home/${relative%%/*}"
+        SUBYARD_PRESERVED_RUNTIME="$runtime_root"
+        ;;
+    esac
+  fi
+
+  if [ -z "$SUBYARD_PRESERVED_RUNTIME" ]; then
+    rm -rf -- "$data_home"
+    return 0
+  fi
+
+  while IFS= read -r -d '' entry; do
+    [ "$entry" = "$preserve_path" ] || rm -rf -- "$entry"
+  done < <(find "$data_home" -mindepth 1 -maxdepth 1 -print0)
 }
 
 incus_preflight() {

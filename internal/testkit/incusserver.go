@@ -33,6 +33,7 @@ type IncusServer struct {
 	execStarted chan struct{}
 	execSteps   []IncusServerExecStep
 	execCalls   []IncusServerExecCall
+	powerCalls  []IncusServerPowerCall
 	operations  map[string]*incusOperation
 	eventQuery  string
 	nextOp      int
@@ -57,6 +58,13 @@ type IncusServerExecCall struct {
 	Stdin       []byte
 }
 
+type IncusServerPowerCall struct {
+	Project string
+	Name    string
+	Action  string
+	Force   bool
+}
+
 type incusOperation struct {
 	id        string
 	step      IncusServerExecStep
@@ -79,7 +87,7 @@ func NewIncusServer(root string) (*IncusServer, error) {
 		SocketPath: socket,
 		listener:   listener,
 		serverInfo: map[string]any{
-			"api_extensions": []string{"projects", "instances"},
+			"api_extensions": []string{"projects", "instances", "instance_all_projects"},
 			"environment":    map[string]any{"server": "incus", "server_version": "6.23"},
 		},
 		instances:   make(map[string]map[string]any),
@@ -153,6 +161,12 @@ func (fake *IncusServer) ExecCalls() []IncusServerExecCall {
 	return result
 }
 
+func (fake *IncusServer) PowerCalls() []IncusServerPowerCall {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return append([]IncusServerPowerCall(nil), fake.powerCalls...)
+}
+
 func (fake *IncusServer) SetExtensions(extensions ...string) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
@@ -218,8 +232,13 @@ func (fake *IncusServer) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/exec") &&
 		strings.HasPrefix(request.URL.Path, "/1.0/instances/"):
 		fake.startExec(writer, request)
+	case request.Method == http.MethodPut && strings.HasSuffix(request.URL.Path, "/state") &&
+		strings.HasPrefix(request.URL.Path, "/1.0/instances/"):
+		fake.setPower(writer, request)
 	case strings.HasPrefix(request.URL.Path, "/1.0/operations/"):
 		fake.serveOperation(writer, request)
+	case request.Method == http.MethodGet && request.URL.Path == "/1.0/instances":
+		fake.listInstances(writer, request)
 	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/1.0/instances/"):
 		name := strings.TrimPrefix(request.URL.Path, "/1.0/instances/")
 		project := request.URL.Query().Get("project")
@@ -240,6 +259,64 @@ func (fake *IncusServer) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	default:
 		writeIncusError(writer, http.StatusNotFound, "endpoint not found")
 	}
+}
+
+func (fake *IncusServer) listInstances(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Query().Get("all-projects") != "true" {
+		writeIncusError(writer, http.StatusBadRequest, "all-projects is required")
+		return
+	}
+	fake.mu.Lock()
+	instances := make([]map[string]any, 0, len(fake.instances))
+	for key, source := range fake.instances {
+		instance := cloneAnyMap(source)
+		project, _, _ := strings.Cut(key, "/")
+		if _, ok := instance["project"]; !ok {
+			instance["project"] = project
+		}
+		instances = append(instances, instance)
+	}
+	fake.mu.Unlock()
+	writeIncusSync(writer, instances)
+}
+
+func (fake *IncusServer) setPower(writer http.ResponseWriter, request *http.Request) {
+	name := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/1.0/instances/"), "/state")
+	project := request.URL.Query().Get("project")
+	var input struct {
+		Action string `json:"action"`
+		Force  bool   `json:"force"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 64*1024)).Decode(&input); err != nil {
+		writeIncusError(writer, http.StatusBadRequest, "invalid state request")
+		return
+	}
+	fake.mu.Lock()
+	instance, ok := fake.instances[project+"/"+name]
+	if !ok {
+		fake.mu.Unlock()
+		writeIncusError(writer, http.StatusNotFound, "instance not found")
+		return
+	}
+	fake.powerCalls = append(fake.powerCalls, IncusServerPowerCall{
+		Project: project, Name: name, Action: input.Action, Force: input.Force,
+	})
+	if input.Action == "start" {
+		instance["status"] = "Running"
+	} else {
+		instance["status"] = "Stopped"
+	}
+	fake.nextOp++
+	id := fmt.Sprintf("operation-%d", fake.nextOp)
+	stdinDone := make(chan struct{})
+	close(stdinDone)
+	operation := &incusOperation{
+		id: id, cancelled: make(chan struct{}), stdinDone: stdinDone, callIndex: -1,
+	}
+	fake.operations[id] = operation
+	fake.mu.Unlock()
+	writeIncusAsync(writer, "/1.0/operations/"+id,
+		operationMetadata(operation, "Running", 103, "", nil))
 }
 
 func (fake *IncusServer) EventQuery() string {

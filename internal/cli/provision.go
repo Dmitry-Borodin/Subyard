@@ -185,7 +185,7 @@ func (cli *CLI) executeProvision(
 	}
 	contextValues := structuredCommandContext(loaded)
 	if strings.EqualFold(instance.Status, "stopped") && cli.options.AdapterRunner == nil {
-		if err := cli.prepareStartPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
+		if err := cli.prepareNetworkManagerPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
 			return domain.AdapterResult{}, err
 		}
 		contextValues["SUBYARD_SUDO_PREAUTHORIZED"] = "1"

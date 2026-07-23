@@ -35,10 +35,15 @@ make build
 
 `make build` writes the ignored developer candidate `.build/yard` atomically. The source-tree
 `bin/yard` launcher uses that explicit candidate and never compiles or downloads a toolchain at
-runtime. Production does not use the source checkout: `scripts/install-cli.sh` installs a verified
-self-contained runtime and links `~/.local/bin/yard` and `sy` to its stable `current/bin/yard` path.
-It also configures the effective login profile so non-interactive remote-owner SSH calls resolve the
-same entrypoint.
+runtime. Production does not use the source checkout:
+
+```sh
+curl -fsSL --proto '=https' --tlsv1.2 \
+  https://github.com/Dmitry-Borodin/Subyard/releases/latest/download/subyard-install.sh | bash
+```
+
+This links `~/.local/bin/{yard,sy}` to the verified runtime. The source-only `dev/install-cli.sh`
+also configures shell profiles for development hosts.
 
 `make package VERSION=<version>` writes amd64 or arm64 Linux engine artifacts and a complete
 `subyard-<version>-linux-<arch>.tar.gz` runtime under `.build/release/`, each with a detached SHA-256,

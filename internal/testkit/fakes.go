@@ -202,12 +202,20 @@ type Incus struct {
 	ExecSteps     []IncusExecStep
 	ExecCalls     []IncusExecCall
 	ConfigUpdates []InstanceConfigUpdate
+	PowerUpdates  []InstancePowerUpdate
 }
 
 type InstanceConfigUpdate struct {
 	Project string
 	Name    string
 	Values  map[string]string
+}
+
+type InstancePowerUpdate struct {
+	Project string
+	Name    string
+	Action  string
+	Force   bool
 }
 
 type IncusExecStep struct {
@@ -234,6 +242,47 @@ func (fake *Incus) Instance(_ context.Context, project, name string) (ports.Inst
 		return ports.InstanceInfo{}, ports.ErrInstanceNotFound
 	}
 	return instance, nil
+}
+
+func (fake *Incus) ListInstances(context.Context) ([]ports.InstanceInfo, error) {
+	if fake.Err != nil {
+		return nil, fake.Err
+	}
+	instances := make([]ports.InstanceInfo, 0, len(fake.Instances))
+	for _, instance := range fake.Instances {
+		instances = append(instances, instance)
+	}
+	return instances, nil
+}
+
+func (fake *Incus) SetInstancePower(
+	_ context.Context,
+	project string,
+	name string,
+	action string,
+	force bool,
+) error {
+	if fake.Err != nil {
+		return fake.Err
+	}
+	key := project + "/" + name
+	instance, ok := fake.Instances[key]
+	if !ok {
+		return ports.ErrInstanceNotFound
+	}
+	if action != "start" && action != "stop" {
+		return errors.New("invalid instance power action")
+	}
+	fake.PowerUpdates = append(fake.PowerUpdates, InstancePowerUpdate{
+		Project: project, Name: name, Action: action, Force: force,
+	})
+	if action == "start" {
+		instance.Status = "Running"
+	} else {
+		instance.Status = "Stopped"
+	}
+	fake.Instances[key] = instance
+	return nil
 }
 
 func (fake *Incus) ReconcileState(

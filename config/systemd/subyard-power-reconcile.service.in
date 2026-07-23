@@ -5,7 +5,7 @@ After=network-online.target NetworkManager.service incus.service incus.socket
 
 [Service]
 Type=oneshot
-ExecStart=@SUBYARD_POWER_RECONCILER@
+ExecStart=@SUBYARD_POWER_RECONCILER@ _power-reconcile
 TimeoutStartSec=120
 NoNewPrivileges=true
 PrivateTmp=true

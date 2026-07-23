@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sy-stage.sh — IN-YARD self-serve staging control for a coding agent.
+# In-yard staging control for an OpenClaw coding agent.
 #
 # Runs INSIDE the yard and drives the yard's own Docker directly (the agent in L1 is in the
 # `docker` group). No host `yard` CLI, no path typing: the runner is already live-bound to the

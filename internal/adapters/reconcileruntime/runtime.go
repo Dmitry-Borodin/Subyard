@@ -688,7 +688,7 @@ func (runtime Runtime) sshConverged(ctx context.Context) (bool, error) {
 	}
 	yardName := runtime.Yard.YardName
 	suffix := ""
-	if yardName != "" {
+	if yardName != "" && yardName != "default" {
 		suffix = "-" + yardName
 	}
 	snippet := filepath.Join(home, ".ssh", "subyard"+suffix+".config")
@@ -977,17 +977,14 @@ func (runtime Runtime) powerConverged(ctx context.Context, requireMetadata bool)
 func (runtime Runtime) powerReconcilerConverged(ctx context.Context) bool {
 	reconciler := runtime.environmentDefault("SUBYARD_POWER_RECONCILER_PATH",
 		"/usr/local/libexec/subyard/yard-boot-reconcile")
-	powerLibrary := runtime.environmentDefault("SUBYARD_POWER_LIB_PATH",
-		"/usr/local/libexec/subyard/lib-power.sh")
+	engineSource := runtime.environmentValue("SUBYARD_POWER_ENGINE_SOURCE")
 	unit := runtime.environmentDefault("SUBYARD_POWER_UNIT_PATH",
 		"/etc/systemd/system/subyard-power-reconcile.service")
-	if !executable(reconciler) || !sameFile(filepath.Join(runtime.RepositoryRoot,
-		"scripts", "yard-boot-reconcile.sh"), reconciler) ||
-		!sameFile(filepath.Join(runtime.RepositoryRoot, "scripts", "lib-power.sh"), powerLibrary) {
+	if engineSource == "" || !executable(reconciler) || !sameFile(engineSource, reconciler) {
 		return false
 	}
 	contents, err := os.ReadFile(unit)
-	if err != nil || !hasLine(string(contents), "ExecStart="+reconciler) {
+	if err != nil || !hasLine(string(contents), "ExecStart="+reconciler+" _power-reconcile") {
 		return false
 	}
 	systemctl, err := runtime.executableFromPath("systemctl")

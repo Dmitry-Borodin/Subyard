@@ -14,7 +14,7 @@ for tool in ssh ssh-keygen ssh-keyscan jq git; do
   command -v "$tool" >/dev/null 2>&1 || { printf 'ssh-credential-peer: %s is required\n' "$tool" >&2; exit 2; }
 done
 command -v go >/dev/null 2>&1 || { printf 'ssh-credential-peer: Go is required\n' >&2; exit 2; }
-"$ROOT/scripts/build-engine.sh" >/dev/null
+"$ROOT/dev/build-engine.sh" >/dev/null
 
 TMP="$(mktemp -d)"
 sshd_pid=''

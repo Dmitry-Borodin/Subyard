@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a versioned Linux engine artifact with a detached SHA-256 and compatibility manifest.
+# Build versioned Linux release artifacts.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +24,7 @@ case "$TARGET_ARCH" in amd64 | arm64) ;; *) printf 'package-engine: unsupported 
 
 goos=linux; goarch="$TARGET_ARCH"
 install -d "$OUTPUT_DIR"
-install -m 0755 "$REPO/scripts/bootstrap-runtime.sh" "$OUTPUT_DIR/subyard-install.sh"
+install -m 0755 "$REPO/dev/bootstrap-runtime.sh" "$OUTPUT_DIR/subyard-install.sh"
 install -m 0755 "$REPO/scripts/install-runtime-release.sh" \
   "$OUTPUT_DIR/subyard-install-runtime-release.sh"
 ( cd "$OUTPUT_DIR" && sha256sum subyard-install-runtime-release.sh \
@@ -56,8 +56,6 @@ install -d "$bundle_stage/bin"
 install -m 0755 "$artifact" "$bundle_stage/bin/yard-engine"
 install -m 0755 "$REPO/bin/yard" "$bundle_stage/bin/yard"
 cp -a "$REPO/scripts" "$REPO/config" "$REPO/completions" "$bundle_stage/"
-rm -f "$bundle_stage/scripts/build-engine.sh" "$bundle_stage/scripts/package-engine.sh" \
-  "$bundle_stage/scripts/install-cli.sh" "$bundle_stage/scripts/bootstrap-runtime.sh"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$bundle_stage" -cf - . \
   | gzip -n > "$bundle"
 chmod 0644 "$bundle"

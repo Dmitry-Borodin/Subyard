@@ -57,9 +57,10 @@ Usage:
   dev/agent-e2e.sh [--yard NAME] --verify-boundary
 
 The normal form copies the current tracked, dirty and non-ignored public worktree to each selected
-VM, runs COMMAND as dev, streams output and removes every run directory. --ssh opens an ordinary
-guest terminal (or runs a direct guest command). --ssh-config prints the generated strict OpenSSH
-config path for direct `ssh -F PATH e2e-vm-1` use.
+VM, runs COMMAND as dev, streams output and removes every run directory. A direct ./bin/yard command
+first builds the explicit development candidate in that run directory. --ssh opens an ordinary guest
+terminal (or runs a direct guest command). --ssh-config prints the generated strict OpenSSH config
+path for direct `ssh -F PATH e2e-vm-1` use.
 
 NAME defaults to test-yard. During a temporary migration, select the old yard explicitly with
 `--yard e2e-yard`; route and generated client state remain isolated per yard.
@@ -424,7 +425,7 @@ cleanup_guest() {
   local vm="$1" directory="${GUEST_DIRS[$1]:-}"
   [ -n "$directory" ] || return 0
   case "$directory" in /tmp/subyard-worktree.*) ;; *) return 1 ;; esac
-  guest "$vm" find "$directory" -depth -delete </dev/null
+  guest "$vm" sudo -n find "$directory" -depth -delete </dev/null
   unset 'GUEST_DIRS[$vm]'
 }
 
@@ -471,11 +472,14 @@ build_bundle() {
 }
 
 write_guest_command() {
-  local vm="$1" directory="$2"; shift 2
-  printf '#!/usr/bin/env bash\nset -euo pipefail\n'
-  printf 'cd %q\n' "$directory/src"
-  printf 'export SUBYARD_E2E_VM=%q\n' "$vm"
-  printf 'exec'
+	local vm="$1" directory="$2"; shift 2
+	printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+	printf 'cd %q\n' "$directory/src"
+	printf 'export SUBYARD_E2E_VM=%q\n' "$vm"
+	if [ "${1:-}" = ./bin/yard ]; then
+		printf './dev/build-engine.sh\n'
+	fi
+	printf 'exec'
   printf ' %q' "$@"
   printf '\n'
 }

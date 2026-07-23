@@ -67,6 +67,7 @@ func (cli *CLI) initPlatform(loaded config.Loaded, powerYards []domain.Context) 
 	}
 	environment := structuredCommandContext(loaded)
 	environment["SUBYARD_DISPATCHER_PATH"] = cli.options.DispatcherPath
+	environment["SUBYARD_POWER_ENGINE_SOURCE"] = cli.options.DispatcherPath
 	incusPort, executor := cli.statusPorts()
 	configWriter, _ := incusPort.(ports.InstanceConfigWriter)
 	return reconcileruntime.Runtime{

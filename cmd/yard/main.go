@@ -8,10 +8,23 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/hostruntime"
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/incusclient"
+	"github.com/Dmitry-Borodin/Subyard/internal/application"
 	"github.com/Dmitry-Borodin/Subyard/internal/cli"
 )
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if len(os.Args) > 1 && os.Args[1] == "_power-reconcile" {
+		client := incusclient.New(os.Getenv("SUBYARD_INCUS_SOCKET"), "projects")
+		os.Exit(cli.RunBootPower(ctx, os.Args[2:], os.Stdout, os.Stderr,
+			application.BootPowerReconciler{
+				Inventory: client, Instances: client, Power: client,
+				Network: hostruntime.NetworkGuard{},
+			}))
+	}
 	root, err := repositoryRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "yard: %v\n", err)
@@ -42,8 +55,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "yard: initialize engine: %v\n", err)
 		os.Exit(2)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	os.Exit(program.Run(ctx))
 }
 

@@ -56,7 +56,7 @@ rpc_negotiate() { # <engine> <engine-version> <protocol-version> <compatible|inc
   esac
 }
 
-artifact_one="$("$ROOT/scripts/package-engine.sh" --output-dir "$release" --version 1.0.0-test)"
+artifact_one="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.0.0-test)"
 bundle_one="$release/subyard-1.0.0-test-linux-amd64.tar.gz"
 [ -x "$release/subyard-install.sh" ] \
   && [ -x "$release/subyard-install-runtime-release.sh" ] \
@@ -121,7 +121,7 @@ fi
   || fail 'corrupt standalone installer changed the current runtime'
 
 arm_release="$TMP/release-arm64"
-artifact_arm="$("$ROOT/scripts/package-engine.sh" --output-dir "$arm_release" --version 1.0.0-test --arch arm64)"
+artifact_arm="$("$ROOT/dev/package-engine.sh" --output-dir "$arm_release" --version 1.0.0-test --arch arm64)"
 jq -e '.os == "linux" and .arch == "arm64" and .version == "1.0.0-test"' \
   "$artifact_arm.manifest.json" >/dev/null \
   || fail 'arm64 release contract was not published'
@@ -131,7 +131,7 @@ install -d -m 0700 "$(dirname "$legacy_state")"
 printf '%s\n' '{"schema":1,"projectId":"legacy-12345678","name":"Legacy","hostPath":"/host/Legacy","yardPath":"/srv/workspaces/legacy-12345678/src","mode":"sync","sshHost":"yard"}' > "$legacy_state"
 chmod 0664 "$legacy_state"
 
-artifact_two="$("$ROOT/scripts/package-engine.sh" --output-dir "$release" --version 1.1.0-test)"
+artifact_two="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.1.0-test)"
 bundle_two="$release/subyard-1.1.0-test-linux-amd64.tar.gz"
 release_engine="$artifact_two"
 jq -e '.version == "1.1.0-test" and .rpc.min == 1 and .rpc.max == 1' \

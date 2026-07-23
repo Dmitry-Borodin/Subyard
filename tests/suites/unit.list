@@ -5,3 +5,4 @@ lib-power-network.sh
 project-state-store.sh
 runtime-privilege-reexec.sh
 ssh-config.sh
+teardown-runtime-preservation.sh

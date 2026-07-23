@@ -77,6 +77,11 @@ write_guest_command 2 "$command_root" sh -c \
   'test "$SUBYARD_E2E_VM" = 2 && test "$1" = "argument with spaces"' fixture 'argument with spaces' \
   > "$TMP/run.sh"
 bash "$TMP/run.sh" || fail "guest command did not preserve its argv or VM selector"
+write_guest_command 1 "$command_root" ./bin/yard --version > "$TMP/yard-run.sh"
+grep -Fxq './dev/build-engine.sh' "$TMP/yard-run.sh" \
+  || fail "direct guest yard command does not build its explicit development engine"
+grep -Fxq 'exec ./bin/yard --version' "$TMP/yard-run.sh" \
+  || fail "direct guest yard command changed its argv after the development build"
 quoted="$(quote_ssh_command bash -c 'test "$1" = "argument with spaces"' _ 'argument with spaces')"
 bash -c "$quoted" || fail "direct SSH command did not preserve its argv"
 
@@ -182,6 +187,7 @@ PATH="$TMP/fake-bin:$PATH" prepare_client
 # Model direct guest SSH and cleanup locally.
 guest() {
   shift
+  if [ "${1:-}" = sudo ] && [ "${2:-}" = -n ]; then shift 2; fi
   "$@"
 }
 mock_bundle="$TMP/mock.tar.gz"
@@ -217,7 +223,7 @@ if sed '/^[[:space:]]*#/d' "$ROOT/dev/e2e/p0-acceptance.sh" \
 fi
 grep -Fq 'trap owner_cleanup EXIT' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not clean its candidate after failure"
-grep -Fq 'scripts/build-engine.sh --force' "$ROOT/dev/e2e/p0-guest.sh" \
+grep -Fq 'dev/build-engine.sh --force' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not build an explicit source candidate"
 grep -Fq 'scripts/install-runtime-release.sh' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not install an immutable candidate runtime"
@@ -240,6 +246,18 @@ grep -Fq 'export "$source" --yes' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not confirm export automation"
 grep -Fq 'YARD_ENGINE_PATH=%q' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer wrapper does not select its explicit candidate engine"
+grep -Fq 'UserKnownHostsFile="$PEER_SSH_DIR/known_hosts"' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'ConnectTimeout=8' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'id_ed25519"' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 cross-owner SSH lacks its synthetic identity, strict pin or bounded timeout"
+grep -Fq 'remove_peer_authorization' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 peer cleanup does not revoke its synthetic SSH authorization"
+grep -Fq 'incus "$@" </dev/null; }' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'real_incus_quiet launch "$VM_IMAGE" p0-vm' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'VM_CACHE_ALIAS="${P0_REAL_INCUS_VM_CACHE_ALIAS:-' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  || fail "P0 real-Incus lane leaves YAML-reading control-plane stdin open"
+grep -Fq '"$AGENT" --ssh "$vm" --' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail "P0 peer cleanup assertion bypasses direct-command argv quoting"
 grep -Fq 'cleanup_peer_incus' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer lane does not clean its Incus fixture"
 ! grep -Fq 'test-vms-inner' "$ROOT/dev/agent-e2e.sh" \

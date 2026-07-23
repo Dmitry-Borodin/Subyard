@@ -18,8 +18,8 @@ wins):
 
 | Location | Use |
 | --- | --- |
-| `private/yards/<name>.env` | operator overlay (private repo); wins over machine-local |
-| `~/.config/subyard/yards/<name>.env` | machine-local, no private repo needed |
+| `~/.config/subyard/yards/<name>.env` | installed-runtime machine registry |
+| `private/yards/<name>.env` | source-checkout operator overlay; wins when present |
 
 Files under `config/yards/` are not registry entries. Use [`example.env`](example.env) for an
 ordinary named yard. Reusable public settings live in `config/yards/profiles/` and are loaded only
@@ -41,11 +41,9 @@ overridable:
 The default yard keeps the historical unnamed values (`yard`, `subyard`, `/srv/subyard`,
 `~/.config/subyard/projects/`), so existing setups are untouched.
 
-**Precedence.** Per-yard files beat `private/config.env`: config is layered as env override >
-yard context > `private/config.env` > shipped defaults. Put machine-wide **globals** in
-`private/config.env` (or `config/*.env`), and anything that must differ **per yard** — above all
-`SSH_PORT` — in `yards/<name>.env`. A global `SSH_PORT` in `private/config.env` applies only to
-yards that do not set their own; it can never collapse every named yard onto one port.
+**Precedence.** Per-yard values beat source `private/config.env`, machine
+`~/.subyard/config.env`, and public defaults, in that order. Keep globals in the machine overlay and
+yard-specific values such as `SSH_PORT` in the yard file. Production install imports legacy overlays.
 
 ## Personal-data isolation
 

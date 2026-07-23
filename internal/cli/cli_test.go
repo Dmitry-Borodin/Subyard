@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -229,6 +230,51 @@ func TestOldYardTeardownRequiresCanonicalTemplateMigration(t *testing.T) {
 		runner.Requests[0].Context["YARD_TEMPLATE"] != "test-vms" ||
 		runner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
 		t.Fatalf("teardown lost the migrated old-yard identity: %#v", runner.Requests)
+	}
+}
+
+func TestMigrationPathsLoadExplicitMachineContext(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, ".config", "subyard")
+	dataHome := filepath.Join(home, ".subyard")
+	explicitState := filepath.Join(home, "custom-projects")
+	for _, directory := range []string{configHome, dataHome, explicitState} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: repositoryRoot(t), Program: "yard",
+		Arguments: []string{"_migrate", "paths"},
+		Environment: []string{
+			"HOME=" + home, "SUBYARD_OPERATOR_HOME=" + home,
+			"SUBYARD_CONFIG_HOME=" + configHome, "SUBYARD_HOME=" + dataHome,
+			"SUBYARD_STATE_DIR=" + explicitState, "SUBYARD_NO_AUDIT=1",
+		},
+		WorkingDir: home, Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("migration paths failed: code=%d stderr=%q", code, stderr.String())
+	}
+	var payload struct {
+		ConfigHome         string   `json:"configHome"`
+		DataHome           string   `json:"dataHome"`
+		ProjectDirectories []string `json:"projectDirectories"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ConfigHome != configHome || payload.DataHome != dataHome {
+		t.Fatalf("migration roots do not use loaded context: %#v", payload)
+	}
+	if len(payload.ProjectDirectories) != 2 ||
+		payload.ProjectDirectories[0] != filepath.Join(configHome, "projects") ||
+		payload.ProjectDirectories[1] != explicitState {
+		t.Fatalf("migration state roots are missing or duplicated: %#v", payload.ProjectDirectories)
 	}
 }
 

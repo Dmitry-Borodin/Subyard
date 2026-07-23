@@ -5,8 +5,9 @@ set -euo pipefail
 REPOSITORY="${YARD_RELEASE_REPOSITORY:-Dmitry-Borodin/Subyard}"
 CHANNEL=stable
 VERSION="${YARD_RELEASE_VERSION:-}"
-RUNTIME_ROOT="${YARD_RUNTIME_ROOT:-${SUBYARD_HOME:-$HOME/.subyard}/runtime}"
-CACHE_ROOT="${YARD_RELEASE_CACHE:-${SUBYARD_HOME:-$HOME/.subyard}/releases}"
+DATA_HOME="${SUBYARD_HOME:-$HOME/.subyard}"
+RUNTIME_ROOT="${YARD_RUNTIME_ROOT:-$DATA_HOME/runtime}"
+CACHE_ROOT="${YARD_RELEASE_CACHE:-$DATA_HOME/releases}"
 BIN_DIR="${YARD_BIN_DIR:-$HOME/.local/bin}"
 OFFLINE=0
 ASSUME_YES="${ASSUME_YES:-0}"
@@ -94,6 +95,7 @@ printf '  - download and verify Subyard %s for %s/%s;\n' "$VERSION" "$os" "$arch
 printf '  - install the immutable runtime under %s;\n' "$RUNTIME_ROOT"
 printf '  - link yard and sy under %s;\n' "$BIN_DIR"
 printf '  - configure login PATH and shell completion.\n'
+printf '  - migrate a recognized pre-Go install and retain recovery.\n'
 if [ "$ASSUME_YES" != 1 ]; then
   if [ ! -t 1 ] || [ ! -r /dev/tty ]; then
     printf 'bootstrap-runtime: confirmation requires a terminal; rerun with --yes for automation\n' >&2
@@ -155,27 +157,41 @@ chmod 0700 "$installer"
 printf 'channel=%s available=%s platform=%s/%s\n' "$CHANNEL" "$VERSION" "$os" "$arch"
 "$installer" --runtime-root "$RUNTIME_ROOT" \
   --bundle "$bundle" --checksum "$checksum" --manifest "$manifest" --provenance "$provenance"
-install -d "$BIN_DIR"
-ln -sfn "$RUNTIME_ROOT/current/bin/yard" "$BIN_DIR/yard"
-ln -sfn "$RUNTIME_ROOT/current/bin/yard" "$BIN_DIR/sy"
 
-if [ -f "$LOGIN_RC" ] && grep -qF 'Subyard CLI login PATH' "$LOGIN_RC"; then
-  :
+migrated_source=0
+if "$RUNTIME_ROOT/current/scripts/migrate-source-install.sh" \
+  --runtime-root "$RUNTIME_ROOT" --bin-dir "$BIN_DIR" --rc "$RC" --login-rc "$LOGIN_RC" \
+  --data-home "$DATA_HOME"; then
+  migrated_source=1
 else
-  printf '\n# Subyard CLI login PATH\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$LOGIN_RC"
+  migration_status=$?
+  [ "$migration_status" = 3 ] \
+    || { printf 'bootstrap-runtime: pre-Go source migration failed; legacy entrypoints were preserved\n' >&2; exit "$migration_status"; }
 fi
-if [ "$need_path_line" = 1 ]; then
-  if [ -f "$RC" ] && grep -qF 'Subyard CLI interactive PATH' "$RC"; then
+
+if [ "$migrated_source" = 0 ]; then
+  install -d "$BIN_DIR"
+  ln -sfn "$RUNTIME_ROOT/current/bin/yard" "$BIN_DIR/yard"
+  ln -sfn "$RUNTIME_ROOT/current/bin/yard" "$BIN_DIR/sy"
+
+  if [ -f "$LOGIN_RC" ] && grep -qF 'Subyard CLI login PATH' "$LOGIN_RC"; then
     :
   else
-    printf '\n# Subyard CLI interactive PATH\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
+    printf '\n# Subyard CLI login PATH\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$LOGIN_RC"
   fi
-fi
-if [ -f "$RC" ] && grep -qF 'Subyard CLI completion' "$RC"; then
-  :
-else
-  printf '\n# Subyard CLI completion\n[ -f "%s" ] && source "%s"\n' \
-    "$completion" "$completion" >> "$RC"
+  if [ "$need_path_line" = 1 ]; then
+    if [ -f "$RC" ] && grep -qF 'Subyard CLI interactive PATH' "$RC"; then
+      :
+    else
+      printf '\n# Subyard CLI interactive PATH\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$RC"
+    fi
+  fi
+  if [ -f "$RC" ] && grep -qF 'Subyard CLI completion' "$RC"; then
+    :
+  else
+    printf '\n# Subyard CLI completion\n[ -f "%s" ] && source "%s"\n' \
+      "$completion" "$completion" >> "$RC"
+  fi
 fi
 
 printf 'yard installed: %s/yard\n' "$BIN_DIR"

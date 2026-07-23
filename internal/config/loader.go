@@ -76,6 +76,25 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 		return domain.Context{}, nil, errors.New("operator home is required")
 	}
 
+	dataHome := values["SUBYARD_HOME"]
+	if dataHome == "" {
+		dataHome = filepath.Join(values["SUBYARD_OPERATOR_HOME"], ".subyard")
+	}
+	machineConfig := filepath.Join(dataHome, "config.env")
+	if _, err := os.Stat(machineConfig); err == nil {
+		// Resolve migrated private asset paths outside the runtime.
+		overlayConfig := filepath.Join(dataHome, "operator-overlay", "config")
+		if info, overlayErr := os.Stat(filepath.Join(dataHome, "operator-overlay", "private")); overlayErr == nil && info.IsDir() {
+			values["SUBYARD_CONFIG_DIR"] = overlayConfig
+		}
+		if err := applyEnvFile(machineConfig, values); err != nil {
+			return domain.Context{}, nil, err
+		}
+		values["SUBYARD_CONFIG_DIR"] = configDir
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return domain.Context{}, nil, err
+	}
+
 	if !options.DisablePrivate {
 		privateConfig := filepath.Join(configDir, "..", "private", "config.env")
 		if err := applyOptional(privateConfig, values); err != nil {

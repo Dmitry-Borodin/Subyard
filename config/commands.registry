@@ -38,7 +38,7 @@ _info||@info||local|read|hidden|internal|none|_info|machine-readable owner probe
 _authorize||@authorize||forward|mutate|hidden|internal|none|_authorize|authorize a controller key inside a yard||
 _state||@state||local|mutate|hidden|internal|none|_state|native project state adapter||
 _project-state||@project-state||forward|mutate|hidden|internal|none|_project-state|converge owner-host project state||
-_migrate||@migrate||local|mutate|hidden|internal|none|_migrate|validate or apply engine state migrations||check apply
+_migrate||@migrate||local|mutate|hidden|internal|none|_migrate|inspect, validate or apply engine state migrations||paths check apply
 _keys-exchange||@keys|_exchange|forward|mutate|hidden|internal|none|_keys-exchange|credential peer exchange endpoint||
 _keys-auto-sync||@keys|_auto-worker|forward|mutate|hidden|internal|none|_keys-auto-sync|credential auto-sync worker||
 _keys-init||@keys|_init-store|local|mutate|hidden|internal|none|_keys-init|initialize the host credential ledger||

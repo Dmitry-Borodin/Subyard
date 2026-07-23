@@ -177,7 +177,7 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return cli.serveRPC(ctx, yard, commandArguments)
 	}
 	if core && definition.Handler == "@migrate" {
-		return cli.runMigration(ctx, commandArguments)
+		return cli.runMigration(ctx, yard, commandArguments)
 	}
 	remotePlane := command.RemoteForward
 	if core {
@@ -1405,31 +1405,65 @@ func (cli *CLI) runProjectState(
 	return 0
 }
 
-func (cli *CLI) runMigration(ctx context.Context, arguments []string) int {
-	if len(arguments) != 1 || (arguments[0] != "check" && arguments[0] != "apply") {
-		cli.errorf("internal: _migrate expects check or apply")
+func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []string) int {
+	if len(arguments) != 1 ||
+		(arguments[0] != "paths" && arguments[0] != "check" && arguments[0] != "apply") {
+		cli.errorf("internal: _migrate expects paths, check or apply")
 		return 2
 	}
-	operatorHome := cli.baseEnv["SUBYARD_OPERATOR_HOME"]
-	if operatorHome == "" {
-		operatorHome = cli.baseEnv["HOME"]
+	loaded, err := cli.loadContext(yard)
+	if err != nil {
+		cli.errorf("state migration context: %v", err)
+		return 1
 	}
-	configHome := cli.baseEnv["SUBYARD_CONFIG_HOME"]
+	environment := loaded.Environment
+	operatorHome := environment["SUBYARD_OPERATOR_HOME"]
+	if operatorHome == "" {
+		operatorHome = environment["HOME"]
+	}
+	configHome := environment["SUBYARD_CONFIG_HOME"]
 	if configHome == "" {
 		configHome = filepath.Join(operatorHome, ".config", "subyard")
 	}
-	projectDirectories := []string{filepath.Join(configHome, "projects")}
-	if explicit := cli.baseEnv["SUBYARD_STATE_DIR"]; explicit != "" {
-		projectDirectories = append(projectDirectories, explicit)
+	projectDirectories := make([]string, 0, 4)
+	seenDirectory := make(map[string]struct{})
+	addDirectory := func(directory string) {
+		directory = filepath.Clean(directory)
+		if _, exists := seenDirectory[directory]; exists {
+			return
+		}
+		seenDirectory[directory] = struct{}{}
+		projectDirectories = append(projectDirectories, directory)
+	}
+	addDirectory(filepath.Join(configHome, "projects"))
+	if explicit := environment["SUBYARD_STATE_DIR"]; explicit != "" {
+		addDirectory(explicit)
 	}
 	named, _ := filepath.Glob(filepath.Join(configHome, "yards", "*", "projects"))
-	projectDirectories = append(projectDirectories, named...)
-	keysRoot := cli.baseEnv["SUBYARD_KEYS_ROOT"]
+	for _, directory := range named {
+		addDirectory(directory)
+	}
+	if arguments[0] == "paths" {
+		payload := struct {
+			OperatorHome       string   `json:"operatorHome"`
+			ConfigHome         string   `json:"configHome"`
+			DataHome           string   `json:"dataHome"`
+			ProjectDirectories []string `json:"projectDirectories"`
+		}{
+			OperatorHome: operatorHome, ConfigHome: configHome,
+			DataHome: environment["SUBYARD_HOME"], ProjectDirectories: projectDirectories,
+		}
+		if err := json.NewEncoder(cli.options.Stdout).Encode(payload); err != nil {
+			cli.errorf("state migration paths: %v", err)
+			return 1
+		}
+		return 0
+	}
+	keysRoot := environment["SUBYARD_KEYS_ROOT"]
 	if keysRoot == "" {
 		keysRoot = filepath.Join(configHome, "keys")
 	}
 	var report migration.Report
-	var err error
 	if arguments[0] == "apply" {
 		report, err = migration.Apply(ctx, projectDirectories, credentialmeta.Reader{Root: keysRoot})
 	} else {
@@ -2407,7 +2441,8 @@ func (cli *CLI) usage() {
   Run several independent yards on one host, each with its own instance, /srv, ssh port,
   personal-data mount root and projects. Pick one for a command with -Y/--yard (or the
   sugar '@<name>' as the first token); no selection = the default yard, unchanged. Define a
-  yard in private/yards/<name>.env or ~/.config/subyard/yards/<name>.env (SSH_PORT required).
+  installed yard in ~/.config/subyard/yards/<name>.env; source checkouts may also use
+  private/yards/<name>.env (SSH_PORT required).
   '%s yards' lists them all.
 
 Remote yards:

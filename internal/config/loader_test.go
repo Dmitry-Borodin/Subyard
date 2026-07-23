@@ -96,6 +96,65 @@ func TestRetiredE2EVMTemplateReportsMigrationAndTeardown(t *testing.T) {
 	}
 }
 
+func TestLoadMachineConfigAndMigratedPrivateAssets(t *testing.T) {
+	root := t.TempDir()
+	operatorHome := filepath.Join(root, "home")
+	dataHome := filepath.Join(operatorHome, ".subyard")
+	configHome := filepath.Join(operatorHome, ".config", "subyard")
+	shipped := filepath.Join(root, "config")
+	overlayPrivate := filepath.Join(dataHome, "operator-overlay", "private")
+	for _, directory := range []string{
+		operatorHome, shipped, filepath.Join(configHome, "yards"),
+		filepath.Join(overlayPrivate, "agents", "codex"),
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFixture(t, filepath.Join(shipped, "incus.project.env"), `: "${INCUS_PROJECT:=subyard}"
+: "${RESTRICTED_DISK_PATHS:=/srv/subyard}"`)
+	writeFixture(t, filepath.Join(shipped, "subyard.env"), `: "${INSTANCE_NAME:=yard}"
+: "${INSTANCE_TYPE:=container}"
+: "${SHIFT_MODE:=shift}"
+: "${FORWARD_SSH_AGENT:=0}"
+: "${DEV_SUDO:=0}"
+: "${DEV_UID:=1000}"
+: "${SSH_HOST:=yard}"
+: "${SSH_PORT:=2222}"`)
+	writeFixture(t, filepath.Join(shipped, "host.env"), `: "${SUBYARD_CONFIG_HOME:=$SUBYARD_OPERATOR_HOME/.config/subyard}"
+: "${SUBYARD_HOME:=$SUBYARD_OPERATOR_HOME/.subyard}"
+: "${STORAGE_PATH:=$SUBYARD_HOME/incus/storage}"
+: "${HOST_BASE:=${RESTRICTED_DISK_PATHS:-/srv/subyard}}"`)
+	writeFixture(t, filepath.Join(dataHome, "config.env"),
+		"DEV_SUDO=1\nAGENT_codex_RULES=\"$SUBYARD_CONFIG_DIR/../private/agents/codex/repo.rules\"\n")
+	writeFixture(t, filepath.Join(overlayPrivate, "agents", "codex", "repo.rules"), "fixture\n")
+	writeFixture(t, filepath.Join(configHome, "yards", "named.env"), "SSH_PORT=3333\n")
+
+	loaded, err := Load(LoadOptions{
+		RepositoryRoot: root,
+		OperatorHome:   operatorHome,
+		YardName:       "named",
+		DisablePrivate: true,
+		Environment: map[string]string{
+			"SUBYARD_OPERATOR_HOME": operatorHome,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Context.DevSudo {
+		t.Fatal("machine-local global overlay was not loaded")
+	}
+	wantRules := filepath.Join(overlayPrivate, "agents", "codex", "repo.rules")
+	if filepath.Clean(loaded.Environment["AGENT_codex_RULES"]) != wantRules {
+		t.Fatalf("migrated private asset path = %q, want %q",
+			loaded.Environment["AGENT_codex_RULES"], wantRules)
+	}
+	if loaded.Environment["SUBYARD_CONFIG_DIR"] != shipped {
+		t.Fatalf("runtime config root leaked from migration overlay: %q", loaded.Environment["SUBYARD_CONFIG_DIR"])
+	}
+}
+
 func TestResolveE2EVMCPU(t *testing.T) {
 	for _, test := range []struct {
 		value    string

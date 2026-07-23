@@ -10,6 +10,17 @@ load_config() {
   [ -n "${SUBYARD_CONFIG_LOADED:-}" ] && return 0
   SUBYARD_CONFIG_LOADED=1
   : "${SUBYARD_OPERATOR_HOME:=$(subyard_operator_home)}"
+  local runtime_config_dir="$SUBYARD_CONFIG_DIR"
+  local data_home="${SUBYARD_HOME:-$SUBYARD_OPERATOR_HOME/.subyard}"
+  local machine_config="$data_home/config.env"
+  if [ -r "$machine_config" ]; then
+    if [ -d "$data_home/operator-overlay/private" ]; then
+      SUBYARD_CONFIG_DIR="$data_home/operator-overlay/config"
+    fi
+    # shellcheck disable=SC1090
+    . "$machine_config"
+    SUBYARD_CONFIG_DIR="$runtime_config_dir"
+  fi
   # shellcheck disable=SC1091
   [ -r "$SUBYARD_CONFIG_DIR/../private/config.env" ] && . "$SUBYARD_CONFIG_DIR/../private/config.env"
   yard_context_select

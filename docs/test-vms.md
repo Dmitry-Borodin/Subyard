@@ -4,7 +4,7 @@
 
 ```text
 L0 host
-└── yard-e2e-yard                 INSTANCE_TYPE=container
+└── yard-test-yard                INSTANCE_TYPE=container
     └── inner Incus daemon        NESTED_E2E_VMS=1
         ├── e2e-vm-1              virtual machine
         └── e2e-vm-2              virtual machine
@@ -13,13 +13,13 @@ L0 host
 The operator controls the inner Incus worker through L0. Agents reach only guest SSH through a
 restricted L1 jump account. The inner network is not routed onto L0.
 
-## Enable `e2e-yard`
+## Enable `test-yard`
 
-The public `e2e-vms` profile is dormant. Register it explicitly in
-`private/yards/e2e-yard.env` or `~/.config/subyard/yards/e2e-yard.env`:
+The public `test-vms` profile is dormant. Register it explicitly in
+`private/yards/test-yard.env` or `~/.config/subyard/yards/test-yard.env`:
 
 ```sh
-YARD_TEMPLATE=e2e-vms
+YARD_TEMPLATE=test-vms
 SSH_PORT=2223
 ```
 
@@ -27,11 +27,11 @@ Prepare the agent identity, then let the operator reconcile the yard:
 
 ```sh
 dev/agent-e2e.sh --prepare
-yard -Y e2e-yard init
+yard -Y test-yard init
 ```
 
 The private key stays under `~/.subyard/e2e/`. The ignored
-`temp/agent-e2e/e2e-yard/` directory contains only the enrollment public key, route and host-key
+`temp/agent-e2e/test-yard/` directory contains only the enrollment public key, route and host-key
 pins. Without an enrollment request, agent ingress remains disabled.
 
 The outer yard must remain a container. Inner Incus creates `e2e-vm-1` and `e2e-vm-2` as VMs.
@@ -47,11 +47,11 @@ For the AppArmor userspace/kernel mismatch affecting nested QEMU, only the inner
 Only the operator allocates resources:
 
 ```sh
-yard -Y e2e-yard start
-yard -Y e2e-yard test-vms up
+yard -Y test-yard start
+yard -Y test-yard test-vms up
 # Agent checks run here.
-yard -Y e2e-yard test-vms down
-yard -Y e2e-yard stop
+yard -Y test-yard test-vms down
+yard -Y test-yard stop
 ```
 
 Each VM defaults to a 10 GiB root disk, a host-aware automatic vCPU limit, and a 20-hour TTL. Set a
@@ -68,7 +68,9 @@ dev/agent-e2e.sh --vm 1 -- COMMAND [ARG...]
 ```
 
 The runner excludes ignored/private data, checks the bundle and removes its guest directory on
-exit. It never starts or stops the yard or VMs.
+exit. It never starts or stops the yard or VMs. It targets `test-yard` by default. During a
+temporary migration, select the old yard explicitly with `--yard e2e-yard`; each yard has separate
+route and generated SSH state, while the controller identity remains shared.
 
 Run the P0 matrix after the operator allocates both VMs:
 
@@ -99,12 +101,49 @@ VM1 must test old state before current `yard init`:
 
 ```sh
 SUBYARD_E2E_LEGACY_FIXTURE=1 \
-  dev/e2e/seed-test-vms-legacy-state.sh subyard-e2e-yard yard-e2e-yard
-./bin/yard -Y e2e-yard init
+  dev/e2e/seed-test-vms-legacy-state.sh subyard-test-yard yard-test-yard
+./bin/yard -Y test-yard init
 ```
 
 The fixture recreates legacy groups, `root:yard 2770` state and missing agent/firewall setup. It
 refuses L0, the outer operator yard and targets without Subyard ownership markers.
+
+## Migrate or remove an old `e2e-yard`
+
+`e2e-vms` is retired and is not a compatibility alias. If an existing registration still selects
+it, the CLI fails closed and prints that registration's exact path. Replace only its template
+assignment:
+
+```sh
+YARD_TEMPLATE=test-vms
+```
+
+This does not rename or rebuild the existing yard. Verify it read-only before using its lifecycle:
+
+```sh
+yard -Y e2e-yard check
+yard -Y e2e-yard status
+```
+
+`e2e-yard` and `test-yard` may coexist temporarily when they use distinct `SSH_PORT` values. The
+old runner target is always explicit:
+
+```sh
+dev/agent-e2e.sh --yard e2e-yard --ssh-config
+```
+
+After the new yard has passed acceptance, remove the old one explicitly. The registration must
+already use `YARD_TEMPLATE=test-vms`, because teardown never depends on the retired alias:
+
+```sh
+yard -Y e2e-yard status
+yard -Y e2e-yard test-vms status
+yard -Y e2e-yard test-vms down
+yard -Y e2e-yard teardown
+```
+
+Then remove `e2e-yard.env` and its yard-scoped ignored route/state artifacts. Keep
+`~/.subyard/e2e/id_ed25519` while `test-yard` uses that controller identity.
 
 ## Security boundary
 

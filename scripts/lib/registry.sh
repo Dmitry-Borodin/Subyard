@@ -18,11 +18,28 @@ yard_env_file() {
   return 1
 }
 
-yard_template_file() { # <yard-env-file>; empty when no public template is selected
-  local file="${1:?yard_template_file needs a yard env file}" template path
+retired_e2e_vms_template() { # <yard-name> <yard-env-file>
+  local name="${1:?retired_e2e_vms_template needs a yard name}"
+  local file="${2:?retired_e2e_vms_template needs a yard env file}"
+  die "YARD_TEMPLATE 'e2e-vms' is retired in $file
+replace its YARD_TEMPLATE assignment with:
+  YARD_TEMPLATE=test-vms
+then verify the unchanged yard identity:
+  yard -Y $name check
+  yard -Y $name status
+to retire that yard after the config migration:
+  yard -Y $name test-vms status
+  yard -Y $name test-vms down
+  yard -Y $name teardown"
+}
+
+yard_template_file() { # <yard-name> <yard-env-file>; empty when no public template is selected
+  local name="${1:?yard_template_file needs a yard name}"
+  local file="${2:?yard_template_file needs a yard env file}" template path
   template="$(yard_env_val "$file" YARD_TEMPLATE)"
   [ -n "$template" ] || return 1
   yard_valid_name "$template" || die "invalid YARD_TEMPLATE '$template' in $file"
+  [ "$template" != e2e-vms ] || retired_e2e_vms_template "$name" "$file"
   path="$SUBYARD_CONFIG_DIR/yards/profiles/$template.env"
   [ -r "$path" ] || die "unknown YARD_TEMPLATE '$template' in $file"
   printf '%s\n' "$path"
@@ -31,13 +48,13 @@ yard_template_file() { # <yard-env-file>; empty when no public template is selec
 yard_source_env() { # <yard-name>; public template first, selected machine/operator file second
   local name="${1:?yard_source_env needs a name}" file template_file=''
   file="$(yard_env_file "$name")" || return 1
-  template_file="$(yard_template_file "$file" 2>/dev/null || true)"
+  template_file="$(yard_template_file "$name" "$file" 2>/dev/null || true)"
   if [ -n "$template_file" ]; then
     # shellcheck disable=SC1090
     . "$template_file"
   elif [ -n "$(yard_env_val "$file" YARD_TEMPLATE)" ]; then
     # Re-run without stderr suppression to report the invalid/missing template.
-    yard_template_file "$file" >/dev/null
+    yard_template_file "$name" "$file" >/dev/null
   fi
   # shellcheck disable=SC1090
   . "$file"

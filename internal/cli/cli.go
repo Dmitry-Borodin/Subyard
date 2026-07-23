@@ -183,6 +183,13 @@ func (cli *CLI) Run(ctx context.Context) int {
 		remotePlane = definition.Remote
 	}
 	loaded, err := cli.loadContext(yard)
+	if err != nil && core && !explicit &&
+		(definition.Handler == "@list" || definition.Handler == "@yards") &&
+		config.IsRetiredYardTemplate(err) {
+		yard = "default"
+		cli.env["SUBYARD_YARD"] = yard
+		loaded, err = cli.loadContext(yard)
+	}
 	if err != nil {
 		cli.errorf("%v", err)
 		return 2
@@ -572,7 +579,12 @@ func (cli *CLI) runYards(ctx context.Context, loaded config.Loaded, arguments []
 		if name != loaded.Context.YardName {
 			selected, err = cli.loadInventoryLoaded(name, loaded)
 			if err != nil {
-				cli.errorf("load yard %q: %v", name, err)
+				if config.IsRetiredYardTemplate(err) {
+					fmt.Fprintf(cli.options.Stderr,
+						"Warning: yard %q requires registration migration:\n%s\n", name, err)
+				} else {
+					cli.errorf("load yard %q: %v", name, err)
+				}
 				continue
 			}
 		}
@@ -1076,9 +1088,16 @@ func (cli *CLI) printAllProjectLists(
 ) int {
 	all := make([]yardInventory, 0, len(names))
 	counts := make(map[string]map[string]struct{})
+	skippedRetired := false
 	for _, name := range names {
 		yard, err := cli.loadInventoryContext(name, loaded)
 		if err != nil {
+			if config.IsRetiredYardTemplate(err) {
+				skippedRetired = true
+				fmt.Fprintf(cli.options.Stderr,
+					"Warning: skipping yard %q until its registration is migrated:\n%s\n", name, err)
+				continue
+			}
 			cli.errorf("load yard %q: %v", name, err)
 			return 1
 		}
@@ -1113,9 +1132,13 @@ func (cli *CLI) printAllProjectLists(
 		total += len(inventory.records)
 	}
 	if total == 0 {
+		scope := "any yard"
+		if skippedRetired {
+			scope = "loadable yards"
+		}
 		fmt.Fprintf(cli.options.Stdout,
-			"No projects in any yard yet — add one with: %s sync <path> (or: bind <path>)\n",
-			cli.options.Program)
+			"No projects in %s yet — add one with: %s sync <path> (or: bind <path>)\n",
+			scope, cli.options.Program)
 		return 0
 	}
 	fmt.Fprintf(cli.options.Stdout, "%-12s %-24s %-6s %-10s %s\n", "YARD", "NAME", "MODE", "TARGET", "HOST PATH")

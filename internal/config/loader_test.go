@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
@@ -33,8 +34,8 @@ func TestLoadNamedContext(t *testing.T) {
 : "${SUBYARD_HOME:=$SUBYARD_OPERATOR_HOME/.subyard}"
 : "${STORAGE_PATH:=$SUBYARD_HOME/incus/storage}"
 : "${HOST_BASE:=${RESTRICTED_DISK_PATHS:-/srv/subyard}}"`)
-	writeFixture(t, filepath.Join(shipped, "yards", "profiles", "e2e-vms.env"), "NESTED_E2E_VMS=1\nE2E_VM_CPU=2\nFORWARD_SSH_AGENT=0\n")
-	writeFixture(t, filepath.Join(yardDir, "named.env"), "YARD_TEMPLATE=e2e-vms\nSSH_PORT=3333\nINSTANCE_NAME=fixture-yard\nE2E_VM_CPU=1\nHOST_BASE="+root+"/host/../host\nRESTRICTED_DISK_PATHS="+root+"/host\n")
+	writeFixture(t, filepath.Join(shipped, "yards", "profiles", "test-vms.env"), "NESTED_E2E_VMS=1\nE2E_VM_CPU=2\nFORWARD_SSH_AGENT=0\n")
+	writeFixture(t, filepath.Join(yardDir, "named.env"), "YARD_TEMPLATE=test-vms\nSSH_PORT=3333\nINSTANCE_NAME=fixture-yard\nE2E_VM_CPU=1\nHOST_BASE="+root+"/host/../host\nRESTRICTED_DISK_PATHS="+root+"/host\n")
 
 	loaded, err := Load(LoadOptions{
 		RepositoryRoot: root,
@@ -64,6 +65,34 @@ func TestLoadNamedContext(t *testing.T) {
 	}
 	if ctx.YardType != domain.YardLocal {
 		t.Fatalf("unexpected yard type: %s", ctx.YardType)
+	}
+}
+
+func TestRetiredE2EVMTemplateReportsMigrationAndTeardown(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	yardFile := filepath.Join(root, "yards", "e2e-yard.env")
+	writeFixture(t, yardFile, "YARD_TEMPLATE=e2e-vms\nSSH_PORT=3333\n")
+	// Even if a stale file is present, the retired name must never act as an alias.
+	writeFixture(t, filepath.Join(configDir, "yards", "profiles", "e2e-vms.env"), "NESTED_E2E_VMS=1\n")
+
+	err := applyYardConfig(configDir, "e2e-yard", yardFile, environment{})
+	if err == nil {
+		t.Fatal("retired e2e-vms template was accepted")
+	}
+	diagnostic := err.Error()
+	for _, expected := range []string{
+		yardFile,
+		"YARD_TEMPLATE=test-vms",
+		"yard -Y e2e-yard check",
+		"yard -Y e2e-yard status",
+		"yard -Y e2e-yard test-vms status",
+		"yard -Y e2e-yard test-vms down",
+		"yard -Y e2e-yard teardown",
+	} {
+		if !strings.Contains(diagnostic, expected) {
+			t.Fatalf("retired-template diagnostic omitted %q: %s", expected, diagnostic)
+		}
 	}
 }
 

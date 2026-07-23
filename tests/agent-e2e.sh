@@ -12,6 +12,36 @@ export SUBYARD_E2E_SHARED_ROUTE_DIR="$TMP/shared-route"
 # shellcheck source=dev/agent-e2e.sh
 . "$ROOT/dev/agent-e2e.sh"
 
+[ "$E2E_YARD" = test-yard ] || fail "agent runner default yard is not test-yard"
+[ "$STATE_ROOT" = "$TMP/client/yards/test-yard" ] \
+  || fail "default generated client state is not yard-scoped"
+[ "$IDENTITY" = "$TMP/client/id_ed25519" ] \
+  || fail "controller identity is not shared outside yard-scoped state"
+
+scope_snapshot="$(
+  env -u SUBYARD_E2E_BASTION_ROUTE -u SUBYARD_E2E_SHARED_ROUTE_DIR \
+    -u SUBYARD_E2E_STATE_DIR -u SUBYARD_E2E_YARD_STATE_DIR -u SUBYARD_E2E_IDENTITY \
+    -u SUBYARD_E2E_YARD SUBYARD_HOME="$TMP/default-client" \
+    bash -c '
+      set -euo pipefail
+      . "$1/dev/agent-e2e.sh"
+      printf "%s|%s|%s|%s|%s\n" \
+        "$E2E_YARD" "$BASTION_ROUTE" "$SHARED_ROUTE_DIR" "$STATE_ROOT" "$IDENTITY"
+      E2E_YARD=e2e-yard
+      configure_yard_scope
+      printf "%s|%s|%s|%s|%s\n" \
+        "$E2E_YARD" "$BASTION_ROUTE" "$SHARED_ROUTE_DIR" "$STATE_ROOT" "$IDENTITY"
+    ' _ "$ROOT"
+)"
+expected_scope_snapshot="$(printf '%s\n%s\n' \
+  "test-yard|yard-test-yard|$ROOT/temp/agent-e2e/test-yard|$TMP/default-client/e2e/yards/test-yard|$TMP/default-client/e2e/id_ed25519" \
+  "e2e-yard|yard-e2e-yard|$ROOT/temp/agent-e2e/e2e-yard|$TMP/default-client/e2e/yards/e2e-yard|$TMP/default-client/e2e/id_ed25519")"
+[ "$scope_snapshot" = "$expected_scope_snapshot" ] \
+  || fail "test-yard and explicit e2e-yard route/state scopes collide: $scope_snapshot"
+if "$ROOT/dev/agent-e2e.sh" --yard '../unsafe' --prepare >/dev/null 2>&1; then
+  fail "agent runner accepted an unsafe yard selector"
+fi
+
 fixture="$TMP/worktree"
 mkdir -p "$fixture/private" "$fixture/temp"
 git -C "$fixture" init -q
@@ -191,12 +221,18 @@ grep -Fq 'scripts/build-engine.sh --force' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not build an explicit source candidate"
 grep -Fq 'scripts/install-runtime-release.sh' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not install an immutable candidate runtime"
+grep -Fq 'RENAME_BASE_REVISION=' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not install the real pre-rename runtime"
+grep -Fq 'write_owner_registration e2e-yard e2e-vms' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not exercise the retired registration"
+grep -Fq './bin/yard -Y e2e-yard teardown --yes' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not teardown the migrated old yard"
 owner_bootstrap_line="$(grep -n $'^\tensure_owner_incus$' "$ROOT/dev/e2e/p0-guest.sh" | head -n1 | cut -d: -f1)"
 owner_incus_line="$(grep -n 'OWNER_BASELINE_IMAGES=.*incus image list' "$ROOT/dev/e2e/p0-guest.sh" | head -n1 | cut -d: -f1)"
 [ -n "$owner_bootstrap_line" ] && [ -n "$owner_incus_line" ] \
   && [ "$owner_bootstrap_line" -lt "$owner_incus_line" ] \
   || fail "P0 owner lane uses Incus before its disposable-VM bootstrap"
-grep -Fq './bin/yard -Y e2e-yard start --yes' "$ROOT/dev/e2e/p0-guest.sh" \
+grep -Fq './bin/yard -Y test-yard start --yes' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not make start automation explicit"
 grep -Fq 'shell "$source" --yes --' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not confirm shell automation"

@@ -9,6 +9,9 @@ PEER_ROOT="/tmp/subyard-p0-peer-$TOKEN"
 MARKER="subyard-p0-$TOKEN"
 PEER_INCUS_MARKER="$PEER_ROOT/.subyard-p0-incus-init"
 PEER_INCUS_POOL="subyard-p0-$TOKEN"
+OWNER_YARD_DIR="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}/yards"
+RENAME_BASE_REVISION="7c67ee3f423cf9f1596c2f5191f462d2b70adcdc"
+RENAME_BASE_ROOT="/tmp/subyard-p0-rename-base-$TOKEN"
 OWNER_BASELINE_IMAGES=''
 OWNER_BASELINE_CAPTURED=0
 
@@ -32,29 +35,40 @@ owner_project_contract() {
   install -d -m 0700 "$source"
   printf '%s\n' "$MARKER" > "$source/.subyard-p0-marker"
   printf '%s\nbase\n' "$MARKER" > "$source/result.txt"
-  ./bin/yard -Y e2e-yard sync "$source" --yes >/dev/null
-  ./bin/yard -Y e2e-yard shell "$source" --yes -- sh -c 'printf "mutated\n" >> result.txt'
-  ./bin/yard -Y e2e-yard export "$source" --yes >/dev/null
+  ./bin/yard -Y test-yard sync "$source" --yes >/dev/null
+  ./bin/yard -Y test-yard shell "$source" --yes -- sh -c 'printf "mutated\n" >> result.txt'
+  ./bin/yard -Y test-yard export "$source" --yes >/dev/null
   patch="$(grep -RIl -- 'mutated' "${SUBYARD_HOME:-$HOME/.subyard}/exports" | head -n1)"
   [ -n "$patch" ] || die 'project export did not contain the guest change'
-  ./bin/yard -Y e2e-yard remove "$source" --yes >/dev/null
+  ./bin/yard -Y test-yard remove "$source" --yes >/dev/null
   find "$patch" -delete
   clean_tree "$source" "$MARKER"
 }
 
 owner_cleanup() {
-  local rc=$? source="/tmp/subyard-p0-project-$TOKEN" patch fingerprint cleanup_failed=0
+  local rc=$? source="/tmp/subyard-p0-project-$TOKEN" patch fingerprint yard registration
+  local cleanup_failed=0
   trap - EXIT
   set +e
   clean_tree "$source" "$MARKER" || cleanup_failed=1
+  clean_tree "$RENAME_BASE_ROOT" "$MARKER" || cleanup_failed=1
   if [ -d "${SUBYARD_HOME:-$HOME/.subyard}/exports" ]; then
     while IFS= read -r patch; do find "$patch" -delete || cleanup_failed=1; done \
       < <(grep -RIl -- "$MARKER" "${SUBYARD_HOME:-$HOME/.subyard}/exports" 2>/dev/null)
   fi
-  if [ -f private/yards/e2e-yard.env ] \
-    && incus project show subyard-e2e-yard >/dev/null 2>&1; then
-    ./bin/yard -Y e2e-yard teardown --yes >/dev/null 2>&1 || cleanup_failed=1
-  fi
+  for yard in e2e-yard test-yard; do
+    registration="$OWNER_YARD_DIR/$yard.env"
+    [ -f "$registration" ] || continue
+    grep -Fqx "# $MARKER" "$registration" || { cleanup_failed=1; continue; }
+    if grep -Fqx 'YARD_TEMPLATE=e2e-vms' "$registration"; then
+      sed -i 's/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/' "$registration" \
+        || cleanup_failed=1
+    fi
+    if incus project show "subyard-$yard" >/dev/null 2>&1; then
+      ./bin/yard -Y "$yard" teardown --yes >/dev/null 2>&1 || cleanup_failed=1
+    fi
+    find "$registration" -delete || cleanup_failed=1
+  done
   if [ "$OWNER_BASELINE_CAPTURED" = 1 ]; then
     while IFS= read -r fingerprint; do
       [ -n "$fingerprint" ] || continue
@@ -65,6 +79,42 @@ owner_cleanup() {
   fi
   [ "$cleanup_failed" = 0 ] || rc=3
   exit "$rc"
+}
+
+write_owner_registration() { # <yard> <template> <ssh-port>
+  local yard="$1" template="$2" port="$3" registration
+  registration="$OWNER_YARD_DIR/$yard.env"
+  install -d -m 0700 "$OWNER_YARD_DIR"
+  if [ -e "$registration" ]; then
+    grep -Fqx "# $MARKER" "$registration" \
+      || die "refusing to replace unrelated registration $registration"
+  fi
+  printf '# %s\nYARD_TEMPLATE=%s\nSSH_PORT=%s\nAGENTS=none\n' \
+    "$MARKER" "$template" "$port" \
+    > "$registration"
+}
+
+install_rename_base_runtime() {
+  local arch release bundle
+  clean_tree "$RENAME_BASE_ROOT" "$MARKER"
+  install -d -m 0700 "$RENAME_BASE_ROOT"
+  printf '%s\n' "$MARKER" > "$RENAME_BASE_ROOT/.subyard-p0-marker"
+  git -C "$RENAME_BASE_ROOT" init -q
+  git -C "$RENAME_BASE_ROOT" remote add origin https://github.com/Dmitry-Borodin/Subyard.git
+  git -C "$RENAME_BASE_ROOT" fetch -q --depth 1 origin "$RENAME_BASE_REVISION"
+  git -C "$RENAME_BASE_ROOT" checkout -q --detach FETCH_HEAD
+  [ "$(git -C "$RENAME_BASE_ROOT" rev-parse HEAD)" = "$RENAME_BASE_REVISION" ] \
+    || die 'rename-base checkout resolved to the wrong revision'
+  arch="$(go env GOARCH)"
+  release="$RENAME_BASE_ROOT/.build/p0-rename-base-release"
+  bundle="$release/subyard-p0-rename-base-linux-$arch.tar.gz"
+  "$RENAME_BASE_ROOT/scripts/package-engine.sh" \
+    --output-dir "$release" --version p0-rename-base --arch "$arch" >/dev/null
+  "$RENAME_BASE_ROOT/scripts/install-runtime-release.sh" \
+    --bundle "$bundle" \
+    --checksum "$bundle.sha256" \
+    --manifest "$bundle.manifest.json" \
+    --provenance "$bundle.provenance.json" >/dev/null
 }
 
 install_owner_runtime() {
@@ -80,35 +130,92 @@ install_owner_runtime() {
     --provenance "$artifact.tar.gz.provenance.json" >/dev/null
 }
 
+owner_profile_migration_contract() {
+  local old_yard runtime_root="${SUBYARD_HOME:-$HOME/.subyard}/runtime" diagnostic yard_info
+  install_rename_base_runtime
+  old_yard="$runtime_root/current/bin/yard"
+  [ "$("$old_yard" --version)" = 'yard p0-rename-base' ] \
+    || die 'pre-rename runtime was not installed'
+
+  write_owner_registration e2e-yard e2e-vms 2224
+  "$old_yard" -Y e2e-yard init --yes
+  "$old_yard" -Y e2e-yard check
+  "$old_yard" -Y e2e-yard start --yes
+  "$old_yard" -Y e2e-yard status >/dev/null
+
+  install_owner_runtime
+  [ "$("$runtime_root/current/bin/yard" --version)" = 'yard p0-owner' ] \
+    || die 'current runtime was not installed over the pre-rename runtime'
+  if diagnostic="$(./bin/yard -Y e2e-yard status 2>&1)"; then
+    die 'current runtime accepted the retired e2e-vms registration'
+  fi
+  for expected in \
+    "$OWNER_YARD_DIR/e2e-yard.env" \
+    'YARD_TEMPLATE=test-vms' \
+    'yard -Y e2e-yard check' \
+    'yard -Y e2e-yard test-vms down' \
+    'yard -Y e2e-yard teardown'; do
+    grep -Fq "$expected" <<<"$diagnostic" \
+      || die "live retired-template diagnostic omitted: $expected"
+  done
+
+  write_owner_registration e2e-yard test-vms 2224
+  ./bin/yard -Y e2e-yard check
+  ./bin/yard -Y e2e-yard status >/dev/null
+
+  write_owner_registration test-yard test-vms 2223
+  yard_info="$(./bin/yard -Y test-yard _info)"
+  jq -e '.name == "test-yard" and .instance == "yard-test-yard" and
+    .project == "subyard-test-yard" and .sshHost == "yard-test-yard" and .sshPort == 2223' \
+    <<<"$yard_info" >/dev/null \
+    || die "test-yard coexistence context is wrong: $yard_info"
+  yard_info="$(./bin/yard -Y e2e-yard _info)"
+  jq -e '.name == "e2e-yard" and .instance == "yard-e2e-yard" and
+    .project == "subyard-e2e-yard" and .sshHost == "yard-e2e-yard" and .sshPort == 2224' \
+    <<<"$yard_info" >/dev/null \
+    || die "e2e-yard rollback context is wrong: $yard_info"
+
+  ./bin/yard -Y e2e-yard test-vms status --yes
+  ./bin/yard -Y e2e-yard test-vms down --yes
+  ./bin/yard -Y e2e-yard teardown --yes
+  ! incus project show subyard-e2e-yard >/dev/null 2>&1 \
+    || die 'old e2e-yard project remains after migrated teardown'
+  [ ! -e "${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}/yards/e2e-yard/projects" ] \
+    || die 'old e2e-yard state remains after teardown'
+  [ ! -e "$HOME/.ssh/subyard-e2e-yard.config" ] \
+    || die 'old e2e-yard route remains after teardown'
+  find "$OWNER_YARD_DIR/e2e-yard.env" -delete
+  ./bin/yard -Y test-yard init --yes
+  ./bin/yard -Y test-yard status >/dev/null
+  printf 'ok: pre-rename runtime upgraded, coexisted and retired e2e-yard explicitly\n'
+}
+
 owner() (
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner lane requires VM1'
 	trap owner_cleanup EXIT
 	YARD_BUILD_VERSION=p0-owner scripts/build-engine.sh --force >/dev/null
-	install_owner_runtime
 	ensure_owner_incus
 	OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
   OWNER_BASELINE_CAPTURED=1
-  install -d -m 0700 private/yards
-  printf 'YARD_TEMPLATE=e2e-vms\nSSH_PORT=2223\n' > private/yards/e2e-yard.env
-  ./bin/yard -Y e2e-yard init --yes
-  ./bin/yard -Y e2e-yard start --yes
+  owner_profile_migration_contract
+  ./bin/yard -Y test-yard start --yes
   SUBYARD_E2E_LEGACY_FIXTURE=1 \
-    bash dev/e2e/seed-test-vms-legacy-state.sh subyard-e2e-yard yard-e2e-yard
-  ./bin/yard -Y e2e-yard init --yes
-  ./bin/yard -Y e2e-yard check
-  ./bin/yard -Y e2e-yard init --yes
-  [ "$(incus exec yard-e2e-yard --project subyard-e2e-yard -- stat -c '%U:%G:%a' /var/lib/subyard/test-vms)" = root:root:700 ] \
+    bash dev/e2e/seed-test-vms-legacy-state.sh subyard-test-yard yard-test-yard
+  ./bin/yard -Y test-yard init --yes
+  ./bin/yard -Y test-yard check
+  ./bin/yard -Y test-yard init --yes
+  [ "$(incus exec yard-test-yard --project subyard-test-yard -- stat -c '%U:%G:%a' /var/lib/subyard/test-vms)" = root:root:700 ] \
     || die 'nested state permissions did not converge'
-  ! incus exec yard-e2e-yard --project subyard-e2e-yard -- id -nG dev | tr ' ' '\n' \
+  ! incus exec yard-test-yard --project subyard-test-yard -- id -nG dev | tr ' ' '\n' \
     | grep -Eq '^(incus-admin|yard)$' || die 'dev retained a privileged L1 group'
   owner_project_contract
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard --version >/dev/null
-  env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y e2e-yard list >/dev/null
-  env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y e2e-yard status >/dev/null
+  env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y test-yard list >/dev/null
+  env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y test-yard status >/dev/null
   bash dev/e2e/p0-real-incus.sh
   bash tests/engine-release.sh
-  ./bin/yard -Y e2e-yard teardown --yes
-  ! incus project show subyard-e2e-yard >/dev/null 2>&1 || die 'candidate project remains after teardown'
+  ./bin/yard -Y test-yard teardown --yes
+  ! incus project show subyard-test-yard >/dev/null 2>&1 || die 'candidate project remains after teardown'
   printf 'ok: VM1 owner, legacy upgrade, lifecycle, Incus and rollback\n'
 )
 

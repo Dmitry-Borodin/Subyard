@@ -18,8 +18,8 @@ toolchain. Run `./tests/run.sh` before finishing shell or CLI changes. CI additi
 The operator owns `start`, `test-vms up/down` and `stop`. Agents use only allocated VMs.
 
 Before first use, run `dev/agent-e2e.sh --prepare`, then ask the operator to run
-`yard -Y e2e-yard init`. The private key stays under `~/.subyard/e2e/`; only its public half is
-written to ignored `temp/agent-e2e/e2e-yard/agent-access.pub`.
+`yard -Y test-yard init`. The private key stays under `~/.subyard/e2e/`; only its public half is
+written to ignored `temp/agent-e2e/test-yard/agent-access.pub`.
 
 Run checks from the current public worktree with:
 
@@ -33,11 +33,15 @@ Use `--ssh 1|2` for diagnostics and `--ssh-config` for direct OpenSSH. Run `--ve
 after transport or enrollment changes. Never use the privileged outer yard as an agent workspace.
 Run `dev/e2e/p0-acceptance.sh` for the full allocated two-VM matrix.
 
+If there is any doubt that behavior is covered or a problem is reproduced, use the allocated
+`test-vms` to reproduce and verify it on real GNU/Linux hosts. A green host-free test is not a
+substitute for the available VM check. Do not change the operator-owned allocation lifecycle.
+
 VM1 must test legacy convergence before current `yard init`:
 
 ```sh
 SUBYARD_E2E_LEGACY_FIXTURE=1 \
-  dev/e2e/seed-test-vms-legacy-state.sh <project> <instance>
+  dev/e2e/seed-test-vms-legacy-state.sh subyard-test-yard yard-test-yard
 ```
 
 The fixture is restricted to disposable VM1 candidate yards.

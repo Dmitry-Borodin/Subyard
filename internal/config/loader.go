@@ -26,6 +26,19 @@ type Loaded struct {
 	Environment map[string]string
 }
 
+type retiredYardTemplateError struct {
+	diagnostic string
+}
+
+func (err *retiredYardTemplateError) Error() string {
+	return err.diagnostic
+}
+
+func IsRetiredYardTemplate(err error) bool {
+	var retired *retiredYardTemplateError
+	return errors.As(err, &retired)
+}
+
 func LoadContext(options LoadOptions) (domain.Context, error) {
 	loaded, err := Load(options)
 	return loaded.Context, err
@@ -84,7 +97,7 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 		if err != nil {
 			return domain.Context{}, nil, err
 		}
-		if err := applyYardConfig(configDir, yardFile, values); err != nil {
+		if err := applyYardConfig(configDir, yardName, yardFile, values); err != nil {
 			return domain.Context{}, nil, err
 		}
 		applyYardDerivations(yardName, values)
@@ -112,7 +125,7 @@ func resetInheritedContext(values environment) {
 	}
 }
 
-func applyYardConfig(configDir, yardFile string, values environment) error {
+func applyYardConfig(configDir, yardName, yardFile string, values environment) error {
 	// Match scripts/lib/registry.sh: a machine-local yard file selects one public
 	// profile, that profile is applied first, and the machine file wins last.
 	// Probe a copy because env files are declarative but may contain defaults that
@@ -128,6 +141,9 @@ func applyYardConfig(configDir, yardFile string, values environment) error {
 	if template := probe["YARD_TEMPLATE"]; template != "" {
 		if !domain.SafeName(template) {
 			return fmt.Errorf("invalid YARD_TEMPLATE %q in %s", template, yardFile)
+		}
+		if template == "e2e-vms" {
+			return retiredE2EVMTemplateError(yardName, yardFile)
 		}
 		templateFile := filepath.Join(configDir, "yards", "profiles", template+".env")
 		info, err := os.Stat(templateFile)
@@ -145,6 +161,19 @@ func applyYardConfig(configDir, yardFile string, values environment) error {
 		}
 	}
 	return applyEnvFile(yardFile, values)
+}
+
+func retiredE2EVMTemplateError(yardName, yardFile string) error {
+	return &retiredYardTemplateError{diagnostic: fmt.Sprintf(`YARD_TEMPLATE "e2e-vms" is retired in %s
+replace its YARD_TEMPLATE assignment with:
+  YARD_TEMPLATE=test-vms
+then verify the unchanged yard identity:
+  yard -Y %s check
+  yard -Y %s status
+to retire that yard after the config migration:
+  yard -Y %s test-vms status
+  yard -Y %s test-vms down
+  yard -Y %s teardown`, yardFile, yardName, yardName, yardName, yardName, yardName)}
 }
 
 func environmentFrom(explicit map[string]string) environment {

@@ -29,7 +29,7 @@ cat > "$TMP/shipped/host.env" <<'ENV'
 ENV
 : > "$TMP/shipped/agents.env"
 : > "$TMP/shipped/ports.env"
-cat > "$TMP/shipped/yards/profiles/e2e-vms.env" <<'ENV'
+cat > "$TMP/shipped/yards/profiles/test-vms.env" <<'ENV'
 NESTED_E2E_VMS=1
 E2E_VM_DISK=10GiB
 ENV
@@ -60,36 +60,93 @@ export SUBYARD_YARD=named
 # shellcheck source=scripts/lib/config.sh
 . "$ROOT/scripts/lib/config.sh"
 
-if yard_env_file e2e-yard >/dev/null 2>&1 || yard_registry_names | grep -Fxq e2e-yard; then
+if [ ! -r "$ROOT/config/yards/profiles/test-vms.env" ]; then
+  fail 'canonical test-vms profile is not shipped'
+fi
+if [ -e "$ROOT/config/yards/profiles/e2e-vms.env" ] \
+  || [ -e "$TMP/shipped/yards/profiles/e2e-vms.env" ]; then
+  fail 'retired e2e-vms profile is still shipped as an alias'
+fi
+if yard_env_file test-yard >/dev/null 2>&1 || yard_registry_names | grep -Fxq test-yard; then
   fail 'dormant public VM profile was registered without a machine activation'
 fi
-cat > "$TMP/config-home/yards/e2e-yard.env" <<'ENV'
+
+cat > "$TMP/config-home/yards/legacy-yard.env" <<'ENV'
 YARD_TEMPLATE=e2e-vms
+SSH_PORT=4333
+ENV
+set +e
+retired_diagnostic="$(
+  unset YARD_TEMPLATE SSH_PORT NESTED_E2E_VMS E2E_VM_DISK
+  yard_source_env legacy-yard 2>&1
+  printf 'retired template unexpectedly loaded\n'
+  exit 91
+)"
+retired_rc=$?
+set -e
+[ "$retired_rc" -ne 0 ] && [ "$retired_rc" -ne 91 ] \
+  || fail 'retired e2e-vms registration did not fail closed'
+for expected in \
+  "$TMP/config-home/yards/legacy-yard.env" \
+  'YARD_TEMPLATE=test-vms' \
+  'yard -Y legacy-yard check' \
+  'yard -Y legacy-yard status' \
+  'yard -Y legacy-yard test-vms status' \
+  'yard -Y legacy-yard test-vms down' \
+  'yard -Y legacy-yard teardown'; do
+  printf '%s\n' "$retired_diagnostic" | grep -Fq "$expected" \
+    || fail "retired-template diagnostic omitted: $expected"
+done
+
+cat > "$TMP/config-home/yards/test-yard.env" <<'ENV'
+YARD_TEMPLATE=test-vms
 SSH_PORT=4444
 ENV
-[ "$(yard_env_file e2e-yard)" = "$TMP/config-home/yards/e2e-yard.env" ] \
-  || fail 'machine-local E2E yard activation was not registered'
+cat > "$TMP/config-home/yards/e2e-yard.env" <<'ENV'
+YARD_TEMPLATE=test-vms
+SSH_PORT=5555
+ENV
+[ "$(yard_env_file test-yard)" = "$TMP/config-home/yards/test-yard.env" ] \
+  || fail 'machine-local test yard activation was not registered'
 (
   unset SSH_PORT NESTED_E2E_VMS E2E_VM_DISK
-  yard_source_env e2e-yard
+  yard_source_env test-yard
   [ "$SSH_PORT" = 4444 ] && [ "$NESTED_E2E_VMS" = 1 ] && [ "$E2E_VM_DISK" = 10GiB ]
 ) || fail 'machine activation did not layer over the public VM profile'
+yard_snapshot() (
+  unset YARD_NAME INSTANCE_NAME INCUS_PROJECT SSH_HOST SRV_VOLUME RESTRICTED_DISK_PATHS
+  unset SUBYARD_STATE_DIR SSH_PORT NESTED_E2E_VMS E2E_VM_DISK
+  yard_source_env "$1"
+  yard_apply_derivations "$1"
+  printf '%s|%s|%s|%s|%s|%s\n' \
+    "$INSTANCE_NAME" "$INCUS_PROJECT" "$SSH_HOST" "$SRV_VOLUME" "$SUBYARD_STATE_DIR" "$SSH_PORT"
+)
+test_yard_snapshot="$(yard_snapshot test-yard)"
+old_yard_snapshot="$(yard_snapshot e2e-yard)"
+[ "$test_yard_snapshot" = \
+  "yard-test-yard|subyard-test-yard|yard-test-yard|yard-srv-test-yard|$TMP/config-home/yards/test-yard/projects|4444" ] \
+  || fail "canonical test-yard derivations drifted: $test_yard_snapshot"
+[ "$old_yard_snapshot" = \
+  "yard-e2e-yard|subyard-e2e-yard|yard-e2e-yard|yard-srv-e2e-yard|$TMP/config-home/yards/e2e-yard/projects|5555" ] \
+  || fail "migrated e2e-yard derivations drifted: $old_yard_snapshot"
+[ "$test_yard_snapshot" != "$old_yard_snapshot" ] \
+  || fail 'coexisting test-yard and migrated e2e-yard contexts collided'
 (
   unset NESTED_E2E_VMS E2E_VM_DISK
   yard_source_env named
   [ -z "${NESTED_E2E_VMS:-}" ] && [ -z "${E2E_VM_DISK:-}" ]
 ) || fail 'public VM profile leaked into an ordinary named yard'
 mkdir -p "$TMP/private/yards"
-cat > "$TMP/private/yards/e2e-yard.env" <<'ENV'
-YARD_TEMPLATE=e2e-vms
-SSH_PORT=5555
+cat > "$TMP/private/yards/test-yard.env" <<'ENV'
+YARD_TEMPLATE=test-vms
+SSH_PORT=6666
 ENV
 (
   unset SSH_PORT NESTED_E2E_VMS
-  yard_source_env e2e-yard
-  [ "$SSH_PORT" = 5555 ] && [ "$NESTED_E2E_VMS" = 1 ]
+  yard_source_env test-yard
+  [ "$SSH_PORT" = 6666 ] && [ "$NESTED_E2E_VMS" = 1 ]
 ) || fail 'private port override did not retain the selected public VM profile'
-rm "$TMP/private/yards/e2e-yard.env"
+rm "$TMP/private/yards/test-yard.env"
 
 subyard_context_load
 [ "$INSTANCE_NAME" = fixture-yard ] || fail 'yard layer did not precede public defaults'

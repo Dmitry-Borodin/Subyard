@@ -7,14 +7,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 # shellcheck source=scripts/lib/runtime.sh
 . "$REPO_ROOT/scripts/lib/runtime.sh"
 
-BASTION_ROUTE="${SUBYARD_E2E_BASTION_ROUTE:-yard-e2e-yard}"
+E2E_YARD="${SUBYARD_E2E_YARD:-test-yard}"
 BASTION_USER="${SUBYARD_E2E_BASTION_USER:-subyard-e2e-agent}"
-SHARED_ROUTE_DIR="${SUBYARD_E2E_SHARED_ROUTE_DIR:-$REPO_ROOT/temp/agent-e2e/e2e-yard}"
-STATE_ROOT="${SUBYARD_E2E_STATE_DIR:-${SUBYARD_HOME:-$(subyard_operator_home)/.subyard}/e2e}"
-IDENTITY="${SUBYARD_E2E_IDENTITY:-$STATE_ROOT/id_ed25519}"
-ENROLLMENT_PUBLIC_KEY="$SHARED_ROUTE_DIR/agent-access.pub"
-CLIENT_CONFIG="$STATE_ROOT/ssh_config"
-GUEST_KNOWN_HOSTS="$STATE_ROOT/guest_known_hosts"
+STATE_BASE="${SUBYARD_E2E_STATE_DIR:-${SUBYARD_HOME:-$(subyard_operator_home)/.subyard}/e2e}"
+BASTION_ROUTE=""
+SHARED_ROUTE_DIR=""
+STATE_ROOT=""
+IDENTITY=""
+ENROLLMENT_PUBLIC_KEY=""
+CLIENT_CONFIG=""
+GUEST_KNOWN_HOSTS=""
 BASTION_HOSTNAME=""
 BASTION_PORT=""
 BASTION_HOST_KEY_ALIAS=""
@@ -30,23 +32,42 @@ die() { printf 'agent-e2e: %s\n' "$*" >&2; exit 2; }
 info() { printf '  [ .. ] %s\n' "$*"; }
 ok() { printf '  [ ok ] %s\n' "$*"; }
 
+configure_yard_scope() {
+  case "$E2E_YARD" in
+    '' | *[!a-z0-9_-]* | _* | -*) die "unsafe yard selector '$E2E_YARD'" ;;
+  esac
+  BASTION_ROUTE="${SUBYARD_E2E_BASTION_ROUTE:-yard-$E2E_YARD}"
+  SHARED_ROUTE_DIR="${SUBYARD_E2E_SHARED_ROUTE_DIR:-$REPO_ROOT/temp/agent-e2e/$E2E_YARD}"
+  STATE_ROOT="${SUBYARD_E2E_YARD_STATE_DIR:-$STATE_BASE/yards/$E2E_YARD}"
+  IDENTITY="${SUBYARD_E2E_IDENTITY:-$STATE_BASE/id_ed25519}"
+  ENROLLMENT_PUBLIC_KEY="$SHARED_ROUTE_DIR/agent-access.pub"
+  CLIENT_CONFIG="$STATE_ROOT/ssh_config"
+  GUEST_KNOWN_HOSTS="$STATE_ROOT/guest_known_hosts"
+}
+
+configure_yard_scope
+
 usage() {
   cat <<'EOF'
 Usage:
-  dev/agent-e2e.sh --prepare
-  dev/agent-e2e.sh [--vm 1|2|both] -- COMMAND [ARG...]
-  dev/agent-e2e.sh --ssh 1|2 [-- COMMAND [ARG...]]
-  dev/agent-e2e.sh --ssh-config
-  dev/agent-e2e.sh --verify-boundary
+  dev/agent-e2e.sh [--yard NAME] --prepare
+  dev/agent-e2e.sh [--yard NAME] [--vm 1|2|both] -- COMMAND [ARG...]
+  dev/agent-e2e.sh [--yard NAME] --ssh 1|2 [-- COMMAND [ARG...]]
+  dev/agent-e2e.sh [--yard NAME] --ssh-config
+  dev/agent-e2e.sh [--yard NAME] --verify-boundary
 
 The normal form copies the current tracked, dirty and non-ignored public worktree to each selected
 VM, runs COMMAND as dev, streams output and removes every run directory. --ssh opens an ordinary
 guest terminal (or runs a direct guest command). --ssh-config prints the generated strict OpenSSH
 config path for direct `ssh -F PATH e2e-vm-1` use.
 
---prepare creates or verifies one controller identity at ~/.subyard/e2e/id_ed25519 and publishes
-only its public half to the ignored temp/agent-e2e/e2e-yard/agent-access.pub enrollment request.
-One controller identity is authorized on both VMs; each VM still has its own pinned SSH host key.
+NAME defaults to test-yard. During a temporary migration, select the old yard explicitly with
+`--yard e2e-yard`; route and generated client state remain isolated per yard.
+
+--prepare creates or verifies the shared controller identity at ~/.subyard/e2e/id_ed25519 and
+publishes only its public half to the selected yard's ignored
+temp/agent-e2e/NAME/agent-access.pub enrollment request. One controller identity is authorized on
+both VMs; each VM still has its own pinned SSH host key.
 
 The operator must allocate the lab first. This command never starts, stops, creates or deletes a
 yard, VM or inner Incus project, and it never obtains a shell in the privileged L1 yard.
@@ -104,7 +125,7 @@ prepare_enrollment() {
   ensure_identity
   ok "private controller identity ready at $IDENTITY"
   ok "public enrollment request written to $ENROLLMENT_PUBLIC_KEY"
-  info "the operator can now reconcile it with: yard -Y e2e-yard init"
+  info "the operator can now reconcile it with: yard -Y $E2E_YARD init"
 }
 
 valid_route_word() { [[ "$1" =~ ^[A-Za-z0-9._:%-]+$ ]]; }
@@ -179,7 +200,7 @@ resolve_bastion_route() {
     fi
   done
   [ -n "$BASTION_KNOWN_HOSTS" ] || die \
-    "no pinned host key for $lookup; the operator must re-run 'yard -Y e2e-yard init'"
+    "no pinned host key for $lookup; the operator must re-run 'yard -Y $E2E_YARD init'"
 }
 
 ssh_config_value() {
@@ -290,7 +311,7 @@ prepare_client() {
   chmod 0600 "$bootstrap_config"
   if ! manifest="$(ssh -F "$bootstrap_config" -T subyard-e2e-bastion </dev/null)"; then
     rm -f "$bootstrap_config"
-    die "cannot read allocation status with the enrolled agent identity; run 'dev/agent-e2e.sh --prepare', then ask the operator to re-run 'yard -Y e2e-yard init'"
+    die "cannot read allocation status with the enrolled agent identity; run 'dev/agent-e2e.sh --yard $E2E_YARD --prepare', then ask the operator to re-run 'yard -Y $E2E_YARD init'"
   fi
   rm -f "$bootstrap_config"
   parse_allocation_manifest "$manifest"
@@ -506,6 +527,7 @@ main() {
   local -a selected=() command=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --yard) [ "$#" -ge 2 ] || die "--yard needs a yard name"; E2E_YARD="$2"; shift 2 ;;
       --vm) [ "$#" -ge 2 ] || die "--vm needs 1, 2 or both"; selector="$2"; shift 2 ;;
       --ssh) [ "$#" -ge 2 ] || die "--ssh needs 1 or 2"; mode=ssh; ssh_vm="$2"; shift 2 ;;
       --ssh-config) mode=config; shift ;;
@@ -516,6 +538,7 @@ main() {
       *) die "unknown argument '$1' (put the guest command after --)" ;;
     esac
   done
+  configure_yard_scope
   case "$mode" in
     prepare) [ "${#command[@]}" -eq 0 ] || die "--prepare takes no command"; prepare_enrollment; return ;;
     config) [ "${#command[@]}" -eq 0 ] || die "--ssh-config takes no command"; prepare_client; printf '%s\n' "$CLIENT_CONFIG"; return ;;

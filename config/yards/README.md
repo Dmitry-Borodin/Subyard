@@ -68,15 +68,15 @@ logs,teardown,…}`. `yard -Y <name> teardown` removes only that yard's instance
 volume, ssh snippet and state — never another yard's. Shared host objects (the storage pool,
 bridge, NetworkManager guard) are only removed when the last yard goes away.
 
-The dedicated nested-VM acceptance profile is public as `YARD_TEMPLATE=e2e-vms`, but it is dormant
+The dedicated nested-VM acceptance profile is public as `YARD_TEMPLATE=test-vms`, but it is dormant
 until an operator registers a yard that selects it. The conventional private registration is:
 
 ```sh
-YARD_TEMPLATE=e2e-vms
+YARD_TEMPLATE=test-vms
 SSH_PORT=2223
 ```
 
-Run `dev/agent-e2e.sh --prepare`, then initialize with `yard -Y e2e-yard init`. Init confirms the
+Run `dev/agent-e2e.sh --prepare`, then initialize with `yard -Y test-yard init`. Init confirms the
 public-key fingerprint; private keys never enter yard config. See
 [`docs/test-vms.md`](../../docs/test-vms.md).
 

@@ -1,7 +1,7 @@
 # E2E VM acceptance
 
 The default `./tests/run.sh` is host-free. Live acceptance runs only on the two disposable VMs
-allocated by the operator with `yard -Y e2e-yard test-vms up`:
+allocated by the operator with `yard -Y test-yard test-vms up`:
 
 ```sh
 dev/e2e/p0-acceptance.sh

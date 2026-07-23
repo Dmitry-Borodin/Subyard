@@ -65,6 +65,10 @@ for arg in "$@"; do
 done
 [ -n "$dest" ] || exit 255
 joined="$*"
+require_owner_login() {
+  [[ "$joined" == *" bash -lc "* ]] \
+    || { printf 'owner control call did not use a login shell: %s\n' "$joined" >&2; exit 127; }
+}
 
 if [[ "$joined" == *ssh-keyscan* ]]; then
   [ "$(cat "$REMOTE_TEST_ROOT/owner-mode/$dest" 2>/dev/null || true)" != unreachable ] || exit 255
@@ -73,11 +77,13 @@ if [[ "$joined" == *ssh-keyscan* ]]; then
   exit 0
 fi
 if [[ "$joined" == *_info* ]]; then
+  require_owner_login
   [ "$(cat "$REMOTE_TEST_ROOT/owner-mode/$dest" 2>/dev/null || true)" != unreachable ] || exit 255
   cat "$REMOTE_TEST_ROOT/info/$dest"
   exit 0
 fi
 if [[ "$joined" == *_authorize* ]]; then
+  require_owner_login
   cat >/dev/null
   : > "$REMOTE_TEST_ROOT/owner-mode/authorized-$dest"
   exit 0

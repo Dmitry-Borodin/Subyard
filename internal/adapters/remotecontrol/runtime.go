@@ -272,7 +272,8 @@ func (runtime Runtime) ownerCall(ctx context.Context, spec domain.RemoteSpec, st
 		owner = append(owner, "-Y", spec.OwnerYard)
 	}
 	owner = append(owner, arguments...)
-	return runtime.hostCall(ctx, spec.Destination, stdin, owner...)
+	command := shellCommand(owner)
+	return runtime.hostCall(ctx, spec.Destination, stdin, "bash", "-lc", shellQuote(command))
 }
 
 func (runtime Runtime) hostCall(ctx context.Context, destination string, stdin []byte, arguments ...string) ([]byte, error) {
@@ -291,6 +292,18 @@ func (runtime Runtime) call(ctx context.Context, arguments []string, stdin []byt
 		program = "ssh"
 	}
 	return (transport.Process{Program: program, Arguments: arguments, Env: runtime.Environment, Timeout: runtime.timeout()}).Call(ctx, "", stdin)
+}
+
+func shellCommand(arguments []string) string {
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		quoted[index] = shellQuote(argument)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (runtime Runtime) ensureIdentity(ctx context.Context) ([]byte, string, error) {

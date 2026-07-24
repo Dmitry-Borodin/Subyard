@@ -59,39 +59,28 @@ CLI startup, idle RPC RSS/CPU, snapshot latency and package-size measurements; c
 host-free baseline in `docs/development.md`. Record results outside the public repository without
 host names, credentials or payloads.
 
-Before the two-VM SSH run, verify the exact pinned binaries without fake crypto:
+CI and tagged releases use one prepared-context entrypoint for the exact pinned binaries, real
+crypto and loopback OpenSSH contracts:
 
 ```sh
-SUBYARD_KEYS_TOOLS_DIR=/tmp/subyard-real-tools \
-SUBYARD_HOME=/tmp/subyard-real-tools-home \
-ASSUME_YES=1 scripts/install-key-tools.sh --yes
-
-SUBYARD_REAL_KEYS_TOOLS_DIR=/tmp/subyard-real-tools \
-bash tests/real-host/credential-tools.sh
+bash tests/real-host/adapter-contracts.sh
 ```
 
-The opt-in fixture creates only temporary synthetic peer ledgers, checks that plaintext never enters
-them, decrypts through the second peer and verifies revoke materialization. It does not replace the
-real SSH peer/exclusive-handoff check.
+The entrypoint creates a complete temporary engine context, installs the versions and checksums
+pinned in `config/host.env`, and removes its operator/config/data roots on exit. Its fixtures create
+only temporary synthetic peer ledgers, check that plaintext never enters them, decrypt through the
+second peer and verify revoke materialization. They do not replace the real SSH
+peer/exclusive-handoff check.
 
 If OpenSSH server is installed, a non-privileged loopback gate verifies the real SSH handshake,
 temporary host/client keys, strict host-key checking and the framed RPC stream without touching the
-system daemon:
-
-```sh
-bash tests/real-host/ssh-rpc.sh
-```
+system daemon.
 
 This closes the OpenSSH transport implementation itself; the two-E2E-VM run remains responsible
 for routing, disconnect and exclusive-handoff behavior across a real host boundary.
 
-The same ephemeral server can exercise real credential Git/SSH exchange together with the pinned
-age/SOPS binaries:
-
-```sh
-SUBYARD_REAL_KEYS_TOOLS_DIR=/tmp/subyard-real-tools \
-bash tests/real-host/ssh-credential-peer.sh
-```
+The same ephemeral server also exercises real credential Git/SSH exchange together with the pinned
+age/SOPS binaries.
 
 It verifies reciprocal trust roles, the retained SSH route, signed encrypted sync, remote decrypt,
 plaintext isolation and revoke. The two-E2E-VM lane still verifies host identity separation,

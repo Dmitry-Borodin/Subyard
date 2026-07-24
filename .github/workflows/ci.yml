@@ -27,17 +27,4 @@ jobs:
       - name: Yard-safe verification gate
         run: ./tests/run.sh
       - name: Real local crypto and OpenSSH adapter contracts
-        run: |
-          adapter_root="$RUNNER_TEMP/subyard-real-adapters"
-          mkdir -p "$adapter_root/home" "$adapter_root/config" "$adapter_root/data"
-          SUBYARD_OPERATOR_HOME="$adapter_root/home" \
-            SUBYARD_CONFIG_HOME="$adapter_root/config" \
-            SUBYARD_HOME="$adapter_root/data" \
-            SUBYARD_KEYS_TOOLS_DIR="$adapter_root/tools" \
-            ASSUME_YES=1 \
-            bash scripts/install-key-tools.sh --yes
-          SUBYARD_REAL_KEYS_TOOLS_DIR="$adapter_root/tools" \
-            bash tests/real-host/credential-tools.sh
-          bash tests/real-host/ssh-rpc.sh
-          SUBYARD_REAL_KEYS_TOOLS_DIR="$adapter_root/tools" \
-            bash tests/real-host/ssh-credential-peer.sh
+        run: bash tests/real-host/adapter-contracts.sh

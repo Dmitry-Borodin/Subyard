@@ -32,8 +32,7 @@ func (runtime Runtime) Lookup(_ context.Context, name string) (domain.RemoteReco
 		return domain.RemoteRecord{Spec: domain.RemoteSpec{Name: name}}, true, nil
 	}
 	var path string
-	for _, directory := range config.RegistryDirectories(runtime.ConfigDir, runtime.ConfigHome) {
-		candidate := filepath.Join(directory, name+".env")
+	for _, candidate := range config.YardFileCandidates(runtime.ConfigDir, runtime.ConfigHome, name) {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			path = candidate
 			break
@@ -145,7 +144,7 @@ func (runtime Runtime) applyAdd(ctx context.Context, prepared domain.RemotePrepa
 	if _, err := runtime.ownerCall(ctx, prepared.Spec, publicKey, "_authorize"); err != nil {
 		return domain.RemoteResult{}, fmt.Errorf("authorize controller key: %w", err)
 	}
-	envPath := filepath.Join(runtime.ConfigHome, "yards", prepared.Spec.Name+".env")
+	envPath := filepath.Join(runtime.ConfigHome, "yards", prepared.Spec.Name, "config.env")
 	if prepared.Existing != nil {
 		envPath = prepared.Existing.Path
 	}

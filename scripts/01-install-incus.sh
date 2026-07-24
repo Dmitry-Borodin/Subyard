@@ -8,20 +8,13 @@
 # Flags survive the sudo re-exec via SUBYARD_SCRIPT_ARGV (sudo scrubs env, not argv).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Explicit control-plane module composition (config/context loads exactly once).
 # shellcheck source=scripts/lib/runtime.sh
 . "$SCRIPT_DIR/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/engine-context.sh
+. "$SCRIPT_DIR/lib/engine-context.sh"
+subyard_require_engine_context
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
 # shellcheck source=scripts/lib-power.sh
 . "$SCRIPT_DIR/lib-power.sh"
 # shellcheck source=scripts/lib/host.sh

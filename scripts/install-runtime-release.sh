@@ -114,6 +114,24 @@ for required in bin/yard bin/yard-engine config/commands.registry scripts/instal
   [ -f "$candidate/$required" ] && [ ! -L "$candidate/$required" ] \
     || { printf 'install-runtime-release: bundle is missing %s\n' "$required" >&2; exit 1; }
 done
+[ -f "$candidate/runtime-files.sha256" ] && [ ! -L "$candidate/runtime-files.sha256" ] \
+  || { printf 'install-runtime-release: runtime file manifest is missing\n' >&2; exit 1; }
+(
+  cd "$candidate"
+  sha256sum -c runtime-files.sha256 >/dev/null
+) || { printf 'install-runtime-release: runtime file manifest verification failed\n' >&2; exit 1; }
+actual_files="$(mktemp "$releases/.actual-files.XXXXXX")"
+listed_files="$(mktemp "$releases/.listed-files.XXXXXX")"
+trap 'rm -f -- "$actual_files" "$listed_files"; cleanup_candidate' EXIT
+(
+  cd "$candidate"
+  find . -type f ! -name runtime-files.sha256 -print | sort > "$actual_files"
+  sed -E 's/^[0-9a-fA-F]{64}  //' runtime-files.sha256 | sort > "$listed_files"
+)
+cmp -s "$actual_files" "$listed_files" \
+  || { printf 'install-runtime-release: runtime file manifest is not exact\n' >&2; exit 1; }
+rm -f -- "$actual_files" "$listed_files"
+trap cleanup_candidate EXIT
 chmod 0755 "$candidate/bin/yard" "$candidate/bin/yard-engine"
 candidate_version="$(SUBYARD_REPOSITORY_ROOT="$candidate" "$candidate/bin/yard-engine" --version 2>/dev/null | awk '{print $2}')" \
   || { printf 'install-runtime-release: candidate self-check failed\n' >&2; exit 1; }

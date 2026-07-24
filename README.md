@@ -40,6 +40,9 @@ yard status
 The runtime contains the engine, public profiles/config, completions and host adapters, but no
 source checkout, toolchain or private data. Recognized source installs are migrated in place; the
 old checkout and one-time recovery under `~/.subyard/recovery/pre-go-source/` are retained.
+Operator config lives under `~/.config/subyard`; inspect it with `yard config paths` and
+`yard config status --all-local`. Upgrade with `yard update`; use `yard update --rollback` to swap
+back to the retained previous runtime.
 
 Run `yard --help` or `yard <command> --help` for complete command usage.
 See the [control-plane architecture](docs/control-plane.md) for module ownership, stable extension
@@ -74,8 +77,8 @@ yard -Y srv1 sync .
 yard -Y srv1 code .
 ```
 
-Remote yards support `sync` and `clone`; `bind` is local-only. Yard definitions live in
-`config/yards/`. See
+Remote yards support `sync` and `clone`; `bind` is local-only. Installed yard definitions live at
+`~/.config/subyard/yards/<name>/config.env`. See
 [yard configuration](config/yards/README.md) and the [credential ledger](docs/keys.md).
 
 ## Security boundary

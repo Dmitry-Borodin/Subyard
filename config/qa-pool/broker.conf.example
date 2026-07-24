@@ -1,6 +1,4 @@
-# config/qa-pool/broker.conf — non-secret knobs for the in-yard QA credential broker.
-#
-# Copy to `broker.conf` in this folder (gitignored: it may name a host/yard path) to override
+# Copy to ~/.config/subyard/overrides/host/qa-pool/broker.conf to override
 # the defaults below. The broker is OpenClaw's `qa/convex-credential-broker` (a self-hosted
 # Convex app) run as ONE long-lived container on the yard's Docker. It hands a leased test-bot
 # (SUT + driver + group) to each `--credential-source convex` worker, so N dev-agents lease

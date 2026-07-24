@@ -19,6 +19,7 @@ done
 
 case "$VERSION" in ''|*[!A-Za-z0-9._+-]*) printf 'package-engine: unsafe version: %s\n' "$VERSION" >&2; exit 2 ;; esac
 command -v go >/dev/null 2>&1 || { printf 'package-engine: Go is required\n' >&2; exit 2; }
+command -v git >/dev/null 2>&1 || { printf 'package-engine: Git is required\n' >&2; exit 2; }
 command -v sha256sum >/dev/null 2>&1 || { printf 'package-engine: sha256sum is required\n' >&2; exit 2; }
 case "$TARGET_ARCH" in amd64 | arm64) ;; *) printf 'package-engine: unsupported architecture: %s\n' "$TARGET_ARCH" >&2; exit 2 ;; esac
 
@@ -39,7 +40,11 @@ GOOS="$goos" GOARCH="$goarch" YARD_BUILD_VERSION="$VERSION" \
 printf '{"schemaVersion":1,"version":"%s","os":"%s","arch":"%s","rpc":{"min":1,"max":1},"projectStateSchema":1,"credentialSchema":1}\n' \
   "$VERSION" "$goos" "$goarch" > "$artifact.manifest.json"
 artifact_hash="$(cut -d' ' -f1 "$artifact.sha256")"
-revision="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf unknown)"
+revision=unknown
+if candidate_revision="$(git -C "$REPO" rev-parse --verify HEAD 2>/dev/null)" \
+  && [[ "$candidate_revision" =~ ^[0-9a-f]{40,64}$ ]]; then
+  revision="$candidate_revision"
+fi
 generated="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '{"schemaVersion":1,"artifact":"%s","sha256":"%s","version":"%s","sourceRepository":"github.com/Dmitry-Borodin/Subyard","sourceRevision":"%s","generatedAt":"%s"}\n' \
   "$(basename "$artifact")" "$artifact_hash" "$VERSION" "$revision" "$generated" \
@@ -55,7 +60,37 @@ trap cleanup_bundle EXIT
 install -d "$bundle_stage/bin"
 install -m 0755 "$artifact" "$bundle_stage/bin/yard-engine"
 install -m 0755 "$REPO/bin/yard" "$bundle_stage/bin/yard"
-cp -a "$REPO/scripts" "$REPO/config" "$REPO/completions" "$bundle_stage/"
+runtime_list="$bundle_stage/.runtime-inputs"
+runtime_extras=(scripts/lib/engine-context.sh)
+{
+  git -C "$REPO" ls-files --cached -z -- scripts config completions
+  for relative in "${runtime_extras[@]}"; do
+    [ -f "$REPO/$relative" ] && printf '%s\0' "$relative"
+  done
+} | sort -zu > "$runtime_list"
+while IFS= read -r -d '' relative; do
+  [ -e "$REPO/$relative" ] || continue
+  case "$relative" in
+    scripts/*|config/*|completions/*) ;;
+    *) printf 'package-engine: runtime allowlist escaped: %s\n' "$relative" >&2; exit 1 ;;
+  esac
+  case "$relative" in *\\*|*$'\n'*|*$'\r'*|*$'\t'*) printf 'package-engine: unsafe runtime path\n' >&2; exit 1 ;; esac
+  [ -f "$REPO/$relative" ] && [ ! -L "$REPO/$relative" ] \
+    || { printf 'package-engine: runtime input must be a regular file: %s\n' "$relative" >&2; exit 1; }
+  install -d "$bundle_stage/$(dirname "$relative")"
+  cp -p -- "$REPO/$relative" "$bundle_stage/$relative"
+done < "$runtime_list"
+rm -f -- "$runtime_list"
+for required in scripts/install-runtime-release.sh config/commands.registry completions/yard.bash; do
+  [ -f "$bundle_stage/$required" ] \
+    || { printf 'package-engine: runtime allowlist omitted %s\n' "$required" >&2; exit 1; }
+done
+(
+  cd "$bundle_stage"
+  find . -type f ! -name runtime-files.sha256 -print0 | sort -z | xargs -0 sha256sum \
+    > runtime-files.sha256
+)
+chmod 0644 "$bundle_stage/runtime-files.sha256"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$bundle_stage" -cf - . \
   | gzip -n > "$bundle"
 chmod 0644 "$bundle"

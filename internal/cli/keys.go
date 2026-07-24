@@ -41,20 +41,21 @@ func (cli *CLI) credentialRuntime(loaded config.Loaded) (*credentialruntime.Runt
 	}
 	consumerRoot := loaded.Environment["SUBYARD_KEYS_CONSUMER_ROOT"]
 	if consumerRoot == "" {
-		consumerRoot = cli.options.RepositoryRoot
+		consumerRoot = filepath.Join(loaded.Context.Paths.ConfigHome, "generated")
 	}
 	return credentialruntime.New(credentialruntime.Config{
-		RepositoryRoot: cli.options.RepositoryRoot,
-		Root:           root,
-		ConsumerRoot:   consumerRoot,
-		ToolsDirectory: loaded.Environment["SUBYARD_KEYS_TOOLS_DIR"],
-		HostBase:       loaded.Context.Paths.HostBase,
-		Context:        loaded.Context.YardName,
-		Dispatcher:     cli.options.DispatcherPath,
-		Environment:    environmentList(cli.env, loaded.Environment),
-		Stdin:          cli.options.Stdin,
-		Stdout:         cli.options.Stdout,
-		Stderr:         cli.options.Stderr,
+		RepositoryRoot:    cli.options.RepositoryRoot,
+		Root:              root,
+		ConsumerRoot:      consumerRoot,
+		ToolsDirectory:    loaded.Environment["SUBYARD_KEYS_TOOLS_DIR"],
+		HostBase:          loaded.Context.Paths.HostBase,
+		Context:           loaded.Context.YardName,
+		Dispatcher:        cli.options.DispatcherPath,
+		Environment:       environmentList(cli.env, loaded.Environment),
+		TargetEnvironment: environmentList(cli.baseEnv, nil),
+		Stdin:             cli.options.Stdin,
+		Stdout:            cli.options.Stdout,
+		Stderr:            cli.options.Stderr,
 		Resolve: func(ctx context.Context, name string) (credentialruntime.Target, error) {
 			if !domain.SafeName(name) {
 				return credentialruntime.Target{}, fmt.Errorf("invalid credential target %q", name)

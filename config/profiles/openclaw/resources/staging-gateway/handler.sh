@@ -15,7 +15,7 @@
 #     never via -e, never under /srv/cache;
 #   * a startup prod-fingerprint GUARD (ours; the project has no such check) that refuses to
 #     start unless the config is marked staging AND the bot token's fingerprint is not on the
-#     operator's prod denylist (config/prod-fingerprints), plus state-root markers.
+#     operator's host override prod denylist, plus state-root markers.
 #   * the bot identity is the scarce resource: a flock+file LEASE (FIFO/TTL/epoch) admits one
 #     poller at a time; handover is fence-by-lifecycle (stop the prior holder's gateway).
 #
@@ -33,14 +33,15 @@
 #   e2e     [path]               (Slice 2) reflink-isolated ephemeral run — DEFERRED to P4; for now use
 #                               'up <zone> --source <agent-workspace>' for a live-bind run of uncommitted code
 #
-# Per-zone config (optional): config/staging/<zone>.conf — non-secret knobs (PROFILE, SOURCE_BIND,
-# GATEWAY_CMD, BOT_LEASE_KEY, LEASE_TTL). See config/staging/canonical.conf.example.
+# Per-zone knobs come from overrides/host/staging; ledger consumers come from generated/staging.
 # Operator-owned; no root. Docker here is the yard's nested daemon, never the host's.
 set -euo pipefail
 RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBYARD_ROOT="$(cd "$RESOURCE_DIR/../../../../.." && pwd)"
 SCRIPT_DIR="$SUBYARD_ROOT/scripts"
-[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] || { printf 'staging: prepared engine context required\n' >&2; exit 2; }
+# shellcheck source=scripts/lib/engine-context.sh
+. "$SCRIPT_DIR/lib/engine-context.sh"
+subyard_require_engine_context
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
 # shellcheck source=scripts/lib/host.sh
@@ -50,8 +51,11 @@ SCRIPT_DIR="$SUBYARD_ROOT/scripts"
 
 DEV_UID="${DEV_UID:-1000}"
 PROFILES_DIR="$SCRIPT_DIR/../config/profiles"
-ZONES_DIR="$SCRIPT_DIR/../config/staging"
-PROD_FP_FILE="$SCRIPT_DIR/../config/prod-fingerprints"   # host-only sha256 denylist (no secrets)
+: "${SUBYARD_CONFIG_HOST_DIR:?typed host config directory is required}"
+: "${SUBYARD_CONFIG_GENERATED_DIR:?typed generated config directory is required}"
+ZONES_DIR="$SUBYARD_CONFIG_HOST_DIR/staging"
+STAGING_GENERATED_DIR="$SUBYARD_CONFIG_GENERATED_DIR/staging"
+PROD_FP_FILE="$SUBYARD_CONFIG_HOST_DIR/prod-fingerprints"
 LEASE_DIR="/srv/staging/_lease"                          # in the yard; one lease per bot identity
 
 ydocker() { yexec docker "$@"; }
@@ -201,7 +205,7 @@ case "$sub" in
     df="${IMAGE_DOCKERFILE:-}"; run_image="$BASE_IMAGE"; ctx=""
     if [ -n "$df" ]; then ctx="${IMAGE_CONTEXT:-$(dirname "$df")}"; run_image="${IMAGE_TAG:-subyard-staging-$zone}"; fi
 
-    sf="$ZONES_DIR/$zone.env"; have_secrets=0
+    sf="$STAGING_GENERATED_DIR/$zone.env"; have_secrets=0
     [ -r "$sf" ] && have_secrets=1
 
     # live-bind worktree (if any) must exist in the yard (run an agent's uncommitted code)
@@ -314,7 +318,7 @@ ZENV
 Next:
   1. Source tree at /workspace <- $src_desc.
        live-bind an agent's uncommitted worktree: ${PROG:-yard} staging up $zone --source /srv/workspaces/<id>
-       (or set SOURCE_BIND in config/staging/$zone.conf); else populate $srcDir from \`master\`.
+       (or set SOURCE_BIND in the host staging override); else populate $srcDir from \`master\`.
   2. Paste STAGING creds into the runner (one-time):
        ${PROG:-yard} staging shell $zone
        # set channels.telegram.tokenFile/botToken in \$VASILY_HOME/openclaw/openclaw.json,
@@ -323,7 +327,7 @@ Next:
        # (persisted at $dataRoot/creds); else the login lives in the box until 'destroy'.
   3. Record PROD bot fingerprint(s) so the guard refuses them:
        printf '%s' "<PROD_BOT_TOKEN>" | sha256sum   # hash only
-       echo "<that-hash>" >> config/prod-fingerprints
+       echo "<that-hash>" >> "$SUBYARD_CONFIG_HOST_DIR/prod-fingerprints"
   4. ${PROG:-yard} staging start $zone
 MSG
     ;;
@@ -376,7 +380,7 @@ GUARD
       FAIL\ *) die "prod-guard refused start: ${guard_out#FAIL }" ;;
       *)       die "prod-guard produced no verdict — refusing (fail-closed): '${guard_out:-<empty>}'" ;;
     esac
-    [ -n "$prod_fps" ] || warn "config/prod-fingerprints empty — guard passed on the staging marker alone; record prod hashes to harden it"
+    [ -n "$prod_fps" ] || warn "$PROD_FP_FILE is empty — record prod hashes to harden the guard"
 
     # --- acquire the bot lease (canonical takes it too, so ephemeral can preempt) ---
     la="$(lease_acquire canonical normal)"

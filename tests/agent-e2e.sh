@@ -61,9 +61,16 @@ build_bundle "$fixture" "$bundle"
 contents="$(tar -tzf "$bundle" | sort)"
 printf '%s\n' "$contents" | grep -Fxq dirty.txt || fail "dirty untracked file was not copied"
 printf '%s\n' "$contents" | grep -Fxq tracked.txt || fail "modified tracked file was not copied"
+printf '%s\n' "$contents" | grep -Fxq .subyard-e2e-index \
+  || fail "tracked-file inventory was not copied"
 ! printf '%s\n' "$contents" | grep -Fxq removed.txt || fail "deleted tracked file entered the bundle"
 ! printf '%s\n' "$contents" | grep -Eq '(^|/)(private|temp|\.git)(/|$)|ignored\.secret' \
   || fail "ignored or private data entered the worktree bundle"
+inventory="$(tar -xOf "$bundle" .subyard-e2e-index | tr '\0' '\n')"
+printf '%s\n' "$inventory" | grep -Fxq tracked.txt \
+  || fail "tracked-file inventory omitted a tracked path"
+! printf '%s\n' "$inventory" | grep -Fxq dirty.txt \
+  || fail "tracked-file inventory classified an untracked path as tracked"
 
 ln -s /etc/passwd "$fixture/escaping-link"
 if (build_bundle "$fixture" "$TMP/unsafe.tar.gz") >/dev/null 2>&1; then
@@ -84,6 +91,48 @@ grep -Fxq 'exec ./bin/yard --version' "$TMP/yard-run.sh" \
   || fail "direct guest yard command changed its argv after the development build"
 quoted="$(quote_ssh_command bash -c 'test "$1" = "argument with spaces"' _ 'argument with spaces')"
 bash -c "$quoted" || fail "direct SSH command did not preserve its argv"
+
+mkdir -p "$TMP/direct-bin"
+cat > "$TMP/direct-bin/ssh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *' e2e-vm-1 '*)
+    IFS= read -r forwarded
+    [ "$forwarded" = explicit-stdin ]
+    ;;
+  *)
+    if IFS= read -r leaked; then
+      printf 'direct SSH leaked stdin: %s\n' "$leaked" >&2
+      exit 91
+    fi
+    ;;
+esac
+printf '%s\n' "$*"
+SH
+chmod +x "$TMP/direct-bin/ssh"
+direct_ssh="$(
+  PATH="$TMP/direct-bin:$PATH" ROOT="$ROOT" bash -c '
+    set -euo pipefail
+    . "$ROOT/dev/agent-e2e.sh"
+    prepare_client() { CLIENT_CONFIG=/tmp/direct-ssh-config; }
+    printf "must-not-reach-ssh\n" | run_direct_ssh 2 0 printf "%s" "argument with spaces"
+  '
+)"
+printf '%s\n' "$direct_ssh" | grep -Fq -- '-T e2e-vm-2 --' \
+  || fail "direct SSH command did not use the pinned non-TTY VM route"
+direct_ssh_stdin="$(
+  PATH="$TMP/direct-bin:$PATH" ROOT="$ROOT" bash -c '
+    set -euo pipefail
+    . "$ROOT/dev/agent-e2e.sh"
+    prepare_client() { CLIENT_CONFIG=/tmp/direct-ssh-config; }
+    printf "explicit-stdin\n" | run_direct_ssh 1 1 sh -c "read -r value"
+  '
+)"
+printf '%s\n' "$direct_ssh_stdin" | grep -Fq -- '-T e2e-vm-1 --' \
+  || fail "explicit direct SSH stdin did not use the pinned non-TTY VM route"
+grep -Fq '"$AGENT" --ssh-stdin 1 --' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail "P0 source archive does not opt in to direct SSH stdin"
 
 # Accept only two ready, unexpired VMs with pinned host keys.
 ensure_state_root
@@ -106,17 +155,6 @@ ensure_identity
   || fail "published enrollment request is not public-key readable"
 [ ! -e "$SHARED_ROUTE_DIR/id_ed25519" ] \
   || fail "controller private key entered the shared worktree directory"
-# Enrollment accepts only the ignored public request.
-# shellcheck source=scripts/lib/e2e-agent-enrollment.sh
-. "$ROOT/scripts/lib/e2e-agent-enrollment.sh"
-e2e_agent_enrollment_read "$SHARED_ROUTE_DIR" \
-  || fail "product enrollment reader rejected the helper's public request"
-[ "$E2E_AGENT_PUBLIC_KEY" = "$(normalized_public_key_file "$IDENTITY.pub")" ] \
-  || fail "product enrollment reader did not normalize the requested key"
-printf 'ssh-rsa invalid\n' > "$SHARED_ROUTE_DIR/agent-access.pub"
-if e2e_agent_enrollment_read "$SHARED_ROUTE_DIR"; then
-  fail "product enrollment reader accepted a non-Ed25519 key"
-fi
 ensure_identity
 BASTION_HOSTNAME=127.0.0.1
 BASTION_PORT=2223
@@ -223,6 +261,9 @@ if sed '/^[[:space:]]*#/d' "$ROOT/dev/e2e/p0-acceptance.sh" \
 fi
 grep -Fq 'trap owner_cleanup EXIT' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not clean its candidate after failure"
+grep -Fq 'prepare_owner_go_cache' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'clean_tree "$OWNER_GO_CACHE_ROOT" "$MARKER"' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane leaves candidate Go caches on the disposable VM"
 grep -Fq 'dev/build-engine.sh --force' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not build an explicit source candidate"
 grep -Fq 'scripts/install-runtime-release.sh' "$ROOT/dev/e2e/p0-guest.sh" \
@@ -277,6 +318,16 @@ grep -Fq '"$AGENT" --ssh "$vm" --' "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 peer cleanup assertion bypasses direct-command argv quoting"
 grep -Fq 'cleanup_peer_incus' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer lane does not clean its Incus fixture"
+grep -Fq '. "$ROOT/tests/helpers/test-context.sh"' "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  && grep -Fq 'run_incus_installer --yes --zabbly' "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  && ! grep -Fq '"$ROOT/scripts/01-install-incus.sh" --yes --zabbly' \
+    "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  || fail "P0 source-upgrade bootstrap bypasses the typed test engine context"
+! grep -Fq '"$SOURCE_ROOT/config/qa-pool/"*' "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  || fail "P0 source-upgrade fixture expands operator-private paths as the outer user"
+grep -Fq 's/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/' \
+  "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  || fail "P0 source-upgrade lane does not verify the retired template migration"
 ! grep -Fq 'test-vms-inner' "$ROOT/dev/agent-e2e.sh" \
   || fail "agent E2E transport still invokes the privileged lifecycle worker"
 

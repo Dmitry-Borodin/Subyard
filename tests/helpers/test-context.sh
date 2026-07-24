@@ -4,8 +4,13 @@
 setup_test_context() { # <temp-root> [incus-project] [instance-name]
   local root="${1:?setup_test_context needs a temp root}"
   export SUBYARD_OPERATOR_HOME="$root/home"
+  export SUBYARD_CONFIG_DIR="$root/public-config"
   export SUBYARD_CONFIG_HOME="$root/config"
   export SUBYARD_HOME="$root/subyard"
+  export SUBYARD_STATE_DIR="$SUBYARD_HOME/state"
+  export SUBYARD_ENGINE_CONTEXT=1
+  export SUBYARD_ENGINE_CONTEXT_SCHEMA=1
+  export SUBYARD_CONFIG_LOADED=1
   export STORAGE_PATH="$SUBYARD_HOME/incus/storage"
   export HOST_BASE="$root/host-data"
   export RESTRICTED_DISK_PATHS="$HOST_BASE"
@@ -22,7 +27,10 @@ setup_test_context() { # <temp-root> [incus-project] [instance-name]
   export E2E_VM_TTL_MINUTES=240
   export E2E_VM_BOOT_TIMEOUT=300
   export INCUS_PROJECT="${2:-subyard}"
+  export INCUS_BRIDGE=incusbr0
   export INSTANCE_NAME="${3:-yard}"
+  export YARD_TYPE=local
+  export SSH_HOST=yard
   export DEV_USER=dev
   export SSH_PORT=2222
 }

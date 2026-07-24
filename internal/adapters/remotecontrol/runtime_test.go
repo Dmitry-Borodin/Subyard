@@ -16,7 +16,7 @@ const fixturePublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAA
 
 func TestLookupAndListReadRegistryAndCache(t *testing.T) {
 	runtime := remoteFixture(t)
-	contextPath := filepath.Join(runtime.ConfigHome, "yards", "demo.env")
+	contextPath := filepath.Join(runtime.ConfigHome, "yards", "demo", "config.env")
 	writeRemoteFile(t, contextPath, strings.Join([]string{
 		"YARD_TYPE=remote",
 		"REMOTE_DEST=owner.example",
@@ -24,7 +24,7 @@ func TestLookupAndListReadRegistryAndCache(t *testing.T) {
 		"REMOTE_SSH_PORT=2233",
 		"",
 	}, "\n"), 0o600)
-	writeRemoteFile(t, filepath.Join(runtime.ConfigHome, "yards", "local.env"),
+	writeRemoteFile(t, filepath.Join(runtime.ConfigHome, "yards", "local", "config.env"),
 		"YARD_TYPE=local\nSSH_PORT=2244\n", 0o600)
 	writeRemoteFile(t, runtime.cachePath("demo"),
 		"100\n{\"state\":\"RUNNING\",\"sshPort\":2233}\n", 0o600)
@@ -95,9 +95,9 @@ func TestApplyAddWritesIsolatedContextAndVerifiesPinnedKey(t *testing.T) {
 		!strings.Contains(ownerCall, "inner") || !strings.Contains(ownerCall, "_authorize") {
 		t.Fatalf("owner call did not use the login-shell contract: %#v", calls)
 	}
-	assertRemoteFileContains(t, filepath.Join(runtime.ConfigHome, "yards", "demo.env"),
+	assertRemoteFileContains(t, filepath.Join(runtime.ConfigHome, "yards", "demo", "config.env"),
 		"REMOTE_DEST=owner.example")
-	assertRemoteFileContains(t, filepath.Join(runtime.ConfigHome, "yards", "demo.env"),
+	assertRemoteFileContains(t, filepath.Join(runtime.ConfigHome, "yards", "demo", "config.env"),
 		"REMOTE_YARD=inner")
 	assertRemoteFileContains(t, runtime.snippetPath("demo"), "HostKeyAlias subyard-remote-demo")
 	assertRemoteFileContains(t, runtime.sshConfigPath(), "Include subyard-demo.config")
@@ -111,7 +111,7 @@ func TestApplyAddWritesIsolatedContextAndVerifiesPinnedKey(t *testing.T) {
 func TestApplyAddRollsBackEveryLocalFileOnProbeFailure(t *testing.T) {
 	runtime := remoteFixture(t)
 	spec := domain.RemoteSpec{Name: "demo", Destination: "owner.example"}
-	envPath := filepath.Join(runtime.ConfigHome, "yards", "demo.env")
+	envPath := filepath.Join(runtime.ConfigHome, "yards", "demo", "config.env")
 	existing := domain.RemoteRecord{Spec: spec, Remote: true, Path: envPath, SSHPort: 2222}
 	paths := []string{
 		envPath,
@@ -157,7 +157,7 @@ func TestApplyAddRollsBackEveryLocalFileOnProbeFailure(t *testing.T) {
 func TestApplyRemoveDeletesOnlyTheSelectedRemote(t *testing.T) {
 	runtime := remoteFixture(t)
 	spec := domain.RemoteSpec{Name: "demo", Destination: "owner.example"}
-	envPath := filepath.Join(runtime.ConfigHome, "yards", "demo.env")
+	envPath := filepath.Join(runtime.ConfigHome, "yards", "demo", "config.env")
 	existing := domain.RemoteRecord{Spec: spec, Remote: true, Path: envPath, SSHPort: 2222}
 	writeRemoteFile(t, envPath, string(renderContext(domain.RemotePrepared{
 		Spec: spec, Owner: domain.RemoteInfo{SSHPort: 2222, DevUser: "dev"},

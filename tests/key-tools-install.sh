@@ -41,6 +41,9 @@ esac
 SH
 chmod +x "$TMP/bin/curl"
 
+# shellcheck source=tests/helpers/test-context.sh
+. "$ROOT/tests/helpers/test-context.sh"
+setup_test_context "$TMP"
 export HOME="$TMP/home"
 export SUBYARD_OPERATOR_HOME="$HOME"
 export SUBYARD_CONFIG_HOME="$TMP/config"

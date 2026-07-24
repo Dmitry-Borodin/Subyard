@@ -11,14 +11,15 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 . "$ROOT/tests/helpers/test-context.sh"
 setup_test_context "$TMP"
 export HOME="$TMP/home"
-export SUBYARD_PROFILES_DIR="$TMP/profiles"
-export SUBYARD_CONFIG_LOADED=1
 export SUBYARD_NO_AUDIT=1
+export SUBYARD_EXTRAS_MOUNTS=''
+export SUBYARD_EXTRAS_CAPABILITIES=''
+export SUBYARD_EXTRAS_DEVICES=''
 export PATH="$TMP/bin:$PATH"
 export MOCK_DEVICES="$TMP/devices"
 export MOCK_CONFIG="$TMP/config-state"
 export MOCK_LOG="$TMP/incus.log"
-mkdir -p "$HOME" "$SUBYARD_PROFILES_DIR" "$TMP/bin"
+mkdir -p "$HOME" "$TMP/bin"
 printf 'yx-last\n' > "$MOCK_DEVICES"
 printf '%s\n' \
   'security.idmap.size=1000000' \

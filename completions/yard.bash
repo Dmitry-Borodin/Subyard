@@ -23,7 +23,7 @@ _yard_profiles() {
 # Registry yard names: 'default' plus the basename of every *.env under private/yards/ and
 # ~/.config/subyard/yards/ — read cheaply in the shell (NEVER invoke incus). $2, if set, is a
 # prefix emitted before each name (e.g. '@' for the first-token sugar). Mirrors registry.sh's
-# yard_registry_names so completion and the CLI agree on what a valid yard name is.
+# Keep discovery aligned with the CLI yard registry.
 _yard_yards() {
   local repo pfx="${2:-}" d f n home
   printf '%s%s\n' "$pfx" default

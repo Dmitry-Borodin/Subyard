@@ -99,13 +99,12 @@ func TestRetiredE2EVMTemplateReportsMigrationAndTeardown(t *testing.T) {
 func TestLoadMachineConfigAndMigratedPrivateAssets(t *testing.T) {
 	root := t.TempDir()
 	operatorHome := filepath.Join(root, "home")
-	dataHome := filepath.Join(operatorHome, ".subyard")
 	configHome := filepath.Join(operatorHome, ".config", "subyard")
 	shipped := filepath.Join(root, "config")
-	overlayPrivate := filepath.Join(dataHome, "operator-overlay", "private")
+	hostAgents := filepath.Join(configHome, "overrides", "host", "agents")
 	for _, directory := range []string{
-		operatorHome, shipped, filepath.Join(configHome, "yards"),
-		filepath.Join(overlayPrivate, "agents", "codex"),
+		operatorHome, shipped, filepath.Join(configHome, "yards", "named"),
+		filepath.Join(hostAgents, "codex"),
 	} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
@@ -125,10 +124,12 @@ func TestLoadMachineConfigAndMigratedPrivateAssets(t *testing.T) {
 : "${SUBYARD_HOME:=$SUBYARD_OPERATOR_HOME/.subyard}"
 : "${STORAGE_PATH:=$SUBYARD_HOME/incus/storage}"
 : "${HOST_BASE:=${RESTRICTED_DISK_PATHS:-/srv/subyard}}"`)
-	writeFixture(t, filepath.Join(dataHome, "config.env"),
+	writeFixture(t, filepath.Join(shipped, "agents.env"),
+		`AGENT_codex_RULES="$SUBYARD_CONFIG_DIR/agents/codex/rules/repo.rules"`)
+	writeFixture(t, filepath.Join(configHome, "config.env"),
 		"DEV_SUDO=1\nAGENT_codex_RULES=\"$SUBYARD_CONFIG_DIR/../private/agents/codex/repo.rules\"\n")
-	writeFixture(t, filepath.Join(overlayPrivate, "agents", "codex", "repo.rules"), "fixture\n")
-	writeFixture(t, filepath.Join(configHome, "yards", "named.env"), "SSH_PORT=3333\n")
+	writeFixture(t, filepath.Join(hostAgents, "codex", "repo.rules"), "fixture\n")
+	writeFixture(t, filepath.Join(configHome, "yards", "named", "config.env"), "SSH_PORT=3333\n")
 
 	loaded, err := Load(LoadOptions{
 		RepositoryRoot: root,
@@ -145,14 +146,97 @@ func TestLoadMachineConfigAndMigratedPrivateAssets(t *testing.T) {
 	if !loaded.Context.DevSudo {
 		t.Fatal("machine-local global overlay was not loaded")
 	}
-	wantRules := filepath.Join(overlayPrivate, "agents", "codex", "repo.rules")
-	if filepath.Clean(loaded.Environment["AGENT_codex_RULES"]) != wantRules {
+	wantRules := filepath.Join(hostAgents, "codex", "repo.rules")
+	if loaded.Environment["AGENT_codex_RULES"] != wantRules {
 		t.Fatalf("migrated private asset path = %q, want %q",
 			loaded.Environment["AGENT_codex_RULES"], wantRules)
+	}
+	file, err := os.Open(loaded.Environment["AGENT_codex_RULES"])
+	if err != nil {
+		t.Fatalf("production agent asset path is not openable: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(loaded.Environment["AGENT_codex_RULES"]); err != nil ||
+		!info.Mode().IsRegular() {
+		t.Fatalf("production agent asset path is not a regular file: %v", err)
+	}
+	if loaded.Environment["SUBYARD_CONFIG_HOME"] != configHome ||
+		loaded.Environment["SUBYARD_CONFIG_HOST_DIR"] != filepath.Join(configHome, "overrides", "host") ||
+		loaded.Environment["SUBYARD_CONFIG_GENERATED_DIR"] != filepath.Join(configHome, "generated") ||
+		loaded.Environment["SUBYARD_KEYS_CONSUMER_ROOT"] != filepath.Join(configHome, "generated") {
+		t.Fatalf("persistent operator config root is not canonical: %#v", loaded.Environment)
 	}
 	if loaded.Environment["SUBYARD_CONFIG_DIR"] != shipped {
 		t.Fatalf("runtime config root leaked from migration overlay: %q", loaded.Environment["SUBYARD_CONFIG_DIR"])
 	}
+}
+
+func TestOperatorConfigPrecedenceAndYardAssetOverride(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	temp := t.TempDir()
+	home := filepath.Join(temp, "home")
+	configHome := filepath.Join(home, ".config", "subyard")
+	shared := filepath.Join(configHome, "overrides", "shared", "agents", "codex", "rules", "repo.rules")
+	host := filepath.Join(configHome, "overrides", "host", "agents", "codex", "rules", "repo.rules")
+	yard := filepath.Join(configHome, "yards", "named", "overrides", "agents", "codex", "rules", "repo.rules")
+	external := filepath.Join(temp, "external.rules")
+	for path, value := range map[string]string{
+		shared: "shared\n", host: "host\n", yard: "yard\n", external: "external\n",
+		filepath.Join(configHome, "config.env"):                   "DEV_SUDO=1\nAGENT_codex_RULES=" + external + "\n",
+		filepath.Join(configHome, "yards", "named", "config.env"): "DEV_SUDO=0\nSSH_PORT=3333\n",
+	} {
+		writeFixture(t, path, value)
+	}
+	base := map[string]string{
+		"HOME": home, "SUBYARD_OPERATOR_HOME": home,
+		"SUBYARD_CONFIG_HOME": configHome, "SUBYARD_HOME": filepath.Join(home, ".subyard"),
+	}
+	defaultLoaded, err := Load(LoadOptions{
+		RepositoryRoot: root, OperatorHome: home, Environment: base, DisablePrivate: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultLoaded.Environment["AGENT_codex_RULES"] != host {
+		t.Fatalf("host asset did not override shared/config.env: %s",
+			defaultLoaded.Environment["AGENT_codex_RULES"])
+	}
+	namedLoaded, err := Load(LoadOptions{
+		RepositoryRoot: root, OperatorHome: home, YardName: "named",
+		Environment: base, DisablePrivate: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namedLoaded.Environment["AGENT_codex_RULES"] != yard || namedLoaded.Context.DevSudo {
+		t.Fatalf("yard layer did not win: asset=%s sudo=%v",
+			namedLoaded.Environment["AGENT_codex_RULES"], namedLoaded.Context.DevSudo)
+	}
+	withEnvironment := cloneStringMap(base)
+	withEnvironment["AGENT_codex_RULES"] = external
+	withEnvironment["DEV_SUDO"] = "1"
+	environmentLoaded, err := Load(LoadOptions{
+		RepositoryRoot: root, OperatorHome: home, YardName: "named",
+		Environment: withEnvironment, DisablePrivate: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environmentLoaded.Environment["AGENT_codex_RULES"] != external ||
+		!environmentLoaded.Context.DevSudo {
+		t.Fatalf("command environment did not win: asset=%s sudo=%v",
+			environmentLoaded.Environment["AGENT_codex_RULES"], environmentLoaded.Context.DevSudo)
+	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for name, value := range values {
+		result[name] = value
+	}
+	return result
 }
 
 func TestResolveE2EVMCPU(t *testing.T) {

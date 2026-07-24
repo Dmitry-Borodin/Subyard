@@ -1,6 +1,4 @@
-# config/staging/<zone>.conf — non-secret knobs for a shared staging zone (`yard staging`).
-#
-# Copy to `canonical.conf` (gitignored: it may name host paths) to override the defaults below.
+# Copy to ~/.config/subyard/overrides/host/staging/<zone>.conf.
 # A zone is a SHARED live-gateway environment, identified by its name — not by a dev project.
 # `canonical` is the persistent baseline zone built from `master`. Secrets never go here; the
 # zone's credential VALUES live inside the runner (see <zone>.env and `yard staging shell`).

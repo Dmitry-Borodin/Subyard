@@ -35,8 +35,8 @@ yard init
 yard -Y srv1 init
 yard keys trust @srv1
 
-yard keys import config/staging/canonical.env --dry-run
-yard keys import config/staging/canonical.env
+yard keys import ~/.config/subyard/secrets/legacy/staging/canonical.env --dry-run
+yard keys import ~/.config/subyard/secrets/legacy/staging/canonical.env
 yard keys materialize canonical
 yard keys status
 ```

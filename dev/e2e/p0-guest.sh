@@ -25,6 +25,7 @@ PEER_REAL_YARD_MARKER="$PEER_ROOT/.subyard-p0-real-yard"
 OWNER_BASELINE_IMAGES=''
 OWNER_BASELINE_CAPTURED=0
 OWNER_BASE_IMAGE="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
+OWNER_GO_CACHE_ROOT="/tmp/subyard-p0-go-cache-$TOKEN"
 
 die() { printf 'p0-guest: %s\n' "$*" >&2; exit 2; }
 valid_token() { [[ "$1" =~ ^[0-9]+$ ]]; }
@@ -84,6 +85,7 @@ owner_cleanup() {
   set +e
   clean_tree "$source" "$MARKER" || cleanup_failed=1
   clean_tree "$RENAME_BASE_ROOT" "$MARKER" || cleanup_failed=1
+  clean_tree "$OWNER_GO_CACHE_ROOT" "$MARKER" || cleanup_failed=1
   if [ -d "${SUBYARD_HOME:-$HOME/.subyard}/exports" ]; then
     while IFS= read -r patch; do find "$patch" -delete || cleanup_failed=1; done \
       < <(grep -RIl -- "$MARKER" "${SUBYARD_HOME:-$HOME/.subyard}/exports" 2>/dev/null)
@@ -97,7 +99,10 @@ owner_cleanup() {
         || cleanup_failed=1
     fi
     if incus project show "subyard-$yard" >/dev/null 2>&1; then
-      ./bin/yard -Y "$yard" teardown --yes >/dev/null 2>&1 || cleanup_failed=1
+      if ! ./bin/yard -Y "$yard" teardown --yes >/dev/null 2>&1; then
+        cleanup_failed=1
+        continue
+      fi
     fi
     find "$registration" -delete || cleanup_failed=1
   done
@@ -111,6 +116,14 @@ owner_cleanup() {
   fi
   [ "$cleanup_failed" = 0 ] || rc=3
   exit "$rc"
+}
+
+prepare_owner_go_cache() {
+  clean_tree "$OWNER_GO_CACHE_ROOT" "$MARKER"
+  install -d -m 0700 "$OWNER_GO_CACHE_ROOT"
+  printf '%s\n' "$MARKER" > "$OWNER_GO_CACHE_ROOT/.subyard-p0-marker"
+  export GOCACHE="$OWNER_GO_CACHE_ROOT/build"
+  export GOMODCACHE="$OWNER_GO_CACHE_ROOT/modules"
 }
 
 write_owner_registration() { # <yard> <template> <ssh-port>
@@ -217,13 +230,17 @@ owner_profile_migration_contract() {
   [ ! -e "$HOME/.ssh/subyard-e2e-yard.config" ] \
     || die 'old e2e-yard route remains after teardown'
   find "$OWNER_YARD_DIR/e2e-yard.env" -delete
+  prepare_owner_image_cache_project subyard-test-yard
   ./bin/yard -Y test-yard init --yes
   ./bin/yard -Y test-yard status >/dev/null
   printf 'ok: pre-rename runtime upgraded, coexisted and retired e2e-yard explicitly\n'
 }
 
 prepare_owner_image_cache_project() {
-  local project=subyard-e2e-yard
+  local project="${1:?owner image-cache project is required}"
+  case "$project" in subyard-e2e-yard | subyard-test-yard) ;;
+    *) die "unsafe owner image-cache project $project" ;;
+  esac
   if incus project show "$project" >/dev/null 2>&1; then
     incus project delete "$project" >/dev/null 2>&1 \
       || die "refusing to replace non-empty owner project $project"
@@ -238,12 +255,13 @@ prepare_owner_image_cache_project() {
 owner() (
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner lane requires VM1'
 	trap owner_cleanup EXIT
+  prepare_owner_go_cache
 	YARD_BUILD_VERSION=p0-owner dev/build-engine.sh --force >/dev/null
 	ensure_owner_incus
 	OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
   OWNER_BASELINE_CAPTURED=1
 	bash dev/e2e/p0-real-incus.sh
-  prepare_owner_image_cache_project
+  prepare_owner_image_cache_project subyard-e2e-yard
   owner_profile_migration_contract
   ./bin/yard -Y test-yard start --yes
   SUBYARD_E2E_LEGACY_FIXTURE=1 \
@@ -281,8 +299,17 @@ controller() (
   bash tests/real-host/ssh-rpc.sh
   temp="$(mktemp -d /tmp/subyard-p0-tools.XXXXXX)"
   trap 'find "$temp" -depth -delete' EXIT
-  SUBYARD_HOME="$temp/state" SUBYARD_KEYS_TOOLS_DIR="$temp/tools" \
-    bash scripts/install-key-tools.sh -y >/dev/null
+  (
+    # shellcheck source=tests/helpers/test-context.sh
+    . tests/helpers/test-context.sh
+    setup_test_context "$temp/context"
+    set -a
+    # shellcheck source=config/host.env
+    . config/host.env
+    set +a
+    SUBYARD_HOME="$temp/state" SUBYARD_KEYS_TOOLS_DIR="$temp/tools" \
+      bash scripts/install-key-tools.sh -y >/dev/null
+  )
   SUBYARD_REAL_KEYS_TOOLS_DIR="$temp/tools" bash tests/real-host/credential-tools.sh
   SUBYARD_REAL_KEYS_TOOLS_DIR="$temp/tools" bash tests/real-host/ssh-credential-peer.sh
   find "$temp" -depth -delete
@@ -372,6 +399,29 @@ reexec_with_incus_group() {
 	exec sg incus-admin -c "$command"
 }
 
+run_incus_installer() {
+  local state_root="$1"; shift
+  (
+    # shellcheck source=tests/helpers/test-context.sh
+    . "$ROOT/tests/helpers/test-context.sh"
+    setup_test_context "$state_root/e2e-bootstrap"
+    export SUBYARD_USER
+    SUBYARD_USER="$(id -un)"
+    export SUBYARD_OPERATOR_HOME="$HOME"
+    export SUBYARD_CONFIG_DIR="$ROOT/config"
+    export SUBYARD_CONFIG_HOME="$state_root/e2e-bootstrap-config"
+    export SUBYARD_HOME="$state_root"
+    export STORAGE_PATH="$state_root/incus/storage"
+    export HOST_BASE="$state_root/host-data"
+    export RESTRICTED_DISK_PATHS="$HOST_BASE"
+    set -a
+    # shellcheck source=config/host.env
+    . "$ROOT/config/host.env"
+    set +a
+    bash "$ROOT/scripts/01-install-incus.sh" "$@"
+  )
+}
+
 ensure_incus() {
 	local state_root="$1" install_marker="${2:-}" resume_mode="$3"
 	if command -v incus >/dev/null 2>&1 \
@@ -382,7 +432,7 @@ ensure_incus() {
 	if incus info >/dev/null 2>&1; then
     if ! dpkg --compare-versions "$(incus --version)" ge 6.0.6; then
       printf '  [ .. ] VM%s: upgrading Incus to the supported LTS\n' "$SUBYARD_E2E_VM"
-      bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly --upgrade-only
+      run_incus_installer "$state_root" --yes --zabbly --upgrade-only
       dpkg --compare-versions "$(incus --version)" ge 6.0.6 \
         || die 'Incus upgrade did not reach 6.0.6'
     fi
@@ -392,22 +442,19 @@ ensure_incus() {
     fi
 		[ -z "$install_marker" ] || printf '%s\n' "$MARKER" > "$install_marker"
     printf '  [ .. ] VM%s: restoring the Incus owner API\n' "$SUBYARD_E2E_VM"
-    SUBYARD_USER="$(id -un)" SUBYARD_HOME="$state_root" \
-      bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
+    run_incus_installer "$state_root" --yes --zabbly
     return
   fi
   if command -v incus >/dev/null 2>&1 || [ -S /var/lib/incus/unix.socket ]; then
     [ -z "$install_marker" ] || printf '%s\n' "$MARKER" > "$install_marker"
     printf '  [ .. ] VM%s: reconciling a partial Incus installation\n' "$SUBYARD_E2E_VM"
-    SUBYARD_USER="$(id -un)" SUBYARD_HOME="$state_root" \
-      bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
+    run_incus_installer "$state_root" --yes --zabbly
     id -nG | tr ' ' '\n' | grep -qx incus-admin || reexec_with_incus_group "$resume_mode"
     return
   fi
 	[ -z "$install_marker" ] || printf '%s\n' "$MARKER" > "$install_marker"
 	printf '  [ .. ] VM%s: initializing the Incus owner API\n' "$SUBYARD_E2E_VM"
-	SUBYARD_USER="$(id -un)" SUBYARD_HOME="$state_root" \
-		bash "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
+	run_incus_installer "$state_root" --yes --zabbly
 	id -nG | tr ' ' '\n' | grep -qx incus-admin || reexec_with_incus_group "$resume_mode"
 }
 
@@ -514,8 +561,17 @@ peer_prepare_finish() {
   [ "$(readlink "$PEER_ROOT/bin/yard")" = "$PEER_DATA_ROOT/runtime/current/bin/yard" ] \
     && [ "$("$PEER_ROOT/bin/yard" --version)" = "yard $version" ] \
     || die 'peer standalone release is not active'
-  SUBYARD_HOME="$PEER_DATA_ROOT" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
-    bash "$PEER_DATA_ROOT/runtime/current/scripts/install-key-tools.sh" -y >/dev/null
+  (
+    # shellcheck source=tests/helpers/test-context.sh
+    . "$PEER_ROOT/src/tests/helpers/test-context.sh"
+    setup_test_context "$PEER_ROOT"
+    set -a
+    # shellcheck source=config/host.env
+    . "$PEER_ROOT/src/config/host.env"
+    set +a
+    SUBYARD_HOME="$PEER_DATA_ROOT" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
+      bash "$PEER_DATA_ROOT/runtime/current/scripts/install-key-tools.sh" -y >/dev/null
+  )
   bootstrap_peer_keys
   install_peer_wrapper
   printf 'ok: VM%s local cross-owner fixture staged\n' "$SUBYARD_E2E_VM"
@@ -708,14 +764,14 @@ peer_credentials() {
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   source_hash="$(sha256sum "$expected" | awk '{print $1}')"
   remote_hash="$(peer_ssh "dev@$PEER_IP" -- sha256sum \
-    "/tmp/subyard-p0-peer-$TOKEN/consumer/config/staging/p0-cross-owner.env" | awk '{print $1}')"
+    "/tmp/subyard-p0-peer-$TOKEN/consumer/staging/p0-cross-owner.env" | awk '{print $1}')"
   [ "$source_hash" = "$remote_hash" ] || die 'cross-owner credential materialization differs'
   "$PEER_YARD_ENTRY" keys revoke "$credential" --yes >/dev/null
   "$PEER_YARD_ENTRY" keys sync @peer --now --yes >/dev/null
   peer_ssh "dev@$PEER_IP" -- bash -lc \
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   ! peer_ssh "dev@$PEER_IP" -- test -e \
-    "/tmp/subyard-p0-peer-$TOKEN/consumer/config/staging/p0-cross-owner.env" \
+    "/tmp/subyard-p0-peer-$TOKEN/consumer/staging/p0-cross-owner.env" \
     || die 'revoked cross-owner credential remains materialized'
   "$PEER_YARD_ENTRY" remote remove peer --yes >/dev/null
   printf 'ok: real cross-owner credential trust, sync and revoke\n'

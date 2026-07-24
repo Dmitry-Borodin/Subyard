@@ -59,10 +59,29 @@ export MOCK_SUDO_LOG="$TMP/sudo.argv"
   SUBYARD_YARD_EXPLICIT=1
   SUBYARD_SUDO_PREAUTHORIZED=1
   SUBYARD_POWER_ENGINE_SOURCE="$TMP/runtime/yard-engine"
+  SUBYARD_ENGINE_CONTEXT=1
+  SUBYARD_ENGINE_CONTEXT_SCHEMA=1
+  YARD_TYPE=local
+  INSTANCE_TYPE=container
+  INSTANCE_NAME=yard-e2e
+  INCUS_PROJECT=subyard-e2e
+  INCUS_BRIDGE=incusbr0
+  SSH_HOST=yard-e2e
+  DEV_USER=dev
+  DEV_UID=1000
+  DEV_SUDO=0
+  FORWARD_SSH_AGENT=0
+  NESTED_E2E_VMS=1
+  E2E_VM_IMAGE=images:debian/13/cloud
+  AGENT_CODEX_COMMAND=codex
+  AWS_SECRET_ACCESS_KEY=do-not-copy
   SUBYARD_SCRIPT_PATH="$TMP/phase.sh"
   SUBYARD_SCRIPT_ARGV=(--yes)
   warn() { :; }
   info() { :; }
+  # shellcheck source=scripts/lib/engine-context.sh
+  . "$ROOT/scripts/lib/engine-context.sh"
+  subyard_require_engine_context
   # shellcheck source=scripts/lib/host.sh
   . "$ROOT/scripts/lib/host.sh"
   require_root fixture
@@ -70,6 +89,8 @@ export MOCK_SUDO_LOG="$TMP/sudo.argv"
 
 for expected in \
   SUBYARD_ELEVATED=1 \
+  SUBYARD_ENGINE_CONTEXT=1 \
+  SUBYARD_ENGINE_CONTEXT_SCHEMA=1 \
   SUBYARD_USER=operator \
   "SUBYARD_OPERATOR_HOME=$TMP/operator home" \
   "SUBYARD_CONFIG_DIR=$TMP/repository/config" \
@@ -81,6 +102,8 @@ for expected in \
   "RESTRICTED_DISK_PATHS=$TMP/host data" \
   SUBYARD_YARD=e2e-yard \
   SUBYARD_YARD_EXPLICIT=1 \
+  E2E_VM_IMAGE=images:debian/13/cloud \
+  AGENT_CODEX_COMMAND=codex \
   "SUBYARD_POWER_ENGINE_SOURCE=$TMP/runtime/yard-engine" \
   "$TMP/phase.sh" \
   --yes; do
@@ -90,5 +113,8 @@ done
 grep -Fxq -- env "$MOCK_SUDO_LOG" || fail 'sudo re-entry did not use an explicit environment'
 grep -Fxq -- -n "$MOCK_SUDO_LOG" \
   || fail 'preauthorized sudo re-entry attempted an interactive password prompt'
+if grep -Fq 'AWS_SECRET_ACCESS_KEY' "$MOCK_SUDO_LOG"; then
+  fail 'sudo re-entry copied a non-allowlisted variable'
+fi
 
 printf 'ok: child phases own re-exec identity and preauthorized sudo preserves operator roots\n'

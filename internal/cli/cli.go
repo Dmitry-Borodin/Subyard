@@ -25,6 +25,7 @@ import (
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/credentialmeta"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/incusclient"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/projectruntime"
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/securityruntime"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/shelladapter"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/statusruntime"
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/transport"
@@ -69,6 +70,7 @@ type Options struct {
 	InitPlatform    ports.InitPlatform
 	RemoteControl   ports.RemoteControl
 	Prompt          ports.Prompter
+	Config          ports.ConfigApplier
 	Clock           ports.Clock
 	Audit           ports.AuditSink
 }
@@ -248,10 +250,16 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return cli.forwardRemote(ctx, loadedContext, name, commandArguments)
 	}
 	switch definition.Handler {
+	case "@check":
+		return cli.runHostCheck(ctx, loaded, commandArguments)
+	case "@security":
+		return cli.runSecurity(ctx, loaded, commandArguments)
 	case "@keys":
 		return cli.runKeys(ctx, loaded, definition, commandArguments)
 	case "@update":
 		return cli.runUpdate(ctx, loaded, definition, commandArguments)
+	case "@config":
+		return cli.runConfig(ctx, loaded, commandArguments)
 	case "@status":
 		return cli.runStatus(ctx, loaded, commandArguments)
 	case "@info":
@@ -416,6 +424,7 @@ func (cli *CLI) statusFacts(loaded config.Loaded) ports.StatusFactsReader {
 	}
 	environment["SUBYARD_CONFIG_LOADED"] = "1"
 	environment["SUBYARD_ENGINE_CONTEXT"] = "1"
+	environment["SUBYARD_ENGINE_CONTEXT_SCHEMA"] = "1"
 	environment["SUBYARD_REPOSITORY_ROOT"] = cli.options.RepositoryRoot
 	environment["PROG"] = cli.options.Program
 	definitions := cli.resources.Definitions()
@@ -424,9 +433,14 @@ func (cli *CLI) statusFacts(loaded config.Loaded) ports.StatusFactsReader {
 			return !slices.Contains(profiles, definition.Profile)
 		})
 	}
+	incusPort, executor := cli.statusPorts()
 	return statusruntime.Runtime{
-		RepositoryRoot: cli.options.RepositoryRoot, Environment: environment,
-		Resources: definitions, Program: cli.options.Program,
+		Environment: environment,
+		Resources:   definitions, Program: cli.options.Program, Executor: executor,
+		Security: securityruntime.Runtime{
+			RepositoryRoot: cli.options.RepositoryRoot, Environment: loaded.Environment,
+			Yard: loaded.Context, Incus: incusPort, Stdout: io.Discard, Stderr: io.Discard,
+		},
 	}
 }
 
@@ -516,8 +530,7 @@ func (cli *CLI) printYardStatus(ctx context.Context, loaded config.Loaded) int {
 		fmt.Fprintf(cli.options.Stdout, "  ssh      127.0.0.1:%d  (ssh %s)\n",
 			status.Context.SSHPort, status.Context.SSHHost)
 	} else {
-		fmt.Fprintf(cli.options.Stdout,
-			"  ssh      not set up  (run: %s init, or scripts/07-ssh-access.sh)\n",
+		fmt.Fprintf(cli.options.Stdout, "  ssh      not set up  (run: %s init)\n",
 			cli.yardHint(status.Context))
 	}
 	mounts := "none"
@@ -1230,6 +1243,11 @@ func (cli *CLI) loadInventoryLoaded(name string, loaded config.Loaded) (config.L
 	for key, value := range cli.baseEnv {
 		environment[key] = value
 	}
+	for _, key := range []string{
+		"SUBYARD_YARD", "YARD_NAME", "YARD_TYPE", "REMOTE_DEST", "REMOTE_YARD",
+	} {
+		delete(environment, key)
+	}
 	return config.Load(config.LoadOptions{
 		RepositoryRoot: cli.options.RepositoryRoot,
 		OperatorHome:   loaded.Context.Paths.OperatorHome,
@@ -1406,9 +1424,36 @@ func (cli *CLI) runProjectState(
 }
 
 func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []string) int {
+	if len(arguments) == 3 && arguments[0] == "normalize-yard-config" {
+		if err := migration.NormalizeLegacyYardConfig(arguments[1], arguments[2]); err != nil {
+			cli.errorf("source-install yard config normalization: %v", err)
+			return 1
+		}
+		return 0
+	}
+	if (len(arguments) == 2 || len(arguments) == 4) && arguments[0] == "overlay-manifest" {
+		var manifest migration.SourceInstallManifest
+		var err error
+		if len(arguments) == 2 {
+			manifest, err = migration.DiscoverSourceInstall(arguments[1])
+		} else {
+			manifest, err = migration.DiscoverSourceInstallWithRoots(
+				arguments[1], arguments[2], arguments[3],
+			)
+		}
+		if err != nil {
+			cli.errorf("source-install overlay manifest: %v", err)
+			return 1
+		}
+		if err := json.NewEncoder(cli.options.Stdout).Encode(manifest); err != nil {
+			cli.errorf("source-install overlay manifest: %v", err)
+			return 1
+		}
+		return 0
+	}
 	if len(arguments) != 1 ||
 		(arguments[0] != "paths" && arguments[0] != "check" && arguments[0] != "apply") {
-		cli.errorf("internal: _migrate expects paths, check or apply")
+		cli.errorf("internal: invalid _migrate action")
 		return 2
 	}
 	loaded, err := cli.loadContext(yard)
@@ -1724,6 +1769,7 @@ func (cli *CLI) operationOrchestrator(
 			"SUBYARD_PROJECT_DEVICE", "SUBYARD_PROJECT_EXISTS", "SUBYARD_PROJECT_PROFILES",
 			"SUBYARD_PROJECT_REMOVE_SOFT", "SUBYARD_PROJECT_REBUILD",
 			"SUBYARD_POWER_DESIRED", "SUBYARD_SUDO_PREAUTHORIZED", "SUBYARD_TEARDOWN_KEEP_DATA",
+			"SUBYARD_TEARDOWN_KEEP_SHARED",
 		} {
 			contextKeys[key] = struct{}{}
 		}
@@ -1797,37 +1843,38 @@ func structuredAdapterContext(yard domain.Context) map[string]string {
 		selectedYard = ""
 	}
 	return map[string]string{
-		"YARD_VERSION":           Version,
-		"HOME":                   yard.Paths.OperatorHome,
-		"SUBYARD_OPERATOR_HOME":  yard.Paths.OperatorHome,
-		"SUBYARD_CONFIG_DIR":     yard.Paths.ConfigDir,
-		"SUBYARD_CONFIG_HOME":    yard.Paths.ConfigHome,
-		"SUBYARD_HOME":           yard.Paths.DataHome,
-		"SUBYARD_STATE_DIR":      yard.Paths.StateDir,
-		"SUBYARD_CONFIG_LOADED":  "1",
-		"SUBYARD_ENGINE_CONTEXT": "1",
-		"SUBYARD_YARD":           selectedYard,
-		"YARD_NAME":              yardName,
-		"YARD_TYPE":              string(yard.YardType),
-		"REMOTE_DEST":            yard.RemoteDest,
-		"REMOTE_YARD":            yard.RemoteYard,
-		"INSTANCE_TYPE":          string(yard.InstanceType),
-		"INSTANCE_NAME":          yard.InstanceName,
-		"INCUS_PROJECT":          yard.IncusProject,
-		"INCUS_BRIDGE":           yard.IncusBridge,
-		"SSH_HOST":               yard.SSHHost,
-		"SSH_PORT":               strconv.Itoa(yard.SSHPort),
-		"DEV_USER":               yard.DevUser,
-		"DEV_UID":                strconv.Itoa(yard.DevUID),
-		"DEV_SUDO":               boolValue(yard.DevSudo),
-		"FORWARD_SSH_AGENT":      boolValue(yard.ForwardSSHAgent),
-		"NESTED_E2E_VMS":         boolValue(yard.NestedE2EVMs),
-		"SHIFT_MODE":             yard.ShiftMode,
-		"STORAGE_PATH":           yard.Paths.StoragePath,
-		"HOST_BASE":              yard.Paths.HostBase,
-		"RESTRICTED_DISK_PATHS":  yard.Paths.HostBase,
-		"ASSUME_YES":             "1",
-		"PROG":                   cliProgramName,
+		"YARD_VERSION":                  Version,
+		"HOME":                          yard.Paths.OperatorHome,
+		"SUBYARD_OPERATOR_HOME":         yard.Paths.OperatorHome,
+		"SUBYARD_CONFIG_DIR":            yard.Paths.ConfigDir,
+		"SUBYARD_CONFIG_HOME":           yard.Paths.ConfigHome,
+		"SUBYARD_HOME":                  yard.Paths.DataHome,
+		"SUBYARD_STATE_DIR":             yard.Paths.StateDir,
+		"SUBYARD_CONFIG_LOADED":         "1",
+		"SUBYARD_ENGINE_CONTEXT":        "1",
+		"SUBYARD_ENGINE_CONTEXT_SCHEMA": "1",
+		"SUBYARD_YARD":                  selectedYard,
+		"YARD_NAME":                     yardName,
+		"YARD_TYPE":                     string(yard.YardType),
+		"REMOTE_DEST":                   yard.RemoteDest,
+		"REMOTE_YARD":                   yard.RemoteYard,
+		"INSTANCE_TYPE":                 string(yard.InstanceType),
+		"INSTANCE_NAME":                 yard.InstanceName,
+		"INCUS_PROJECT":                 yard.IncusProject,
+		"INCUS_BRIDGE":                  yard.IncusBridge,
+		"SSH_HOST":                      yard.SSHHost,
+		"SSH_PORT":                      strconv.Itoa(yard.SSHPort),
+		"DEV_USER":                      yard.DevUser,
+		"DEV_UID":                       strconv.Itoa(yard.DevUID),
+		"DEV_SUDO":                      boolValue(yard.DevSudo),
+		"FORWARD_SSH_AGENT":             boolValue(yard.ForwardSSHAgent),
+		"NESTED_E2E_VMS":                boolValue(yard.NestedE2EVMs),
+		"SHIFT_MODE":                    yard.ShiftMode,
+		"STORAGE_PATH":                  yard.Paths.StoragePath,
+		"HOST_BASE":                     yard.Paths.HostBase,
+		"RESTRICTED_DISK_PATHS":         yard.Paths.HostBase,
+		"ASSUME_YES":                    "1",
+		"PROG":                          cliProgramName,
 	}
 }
 
@@ -1843,7 +1890,10 @@ var structuredCommandConfigKeys = map[string]struct{}{
 	"LIMITS_CPU": {}, "LIMITS_MEMORY": {}, "SRV_POOL": {}, "SRV_VOLUME": {},
 	"SUBYARD_AGE_SHA256_AMD64": {}, "SUBYARD_AGE_SHA256_ARM64": {}, "SUBYARD_AGE_VERSION": {},
 	"SUBYARD_KEYS_CONSUMER_ROOT": {}, "SUBYARD_KEYS_ROOT": {}, "SUBYARD_KEYS_SYSTEMD_DIR": {},
+	"SUBYARD_KEYS_PROD_FINGERPRINTS":   {},
 	"SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE": {}, "SUBYARD_KEYS_TOOLS_DIR": {}, "SUBYARD_POWER_LIBEXEC_DIR": {},
+	"SUBYARD_CONFIG_GENERATED_DIR": {}, "SUBYARD_CONFIG_HOST_DIR": {},
+	"SUBYARD_CONFIG_SHARED_DIR": {}, "SUBYARD_CONFIG_YARD_DIR": {},
 	"SUBYARD_POWER_RECONCILER_PATH": {}, "SUBYARD_POWER_UNIT_PATH": {},
 	"SUBYARD_SOPS_SHA256_AMD64": {}, "SUBYARD_SOPS_SHA256_ARM64": {}, "SUBYARD_SOPS_VERSION": {},
 	"YARD_RUNTIME_ROOT": {},
@@ -2100,6 +2150,13 @@ func (cli *CLI) executeStructuredCommand(
 		return result, err
 	}
 	if initRun != nil && definition.Handler == "@init" {
+		if cli.options.InitPlatform == nil {
+			if err := cli.prepareSudoPrivileges(
+				ctx, diagnostics, os.Geteuid(), definition.Name,
+			); err != nil {
+				return domain.AdapterResult{}, err
+			}
+		}
 		orchestrator.Runner = initAdapter{
 			execution: initRun, cli: cli, output: diagnostics,
 		}
@@ -2203,94 +2260,7 @@ func (cli *CLI) executeStructuredCommand(
 }
 
 func structuredCommandNeedsSudo(name string) bool {
-	return name == "init" || name == "teardown"
-}
-
-func parseStructuredStartArguments(arguments []string, inheritedYes bool) (assumeYes, help bool, err error) {
-	assumeYes = inheritedYes
-	for _, argument := range arguments {
-		switch argument {
-		case "-y", "--yes":
-			assumeYes = true
-		case "-h", "--help":
-			help = true
-		default:
-			return false, false, fmt.Errorf("unknown option %q", argument)
-		}
-	}
-	return assumeYes, help, nil
-}
-
-func (cli *CLI) runStructuredStart(
-	ctx context.Context,
-	loaded config.Loaded,
-	definition command.Definition,
-	arguments []string,
-	inheritedYes bool,
-) int {
-	assumeYes, help, err := parseStructuredStartArguments(arguments, inheritedYes)
-	if err != nil {
-		cli.errorf("%v", err)
-		return 2
-	}
-	if help {
-		fmt.Fprintf(cli.options.Stdout, "Usage: %s start [--yes]\n", cli.options.Program)
-		return 0
-	}
-	operationID := cli.env["SUBYARD_OPERATION_ID"]
-	orchestrator := cli.operationOrchestrator(operationID, loaded, nil, &definition)
-	plan, err := orchestrator.Plan(ctx, loaded.Context, startPolicy(definition, loaded.Context), assumeYes)
-	if err != nil {
-		if errors.Is(err, application.ErrDeclined) {
-			cli.errorf("operation declined")
-		} else {
-			cli.errorf("plan start: %v", err)
-		}
-		return 1
-	}
-	if plan.Target == domain.TargetRemoteOwner {
-		return cli.forwardRemote(ctx, loaded.Context, definition.Name, []string{"--yes"})
-	}
-	result, err := cli.executeStructuredStart(ctx, orchestrator, loaded.Context, plan, cli.options.Stdout)
-	if err != nil {
-		cli.errorf("start: %v", err)
-		return 1
-	}
-	if result.Status != "ok" {
-		cli.errorf("start adapter returned %s (%s)", result.Status, result.ErrorCode)
-		return 1
-	}
-	return 0
-}
-
-func (cli *CLI) executeStructuredStart(
-	ctx context.Context,
-	orchestrator *application.Orchestrator,
-	yard domain.Context,
-	plan domain.OperationPlan,
-	diagnostics io.Writer,
-) (domain.AdapterResult, error) {
-	if cli.options.AdapterRunner == nil {
-		if err := cli.prepareNetworkManagerPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
-			return domain.AdapterResult{}, err
-		}
-	}
-	adapterContext := structuredAdapterContext(yard)
-	adapterContext["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
-	fmt.Fprintf(diagnostics, "  [ .. ] starting %s\n", yard.InstanceName)
-	request := domain.AdapterRequest{
-		Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
-		Adapter: "command", Action: "start", Arguments: []string{"start", "--yes"},
-		Context: adapterContext,
-	}
-	result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
-	if stderr != "" {
-		_, _ = io.WriteString(diagnostics, stderr)
-		if !strings.HasSuffix(stderr, "\n") {
-			_, _ = io.WriteString(diagnostics, "\n")
-		}
-	}
-	return result, err
+	return name == "teardown"
 }
 
 func (cli *CLI) prepareSudoPrivileges(
@@ -2441,7 +2411,7 @@ func (cli *CLI) usage() {
   Run several independent yards on one host, each with its own instance, /srv, ssh port,
   personal-data mount root and projects. Pick one for a command with -Y/--yard (or the
   sugar '@<name>' as the first token); no selection = the default yard, unchanged. Define a
-  installed yard in ~/.config/subyard/yards/<name>.env; source checkouts may also use
+  installed yard in ~/.config/subyard/yards/<name>/config.env; source checkouts may also use
   private/yards/<name>.env (SSH_PORT required).
   '%s yards' lists them all.
 
@@ -2497,6 +2467,7 @@ func (cli *CLI) loadContext(yard string) (config.Loaded, error) {
 	}
 	cli.env["SUBYARD_CONFIG_LOADED"] = "1"
 	cli.env["SUBYARD_ENGINE_CONTEXT"] = "1"
+	cli.env["SUBYARD_ENGINE_CONTEXT_SCHEMA"] = "1"
 	return loaded, nil
 }
 

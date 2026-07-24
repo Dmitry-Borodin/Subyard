@@ -54,5 +54,13 @@ grep -Fq "[127.0.0.1]:2223 $key_two" "$known" \
 grep -Fq "unrelated.example $key_one" "$known" \
   || fail 'host-key rotation removed an unrelated pin'
 [ "$(stat -c '%a' "$known")" = 600 ] || fail 'known_hosts mode is not 0600'
+ssh_known_host_remove "$known" '[127.0.0.1]:2223' \
+  || fail 'could not atomically remove a pinned yard host key'
+! ssh-keygen -F '[127.0.0.1]:2223' -f "$known" | grep -q '^\[127' \
+  || fail 'yard host-key pin remained after removal'
+grep -Fq "unrelated.example $key_one" "$known" \
+  || fail 'host-key removal removed an unrelated pin'
+[ "$(stat -c '%a' "$known")" = 600 ] || fail 'known_hosts removal changed its mode'
+[ ! -e "$known.old" ] || fail 'known_hosts removal left an ssh-keygen backup'
 
 printf 'ok: SSH config and host-key pins are atomic, strict and idempotent\n'

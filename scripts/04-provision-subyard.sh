@@ -5,20 +5,13 @@
 # Config: config/incus.project.env + config/subyard.env + config/host.env + config/agents.env.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Explicit control-plane module composition (config/context loads exactly once).
 # shellcheck source=scripts/lib/runtime.sh
 . "$SCRIPT_DIR/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/engine-context.sh
+. "$SCRIPT_DIR/lib/engine-context.sh"
+subyard_require_engine_context
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
 
@@ -212,11 +205,6 @@ if incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/null | grep -qx
 else
   ok "no kvm device attached (vm mode or /dev/kvm absent) — nothing to fix"
 fi
-
-# --- 5. refresh agent instructions and configs ------------------------------
-# Kept in a standalone helper so an existing yard can re-apply these lightweight artifacts via
-# `yard init --configs`, without repeating package installation or rebuilding the instance.
-"$SCRIPT_DIR/agent-configs.sh" --yes
 
 # --- summary -----------------------------------------------------------------
 incus config set "$INSTANCE_NAME" user.subyard.ccusage_version "$CCUSAGE_VERSION" "${PROJ[@]}" \

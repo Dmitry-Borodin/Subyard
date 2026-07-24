@@ -426,32 +426,6 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 	}
 }
 
-func TestStructuredInitMarksNetworkManagerProbePreauthorized(t *testing.T) {
-	root, environment, _ := nativeFixture(t)
-	runner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
-		Schema: 1, OperationID: "operation-init", Status: "ok",
-	}}}}
-	prompt := &testkit.Prompt{Answers: []bool{true}}
-	var stderr bytes.Buffer
-	program, err := New(Options{
-		RepositoryRoot: root, Program: "yard", Arguments: []string{"init"},
-		Environment: append(environment, "SUBYARD_OPERATION_ID=operation-init"), WorkingDir: root,
-		Stderr: &stderr, AdapterRunner: runner, Prompt: prompt,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if code := program.Run(context.Background()); code != 0 {
-		t.Fatalf("structured CLI init failed: code=%d stderr=%q", code, stderr.String())
-	}
-	if len(prompt.Seen) != 1 || len(runner.Requests) != 1 ||
-		runner.Requests[0].Adapter != "command" || runner.Requests[0].Action != "init" ||
-		runner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
-		t.Fatalf("init did not carry the preauthorized network probe: prompt=%#v requests=%#v",
-			prompt.Seen, runner.Requests)
-	}
-}
-
 func TestStructuredMutationSharesTypedAdapterAcrossCLIAndRPC(t *testing.T) {
 	root, environment, _ := nativeFixture(t)
 	clock := testkit.NewManualClock(time.Unix(100, 0))
@@ -609,6 +583,7 @@ exit 90
 		"HOST_OPENCODE_AGENTS_MD":          "/home/operator/.config/opencode/AGENTS.md",
 		"YARD_RUNTIME_ROOT":                "/opt/subyard/runtime",
 		"SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE": "1",
+		"SUBYARD_CONFIG_SECRETS_DIR":       "/home/operator/.config/subyard/secrets",
 		"AGENT_codex_TOKEN":                "must-not-cross",
 		"AWS_SECRET_ACCESS_KEY":            "must-not-cross",
 		"UNRELATED_AMBIENT_VALUE":          "must-not-cross",
@@ -625,7 +600,10 @@ exit 90
 			t.Fatalf("structured command context lost %s: %#v", name, commandValues)
 		}
 	}
-	for _, name := range []string{"AGENT_codex_TOKEN", "AWS_SECRET_ACCESS_KEY", "UNRELATED_AMBIENT_VALUE"} {
+	for _, name := range []string{
+		"SUBYARD_CONFIG_SECRETS_DIR", "AGENT_codex_TOKEN",
+		"AWS_SECRET_ACCESS_KEY", "UNRELATED_AMBIENT_VALUE",
+	} {
 		if _, ok := commandValues[name]; ok {
 			t.Fatalf("structured command context leaked %s", name)
 		}

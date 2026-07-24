@@ -320,7 +320,7 @@ func TestPayloadImportDenylistAndConsumerMapping(t *testing.T) {
 
 	staging, mapped, err := runtime.consumerPath("staging-env", "demo")
 	if err != nil || !mapped ||
-		staging != filepath.Join(runtime.config.ConsumerRoot, "config", "staging", "demo.env") {
+		staging != filepath.Join(runtime.config.ConsumerRoot, "staging", "demo.env") {
 		t.Fatalf("staging consumer mapping drifted: path=%q mapped=%v err=%v", staging, mapped, err)
 	}
 	if runtime.detectConsumer(staging) != "staging-env" || runtime.detectZone(staging) != "demo" {
@@ -516,6 +516,25 @@ func TestIdentityAndAllowedSignersAreProtectedAndDeduplicated(t *testing.T) {
 	}
 	if err := runtime.addAllowedSigner("actor-two", "ssh-rsa invalid"); err == nil {
 		t.Fatal("non-ed25519 signer was accepted")
+	}
+}
+
+func TestLocalTargetUsesUnresolvedCommandEnvironment(t *testing.T) {
+	runtime := credentialFixture(t)
+	dispatcher := filepath.Join(runtime.config.RepositoryRoot, "dispatcher")
+	writeCredentialFile(t, dispatcher, "#!/bin/sh\nprintf '%s\\n' \"$SUBYARD_KEYS_ROOT\"\n", 0o700)
+	runtime.config.Dispatcher = dispatcher
+	runtime.config.Environment = []string{"SUBYARD_KEYS_ROOT=/current-yard"}
+	runtime.config.TargetEnvironment = []string{"SUBYARD_KEYS_ROOT=/target-command"}
+
+	output, err := runtime.callTarget(context.Background(), Target{
+		Name: "other", Transport: "local",
+	}, []string{"_keys-identity"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "/target-command\n" {
+		t.Fatalf("local target inherited resolved current-yard config: %q", output)
 	}
 }
 

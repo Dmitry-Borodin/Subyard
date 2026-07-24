@@ -134,16 +134,38 @@ prepare_operator() {
   operator_env find "$OPERATOR_HOME/source.tar.gz" -delete
   operator_env install -d -m 0700 \
     "$SOURCE_ROOT/private/yards" "$SOURCE_ROOT/private/agents/codex" \
+    "$SOURCE_ROOT/config/profiles/openclaw" "$SOURCE_ROOT/config/staging" \
+    "$SOURCE_ROOT/config/qa-pool" \
     "$OPERATOR_HOME/.local/bin"
-  operator_env bash -c 'printf "DEV_SUDO=1\n" > "$1"' _ \
-    "$SOURCE_ROOT/private/config.env"
+  operator_env bash -c 'printf "%s" "$2" > "$1"' _ "$SOURCE_ROOT/private/config.env" \
+    $'DEV_SUDO=1\nAGENT_codex_RULES="$SUBYARD_CONFIG_DIR/../private/agents/codex/repo.rules"\n'
   operator_env bash -c \
     'printf "YARD_TEMPLATE=e2e-vms\nSSH_PORT=2223\nDEV_UID=1001\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n" "$2" "$2" > "$1"' \
     _ "$SOURCE_ROOT/private/yards/e2e-yard.env" "$BASE_IMAGE"
   operator_env bash -c 'printf "source-upgrade-fixture\n" > "$1"' _ \
     "$SOURCE_ROOT/private/agents/codex/repo.rules"
+  operator_env bash -c 'printf "PROFILE_TOKEN=source-profile-fixture\n" > "$1"' _ \
+    "$SOURCE_ROOT/config/profiles/openclaw/profile.env"
+  operator_env bash -c \
+    'printf "PROFILE=openclaw\n" > "$1"; printf "STAGING_TOKEN=source-staging-fixture\n" > "$2"' _ \
+    "$SOURCE_ROOT/config/staging/canonical.conf" "$SOURCE_ROOT/config/staging/canonical.env"
+  operator_env bash -c \
+    'printf "source-fingerprint\n" > "$1"; printf "CLOUD_PORT=3210\n" > "$2"; printf "QA_SECRET=source-qa-fixture\n" > "$3"; printf "{\"fixture\":true}\n" > "$4"; printf "retain-me\n" > "$5"' _ \
+    "$SOURCE_ROOT/config/prod-fingerprints" \
+    "$SOURCE_ROOT/config/qa-pool/broker.conf" \
+    "$SOURCE_ROOT/config/qa-pool/secrets.env" \
+    "$SOURCE_ROOT/config/qa-pool/pool.jsonl" \
+    "$SOURCE_ROOT/config/qa-pool/operator-note.local"
   operator_env chmod 0600 \
-    "$SOURCE_ROOT/private/config.env" "$SOURCE_ROOT/private/yards/e2e-yard.env"
+    "$SOURCE_ROOT/private/config.env" "$SOURCE_ROOT/private/yards/e2e-yard.env" \
+    "$SOURCE_ROOT/private/agents/codex/repo.rules" \
+    "$SOURCE_ROOT/config/profiles/openclaw/profile.env" \
+    "$SOURCE_ROOT/config/staging/canonical.conf" "$SOURCE_ROOT/config/staging/canonical.env" \
+    "$SOURCE_ROOT/config/prod-fingerprints" \
+    "$SOURCE_ROOT/config/qa-pool/broker.conf" \
+    "$SOURCE_ROOT/config/qa-pool/secrets.env" \
+    "$SOURCE_ROOT/config/qa-pool/pool.jsonl" \
+    "$SOURCE_ROOT/config/qa-pool/operator-note.local"
   operator_env env YARD_BUILD_VERSION="source-$SOURCE_REVISION" \
     "$SOURCE_ROOT/scripts/build-engine.sh" --force
   operator_env ln -s "$SOURCE_ROOT/bin/yard" "$OPERATOR_HOME/.local/bin/yard"
@@ -154,6 +176,20 @@ prepare_operator() {
   operator_env bash -c \
     'printf "#!/bin/sh\nprintf invoked > \"%s/go-invoked\"\nexit 127\n" "$1" > "$1/no-go"; chmod 0700 "$1/no-go"' \
     _ "$OPERATOR_HOME"
+}
+
+seed_previous_migration_inputs() {
+  operator_env install -d -m 0700 \
+    "$OPERATOR_HOME/.subyard/operator-overlay/private/agents/codex" \
+    "$OPERATOR_HOME/.subyard/operator-overlay/private/agents/claude"
+  operator_env cp "$SOURCE_ROOT/private/config.env" "$OPERATOR_HOME/.subyard/config.env"
+  operator_env cp "$SOURCE_ROOT/private/agents/codex/repo.rules" \
+    "$OPERATOR_HOME/.subyard/operator-overlay/private/agents/codex/repo.rules"
+  operator_env bash -c 'printf "{\"fixture\":true}\n" > "$1"' _ \
+    "$OPERATOR_HOME/.subyard/operator-overlay/private/agents/claude/settings.json"
+  operator_env chmod 0600 "$OPERATOR_HOME/.subyard/config.env" \
+    "$OPERATOR_HOME/.subyard/operator-overlay/private/agents/codex/repo.rules" \
+    "$OPERATOR_HOME/.subyard/operator-overlay/private/agents/claude/settings.json"
 }
 
 package_candidates() {
@@ -187,16 +223,80 @@ verify_migration() {
     || die 'source entrypoints did not switch to the immutable runtime'
   operator_env test -x "$SOURCE_ROOT/.build/yard" \
     || die 'source checkout was changed or removed'
-  operator_env cmp "$SOURCE_ROOT/private/config.env" "$OPERATOR_HOME/.subyard/config.env" \
+  operator_env cmp "$SOURCE_ROOT/private/config.env" "$OPERATOR_HOME/.config/subyard/config.env" \
     || die 'machine config was not migrated'
-  operator_env cmp "$SOURCE_ROOT/private/yards/e2e-yard.env" \
-    "$OPERATOR_HOME/.config/subyard/yards/e2e-yard.env" \
-    || die 'named yard was not migrated'
+  operator_env bash -c \
+    'sed "s/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/" "$1" | cmp - "$2"' _ \
+    "$SOURCE_ROOT/private/yards/e2e-yard.env" \
+    "$OPERATOR_HOME/.config/subyard/yards/e2e-yard/config.env" \
+    || die 'named yard was not migrated to the canonical template'
   operator_env cmp "$SOURCE_ROOT/private/agents/codex/repo.rules" \
-    "$OPERATOR_HOME/.subyard/operator-overlay/private/agents/codex/repo.rules" \
+    "$OPERATOR_HOME/.config/subyard/overrides/host/agents/codex/repo.rules" \
     || die 'private agent asset was not migrated'
+  operator_env test -f \
+    "$OPERATOR_HOME/.config/subyard/overrides/host/agents/claude/settings.json" \
+    || die 'transitional operator overlay was not migrated'
+  operator_env cmp "$SOURCE_ROOT/config/profiles/openclaw/profile.env" \
+    "$OPERATOR_HOME/.config/subyard/secrets/profiles/openclaw/profile.env" \
+    || die 'profile secret was not migrated'
+  operator_env cmp "$SOURCE_ROOT/config/staging/canonical.conf" \
+    "$OPERATOR_HOME/.config/subyard/overrides/host/staging/canonical.conf" \
+    || die 'staging config was not migrated'
+  operator_env cmp "$SOURCE_ROOT/config/staging/canonical.env" \
+    "$OPERATOR_HOME/.config/subyard/secrets/legacy/staging/canonical.env" \
+    || die 'legacy staging secret was not retained'
+  operator_env cmp "$SOURCE_ROOT/config/qa-pool/operator-note.local" \
+    "$OPERATOR_HOME/.config/subyard/secrets/legacy/unclassified/qa-pool/operator-note.local" \
+    || die 'unclassified ignored input was not retained'
+  operator_env test ! -e "$OPERATOR_HOME/.subyard/config.env" \
+    || die 'legacy machine config remained under the data home'
+  operator_env test ! -e "$OPERATOR_HOME/.subyard/operator-overlay" \
+    || die 'legacy operator overlay remained under the data home'
   operator_env test -x "$OPERATOR_HOME/.subyard/recovery/pre-go-source/restore.sh" \
     || die 'guarded source recovery was not retained'
+}
+
+verify_config_workflow() {
+  local paths host_hash guest_hash status_output status_rc
+  paths="$(operator_yard -Y e2e-yard config paths)"
+  grep -Fq "config-root: $OPERATOR_HOME/.config/subyard" <<<"$paths" \
+    || die 'config paths did not report the persistent operator root'
+  grep -Fq "$OPERATOR_HOME/.config/subyard/overrides/host/agents/codex/repo.rules (host)" \
+    <<<"$paths" || die 'config paths did not resolve the migrated Codex asset'
+  ! grep -Fq 'source-staging-fixture' <<<"$paths" \
+    || die 'config paths printed a secret value'
+  set +e
+  status_output="$(operator_yard -Y e2e-yard config status --all-local 2>&1)"
+  status_rc=$?
+  set -e
+  printf '%s\n' "$status_output"
+  if [ "$status_rc" -ne 0 ]; then
+    [ "$status_rc" -eq 1 ] \
+      && grep -Fq 'yard e2e-yard: drift' <<<"$status_output" \
+      && grep -Fq 'config status: agent config drift in yards: e2e-yard' <<<"$status_output" \
+      || die 'config status failed for a reason other than expected agent drift'
+  fi
+  ! grep -Eq 'source-(staging|qa|profile)-fixture' <<<"$status_output" \
+    || die 'config status printed a secret value'
+  operator_yard -Y e2e-yard config apply --all-local --yes
+  operator_yard -Y e2e-yard config status --all-local
+  host_hash="$(sudo -n sha256sum \
+    "$OPERATOR_HOME/.config/subyard/overrides/host/agents/codex/repo.rules" | awk '{print $1}')"
+  guest_hash="$(incus exec "$INSTANCE" --project "$PROJECT" --user 1001 --group 1001 -- \
+    sha256sum /home/dev/.codex/rules/repo.rules | awk '{print $1}')"
+  [ "$host_hash" = "$guest_hash" ] || die 'migrated Codex rules were not applied to the yard'
+}
+
+verify_without_source_checkout() {
+  local unavailable="$OPERATOR_HOME/src.unavailable"
+  operator_env mv "$SOURCE_ROOT" "$unavailable"
+  if ! operator_yard -Y e2e-yard config paths >/dev/null \
+    || ! operator_yard -Y e2e-yard config status --all-local \
+    || ! operator_yard -Y e2e-yard check; then
+    operator_env mv "$unavailable" "$SOURCE_ROOT"
+    die 'installed runtime still depends on the source checkout'
+  fi
+  operator_env mv "$unavailable" "$SOURCE_ROOT"
 }
 
 wait_for_running_yard() {
@@ -221,6 +321,28 @@ prepare_project() {
     -c features.images=false -c user.subyard.p0-source="$MARKER" >/dev/null
 }
 
+run_incus_installer() {
+  (
+    # shellcheck source=tests/helpers/test-context.sh
+    . "$ROOT/tests/helpers/test-context.sh"
+    setup_test_context "$HOME/.subyard/p0-source-bootstrap-$TOKEN"
+    export SUBYARD_USER
+    SUBYARD_USER="$(id -un)"
+    export SUBYARD_OPERATOR_HOME="$HOME"
+    export SUBYARD_CONFIG_DIR="$ROOT/config"
+    export SUBYARD_CONFIG_HOME="$HOME/.config/subyard"
+    export SUBYARD_HOME="$HOME/.subyard"
+    export STORAGE_PATH="$SUBYARD_HOME/incus/storage"
+    export HOST_BASE="$SUBYARD_HOME/p0-source-host-data-$TOKEN"
+    export RESTRICTED_DISK_PATHS="$HOST_BASE"
+    set -a
+    # shellcheck source=config/host.env
+    . "$ROOT/config/host.env"
+    set +a
+    bash "$ROOT/scripts/01-install-incus.sh" "$@"
+  )
+}
+
 prepare() {
   [[ "$ARCHIVE" =~ ^/tmp/subyard-p0-source-[0-9]+\.tar\.gz$ ]] \
     || die 'source archive path is invalid'
@@ -233,8 +355,7 @@ prepare() {
   if ! incus info >/dev/null 2>&1 \
     || ! incus storage show default --project default >/dev/null 2>&1 \
     || ! incus network show incusbr0 --project default >/dev/null 2>&1; then
-    SUBYARD_USER="$(id -un)" SUBYARD_HOME="$HOME/.subyard" \
-      "$ROOT/scripts/01-install-incus.sh" --yes --zabbly
+    run_incus_installer --yes --zabbly
   fi
   if ! incus image info "$BASE_IMAGE" --project default >/dev/null 2>&1; then
     bash "$ROOT/dev/e2e/p0-real-incus.sh"
@@ -249,6 +370,7 @@ prepare() {
   operator_yard -Y e2e-yard init --yes
   operator_yard -Y e2e-yard start --yes
   operator_yard -Y e2e-yard check
+  seed_previous_migration_inputs
 
   bootstrap_candidate "$RELEASE_ROOT/a" "$VERSION_A"
   verify_migration
@@ -260,6 +382,8 @@ prepare() {
   operator_yard -Y e2e-yard init --yes
   operator_yard -Y e2e-yard check
   operator_yard -Y e2e-yard init --yes
+  verify_config_workflow
+  verify_without_source_checkout
 
   operator_no_go env YARD_RELEASE_BASE_URL="file://$RELEASE_ROOT/b" \
     "$OPERATOR_HOME/.local/bin/yard" update --version "$VERSION_B" --yes
@@ -268,6 +392,7 @@ prepare() {
   operator_yard update --rollback --yes
   [ "$(operator_yard --version)" = "yard $VERSION_A" ] \
     || die 'candidate rollback did not restore the previous runtime'
+  verify_config_workflow
   operator_no_go env YARD_RELEASE_BASE_URL="file://$RELEASE_ROOT/b" \
     "$OPERATOR_HOME/.local/bin/yard" update --version "$VERSION_B" --yes
   operator_yard -Y e2e-yard start --yes
@@ -294,6 +419,7 @@ finish() {
   operator_yard -Y e2e-yard status >/dev/null
   operator_yard -Y e2e-yard check
   operator_yard -Y e2e-yard init --yes
+  verify_config_workflow
 
   operator_no_go "$OPERATOR_HOME/.subyard/recovery/pre-go-source/restore.sh" >/dev/null
   [ "$(operator_env readlink -f "$OPERATOR_HOME/.local/bin/yard")" = "$SOURCE_ROOT/bin/yard" ] \
@@ -306,6 +432,7 @@ finish() {
   verify_migration
   operator_yard -Y e2e-yard init --yes
   operator_yard -Y e2e-yard check
+  verify_config_workflow
   operator_yard -Y e2e-yard teardown --yes
   ! incus project show "$PROJECT" >/dev/null 2>&1 \
     || die 'upgraded yard remains after teardown'

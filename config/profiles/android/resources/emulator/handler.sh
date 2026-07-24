@@ -25,7 +25,9 @@ set -euo pipefail
 RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBYARD_ROOT="$(cd "$RESOURCE_DIR/../../../../.." && pwd)"
 SCRIPT_DIR="$SUBYARD_ROOT/scripts"
-[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] || { printf 'emulator: prepared engine context required\n' >&2; exit 2; }
+# shellcheck source=scripts/lib/engine-context.sh
+. "$SCRIPT_DIR/lib/engine-context.sh"
+subyard_require_engine_context
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
 # shellcheck source=scripts/lib/host.sh

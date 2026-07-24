@@ -8,6 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/reconcileruntime"
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 )
 
 func TestPowerYardContextsAreDiscoveredWithoutChangingSelection(t *testing.T) {
@@ -34,6 +37,29 @@ func TestPowerYardContextsAreDiscoveredWithoutChangingSelection(t *testing.T) {
 	if len(yards) != 2 || yards[0].YardName != "default" || yards[1].YardName != "demo" ||
 		program.env["YARD_NAME"] != "" {
 		t.Fatalf("power discovery changed selection or included remote yards: %#v", yards)
+	}
+}
+
+func TestRealInitPlatformCarriesPreauthorizedTypedContext(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	program, err := New(Options{RepositoryRoot: root, Program: "yard", Environment: environment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform, ok := program.initPlatform(loaded, []domain.Context{loaded.Context}).(reconcileruntime.Runtime)
+	if !ok {
+		t.Fatalf("unexpected real init platform %T", platform)
+	}
+	found := false
+	for _, value := range platform.Environment {
+		found = found || value == "SUBYARD_SUDO_PREAUTHORIZED=1"
+	}
+	if !found {
+		t.Fatal("real init platform omitted the preauthorized sudo marker")
 	}
 }
 

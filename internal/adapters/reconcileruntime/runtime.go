@@ -8,12 +8,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/adapters/credentialruntime"
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/hostruntime"
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/securityruntime"
+	"github.com/Dmitry-Borodin/Subyard/internal/adapters/testvmsruntime"
 	"github.com/Dmitry-Borodin/Subyard/internal/application"
+	"github.com/Dmitry-Borodin/Subyard/internal/config"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
 )
@@ -52,7 +57,7 @@ func (runtime Runtime) CheckStage(ctx context.Context, stage string) (bool, erro
 	case "power", "finalize":
 		return runtime.powerConverged(ctx, true)
 	case "test-vms":
-		err = runtime.runObservedPowerScript(ctx, nil, true, "e2e-lab/reconcile.sh", "--check")
+		return runtime.testVMsConverged(ctx)
 	case "keys":
 		return runtime.keysConverged(ctx)
 	case "ssh":
@@ -62,9 +67,13 @@ func (runtime Runtime) CheckStage(ctx context.Context, stage string) (bool, erro
 	case "incus":
 		return runtime.incusConverged(ctx)
 	case "extras":
-		err = runtime.runScript(ctx, nil, "09-yard-extras.sh", "--check")
+		desired, desiredErr := runtime.extrasContext()
+		if desiredErr != nil {
+			return false, desiredErr
+		}
+		err = runtime.runScriptEnvironment(ctx, nil, desired, "09-yard-extras.sh", "--check")
 	case "security":
-		err = runtime.runScript(ctx, nil, "security-lint.sh", "--quiet", "--require-live")
+		return runtime.securityConverged(ctx)
 	default:
 		return false, fmt.Errorf("unknown reconcile stage %q", stage)
 	}
@@ -89,7 +98,7 @@ func (runtime Runtime) ApplyStage(ctx context.Context, stage string) error {
 	case "power-import":
 		return runtime.importPowerState(ctx)
 	case "git-identity":
-		return runtime.runScript(ctx, runtime.Stderr, "08-git-identity.sh", "--yes")
+		return runtime.applyGitIdentity(ctx)
 	case "network":
 		return runtime.runScript(ctx, runtime.Stderr, "06-network.sh", "--yes")
 	case "power":
@@ -97,7 +106,11 @@ func (runtime Runtime) ApplyStage(ctx context.Context, stage string) error {
 	case "finalize":
 		return runtime.finalizePowerState(ctx)
 	case "test-vms":
-		return runtime.runPreparedPowerScript(ctx, runtime.Stderr, "e2e-lab/reconcile.sh", "--yes")
+		intent, err := runtime.powerService().Ensure(ctx, runtime.Yard)
+		if err != nil {
+			return err
+		}
+		return runtime.testVMBackend(intent.Desired).Apply(ctx)
 	case "keys":
 		if err := runtime.runScript(ctx, runtime.Stderr, "install-key-tools.sh", "--yes"); err != nil {
 			return err
@@ -113,13 +126,22 @@ func (runtime Runtime) ApplyStage(ctx context.Context, stage string) error {
 	case "ssh":
 		return runtime.runScript(ctx, runtime.Stderr, "07-ssh-access.sh", "--yes")
 	case "provision":
-		return runtime.runScript(ctx, runtime.Stderr, "04-provision-subyard.sh", "--yes")
+		if err := runtime.runScript(ctx, runtime.Stderr, "04-provision-subyard.sh", "--yes"); err != nil {
+			return err
+		}
+		return runtime.RefreshConfigs(ctx)
 	case "incus":
 		return runtime.installIncus(ctx)
 	case "extras":
-		return runtime.runScript(ctx, runtime.Stderr, "09-yard-extras.sh", "--yes")
+		desired, err := runtime.extrasContext()
+		if err != nil {
+			return err
+		}
+		return runtime.runScriptEnvironment(ctx, runtime.Stderr, desired,
+			"09-yard-extras.sh", "--yes")
 	case "security":
-		return runtime.runScript(ctx, runtime.Stderr, "security-lint.sh", "--require-live")
+		_, err := runtime.securityRuntime().CheckSecurity(ctx, true, false)
+		return err
 	default:
 		return fmt.Errorf("unknown reconcile stage %q", stage)
 	}
@@ -130,7 +152,7 @@ func (runtime Runtime) VerifyStage(ctx context.Context, stage string) (bool, err
 		return runtime.observedPowerScriptConverged(ctx, true, "06-network.sh", "--verify")
 	}
 	if stage == "test-vms" {
-		return runtime.observedPowerScriptConverged(ctx, true, "e2e-lab/reconcile.sh", "--verify")
+		return runtime.testVMsConverged(ctx)
 	}
 	if stage == "keys" {
 		return runtime.keysConverged(ctx)
@@ -310,6 +332,17 @@ func (runtime Runtime) environmentValue(name string) string {
 	return ""
 }
 
+func runtimeEnvironment(environment []string) map[string]string {
+	result := make(map[string]string, len(environment))
+	for _, pair := range environment {
+		name, value, found := strings.Cut(pair, "=")
+		if found {
+			result[name] = value
+		}
+	}
+	return result
+}
+
 func (runtime Runtime) volumeNames() (string, string) {
 	pool, volume := runtime.SRVPool, runtime.SRVVolume
 	if pool == "" {
@@ -429,25 +462,39 @@ func charDeviceMatches(device map[string]string, path string) bool {
 }
 
 func (runtime Runtime) Preflight(ctx context.Context, fresh bool) error {
-	basePresent := "0"
+	basePresent := false
 	if !fresh && runtime.Incus != nil {
 		if _, err := runtime.Incus.Instance(ctx, runtime.Yard.IncusProject, runtime.Yard.InstanceName); err == nil {
-			basePresent = "1"
+			basePresent = true
 		}
 	}
-	return runtime.runScriptEnvironment(ctx, runtime.Stdout, map[string]string{
-		"SUBYARD_PREFLIGHT_STRICT":       "1",
-		"SUBYARD_PREFLIGHT_BASE_PRESENT": basePresent,
-	}, "00-check-host.sh")
-}
-
-func (runtime Runtime) RefreshConfigs(ctx context.Context) error {
-	return runtime.runScript(ctx, runtime.Stdout, "agent-configs.sh", "--yes")
+	return (hostruntime.HostCheck{
+		Yard: runtime.Yard, Yards: runtime.powerYards(),
+		Environment: runtimeEnvironment(runtime.Environment),
+		Incus:       runtime.Incus, Output: runtime.Stdout,
+	}).Run(ctx, hostruntime.CheckOptions{Strict: true, BasePresent: basePresent})
 }
 
 func (runtime Runtime) Teardown(ctx context.Context) error {
+	keepShared := "0"
+	if hasOtherRegisteredLocalYard(runtime.Yard.YardName, runtime.powerYards()) {
+		keepShared = "1"
+	}
 	return runtime.runScriptEnvironment(ctx, runtime.Stdout,
-		map[string]string{"SUBYARD_TEARDOWN_KEEP_DATA": "0"}, "teardown-physical.sh", "--yes")
+		map[string]string{
+			"SUBYARD_TEARDOWN_KEEP_DATA":   "0",
+			"SUBYARD_TEARDOWN_KEEP_SHARED": keepShared,
+		}, "teardown-physical.sh", "--yes")
+}
+
+func hasOtherRegisteredLocalYard(current string, yards []domain.Context) bool {
+	for _, yard := range yards {
+		if yard.YardType == domain.YardLocal &&
+			yard.YardName != "default" && yard.YardName != current {
+			return true
+		}
+	}
+	return false
 }
 
 func (runtime Runtime) powerImportsConverged(ctx context.Context) (bool, error) {
@@ -535,6 +582,110 @@ func (runtime Runtime) runPreparedPowerScript(
 	}, name, arguments...)
 }
 
+func (runtime Runtime) testVMsConverged(ctx context.Context) (bool, error) {
+	intent, err := runtime.powerService().Intent(ctx, runtime.Yard)
+	if err != nil {
+		if errors.Is(err, ports.ErrInstanceNotFound) ||
+			errors.Is(err, application.ErrPowerUnmanaged) {
+			return false, nil
+		}
+		return false, err
+	}
+	return runtime.testVMBackend(intent.Desired).Converged(ctx)
+}
+
+func (runtime Runtime) testVMBackend(desired string) *testvmsruntime.Backend {
+	environment := runtimeEnvironment(runtime.Environment)
+	return &testvmsruntime.Backend{
+		RepositoryRoot: runtime.RepositoryRoot,
+		Dispatcher:     environment["SUBYARD_DISPATCHER_PATH"],
+		Project:        runtime.Yard.IncusProject,
+		Instance:       runtime.Yard.InstanceName,
+		YardName:       runtime.Yard.YardName,
+		DesiredPower:   desired,
+		Environment:    environment,
+		Output:         runtime.Stderr,
+		Start: func(ctx context.Context) error {
+			return runtime.runScript(ctx, runtime.Stderr,
+				"lifecycle-guard.sh", "start", "--reconcile")
+		},
+		Stop: func(ctx context.Context) error {
+			return runtime.runScript(ctx, runtime.Stderr,
+				"lifecycle-guard.sh", "stop", "--reconcile")
+		},
+	}
+}
+
+func (runtime Runtime) extrasContext() (map[string]string, error) {
+	paths, err := filepath.Glob(filepath.Join(runtime.RepositoryRoot,
+		"config", "profiles", "*", "profile.conf"))
+	if err != nil {
+		return nil, err
+	}
+	mounts := map[string]bool{}
+	capabilities := map[string]bool{}
+	devices := map[string]bool{}
+	base := runtimeEnvironment(runtime.Environment)
+	for _, path := range paths {
+		values, err := config.ReadAssignmentsOver(path, base)
+		if err != nil {
+			return nil, err
+		}
+		for _, mount := range strings.Fields(values["YARD_MOUNTS"]) {
+			parts := strings.Split(mount, ":")
+			if len(parts) != 4 || !domain.SafeName(parts[0]) ||
+				!filepath.IsAbs(parts[1]) ||
+				(parts[2] != "ro" && parts[2] != "rw") ||
+				!safeDirectoryMode(parts[3]) {
+				return nil, fmt.Errorf("invalid YARD_MOUNTS entry %q in %s", mount, path)
+			}
+			mounts[mount] = true
+		}
+		for _, capability := range strings.Fields(values["YARD_CAPS"]) {
+			switch capability {
+			case "nesting", "rootless-docker", "fuse":
+				capabilities[capability] = true
+			default:
+				return nil, fmt.Errorf("invalid YARD_CAPS entry %q in %s", capability, path)
+			}
+		}
+		for _, device := range strings.Fields(values["YARD_DEVICES"]) {
+			switch device {
+			case "kvm", "fuse", "gpu":
+				devices[device] = true
+			default:
+				return nil, fmt.Errorf("invalid YARD_DEVICES entry %q in %s", device, path)
+			}
+		}
+	}
+	return map[string]string{
+		"SUBYARD_EXTRAS_MOUNTS":       sortedSet(mounts),
+		"SUBYARD_EXTRAS_CAPABILITIES": sortedSet(capabilities),
+		"SUBYARD_EXTRAS_DEVICES":      sortedSet(devices),
+	}, nil
+}
+
+func safeDirectoryMode(value string) bool {
+	if len(value) != 3 && len(value) != 4 {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '7' {
+			return false
+		}
+	}
+	return true
+}
+
+func sortedSet(values map[string]bool) string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return strings.Join(result, " ")
+}
+
 func (runtime Runtime) runObservedPowerScript(
 	ctx context.Context,
 	output io.Writer,
@@ -615,7 +766,8 @@ func (runtime Runtime) keysConverged(ctx context.Context) (bool, error) {
 
 func (runtime Runtime) credentialRuntime() (*credentialruntime.Runtime, error) {
 	root := runtime.environmentDefault("SUBYARD_KEYS_ROOT", filepath.Join(runtime.Yard.Paths.ConfigHome, "keys"))
-	consumerRoot := runtime.environmentDefault("SUBYARD_KEYS_CONSUMER_ROOT", runtime.RepositoryRoot)
+	consumerRoot := runtime.environmentDefault("SUBYARD_KEYS_CONSUMER_ROOT",
+		filepath.Join(runtime.Yard.Paths.ConfigHome, "generated"))
 	dispatcher := runtime.environmentDefault("SUBYARD_DISPATCHER_PATH", filepath.Join(runtime.RepositoryRoot, "bin", "yard"))
 	return credentialruntime.New(credentialruntime.Config{
 		RepositoryRoot: runtime.RepositoryRoot,
@@ -630,6 +782,28 @@ func (runtime Runtime) credentialRuntime() (*credentialruntime.Runtime, error) {
 		Stdout:         runtime.Stdout,
 		Stderr:         runtime.Stderr,
 	})
+}
+
+func (runtime Runtime) securityRuntime() securityruntime.Runtime {
+	return securityruntime.Runtime{
+		RepositoryRoot: runtime.RepositoryRoot,
+		Environment:    runtimeEnvironment(runtime.Environment),
+		Yard:           runtime.Yard,
+		Incus:          runtime.Incus,
+		Stdout:         runtime.Stdout,
+		Stderr:         runtime.Stderr,
+	}
+}
+
+func (runtime Runtime) securityConverged(ctx context.Context) (bool, error) {
+	_, err := runtime.securityRuntime().CheckSecurity(ctx, true, true)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, securityruntime.ErrContract) {
+		return false, nil
+	}
+	return false, err
 }
 
 func (runtime Runtime) gitIdentityConverged(ctx context.Context) (bool, error) {
@@ -819,13 +993,15 @@ func (runtime Runtime) provisionConverged(ctx context.Context) (bool, error) {
 	if err != nil || !ok || strings.TrimSpace(string(reported.Stdout)) != "ccusage "+version {
 		return false, err
 	}
-	for _, instruction := range [][2]string{
-		{"HOST_CLAUDE_MD", filepath.Join(home, ".claude", "CLAUDE.md")},
-		{"HOST_CODEX_AGENTS_MD", filepath.Join(home, ".codex", "AGENTS.md")},
-		{"HOST_OPENCODE_AGENTS_MD", filepath.Join(home, ".config", "opencode", "AGENTS.md")},
-	} {
-		if regularFile(runtime.environmentValue(instruction[0])) {
-			if ok, err := runtime.guestCheck(ctx, []string{"test", "-f", instruction[1]}); err != nil || !ok {
+	configFiles, err := runtime.guestConfigFiles()
+	if err != nil {
+		return false, err
+	}
+	for _, file := range configFiles {
+		if regularFile(file.source) {
+			if ok, err := runtime.guestCheck(
+				ctx, []string{"test", "-f", file.destination},
+			); err != nil || !ok {
 				return false, err
 			}
 		}

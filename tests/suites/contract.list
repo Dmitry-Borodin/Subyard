@@ -6,7 +6,6 @@ init-extras-convergence.sh
 init-network-convergence.sh
 opencode-agent-defaults.sh
 prompt-contract.sh
-security-lint.sh
 test-vms.sh
 yard-extras-convergence.sh
 yard-usage.sh

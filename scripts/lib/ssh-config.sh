@@ -48,3 +48,24 @@ ssh_known_host_replace() {
   chmod 0600 "$temp" && mv -f -- "$temp" "$known_hosts" \
     || { rm -f -- "$temp"; return 1; }
 }
+
+ssh_known_host_remove() {
+  local known_hosts="${1:?ssh_known_host_remove needs a file}"
+  local endpoint="${2:?ssh_known_host_remove needs an endpoint}"
+  local owner="${3:-}" group="${4:-}" directory temp
+
+  [ -f "$known_hosts" ] && [ ! -L "$known_hosts" ] || return 1
+  directory="$(dirname "$known_hosts")"
+  temp="$(mktemp "$directory/.subyard-known-hosts.XXXXXX")" || return 1
+  cp -- "$known_hosts" "$temp" || { rm -f -- "$temp"; return 1; }
+  ssh-keygen -R "$endpoint" -f "$temp" >/dev/null 2>&1 \
+    || { rm -f -- "$temp" "$temp.old"; return 1; }
+  rm -f -- "$temp.old"
+  chmod 0600 "$temp" || { rm -f -- "$temp"; return 1; }
+  if [ -n "$owner" ] || [ -n "$group" ]; then
+    [ -n "$owner" ] && [ -n "$group" ] \
+      || { rm -f -- "$temp"; return 1; }
+    chown "$owner:$group" "$temp" || { rm -f -- "$temp"; return 1; }
+  fi
+  mv -f -- "$temp" "$known_hosts" || { rm -f -- "$temp"; return 1; }
+}

@@ -122,6 +122,10 @@ type StatusFactsReader interface {
 	ReadStatusFacts(context.Context, domain.Context, bool) (domain.StatusFacts, error)
 }
 
+type SecurityChecker interface {
+	CheckSecurity(context.Context, bool, bool) (string, error)
+}
+
 type FileSystem interface {
 	ReadFile(context.Context, string) ([]byte, error)
 	AtomicWrite(context.Context, string, []byte, uint32) error
@@ -166,6 +170,10 @@ type IDSource interface {
 
 type Prompter interface {
 	Confirm(context.Context, string, []string) (bool, error)
+}
+
+type ConfigApplier interface {
+	ApplyConfig(context.Context, string) error
 }
 
 type AdapterRunner interface {

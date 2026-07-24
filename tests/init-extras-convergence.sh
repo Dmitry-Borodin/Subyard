@@ -11,12 +11,12 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 . "$ROOT/tests/helpers/test-context.sh"
 setup_test_context "$TMP"
 export HOME="$TMP/home"
-export SUBYARD_PROFILES_DIR="$TMP/profiles"
-export SUBYARD_CONFIG_LOADED=1
 export SUBYARD_NO_AUDIT=1
+export SUBYARD_EXTRAS_MOUNTS='cache:/srv/cache:rw:0755'
+export SUBYARD_EXTRAS_CAPABILITIES=''
+export SUBYARD_EXTRAS_DEVICES=''
 export PATH="$TMP/bin:$PATH"
-mkdir -p "$HOME" "$SUBYARD_PROFILES_DIR/fixture" "$TMP/bin"
-printf 'YARD_MOUNTS="cache:/srv/cache:rw:0755"\n' > "$SUBYARD_PROFILES_DIR/fixture/profile.conf"
+mkdir -p "$HOME" "$TMP/bin"
 
 export MOCK_DEVICES=yx-cache
 export MOCK_SOURCE="$HOST_BASE/cache"
@@ -64,7 +64,7 @@ MOCK_PATH=/wrong
 
 # No declarations is still a desired state: stale devices and extras-owned capability keys must
 # keep the stage pending until the reconciler removes the final extra.
-: > "$SUBYARD_PROFILES_DIR/fixture/profile.conf"
+SUBYARD_EXTRAS_MOUNTS=''
 MOCK_DEVICES=yx-last
 MOCK_IDMAP=1000000
 MOCK_MKNOD=true

@@ -402,7 +402,7 @@ Requires=incus.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/libexec/subyard/test-vms-inner gc
+ExecStart=/usr/local/libexec/subyard/test-vms-inner _test-vms-worker gc
 EOF
 cat > /etc/systemd/system/subyard-test-vms-gc.timer <<'EOF'
 [Unit]
@@ -420,4 +420,4 @@ systemctl daemon-reload
 systemctl enable --now subyard-test-vms-gc.timer
 
 # Re-enroll without changing allocation state.
-/usr/local/libexec/subyard/test-vms-inner reconcile-access
+/usr/local/libexec/subyard/test-vms-inner _test-vms-worker reconcile-access

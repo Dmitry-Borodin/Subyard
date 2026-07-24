@@ -1472,11 +1472,11 @@ func (runtime *Runtime) consumerPath(consumerName, zone string) (string, bool, e
 	case "none", "":
 		return "", false, nil
 	case "staging-env":
-		destination = filepath.Join(runtime.config.ConsumerRoot, "config", "staging", zone+".env")
+		destination = filepath.Join(runtime.config.ConsumerRoot, "staging", zone+".env")
 	case "qa-secrets":
-		destination = filepath.Join(runtime.config.ConsumerRoot, "config", "qa-pool", "secrets.env")
+		destination = filepath.Join(runtime.config.ConsumerRoot, "qa-pool", "secrets.env")
 	case "qa-pool":
-		destination = filepath.Join(runtime.config.ConsumerRoot, "config", "qa-pool", "pool.jsonl")
+		destination = filepath.Join(runtime.config.ConsumerRoot, "qa-pool", "pool.jsonl")
 	default:
 		return "", false, errors.New("invalid credential consumer")
 	}
@@ -1488,13 +1488,13 @@ func (runtime *Runtime) consumerPath(consumerName, zone string) (string, bool, e
 
 func (runtime *Runtime) detectConsumer(path string) string {
 	clean := filepath.Clean(path)
-	staging := filepath.Join(runtime.config.ConsumerRoot, "config", "staging") + string(filepath.Separator)
+	staging := filepath.Join(runtime.config.ConsumerRoot, "staging") + string(filepath.Separator)
 	switch {
 	case strings.HasPrefix(clean, staging) && strings.HasSuffix(clean, ".env"):
 		return "staging-env"
-	case clean == filepath.Join(runtime.config.ConsumerRoot, "config", "qa-pool", "secrets.env"):
+	case clean == filepath.Join(runtime.config.ConsumerRoot, "qa-pool", "secrets.env"):
 		return "qa-secrets"
-	case clean == filepath.Join(runtime.config.ConsumerRoot, "config", "qa-pool", "pool.jsonl"):
+	case clean == filepath.Join(runtime.config.ConsumerRoot, "qa-pool", "pool.jsonl"):
 		return "qa-pool"
 	default:
 		return "none"

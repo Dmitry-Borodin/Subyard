@@ -1,39 +1,22 @@
 #!/usr/bin/env bash
-# 09-yard-extras.sh — Phase 2b: reconcile yard-level extras DECLARED BY PROFILES.
-# Each profile may declare what it wants ON the yard (level 1):
-#   YARD_MOUNTS   "<name>:<yard-path>:<ro|rw>:<mode>"   extra host mounts (under HOST_BASE)
-#   YARD_CAPS     nesting rootless-docker fuse ...       instance capabilities
-#   YARD_DEVICES  kvm fuse gpu ...                       instance devices (/dev passthrough; gpu=host GPU)
-# P1: the yard gets the UNION across ALL on-disk profiles in config/profiles/ (P2 makes this configurable). Operator-run
-# (incus-admin); only host-dir creation for YARD_MOUNTS uses sudo. Capabilities that need a
-# restart are SET now; the operator is told to restart via the GUARDED path (yard stop/start)
-# so the host's network guard runs — the host itself is never touched. Idempotent.
-# Config: config/incus.project.env + config/subyard.env + config/profiles/*/profile.conf.
+# Apply Go-prepared yard-level profile mounts, capabilities and devices.
 # Usage: scripts/09-yard-extras.sh [--check] [--yes]
 #   --check  read-only: exit 0 only when live extras match the profile union exactly.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Explicit control-plane module composition (config/context loads exactly once).
 # shellcheck source=scripts/lib/runtime.sh
 . "$SCRIPT_DIR/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/engine-context.sh
+. "$SCRIPT_DIR/lib/engine-context.sh"
+subyard_require_engine_context
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
 SHIFT_MODE="${SHIFT_MODE:-shift}"
 DEV_UID="${DEV_UID:-1000}"
-PROFILES_DIR="${SUBYARD_PROFILES_DIR:-$SCRIPT_DIR/../config/profiles}"
 PROJ=(--project "$INCUS_PROJECT")
 
 check_only=0
@@ -53,28 +36,9 @@ dev_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2>/d
 cfg_get() { incus config get "$INSTANCE_NAME" "$1" "${PROJ[@]}" 2>/dev/null || true; }
 case "$SHIFT_MODE" in shift) SHIFT_OPT="shift=true" ;; *) SHIFT_OPT="" ;; esac
 
-# --- collect the UNION of YARD_* across profiles -----------------------------
-# P1: enable ALL on-disk profiles (union their YARD_*); P2 makes the active set configurable.
-u_mounts=(); u_caps=(); u_devs=()
-for pf in "$PROFILES_DIR"/*/profile.conf; do
-  [ -r "$pf" ] || continue
-  while IFS= read -r line; do
-    case "$line" in
-      MOUNT\ *) u_mounts+=("${line#MOUNT }") ;;
-      CAP\ *)   u_caps+=("${line#CAP }") ;;
-      DEV\ *)   u_devs+=("${line#DEV }") ;;
-    esac
-  done < <( # subshell so each profile's YARD_* can't clobber ours
-    # shellcheck disable=SC1090
-    . "$pf"
-    for m in ${YARD_MOUNTS:-}; do echo "MOUNT $m"; done
-    for c in ${YARD_CAPS:-};    do echo "CAP $c"; done
-    for d in ${YARD_DEVICES:-}; do echo "DEV $d"; done
-  )
-done
-mapfile -t u_mounts < <(printf '%s\n' ${u_mounts[@]+"${u_mounts[@]}"} | sed '/^$/d' | sort -u)
-mapfile -t u_caps   < <(printf '%s\n' ${u_caps[@]+"${u_caps[@]}"}     | sed '/^$/d' | sort -u)
-mapfile -t u_devs   < <(printf '%s\n' ${u_devs[@]+"${u_devs[@]}"}     | sed '/^$/d' | sort -u)
+read -r -a u_mounts <<<"${SUBYARD_EXTRAS_MOUNTS:-}"
+read -r -a u_caps <<<"${SUBYARD_EXTRAS_CAPABILITIES:-}"
+read -r -a u_devs <<<"${SUBYARD_EXTRAS_DEVICES:-}"
 
 # Resolve the desired device/capability set once. Both --check and reconcile consume this state,
 # so profile interpretation has a single owner and cannot drift from init's convergence probe.

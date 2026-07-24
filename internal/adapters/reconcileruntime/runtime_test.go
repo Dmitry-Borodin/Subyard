@@ -437,6 +437,37 @@ func TestMountProbeDetectsMissingDriftedAndStaleDevices(t *testing.T) {
 	assertStage(t, runtime, "mounts", false, "stale mount")
 }
 
+func TestExtrasDesiredStateIsParsedAndValidatedInGo(t *testing.T) {
+	root := t.TempDir()
+	writeProfile := func(name, contents string) {
+		t.Helper()
+		directory := filepath.Join(root, "config", "profiles", name)
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "profile.conf"),
+			[]byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeProfile("a", "YARD_MOUNTS='cache:/srv/cache:rw:0755'\nYARD_CAPS='fuse'\n")
+	writeProfile("b", "YARD_CAPS='rootless-docker fuse'\nYARD_DEVICES='gpu'\n")
+	runtime := Runtime{RepositoryRoot: root}
+	values, err := runtime.extrasContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["SUBYARD_EXTRAS_MOUNTS"] != "cache:/srv/cache:rw:0755" ||
+		values["SUBYARD_EXTRAS_CAPABILITIES"] != "fuse rootless-docker" ||
+		values["SUBYARD_EXTRAS_DEVICES"] != "gpu" {
+		t.Fatalf("unexpected extras context: %#v", values)
+	}
+	writeProfile("bad", "YARD_MOUNTS='../escape:/srv/cache:rw:0755'\n")
+	if _, err := runtime.extrasContext(); err == nil {
+		t.Fatal("unsafe profile extras were accepted")
+	}
+}
+
 func assertStageConverged(t *testing.T, runtime Runtime, want bool, label string) {
 	assertStage(t, runtime, "instance", want, label)
 }

@@ -1,0 +1,227 @@
+package testvmsruntime
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"golang.org/x/crypto/ssh"
+)
+
+const (
+	DefaultConfigPath    = "/etc/subyard/test-vms.env"
+	DefaultInstalledPath = "/usr/local/libexec/subyard/test-vms-inner"
+	managedMarker        = "test-vms-v1"
+	agentKeyMarker       = "subyard-managed-e2e-agent"
+)
+
+var (
+	safeName  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	safeUser  = regexp.MustCompile(`^[a-z0-9_][a-z0-9_-]*$`)
+	safeImage = regexp.MustCompile(`^[A-Za-z0-9._:/@+-]+$`)
+	sizeValue = regexp.MustCompile(`^([1-9][0-9]*)(MiB|GiB)$`)
+)
+
+type Config struct {
+	Enabled             bool
+	Project             string
+	Prefix              string
+	Image               string
+	CPU                 int
+	Memory              string
+	Disk                string
+	TTL                 time.Duration
+	BootTimeout         time.Duration
+	DevUser             string
+	StateDir            string
+	PublicDir           string
+	AgentUser           string
+	AgentPublicKey      string
+	AgentHome           string
+	AgentAuthorizedKeys string
+	StatusCommand       string
+	Incus               string
+}
+
+func LoadConfig(path string) (Config, error) {
+	if path == "" {
+		path = DefaultConfigPath
+	}
+	values, err := config.ReadAssignments(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("read test-vms config: %w", err)
+	}
+	return ConfigFromValues(values)
+}
+
+func ConfigFromValues(values map[string]string) (Config, error) {
+	value := func(name, fallback string) string {
+		if values[name] != "" {
+			return values[name]
+		}
+		return fallback
+	}
+	enabled := value("NESTED_E2E_VMS", "0")
+	if enabled != "0" && enabled != "1" {
+		return Config{}, errors.New("invalid NESTED_E2E_VMS")
+	}
+	cpu, err := positiveInt(value("E2E_VM_CPU", "4"), "E2E_VM_CPU")
+	if err != nil {
+		return Config{}, err
+	}
+	ttl, err := boundedMinutes(value("E2E_VM_TTL_MINUTES", "240"), 15, 1440,
+		"E2E_VM_TTL_MINUTES")
+	if err != nil {
+		return Config{}, err
+	}
+	boot, err := boundedSeconds(value("E2E_VM_BOOT_TIMEOUT", "300"), 30, 1800,
+		"E2E_VM_BOOT_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+	result := Config{
+		Enabled: enabled == "1", Project: value("E2E_VM_PROJECT", "subyard-e2e-vms"),
+		Prefix: value("E2E_VM_PREFIX", "e2e-vm"), Image: value("E2E_VM_IMAGE", "images:debian/13/cloud"),
+		CPU: cpu, Memory: value("E2E_VM_MEMORY", "4GiB"), Disk: value("E2E_VM_DISK", "10GiB"),
+		TTL: ttl, BootTimeout: boot, DevUser: value("DEV_USER", "dev"),
+		StateDir:       value("E2E_VM_STATE_DIR", "/var/lib/subyard/test-vms"),
+		PublicDir:      value("E2E_VM_PUBLIC_DIR", "/var/lib/subyard/test-vms-public"),
+		AgentUser:      value("E2E_AGENT_USER", "subyard-e2e-agent"),
+		AgentPublicKey: values["E2E_AGENT_PUBLIC_KEY"],
+		AgentHome:      value("E2E_AGENT_HOME", "/var/lib/subyard/e2e-agent"),
+		StatusCommand: value("E2E_AGENT_STATUS_COMMAND",
+			DefaultInstalledPath+" _test-vms-status"),
+		Incus: value("SUBYARD_INNER_INCUS", "incus"),
+	}
+	result.AgentAuthorizedKeys = value("E2E_AGENT_AUTHORIZED_KEYS",
+		filepath.Join(result.AgentHome, ".ssh", "authorized_keys"))
+	if err := result.Validate(); err != nil {
+		return Config{}, err
+	}
+	return result, nil
+}
+
+func (cfg Config) Validate() error {
+	if !safeName.MatchString(cfg.Project) {
+		return fmt.Errorf("unsafe E2E_VM_PROJECT %q", cfg.Project)
+	}
+	if !safeName.MatchString(cfg.Prefix) {
+		return fmt.Errorf("unsafe E2E_VM_PREFIX %q", cfg.Prefix)
+	}
+	if !safeImage.MatchString(cfg.Image) {
+		return fmt.Errorf("unsafe E2E_VM_IMAGE %q", cfg.Image)
+	}
+	if _, err := sizeMiB(cfg.Memory); err != nil {
+		return fmt.Errorf("E2E_VM_MEMORY must use MiB or GiB")
+	}
+	disk, err := sizeMiB(cfg.Disk)
+	if err != nil {
+		return fmt.Errorf("E2E_VM_DISK must use MiB or GiB")
+	}
+	if disk < 10*1024 {
+		return errors.New("E2E_VM_DISK must be at least 10GiB")
+	}
+	if !safeUser.MatchString(cfg.DevUser) {
+		return fmt.Errorf("unsafe DEV_USER %q", cfg.DevUser)
+	}
+	if !safeUser.MatchString(cfg.AgentUser) {
+		return fmt.Errorf("unsafe E2E_AGENT_USER %q", cfg.AgentUser)
+	}
+	for name, path := range map[string]string{
+		"E2E_VM_STATE_DIR": cfg.StateDir, "E2E_VM_PUBLIC_DIR": cfg.PublicDir,
+		"E2E_AGENT_HOME": cfg.AgentHome,
+	} {
+		if !within(path, "/var/lib/subyard") && !(name == "E2E_VM_PUBLIC_DIR" && within(path, os.TempDir())) {
+			return fmt.Errorf("unsafe %s %q", name, path)
+		}
+	}
+	if cfg.StatusCommand != DefaultInstalledPath+" _test-vms-status" {
+		return fmt.Errorf("unsafe E2E_AGENT_STATUS_COMMAND %q", cfg.StatusCommand)
+	}
+	if cfg.AgentPublicKey != "" {
+		if strings.ContainsAny(cfg.AgentPublicKey, "\r\n") {
+			return errors.New("E2E_AGENT_PUBLIC_KEY must be one line")
+		}
+		key, err := parsePublicKey(cfg.AgentPublicKey)
+		if err != nil || key.Type() != ssh.KeyAlgoED25519 {
+			return errors.New("E2E_AGENT_PUBLIC_KEY must be an Ed25519 public key")
+		}
+	}
+	return nil
+}
+
+func (cfg Config) vm(index int) string { return cfg.Prefix + "-" + strconv.Itoa(index) }
+func (cfg Config) keyPath() string     { return filepath.Join(cfg.StateDir, "id_ed25519") }
+func (cfg Config) knownHosts() string  { return filepath.Join(cfg.StateDir, "known_hosts") }
+func (cfg Config) createdAt() string   { return filepath.Join(cfg.StateDir, "created-at") }
+func (cfg Config) failureLog() string  { return filepath.Join(cfg.StateDir, "last-failure.log") }
+func (cfg Config) keyRevision() string { return filepath.Join(cfg.StateDir, "worker-key-v2") }
+func (cfg Config) revokedKey() string  { return filepath.Join(cfg.StateDir, "revoked-worker.pub") }
+func (cfg Config) manifest() string    { return filepath.Join(cfg.PublicDir, "allocation.tsv") }
+
+func positiveInt(value, name string) (int, error) {
+	number, err := strconv.Atoi(value)
+	if err != nil || number < 1 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return number, nil
+}
+
+func boundedMinutes(value string, minimum, maximum int, name string) (time.Duration, error) {
+	number, err := strconv.Atoi(value)
+	if err != nil || number < minimum || number > maximum {
+		return 0, fmt.Errorf("%s must be from %d to %d", name, minimum, maximum)
+	}
+	return time.Duration(number) * time.Minute, nil
+}
+
+func boundedSeconds(value string, minimum, maximum int, name string) (time.Duration, error) {
+	number, err := strconv.Atoi(value)
+	if err != nil || number < minimum || number > maximum {
+		return 0, fmt.Errorf("%s must be from %d to %d", name, minimum, maximum)
+	}
+	return time.Duration(number) * time.Second, nil
+}
+
+func sizeMiB(value string) (int, error) {
+	match := sizeValue.FindStringSubmatch(value)
+	if match == nil {
+		return 0, errors.New("invalid size")
+	}
+	number, _ := strconv.Atoi(match[1])
+	if match[2] == "GiB" {
+		number *= 1024
+	}
+	return number, nil
+}
+
+func doubleSize(value string) string {
+	match := sizeValue.FindStringSubmatch(value)
+	number, _ := strconv.Atoi(match[1])
+	return strconv.Itoa(number*2) + match[2]
+}
+
+func within(path, root string) bool {
+	clean := filepath.Clean(path)
+	root = filepath.Clean(root)
+	return clean != root && strings.HasPrefix(clean, root+string(filepath.Separator))
+}
+
+func parsePublicKey(value string) (ssh.PublicKey, error) {
+	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(value)))
+	return key, err
+}
+
+func normalizedPublicKey(value string) (string, error) {
+	key, err := parsePublicKey(value)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), nil
+}

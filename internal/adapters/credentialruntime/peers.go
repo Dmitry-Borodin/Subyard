@@ -247,7 +247,10 @@ func (runtime *Runtime) callTarget(
 			args = append(args, "-Y", target.Name)
 		}
 		args = append(args, arguments...)
-		return runtime.run(ctx, runtime.config.Dispatcher, args, stdin, nil)
+		return runtime.runWithEnvironment(
+			ctx, runtime.config.Dispatcher, args, stdin,
+			runtime.config.TargetEnvironment, nil,
+		)
 	case "ssh":
 		if !domain.SafeSSHTarget(target.Destination) ||
 			target.RemoteYard != "" && !domain.SafeName(target.RemoteYard) {
@@ -263,7 +266,9 @@ func (runtime *Runtime) callTarget(
 			"-o", "BatchMode=yes", "-o", "ConnectTimeout=" + strconv.Itoa(runtime.sshTimeout),
 			target.Destination, "--", "bash", "-lc", shellQuote(command),
 		}
-		return runtime.run(ctx, "ssh", args, stdin, nil)
+		return runtime.runWithEnvironment(
+			ctx, "ssh", args, stdin, runtime.config.TargetEnvironment, nil,
+		)
 	default:
 		return nil, fmt.Errorf("unknown credential transport %q", target.Transport)
 	}

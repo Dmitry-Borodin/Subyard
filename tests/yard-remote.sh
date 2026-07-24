@@ -13,7 +13,8 @@ assert_not_contains() { ! grep -Fq -- "$2" <<<"$1" || fail "output unexpectedly 
 
 mkdir -p "$TMP/bin" "$TMP/home/.ssh" "$TMP/state/keys" "$TMP/state/info" \
   "$TMP/state/data-mode" "$TMP/state/owner-mode" "$TMP/config-shipped"
-go build -o "$TMP/bin/yard-engine" "$ROOT/cmd/yard"
+[ -x "$ROOT/.build/yard" ] || fail 'development engine must be built before remote tests'
+install -m 0755 "$ROOT/.build/yard" "$TMP/bin/yard-engine"
 export YARD_ENGINE_PATH="$TMP/bin/yard-engine"
 
 # Real public keys keep known_hosts + ssh-keygen fingerprint/removal behavior realistic.
@@ -136,7 +137,7 @@ if output="$(printf 'n\n' | "$ROOT/bin/yard" remote add preview owner-three 2>&1
 fi
 assert_contains "$output" 'yard ssh key: SHA256:'
 [ ! -e "$REMOTE_TEST_ROOT/owner-mode/authorized-owner-three" ] || fail 'prepare authorized a key before confirmation'
-[ ! -e "$SUBYARD_CONFIG_HOME/yards/preview.env" ] || fail 'prepare wrote a context before confirmation'
+[ ! -e "$SUBYARD_CONFIG_HOME/yards/preview/config.env" ] || fail 'prepare wrote a context before confirmation'
 [ ! -e "$HOME/.ssh/subyard-preview.config" ] || fail 'prepare wrote an alias before confirmation'
 
 # A local port pin and two remote yards all use 2222. Only the per-context aliases distinguish
@@ -159,18 +160,19 @@ assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" '[127.0.0.1]:2222 '
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" 'subyard-remote-one '
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" 'subyard-remote-two '
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" 'subyard-remote-named '
-assert_file_contains "$SUBYARD_CONFIG_HOME/yards/named.env" 'REMOTE_YARD=inner'
+assert_file_contains "$SUBYARD_CONFIG_HOME/yards/named/config.env" 'REMOTE_YARD=inner'
 if output="$(run_add named owner-two --yard other 2>&1)"; then fail 'remote add allowed a remote-yard rebind'; fi
 assert_contains "$output" 'before rebinding it'
 
 # Identical add repairs a legacy snippet and stays idempotent; rebinding is rejected before probe.
-printf 'FORWARD_SSH_AGENT=1\nCUSTOM_REMOTE_SETTING=kept\n' >> "$SUBYARD_CONFIG_HOME/yards/one.env"
+one_config="$SUBYARD_CONFIG_HOME/yards/one/config.env"
+printf 'FORWARD_SSH_AGENT=1\nCUSTOM_REMOTE_SETTING=kept\n' >> "$one_config"
 sed -i '/HostKeyAlias/d' "$HOME/.ssh/subyard-one.config"
 run_add one owner-one >/dev/null
 run_add one owner-one >/dev/null
 assert_file_contains "$HOME/.ssh/subyard-one.config" 'HostKeyAlias subyard-remote-one'
-[ "$(grep -Fc 'FORWARD_SSH_AGENT=1' "$SUBYARD_CONFIG_HOME/yards/one.env")" = 1 ] || fail 'remote add did not preserve explicit forwarding opt-in'
-[ "$(grep -Fc 'CUSTOM_REMOTE_SETTING=kept' "$SUBYARD_CONFIG_HOME/yards/one.env")" = 1 ] || fail 'remote add did not preserve user context overrides'
+[ "$(grep -Fc 'FORWARD_SSH_AGENT=1' "$one_config")" = 1 ] || fail 'remote add did not preserve explicit forwarding opt-in'
+[ "$(grep -Fc 'CUSTOM_REMOTE_SETTING=kept' "$one_config")" = 1 ] || fail 'remote add did not preserve user context overrides'
 [ "$(grep -Fc 'Include subyard-one.config' "$HOME/.ssh/config")" = 1 ] || fail 'remote add duplicated the Include line'
 if output="$(run_add one other-owner 2>&1)"; then fail 'remote add allowed a name rebind'; fi
 assert_contains "$output" 'before rebinding it'
@@ -197,7 +199,7 @@ printf 'auth\n' > "$TMP/state/data-mode/yard-three"
 if output="$(run_add three owner-three 2>&1)"; then fail 'auth-failing add succeeded'; fi
 assert_contains "$output" 'rejected the controller key'
 assert_not_contains "$output" 'state is STOPPED'
-[ ! -e "$SUBYARD_CONFIG_HOME/yards/three.env" ] || fail 'auth failure left a context'
+[ ! -e "$SUBYARD_CONFIG_HOME/yards/three/config.env" ] || fail 'auth failure left a context'
 [ ! -e "$HOME/.ssh/subyard-three.config" ] || fail 'auth failure left an ssh snippet'
 ! grep -Fq 'subyard-remote-three ' "$SUBYARD_HOME/ssh/known_hosts" || fail 'auth failure left a trust pin'
 

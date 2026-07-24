@@ -5,8 +5,8 @@
 # This is the single source of truth for core command dispatch, aliases, remote execution plane,
 # mutation policy, top-level help/list output and completion-provider selection. Profile resource
 # commands remain data-driven by config/profiles/*/resources/*.res and are appended by the engine.
-check||00-check-host.sh||local|read|public|lifecycle|simple|check|verify the host can run a yard (read-only preflight)|--help|
-security||security-lint.sh||local|read|public|lifecycle|simple|security|validate static and live Incus host-boundary invariants|--quiet --require-live --help|
+check||@check||forward|read|public|lifecycle|simple|check|verify the host can run a yard (read-only preflight)|--help|
+security||@security||forward|read|public|lifecycle|simple|security|validate static and live Incus host-boundary invariants|--quiet --require-live --help|
 init|setup|@init||forward|mutate|public|lifecycle|simple|init|install or reconcile Incus, the yard and its core configuration|--configs --reset --yes --help|
 start||@lifecycle||forward|mutate|public|lifecycle|simple|start|start the yard|--yes --help|
 status||@status||forward|read|public|lifecycle|status|status|show yard, SSH, mounts, services, projects, security and size|--all --yes --help|
@@ -31,6 +31,7 @@ info||@project-env||forward|read|public|project_env|project-env|info [project]|s
 yards||@yards||local|read|public|lifecycle|simple|yards|list registered local and remote yards|--help|
 remote||@remote||local|mutate|public|remote|remote|remote <command>|register, repair, remove or list remote yards|--yard --yes --help|add repair-key remove list
 update||@update||local|mutate|public|lifecycle|simple|update|check, install or roll back the release runtime|--check --version --offline --rollback --force --yes --help|
+config||@config||local|mutate|public|lifecycle|simple|config <command>|inspect and reconcile operator configuration|--all-local --yes --help|paths status apply
 help||@help||local|read|hidden|internal|none|help|show top-level help||
 rpc||@rpc||local|mutate|hidden|internal|none|rpc --stdio|serve the versioned local RPC protocol|--stdio|
 svc|resource|@resource||forward|mutate|hidden|internal|resource|svc <resource> <verb>|dispatch a profile resource by registry name|--yes --help|
@@ -38,7 +39,7 @@ _info||@info||local|read|hidden|internal|none|_info|machine-readable owner probe
 _authorize||@authorize||forward|mutate|hidden|internal|none|_authorize|authorize a controller key inside a yard||
 _state||@state||local|mutate|hidden|internal|none|_state|native project state adapter||
 _project-state||@project-state||forward|mutate|hidden|internal|none|_project-state|converge owner-host project state||
-_migrate||@migrate||local|mutate|hidden|internal|none|_migrate|inspect, validate or apply engine state migrations||paths check apply
+_migrate||@migrate||local|mutate|hidden|internal|none|_migrate|inspect, validate or apply engine state migrations||paths check apply overlay-manifest
 _keys-exchange||@keys|_exchange|forward|mutate|hidden|internal|none|_keys-exchange|credential peer exchange endpoint||
 _keys-auto-sync||@keys|_auto-worker|forward|mutate|hidden|internal|none|_keys-auto-sync|credential auto-sync worker||
 _keys-init||@keys|_init-store|local|mutate|hidden|internal|none|_keys-init|initialize the host credential ledger||

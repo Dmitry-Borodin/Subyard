@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -79,8 +81,37 @@ func TestTeardownRejectsUnknownInputAndPublishesMode(t *testing.T) {
 		t.Fatalf("teardown failed: code=%d stderr=%q", code, stderr.String())
 	}
 	if len(runner.Requests) != 1 || runner.Requests[0].Adapter != "teardown" ||
-		runner.Requests[0].Context["SUBYARD_TEARDOWN_KEEP_DATA"] != "1" {
+		runner.Requests[0].Context["SUBYARD_TEARDOWN_KEEP_DATA"] != "1" ||
+		runner.Requests[0].Context["SUBYARD_TEARDOWN_KEEP_SHARED"] != "0" {
 		t.Fatalf("requests=%#v", runner.Requests)
+	}
+}
+
+func TestTeardownKeepsSharedIncusForAnotherRegisteredLocalYard(t *testing.T) {
+	root, environment, stateDirectory := nativeFixture(t)
+	yardDirectory := filepath.Join(filepath.Dir(stateDirectory), "yards", "other")
+	if err := os.MkdirAll(yardDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(yardDirectory, "config.env"), "SSH_PORT=2223\n", 0o600)
+	runner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
+		Schema: 1, OperationID: "teardown-shared-test", Status: "ok",
+	}}}}
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"teardown", "--yes"},
+		Environment: append(environment, "SUBYARD_OPERATION_ID=teardown-shared-test"), WorkingDir: root,
+		AdapterRunner: runner, Prompt: &testkit.Prompt{},
+		Clock: testkit.NewManualClock(time.Unix(100, 0)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("teardown failed with %d", code)
+	}
+	if len(runner.Requests) != 1 ||
+		runner.Requests[0].Context["SUBYARD_TEARDOWN_KEEP_SHARED"] != "1" {
+		t.Fatalf("shared Incus lifecycle was not preserved: %#v", runner.Requests)
 	}
 }
 

@@ -7,17 +7,14 @@
 # DIFFERENT bots with no Telegram 409, and an exhausted pool fails fast. This is the
 # token-DISTRIBUTOR half of the live-test lane (the token-HIDER proxy is a separate axis).
 #
-# The pool's durable source is HOST-CONFIG (config/qa-pool/, gitignored): the two broker role
-# secrets (secrets.env) + the bot-token pool (pool.jsonl). They are staged into the yard and the
-# pool is (re)seeded via the broker's own admin/add — so a yard teardown-wipe is harmless
-# (re-seed on rebuild). No host daemon: everything runs in the yard via its own Docker.
+# Host knobs come from overrides/host/qa-pool; ledger consumers come from generated/qa-pool.
 #
 # Subcommands:
 #   up [--source PATH] [--redeploy]   start the backend + admin-key + `convex deploy` the broker
 #                                     functions + set role secrets, then seed + expose. Idempotent.
 #                                     --source PATH = the in-yard qa/convex-credential-broker dir
 #                                     (overrides BROKER_SRC); --redeploy re-pushes functions/secrets.
-#   seed                              (re)seed the pool from config/qa-pool/pool.jsonl (deduped by note).
+#   seed                              (re)seed the generated pool (deduped by note).
 #   expose                            (re)write the worker env (/srv/qa-pool/client.env: SITE url + CI
 #                                     secret + insecure-http flag) an L1 dev-agent sources.
 #   status                            backend state + pool summary (redacted) + endpoints.
@@ -27,13 +24,14 @@
 #   down                              stop the backend container (keeps data + pool).
 #   destroy [--purge]                 remove the backend container (--purge also wipes /srv/qa-pool).
 #
-# Config: config/qa-pool/broker.conf (knobs) + secrets.env + pool.jsonl. See *.example.
 # Operator-owned; no host root. Docker here is the yard's nested daemon, never the host's.
 set -euo pipefail
 RESOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBYARD_ROOT="$(cd "$RESOURCE_DIR/../../../../.." && pwd)"
 SCRIPT_DIR="$SUBYARD_ROOT/scripts"
-[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] || { printf 'qa-pool: prepared engine context required\n' >&2; exit 2; }
+# shellcheck source=scripts/lib/engine-context.sh
+. "$SCRIPT_DIR/lib/engine-context.sh"
+subyard_require_engine_context
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
 # shellcheck source=scripts/lib/host.sh
@@ -42,10 +40,12 @@ SCRIPT_DIR="$SUBYARD_ROOT/scripts"
 . "$SCRIPT_DIR/lib-service.sh"   # yexec / svc_require_yard_running / PROJ / INSTANCE_NAME
 
 DEV_UID="${DEV_UID:-1000}"
-QA_DIR="$SCRIPT_DIR/../config/qa-pool"
-CONF="$QA_DIR/broker.conf"
-SECRETS="$QA_DIR/secrets.env"
-POOL="$QA_DIR/pool.jsonl"
+: "${SUBYARD_CONFIG_HOST_DIR:?typed host config directory is required}"
+: "${SUBYARD_CONFIG_GENERATED_DIR:?typed generated config directory is required}"
+CONF="$SUBYARD_CONFIG_HOST_DIR/qa-pool/broker.conf"
+QA_GENERATED_DIR="$SUBYARD_CONFIG_GENERATED_DIR/qa-pool"
+SECRETS="$QA_GENERATED_DIR/secrets.env"
+POOL="$QA_GENERATED_DIR/pool.jsonl"
 
 # In-yard layout (under the persistent /srv volume — survives instance rebuild, not --purge).
 CNAME=subyard-qa-broker
@@ -79,7 +79,7 @@ require_box() { box_exists || die "no QA broker in the yard — run: ${PROG:-yar
 
 # Validate the host-side secrets file has both role secrets (never print the values).
 require_secrets() {
-  [ -r "$SECRETS" ] || die "missing $SECRETS — copy config/qa-pool/secrets.env.example and fill it in"
+  [ -r "$SECRETS" ] || die "missing generated QA secrets at $SECRETS — import and materialize them with yard keys"
   local m c
   # shellcheck disable=SC1090 # operator-selected host secret file
   m="$( . "$SECRETS" >/dev/null 2>&1; printf '%s' "${OPENCLAW_QA_CONVEX_SECRET_MAINTAINER:-}")"
@@ -148,8 +148,8 @@ cmd_up() {
   announce "yard qa-pool up — in-yard QA credential broker (Convex, self-hosted)" \
     "Run the Convex backend '$CNAME' on the yard's Docker, bound to 127.0.0.1:$CLOUD_PORT (API) + 127.0.0.1:$SITE_PORT (SITE) — loopback only, never the LAN." \
     "Persist its DB under $YDATA; generate an admin key; deploy the broker functions from $BROKER_SRC (copied to $YSRC)." \
-    "Register the two role secrets (from config/qa-pool/secrets.env) as Convex deployment env." \
-    "Then seed the pool from config/qa-pool/pool.jsonl and write the worker env ($YCLIENT)."
+    "Register the generated role secrets as Convex deployment env." \
+    "Then seed the generated pool and write the worker env ($YCLIENT)."
   proceed_or_die y   # transient bring-up (start the shared QA broker) — default Yes
 
   for d in "$DATA_ROOT" "$YDATA" "$YSRC" "$(dirname "$YSECRETS")"; do
@@ -266,7 +266,7 @@ deploy_functions() {
 # ----------------------------------------------------------------------------------
 cmd_seed() {
   require_box; require_secrets; stage_secrets
-  [ -r "$POOL" ] || { warn "no $POOL — nothing to seed (copy config/qa-pool/pool.jsonl.example)"; return 0; }
+  [ -r "$POOL" ] || { warn "no generated QA pool at $POOL — nothing to seed"; return 0; }
   incus file push "$POOL" "$INSTANCE_NAME$YPOOL" "${PROJ[@]}" \
     --mode 0600 --uid "$DEV_UID" --gid "$DEV_UID" >/dev/null \
     || die "could not stage pool.jsonl into the yard"

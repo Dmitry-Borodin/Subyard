@@ -8,10 +8,21 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 SUBYARD_OPERATOR_HOME="$TMP/operator"
-# shellcheck source=scripts/lib/context.sh
-. "$ROOT/scripts/lib/context.sh"
+# shellcheck source=scripts/lib/engine-context.sh
+. "$ROOT/scripts/lib/engine-context.sh"
 # shellcheck source=scripts/lib/host.sh
 . "$ROOT/scripts/lib/host.sh"
+
+incus() {
+  [ "$1 $2 $3 $4" = "project get fixture features.images" ] || return 1
+  printf '%s\n' "$INCUS_FEATURES_IMAGES"
+}
+INCUS_FEATURES_IMAGES=false
+! incus_project_has_isolated_images fixture \
+  || fail 'shared default-project images were treated as yard-owned'
+INCUS_FEATURES_IMAGES=true
+incus_project_has_isolated_images fixture \
+  || fail 'isolated project images were not treated as yard-owned'
 
 data_home="$TMP/default-home"
 runtime_root="$data_home/runtime"

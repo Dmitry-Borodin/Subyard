@@ -25,11 +25,15 @@ func YardNames(directories ...string) ([]string, error) {
 			return nil, err
 		}
 		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".env") {
-				continue
+			name := ""
+			if entry.IsDir() {
+				if info, statErr := os.Lstat(filepath.Join(directory, entry.Name(), "config.env")); statErr == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+					name = entry.Name()
+				}
+			} else if strings.HasSuffix(entry.Name(), ".env") {
+				name = strings.TrimSuffix(entry.Name(), ".env")
 			}
-			name := strings.TrimSuffix(entry.Name(), ".env")
-			if !domain.SafeName(name) {
+			if name == "" || !domain.SafeName(name) {
 				continue
 			}
 			if _, exists := seen[name]; exists {
@@ -41,6 +45,14 @@ func YardNames(directories ...string) ([]string, error) {
 	}
 	sort.Strings(discovered)
 	return append(names, discovered...), nil
+}
+
+func YardFileCandidates(configDir, configHome, name string) []string {
+	return []string{
+		filepath.Join(configHome, "yards", name, "config.env"),
+		filepath.Join(configDir, "..", "private", "yards", name+".env"),
+		filepath.Join(configHome, "yards", name+".env"),
+	}
 }
 
 func RegistryDirectories(configDir, configHome string) []string {

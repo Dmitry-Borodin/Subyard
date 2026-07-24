@@ -1,98 +1,44 @@
 # Named yards
 
-Run several independent yards on one host, each with its own Incus instance, `/srv`, ssh
-port, personal-data mount root and projects — while the default (unnamed) yard keeps working
-exactly as before. Pick a yard for a command with `-Y <name>` / `--yard <name>`, or the
-first-token sugar `@<name>`:
+Create an installed yard at:
 
+```text
+~/.config/subyard/yards/<name>/config.env
 ```
+
+Source checkouts may still use `private/yards/<name>.env`; release installation migrates it to
+the installed path. Start from [`example.env`](example.env). `SSH_PORT` must be unique; the yard
+name derives the instance, Incus project, SSH alias, storage volume and host-data root.
+
+```sh
 yard -Y openclaw init
 yard @openclaw status
-yard yards                 # table of every yard on this host
+yard yards
 ```
 
-## Defining a yard
+Precedence is:
 
-A yard is one env file, named after the yard. Drop it in a **registry** location (first match
-wins):
+```text
+runtime defaults
+  -> overrides/shared
+  -> config.env + overrides/host
+  -> yards/<name>/config.env + yard overrides
+  -> command environment
+```
 
-| Location | Use |
-| --- | --- |
-| `~/.config/subyard/yards/<name>.env` | installed-runtime machine registry |
-| `private/yards/<name>.env` | source-checkout operator overlay; wins when present |
+Public profiles remain in the immutable runtime. Set `YARD_TEMPLATE=<profile>` for a reusable yard
+template or `YARD_PROFILES="<profile> ..."` to limit project profiles. Run `yard config paths` to
+inspect effective sources, and `yard config status --all-local` / `yard config apply --all-local`
+to verify or apply agent files to local yards. Remote yards are excluded from `--all-local`.
 
-Files under `config/yards/` are not registry entries. Use [`example.env`](example.env) for an
-ordinary named yard. Reusable public settings live in `config/yards/profiles/` and are loaded only
-when a registered yard explicitly names one with `YARD_TEMPLATE=<profile>`.
+`yard teardown` removes only the selected yard and preserves the host credential ledger. Managed
+mounts stay under that yard's `HOST_BASE`; `yard bind` is the explicit exception.
 
-The only value you must set is `SSH_PORT` (a unique host loopback port — the one thing Subyard
-cannot derive without risking a collision). Everything else is derived from the yard name and
-overridable:
-
-| Derived | Default for yard `<name>` |
-| --- | --- |
-| `INSTANCE_NAME` | `yard-<name>` |
-| `INCUS_PROJECT` | `subyard-<name>` |
-| `SSH_HOST` (ssh alias) | `yard-<name>` |
-| `SRV_VOLUME` | `yard-srv-<name>` |
-| `RESTRICTED_DISK_PATHS` ⇒ `HOST_BASE` | `/srv/subyard-<name>` |
-| project state dir | `~/.config/subyard/yards/<name>/projects/` |
-
-The default yard keeps the historical unnamed values (`yard`, `subyard`, `/srv/subyard`,
-`~/.config/subyard/projects/`), so existing setups are untouched.
-
-**Precedence.** Per-yard values beat source `private/config.env`, machine
-`~/.subyard/config.env`, and public defaults, in that order. Keep globals in the machine overlay and
-yard-specific values such as `SSH_PORT` in the yard file. Production install imports legacy overlays.
-
-## Personal-data isolation
-
-Each yard has its own managed `HOST_BASE` (`/srv/subyard-<name>`). Incus cannot combine its
-disk-source allowlist with Subyard's idmapped mounts, so the CLI verifies managed `host-*`/`yx-*`
-sources under that root and `yard security` audits the expanded live device set. An explicit
-`yard bind <path>` may come from anywhere on the host: it warns that encapsulation is reduced, but
-does not impose a project-root allowlist.
-
-## Per-yard profiles
-
-Set `YARD_PROFILES="<profile> …"` in a yard's env to scope it to specific profiles. `yard
-provision` (no argument) then provisions exactly those, and `yard status` lists only their
-shared resources. Unset = all profiles (the default-yard behavior).
-
-## Lifecycle
-
-Every lifecycle command takes the context: `yard -Y <name> {init,start,stop,status,provision,
-logs,teardown,…}`. `yard -Y <name> teardown` removes only that yard's instance, project,
-volume, ssh snippet and state — never another yard's. Shared host objects (the storage pool,
-bridge, NetworkManager guard) are only removed when the last yard goes away.
-
-The dedicated nested-VM acceptance profile is public as `YARD_TEMPLATE=test-vms`, but it is dormant
-until an operator registers a yard that selects it. The conventional private registration is:
+For the disposable two-VM profile:
 
 ```sh
 YARD_TEMPLATE=test-vms
 SSH_PORT=2223
 ```
 
-Run `dev/agent-e2e.sh --prepare`, then initialize with `yard -Y test-yard init`. Init confirms the
-public-key fingerprint; private keys never enter yard config. See
-[`docs/test-vms.md`](../../docs/test-vms.md).
-
-## Encrypted credential exchange
-
-Yard registration and project sync are credential-free. To share selected static credentials,
-initialize the ledger normally on each physical owner host and explicitly enroll the peer:
-
-```bash
-yard -Y openclaw init
-yard -Y srv1 init
-yard -Y openclaw keys trust @srv1
-```
-
-Trust displays the age recipient and signing fingerprints and asks for confirmation. One command
-installs reciprocal cryptographic trust. The side with the known route becomes the automatic `active`
-initiator; the other side is `passive`/respond-only until it separately learns a reverse route.
-Enrolled peers exchange only signed, recipient-authorized ciphertext. All local yard contexts share
-one host identity/store; yard names remain consumer and exclusive-assignment targets. The store survives
-yard teardown. See
-[the credential-ledger contract](../../docs/keys.md).
+See [`docs/test-vms.md`](../../docs/test-vms.md) and [`docs/keys.md`](../../docs/keys.md).

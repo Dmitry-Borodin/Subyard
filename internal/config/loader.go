@@ -62,49 +62,81 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 		return domain.Context{}, nil, fmt.Errorf("resolve repository root: %w", err)
 	}
 	values := environmentFrom(options.Environment)
-	if values["SUBYARD_ENGINE_CONTEXT"] == "1" {
+	if values["SUBYARD_ENGINE_CONTEXT"] == "1" && values["SUBYARD_CONFIG_LOADED"] != "1" {
 		resetInheritedContext(values)
 	}
+	commandEnvironment := cloneEnvironment(values)
 	if values["SUBYARD_CONFIG_DIR"] == "" {
 		values["SUBYARD_CONFIG_DIR"] = filepath.Join(root, "config")
 	}
 	configDir := filepath.Clean(values["SUBYARD_CONFIG_DIR"])
 	if options.OperatorHome != "" {
 		values["SUBYARD_OPERATOR_HOME"] = options.OperatorHome
+		commandEnvironment["SUBYARD_OPERATOR_HOME"] = options.OperatorHome
 	}
 	if values["SUBYARD_OPERATOR_HOME"] == "" {
 		return domain.Context{}, nil, errors.New("operator home is required")
 	}
-
+	configHome, err := bootstrapConfigHome(values)
+	if err != nil {
+		return domain.Context{}, nil, err
+	}
+	values["SUBYARD_CONFIG_HOME"] = configHome
 	dataHome := values["SUBYARD_HOME"]
 	if dataHome == "" {
 		dataHome = filepath.Join(values["SUBYARD_OPERATOR_HOME"], ".subyard")
 	}
-	machineConfig := filepath.Join(dataHome, "config.env")
-	if _, err := os.Stat(machineConfig); err == nil {
-		// Resolve migrated private asset paths outside the runtime.
-		overlayConfig := filepath.Join(dataHome, "operator-overlay", "config")
-		if info, overlayErr := os.Stat(filepath.Join(dataHome, "operator-overlay", "private")); overlayErr == nil && info.IsDir() {
-			values["SUBYARD_CONFIG_DIR"] = overlayConfig
-		}
-		if err := applyEnvFile(machineConfig, values); err != nil {
+	values["SUBYARD_HOME"] = filepath.Clean(dataHome)
+	setOperatorConfigPaths(values, configHome, "default")
+
+	// Immutable runtime defaults are the lowest-precedence layer.
+	for _, name := range []string{"incus.project.env", "subyard.env", "host.env", "agents.env", "ports.env"} {
+		if err := applyOptional(filepath.Join(configDir, name), values); err != nil {
 			return domain.Context{}, nil, err
 		}
-		values["SUBYARD_CONFIG_DIR"] = configDir
-	} else if !errors.Is(err, os.ErrNotExist) {
+	}
+	logicalAssets := agentAssetMappings(values, configDir)
+	if err := applyAgentAssetLayer(values, logicalAssets,
+		filepath.Join(configHome, "overrides", "shared", "agents")); err != nil {
 		return domain.Context{}, nil, err
 	}
 
-	if !options.DisablePrivate {
+	machineConfig := filepath.Join(configHome, "config.env")
+	machineExists, err := regularFileExists(machineConfig)
+	if err != nil {
+		return domain.Context{}, nil, err
+	}
+	if machineExists {
+		if err := applyEnvFile(machineConfig, values); err != nil {
+			return domain.Context{}, nil, err
+		}
+		if err := validateBootstrapConfigHome(values, configHome, machineConfig); err != nil {
+			return domain.Context{}, nil, err
+		}
+	} else if !options.DisablePrivate {
+		// Source checkouts retain a read-only compatibility input until the
+		// installer moves it into configHome/config.env.
 		privateConfig := filepath.Join(configDir, "..", "private", "config.env")
 		if err := applyOptional(privateConfig, values); err != nil {
 			return domain.Context{}, nil, err
 		}
+		if err := validateBootstrapConfigHome(values, configHome, privateConfig); err != nil {
+			return domain.Context{}, nil, err
+		}
+	}
+	values["SUBYARD_CONFIG_DIR"] = configDir
+	extendAgentAssetMappings(logicalAssets, values)
+	if err := applyAgentAssetLayer(values, logicalAssets,
+		filepath.Join(configHome, "overrides", "host", "agents")); err != nil {
+		return domain.Context{}, nil, err
 	}
 
 	yardName := options.YardName
 	if yardName == "" {
 		yardName = values["SUBYARD_YARD"]
+	}
+	if explicit := commandEnvironment["SUBYARD_YARD"]; explicit != "" && options.YardName == "" {
+		yardName = explicit
 	}
 	if yardName == "" || yardName == "default" {
 		yardName = "default"
@@ -112,6 +144,7 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 		if !domain.SafeName(yardName) {
 			return domain.Context{}, nil, fmt.Errorf("invalid yard name %q", yardName)
 		}
+		applyYardDerivations(yardName, values)
 		yardFile, err := findYardFile(root, yardName, values, options.YardDirs)
 		if err != nil {
 			return domain.Context{}, nil, err
@@ -119,16 +152,199 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 		if err := applyYardConfig(configDir, yardName, yardFile, values); err != nil {
 			return domain.Context{}, nil, err
 		}
-		applyYardDerivations(yardName, values)
-	}
-
-	for _, name := range []string{"incus.project.env", "subyard.env", "host.env", "agents.env", "ports.env"} {
-		if err := applyOptional(filepath.Join(configDir, name), values); err != nil {
+		if err := validateBootstrapConfigHome(values, configHome, yardFile); err != nil {
+			return domain.Context{}, nil, err
+		}
+		extendAgentAssetMappings(logicalAssets, values)
+		if err := applyAgentAssetLayer(values, logicalAssets,
+			filepath.Join(configHome, "yards", yardName, "overrides", "agents")); err != nil {
 			return domain.Context{}, nil, err
 		}
 	}
+
+	// The process environment is the final layer. Engine-forwarded contexts
+	// have already had inherited yard fields removed above.
+	for name, value := range commandEnvironment {
+		values[name] = value
+	}
+	values["SUBYARD_CONFIG_DIR"] = configDir
+	values["SUBYARD_CONFIG_HOME"] = configHome
+	setOperatorConfigPaths(values, configHome, yardName)
+	if yardName != "default" {
+		values["YARD_NAME"] = yardName
+	}
+	if err := normalizeAgentAssetPaths(values); err != nil {
+		return domain.Context{}, nil, err
+	}
 	ctx, err := contextFrom(root, yardName, values)
 	return ctx, values, err
+}
+
+func cloneEnvironment(values environment) environment {
+	result := make(environment, len(values))
+	for name, value := range values {
+		result[name] = value
+	}
+	return result
+}
+
+func bootstrapConfigHome(values environment) (string, error) {
+	configHome := values["SUBYARD_CONFIG_HOME"]
+	if configHome == "" {
+		if xdg := values["XDG_CONFIG_HOME"]; xdg != "" {
+			configHome = filepath.Join(xdg, "subyard")
+		} else {
+			configHome = filepath.Join(values["SUBYARD_OPERATOR_HOME"], ".config", "subyard")
+		}
+	}
+	if !filepath.IsAbs(configHome) {
+		return "", errors.New("SUBYARD_CONFIG_HOME must be absolute")
+	}
+	return filepath.Clean(configHome), nil
+}
+
+func validateBootstrapConfigHome(values environment, expected, source string) error {
+	if actual := filepath.Clean(values["SUBYARD_CONFIG_HOME"]); actual != expected {
+		return fmt.Errorf("%s cannot relocate its config root from %s to %s; set SUBYARD_CONFIG_HOME before launch",
+			source, expected, actual)
+	}
+	return nil
+}
+
+func setOperatorConfigPaths(values environment, configHome, yardName string) {
+	values["SUBYARD_CONFIG_SHARED_DIR"] = filepath.Join(configHome, "overrides", "shared")
+	values["SUBYARD_CONFIG_HOST_DIR"] = filepath.Join(configHome, "overrides", "host")
+	values["SUBYARD_CONFIG_SECRETS_DIR"] = filepath.Join(configHome, "secrets")
+	values["SUBYARD_CONFIG_GENERATED_DIR"] = filepath.Join(configHome, "generated")
+	if yardName != "" && yardName != "default" {
+		values["SUBYARD_CONFIG_YARD_DIR"] = filepath.Join(configHome, "yards", yardName)
+	} else {
+		values["SUBYARD_CONFIG_YARD_DIR"] = ""
+	}
+	if values["SUBYARD_KEYS_CONSUMER_ROOT"] == "" {
+		values["SUBYARD_KEYS_CONSUMER_ROOT"] = values["SUBYARD_CONFIG_GENERATED_DIR"]
+	}
+	if values["SUBYARD_KEYS_PROD_FINGERPRINTS"] == "" {
+		values["SUBYARD_KEYS_PROD_FINGERPRINTS"] =
+			filepath.Join(values["SUBYARD_CONFIG_HOST_DIR"], "prod-fingerprints")
+	}
+}
+
+func agentAssetMappings(values environment, configDir string) map[string]string {
+	result := make(map[string]string)
+	for name, value := range values {
+		if !sourceValuedAgentSetting(name) || value == "" {
+			continue
+		}
+		path := filepath.Clean(value)
+		relative, err := filepath.Rel(configDir, path)
+		if err == nil && safeAgentAssetRelative(relative) &&
+			(strings.HasPrefix(relative, "agents"+string(filepath.Separator)) || relative == "agents") {
+			result[name] = strings.TrimPrefix(relative, "agents"+string(filepath.Separator))
+		}
+	}
+	return result
+}
+
+func extendAgentAssetMappings(mappings map[string]string, values environment) {
+	for name, value := range values {
+		if !sourceValuedAgentSetting(name) || value == "" {
+			continue
+		}
+		path := filepath.ToSlash(filepath.Clean(value))
+		for _, marker := range []string{"/private/agents/", "/overrides/host/agents/",
+			"/overrides/shared/agents/"} {
+			if index := strings.LastIndex(path, marker); index >= 0 {
+				relative := filepath.FromSlash(path[index+len(marker):])
+				if safeAgentAssetRelative(relative) {
+					mappings[name] = relative
+				}
+				break
+			}
+		}
+	}
+}
+
+func applyAgentAssetLayer(
+	values environment,
+	mappings map[string]string,
+	agentsRoot string,
+) error {
+	for name, relative := range mappings {
+		candidate := filepath.Join(agentsRoot, relative)
+		exists, err := regularFileExists(candidate)
+		if err != nil {
+			return fmt.Errorf("%s override: %w", name, err)
+		}
+		if exists {
+			values[name] = candidate
+		}
+	}
+	return nil
+}
+
+func safeAgentAssetRelative(relative string) bool {
+	if relative == "" || relative == "." || filepath.IsAbs(relative) ||
+		relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) ||
+		strings.ContainsAny(relative, "\x00\n\r\t") {
+		return false
+	}
+	return true
+}
+
+func regularFileExists(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%s must be a regular non-symlink file", path)
+	}
+	return true, nil
+}
+
+func normalizeAgentAssetPaths(values environment) error {
+	for name, value := range values {
+		if !sourceValuedAgentSetting(name) || value == "" {
+			continue
+		}
+		if !filepath.IsAbs(value) {
+			return fmt.Errorf("%s must name an absolute regular file", name)
+		}
+		path := filepath.Clean(value)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("%s is not openable: %w", name, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("%s must name a regular non-symlink file", name)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("%s is not openable: %w", name, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		values[name] = path
+	}
+	return nil
+}
+
+func sourceValuedAgentSetting(name string) bool {
+	if !strings.HasPrefix(name, "AGENT_") {
+		return false
+	}
+	for _, suffix := range []string{"_CONFIG", "_RULES", "_PROVISION"} {
+		agent, found := strings.CutSuffix(strings.TrimPrefix(name, "AGENT_"), suffix)
+		if found && domain.SafeName(agent) {
+			return true
+		}
+	}
+	return false
 }
 
 func resetInheritedContext(values environment) {
@@ -145,8 +361,8 @@ func resetInheritedContext(values environment) {
 }
 
 func applyYardConfig(configDir, yardName, yardFile string, values environment) error {
-	// Match scripts/lib/registry.sh: a machine-local yard file selects one public
-	// profile, that profile is applied first, and the machine file wins last.
+	// A machine-local yard file selects one public profile. The profile is
+	// applied first and the machine file wins last.
 	// Probe a copy because env files are declarative but may contain defaults that
 	// depend on the existing normalized environment.
 	probe := make(environment, len(values))
@@ -223,17 +439,24 @@ func applyOptional(path string, values environment) error {
 }
 
 func findYardFile(root, name string, values environment, explicit []string) (string, error) {
-	directories := explicit
-	if len(directories) == 0 {
-		configHome := values["SUBYARD_CONFIG_HOME"]
-		if configHome == "" {
-			configHome = filepath.Join(values["SUBYARD_OPERATOR_HOME"], ".config", "subyard")
+	var candidates []string
+	if len(explicit) != 0 {
+		for _, directory := range explicit {
+			candidates = append(candidates,
+				filepath.Join(directory, name, "config.env"),
+				filepath.Join(directory, name+".env"),
+			)
 		}
-		privateYards := filepath.Join(values["SUBYARD_CONFIG_DIR"], "..", "private", "yards")
-		directories = []string{privateYards, filepath.Join(configHome, "yards")}
+	} else {
+		configHome := values["SUBYARD_CONFIG_HOME"]
+		privateYards := filepath.Join(root, "private", "yards")
+		candidates = []string{
+			filepath.Join(configHome, "yards", name, "config.env"),
+			privateYards + string(filepath.Separator) + name + ".env",
+			filepath.Join(configHome, "yards", name+".env"),
+		}
 	}
-	for _, directory := range directories {
-		candidate := filepath.Join(directory, name+".env")
+	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate, nil
 		}
@@ -243,16 +466,24 @@ func findYardFile(root, name string, values environment, explicit []string) (str
 
 func applyYardDerivations(name string, values environment) {
 	values["YARD_NAME"] = name
-	setDefault(values, "INSTANCE_NAME", "yard-"+name)
-	setDefault(values, "INCUS_PROJECT", "subyard-"+name)
-	setDefault(values, "SSH_HOST", "yard-"+name)
-	setDefault(values, "SRV_VOLUME", "yard-srv-"+name)
-	setDefault(values, "RESTRICTED_DISK_PATHS", "/srv/subyard-"+name)
+	setYardDefault(values, "INSTANCE_NAME", "yard", "yard-"+name)
+	setYardDefault(values, "INCUS_PROJECT", "subyard", "subyard-"+name)
+	setYardDefault(values, "SSH_HOST", "yard", "yard-"+name)
+	setYardDefault(values, "SRV_VOLUME", "yard-srv", "yard-srv-"+name)
+	setYardDefault(values, "RESTRICTED_DISK_PATHS", "/srv/subyard", "/srv/subyard-"+name)
+	setYardDefault(values, "HOST_BASE", "/srv/subyard", "/srv/subyard-"+name)
 	configHome := values["SUBYARD_CONFIG_HOME"]
 	if configHome == "" {
 		configHome = filepath.Join(values["SUBYARD_OPERATOR_HOME"], ".config", "subyard")
 	}
-	setDefault(values, "SUBYARD_STATE_DIR", filepath.Join(configHome, "yards", name, "projects"))
+	setYardDefault(values, "SUBYARD_STATE_DIR", filepath.Join(configHome, "projects"),
+		filepath.Join(configHome, "yards", name, "projects"))
+}
+
+func setYardDefault(values environment, name, generic, derived string) {
+	if values[name] == "" || values[name] == generic {
+		values[name] = derived
+	}
 }
 
 func setDefault(values environment, name, value string) {

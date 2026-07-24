@@ -473,7 +473,8 @@ func (runtime *Runtime) capturePayload(source string) ([]byte, error) {
 func (runtime *Runtime) rejectProductionPayload(payload []byte) error {
 	denylist := runtime.env["SUBYARD_KEYS_PROD_FINGERPRINTS"]
 	if denylist == "" {
-		denylist = filepath.Join(runtime.config.RepositoryRoot, "config", "prod-fingerprints")
+		denylist = filepath.Join(filepath.Dir(runtime.config.ConsumerRoot),
+			"overrides", "host", "prod-fingerprints")
 	}
 	denied, err := readFingerprints(denylist)
 	if err != nil {

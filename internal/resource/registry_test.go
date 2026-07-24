@@ -29,7 +29,7 @@ func TestLoadRepositoryResources(t *testing.T) {
 			t.Fatal(err)
 		}
 		source := string(content)
-		if !strings.Contains(source, "SUBYARD_ENGINE_CONTEXT") ||
+		if !strings.Contains(source, "subyard_require_engine_context") ||
 			strings.Contains(source, "subyard_context_load") || strings.Contains(source, "lib/config.sh") {
 			t.Errorf("resource handler does not consume only prepared context: %s", definition.HandlerPath())
 		}

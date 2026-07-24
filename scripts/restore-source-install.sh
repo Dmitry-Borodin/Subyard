@@ -80,8 +80,36 @@ read_value data-home; data_home="$REPLY"
 read_value config-home; config_home="$REPLY"
 case "$data_home" in "$HOME"/*) ;; *) fail "recovered data home escapes the operator home" ;; esac
 case "$config_home" in "$HOME"/*) ;; *) fail "recovered config home escapes the operator home" ;; esac
-find "$data_home/operator-overlay" "$config_home/yards" \
-  -depth -type d -empty -delete 2>/dev/null || true
+if [ -f "$RECOVERY_ROOT/created-directories.list" ]; then
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in "$HOME"/*) ;; *) fail "created-directory record escapes the operator home" ;; esac
+    [ ! -L "$path" ] || fail "created migration directory became a symlink: $path"
+    rmdir -- "$path" 2>/dev/null || true
+  done < <(tac "$RECOVERY_ROOT/created-directories.list")
+else
+  find "$data_home/operator-overlay" "$config_home/yards" \
+    -depth -type d -empty -delete 2>/dev/null || true
+fi
+
+restore_legacy_data() {
+  local label="$1" state path
+  read_value "$label.state"; state="$REPLY"
+  read_value "$label.path"; path="$REPLY"
+  case "$path" in "$HOME"/*) ;; *) fail "legacy data path escapes the operator home" ;; esac
+  case "$state" in
+    absent) ;;
+    present)
+      [ ! -e "$path" ] && [ ! -L "$path" ] \
+        || fail "legacy data path was recreated after migration: $path"
+      [ -e "$RECOVERY_ROOT/$label.before" ] \
+        || fail "legacy data recovery payload is missing: $label"
+      mv -- "$RECOVERY_ROOT/$label.before" "$path" ;;
+    *) fail "invalid legacy data recovery state for $label" ;;
+  esac
+}
+restore_legacy_data legacy-data-config
+restore_legacy_data legacy-operator-overlay
 
 source_root="$(<"$RECOVERY_ROOT/source-root")"
 consumed="$RECOVERY_ROOT.restored.$(date -u +%Y%m%dT%H%M%SZ).$$"

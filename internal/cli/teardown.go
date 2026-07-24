@@ -41,7 +41,7 @@ func (execution *teardownExecution) policy(definition command.Definition, yard d
 	} else {
 		consequences = append(consequences,
 			"delete the yard project and /srv volume",
-			"delete the shared bridge, storage pool and disk data only when no other instance uses them",
+			"delete the shared bridge, storage pool and disk data only when no other instance or registered local yard uses them",
 			"remove the NetworkManager guard only after the bridge disappears",
 		)
 	}
@@ -68,6 +68,14 @@ func (cli *CLI) executeTeardown(
 	} else {
 		contextValues["SUBYARD_TEARDOWN_KEEP_DATA"] = "0"
 	}
+	yards, err := cli.powerYardContexts(loaded)
+	if err != nil {
+		return domain.AdapterResult{}, fmt.Errorf("discover local yards before teardown: %w", err)
+	}
+	contextValues["SUBYARD_TEARDOWN_KEEP_SHARED"] = "0"
+	if hasOtherRegisteredLocalYard(loaded.Context.YardName, yards) {
+		contextValues["SUBYARD_TEARDOWN_KEEP_SHARED"] = "1"
+	}
 	request := domain.AdapterRequest{
 		Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID,
 		Adapter: "teardown", Action: "apply", Arguments: []string{"--yes"}, Context: contextValues,
@@ -75,4 +83,14 @@ func (cli *CLI) executeTeardown(
 	result, stderr, err := orchestrator.RunAdapter(ctx, plan, request, nil)
 	writeAdapterDiagnostics(diagnostics, stderr)
 	return result, err
+}
+
+func hasOtherRegisteredLocalYard(current string, yards []domain.Context) bool {
+	for _, yard := range yards {
+		if yard.YardType == domain.YardLocal &&
+			yard.YardName != "default" && yard.YardName != current {
+			return true
+		}
+	}
+	return false
 }

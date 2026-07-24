@@ -37,18 +37,19 @@ type Target struct {
 type Resolver func(context.Context, string) (Target, error)
 
 type Config struct {
-	RepositoryRoot string
-	Root           string
-	ConsumerRoot   string
-	ToolsDirectory string
-	HostBase       string
-	Context        string
-	Dispatcher     string
-	Environment    []string
-	Stdin          io.Reader
-	Stdout         io.Writer
-	Stderr         io.Writer
-	Resolve        Resolver
+	RepositoryRoot    string
+	Root              string
+	ConsumerRoot      string
+	ToolsDirectory    string
+	HostBase          string
+	Context           string
+	Dispatcher        string
+	Environment       []string
+	TargetEnvironment []string
+	Stdin             io.Reader
+	Stdout            io.Writer
+	Stderr            io.Writer
+	Resolve           Resolver
 }
 
 type Runtime struct {
@@ -100,6 +101,9 @@ func New(config Config) (*Runtime, error) {
 	}
 	if config.Dispatcher == "" {
 		config.Dispatcher = filepath.Join(config.RepositoryRoot, "bin", "yard")
+	}
+	if config.TargetEnvironment == nil {
+		config.TargetEnvironment = append([]string(nil), config.Environment...)
 	}
 	if config.Stdin == nil {
 		config.Stdin = strings.NewReader("")
@@ -414,9 +418,22 @@ func (runtime *Runtime) run(
 	stdin io.Reader,
 	extraEnvironment map[string]string,
 ) ([]byte, error) {
+	return runtime.runWithEnvironment(
+		ctx, program, arguments, stdin, runtime.config.Environment, extraEnvironment,
+	)
+}
+
+func (runtime *Runtime) runWithEnvironment(
+	ctx context.Context,
+	program string,
+	arguments []string,
+	stdin io.Reader,
+	environment []string,
+	extraEnvironment map[string]string,
+) ([]byte, error) {
 	command := exec.CommandContext(ctx, program, arguments...)
 	command.Dir = runtime.config.RepositoryRoot
-	command.Env = append([]string(nil), runtime.config.Environment...)
+	command.Env = append([]string(nil), environment...)
 	for key, value := range extraEnvironment {
 		command.Env = append(command.Env, key+"="+value)
 	}

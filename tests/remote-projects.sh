@@ -85,6 +85,8 @@ chmod 755 "$TMP/bin/ssh"
 # shellcheck source=tests/helpers/test-context.sh
 . "$ROOT/tests/helpers/test-context.sh"
 setup_test_context "$TMP"
+# Exercise resolver-owned registry paths and named-yard identity.
+unset SUBYARD_STATE_DIR YARD_TYPE INSTANCE_NAME INCUS_PROJECT SSH_HOST
 chmod 0700 "$TMP/config/yards/remote/projects"
 export PATH="$TMP/bin:$PATH"
 export HOME="$TMP/home"

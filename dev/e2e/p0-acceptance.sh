@@ -94,7 +94,7 @@ prepare_source_archive() {
   git -C "$ROOT" archive --format=tar "$commit" | gzip -n > "$SOURCE_ARCHIVE"
   hash="$(sha256sum "$SOURCE_ARCHIVE" | cut -d' ' -f1)"
   SOURCE_ARCHIVE_REMOTE="/tmp/subyard-p0-source-$TOKEN.tar.gz"
-  "$AGENT" --ssh 1 -- \
+  "$AGENT" --ssh-stdin 1 -- \
     sh -c 'umask 077; dd of="$1" status=none' _ "$SOURCE_ARCHIVE_REMOTE" \
     < "$SOURCE_ARCHIVE"
   remote_hash="$(ssh -F "$CONFIG" -T e2e-vm-1 -- \

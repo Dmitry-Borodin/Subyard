@@ -323,7 +323,12 @@ func loadProjectEnvironmentProfile(
 	if profile.Dockerfile != "" && profile.Context == "" {
 		profile.Context = filepath.Dir(profile.Dockerfile)
 	}
-	secret := filepath.Join(filepath.Dir(path), "profile.env")
+	secretsRoot := base["SUBYARD_CONFIG_SECRETS_DIR"]
+	if secretsRoot == "" {
+		return application.ProjectEnvironmentProfile{}, "",
+			errors.New("operator secret directory is required")
+	}
+	secret := filepath.Join(secretsRoot, "profiles", name, "profile.env")
 	info, statErr := os.Lstat(secret)
 	if errors.Is(statErr, os.ErrNotExist) {
 		secret = ""

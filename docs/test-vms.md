@@ -16,7 +16,7 @@ restricted L1 jump account. The inner network is not routed onto L0.
 ## Enable `test-yard`
 
 The public `test-vms` profile is dormant. Register it explicitly in
-`private/yards/test-yard.env` or `~/.config/subyard/yards/test-yard.env`:
+`private/yards/test-yard.env` or `~/.config/subyard/yards/test-yard/config.env`:
 
 ```sh
 YARD_TEMPLATE=test-vms

@@ -59,7 +59,6 @@ source_root="$(cd "$(dirname "$source_launcher")/.." && pwd -P)"
   || fail "launcher does not resolve to a source checkout bin/yard"
 for required in \
   "$source_root/bin/yard" \
-  "$source_root/scripts/install-cli.sh" \
   "$source_root/config/commands.registry" \
   "$source_root/completions/yard.bash"; do
   owned_regular "$required" || fail "source checkout file is missing or not operator-owned: $required"
@@ -82,35 +81,36 @@ candidate_engine="$RUNTIME_ROOT/current/bin/yard-engine"
 "$candidate_yard" _migrate check >/dev/null \
   || fail "candidate rejected existing state before import"
 
+bootstrap_paths="$("$candidate_yard" _migrate paths)" \
+  || fail "candidate could not resolve bootstrap config paths"
+config_home="$(jq -er '.configHome | select(type == "string" and startswith("/"))' <<<"$bootstrap_paths")" \
+  || fail "candidate returned no valid config home"
+case "$config_home" in "$HOME"/*) ;; *) fail "config home must stay inside the operator home" ;; esac
+manifest_json="$("$candidate_yard" _migrate overlay-manifest \
+  "$source_root" "$DATA_HOME" "$config_home")" \
+  || fail "candidate rejected source-local runtime inputs"
+jq -e --arg root "$source_root" --arg data "$DATA_HOME" --arg config "$config_home" '
+  .schemaVersion == 2 and .sourceRoot == $root and
+  .dataHome == $data and .configHome == $config and
+  (.entries | type == "array") and
+  all(.entries[];
+    (.source | (type == "string") and (length > 0) and (startswith("/") | not)) and
+    (.destination | (type == "string") and (length > 0) and (startswith("/") | not)) and
+    (.sourceBase == "source-root" or .sourceBase == "data-home" or .sourceBase == "config-home") and
+    .destinationRoot == "config-home" and
+    .mode == "0600" and .conflictPolicy == "identical-or-fail")
+    and all(.entries[];
+      ((.contentTransform // "") == "" or
+       .contentTransform == "yard-template-e2e-vms-to-test-vms"))
+' <<<"$manifest_json" >/dev/null \
+  || fail "candidate returned an invalid source-install manifest"
+
 for shell_file in "$RC" "$LOGIN_RC"; do
   if [ -e "$shell_file" ] || [ -L "$shell_file" ]; then
     owned_regular "$shell_file" \
       || fail "shell rc is not an operator-owned regular file: $shell_file"
   fi
 done
-
-legacy_private="$source_root/private"
-legacy_config="$legacy_private/config.env"
-legacy_yards="$legacy_private/yards"
-legacy_agents="$legacy_private/agents"
-if [ -e "$legacy_config" ] || [ -L "$legacy_config" ]; then
-  owned_regular "$legacy_config" \
-    || fail "legacy private/config.env is not an operator-owned regular file"
-fi
-if [ -e "$legacy_yards" ] || [ -L "$legacy_yards" ]; then
-  owned_directory "$legacy_yards" \
-    || fail "legacy private/yards is not an operator-owned directory"
-  [ -z "$(find "$legacy_yards" -mindepth 1 \( -type l -o ! -type f \) -print -quit)" ] \
-    || fail "legacy private/yards contains a symlink or non-regular entry"
-fi
-if [ -e "$legacy_agents" ] || [ -L "$legacy_agents" ]; then
-  owned_directory "$legacy_agents" \
-    || fail "legacy private/agents is not an operator-owned directory"
-  [ -z "$(find "$legacy_agents" -mindepth 1 \( -type l -o \( ! -type f ! -type d \) \) -print -quit)" ] \
-    || fail "legacy private/agents contains a symlink or special entry"
-  [ -z "$(find "$legacy_agents" -mindepth 1 ! -uid "$uid" -print -quit)" ] \
-    || fail "legacy private/agents contains an entry owned by another user"
-fi
 
 recovery_parent="$DATA_HOME/recovery"
 recovery_root="$recovery_parent/pre-go-source"
@@ -121,6 +121,11 @@ work="$(mktemp -d "$recovery_parent/.pre-go-source.XXXXXX")"
 created="$work/created.tsv"
 : > "$created"
 chmod 0600 "$created"
+created_directories="$work/created-directories.list"
+: > "$created_directories"
+chmod 0600 "$created_directories"
+printf '%s\n' "$manifest_json" > "$work/source-install-manifest.json"
+chmod 0600 "$work/source-install-manifest.json"
 changed=0
 published=0
 
@@ -128,6 +133,27 @@ record_created() {
   local path="$1" digest
   digest="$(sha256sum "$path" | cut -d' ' -f1)"
   printf '%s\t%s\n' "$digest" "$path" >> "$created"
+}
+
+ensure_directory() {
+  local directory="$1" current mode index
+  local -a missing=()
+  case "$directory" in "$HOME"/*) ;; *) fail "migration directory escapes the operator home" ;; esac
+  current="$directory"
+  while [ ! -e "$current" ] && [ ! -L "$current" ]; do
+    missing+=("$current")
+    current="$(dirname "$current")"
+  done
+  owned_directory "$current" \
+    || fail "migration parent is not an operator-owned real directory: $current"
+  mode="$(stat -c '%a' -- "$current")"
+  (( (8#$mode & 8#022) == 0 )) \
+    || fail "migration parent is group/world writable: $current"
+  for (( index=${#missing[@]}-1; index>=0; index-- )); do
+    mkdir -m 0700 -- "${missing[$index]}"
+    printf '%s\n' "${missing[$index]}" >> "$created_directories"
+    changed=1
+  done
 }
 
 backup_shell_file() {
@@ -158,12 +184,25 @@ restore_partial() {
   while IFS=$'\t' read -r _ path; do
     [ -n "$path" ] && rm -f -- "$path"
   done < "$created"
+  if [ -f "$created_directories" ]; then
+    while IFS= read -r path; do
+      [ -n "$path" ] && rmdir -- "$path" 2>/dev/null || true
+    done < <(tac "$created_directories")
+  fi
   state="$(<"$work/rc.state")"; path="$(<"$work/rc.path")"
   if [ "$state" = present ]; then cp -p -- "$work/rc.before" "$path"; else rm -f -- "$path"; fi
   state="$(<"$work/login-rc.state")"; path="$(<"$work/login-rc.path")"
   if [ "$state" != same ]; then
     if [ "$state" = present ]; then cp -p -- "$work/login-rc.before" "$path"; else rm -f -- "$path"; fi
   fi
+  for label in legacy-data-config legacy-operator-overlay; do
+    [ -f "$work/$label.state" ] || continue
+    state="$(<"$work/$label.state")"
+    path="$(<"$work/$label.path")"
+    if [ "$state" = present ] && [ ! -e "$path" ] && [ ! -L "$path" ]; then
+      mv -- "$work/$label.before" "$path"
+    fi
+  done
   ln -sfn -- "$(<"$work/yard.target")" "$yard_link"
   ln -sfn -- "$(<"$work/sy.target")" "$sy_link"
 }
@@ -176,38 +215,107 @@ cleanup() {
 trap cleanup EXIT
 
 install_copy() {
-  local source="$1" destination="$2"
+  local source="$1" destination="$2" mode links
+  owned_regular "$source" \
+    || fail "migration source is not an operator-owned regular file: $source"
+  mode="$(stat -c '%a' -- "$source")"
+  (( (8#$mode & 8#022) == 0 )) \
+    || fail "migration source is group/world writable: $source"
   if [ -e "$destination" ] || [ -L "$destination" ]; then
     owned_regular "$destination" \
       || fail "migration target is not an operator-owned regular file: $destination"
+    mode="$(stat -c '%a' -- "$destination")"
+    links="$(stat -c '%h' -- "$destination")"
+    [ "$mode" = 600 ] && [ "$links" = 1 ] \
+      || fail "migration target has unsafe mode or link count: $destination"
     cmp -s -- "$source" "$destination" \
       || fail "migration target already exists with different content: $destination"
     return
   fi
-  install -d -m 0700 "$(dirname "$destination")"
+  ensure_directory "$(dirname "$destination")"
   install -m 0600 "$source" "$destination"
   record_created "$destination"
   changed=1
 }
 
-machine_config="$DATA_HOME/config.env"
-if [ -e "$legacy_config" ]; then
-  install_copy "$legacy_config" "$machine_config"
-fi
-overlay_private="$DATA_HOME/operator-overlay/private"
-if [ -d "$legacy_agents" ]; then
-  if [ -e "$overlay_private/agents" ] || [ -L "$overlay_private/agents" ]; then
-    owned_directory "$overlay_private/agents" \
-      && diff -qr -- "$legacy_agents" "$overlay_private/agents" >/dev/null \
-      || fail "migrated private agent overlay already exists with different content"
-  else
-    install -d -m 0700 "$overlay_private"
-    cp -a -- "$legacy_agents" "$overlay_private/agents"
-    while IFS= read -r file; do record_created "$file"; done \
-      < <(find "$overlay_private/agents" -type f -print)
-    changed=1
+valid_relative() {
+  case "$1" in
+    ''|/*|..|../*|*/..|*/../*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
+}
+
+copy_manifest_scope() {
+  local scope="$1" root="$2" source_base source destination transform source_root_path
+  local install_source normalize_index=0
+  while IFS=$'\t' read -r source_base source destination transform; do
+    [ -n "$source" ] || continue
+    valid_relative "$source" && valid_relative "$destination" \
+      || fail "candidate manifest contains an unsafe path"
+    case "$source_base" in
+      source-root) source_root_path="$source_root" ;;
+      data-home) source_root_path="$DATA_HOME" ;;
+      config-home) source_root_path="$config_home" ;;
+      *) fail "candidate manifest contains an unknown source base" ;;
+    esac
+    install_source="$source_root_path/$source"
+    if [ "$transform" = "yard-template-e2e-vms-to-test-vms" ]; then
+      normalize_index=$((normalize_index + 1))
+      install_source="$work/normalized-yard-$normalize_index.env"
+      "$candidate_yard" _migrate normalize-yard-config \
+        "$source_root_path/$source" "$install_source" \
+        || fail "candidate could not normalize retired yard config: $source"
+    elif [ -n "$transform" ]; then
+      fail "candidate manifest contains an unknown content transform"
+    fi
+    install_copy "$install_source" "$root/$destination"
+  done < <(jq -r --arg scope "$scope" \
+    '.entries[] | select(.destinationRoot == $scope) |
+     [.sourceBase, .source, .destination, (.contentTransform // "")] | @tsv' \
+    <<<"$manifest_json")
+}
+
+ensure_directory "$config_home"
+
+# A materialized ledger consumer is authoritative. Legacy plaintext may be
+# retained for explicit import only when it is absent or byte-identical.
+while IFS=$'\t' read -r source_base source authoritative; do
+  [ -n "$authoritative" ] || continue
+  case "$source_base" in
+    source-root) source_root_path="$source_root" ;;
+    data-home) source_root_path="$DATA_HOME" ;;
+    config-home) source_root_path="$config_home" ;;
+    *) fail "candidate manifest contains an unknown compatibility source base" ;;
+  esac
+  target="$config_home/$authoritative"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    owned_regular "$target" && [ "$(stat -c '%a' -- "$target")" = 600 ] \
+      || fail "generated credential consumer is not a protected regular file: $target"
+    cmp -s -- "$source_root_path/$source" "$target" \
+      || fail "legacy credential input conflicts with generated consumer: $target"
   fi
-fi
+done < <(jq -r '.entries[] | select(.authoritativeDestination != null) |
+  [.sourceBase, .source, .authoritativeDestination] | @tsv' <<<"$manifest_json")
+
+copy_manifest_scope config-home "$config_home"
+
+archive_legacy_data() {
+  local path="$1" label="$2"
+  printf '%s\n' "$path" > "$work/$label.path"
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    printf 'absent\n' > "$work/$label.state"
+    return
+  fi
+  if [ -d "$path" ]; then
+    owned_directory "$path" || fail "legacy data input is not an operator-owned real directory: $path"
+  else
+    owned_regular "$path" || fail "legacy data input is not an operator-owned regular file: $path"
+  fi
+  mv -- "$path" "$work/$label.before"
+  printf 'present\n' > "$work/$label.state"
+  changed=1
+}
+archive_legacy_data "$DATA_HOME/config.env" legacy-data-config
+archive_legacy_data "$DATA_HOME/operator-overlay" legacy-operator-overlay
 
 paths_json="$("$candidate_yard" _migrate paths)" \
   || fail "candidate could not resolve migrated machine config"
@@ -215,22 +323,16 @@ effective_data_home="$(jq -er '.dataHome | select(type == "string" and startswit
   || fail "candidate returned no valid data home"
 [ "$effective_data_home" = "$DATA_HOME" ] \
   || fail "legacy config changes SUBYARD_HOME; rerun the installer with SUBYARD_HOME=$effective_data_home"
-config_home="$(jq -er '.configHome | select(type == "string" and startswith("/"))' <<<"$paths_json")" \
+effective_config_home="$(jq -er '.configHome | select(type == "string" and startswith("/"))' <<<"$paths_json")" \
   || fail "candidate returned no valid config home"
-case "$config_home" in "$HOME"/*) ;; *) fail "migrated config home must stay inside the operator home" ;; esac
+[ "$effective_config_home" = "$config_home" ] \
+  || fail "legacy config changes SUBYARD_CONFIG_HOME; rerun with SUBYARD_CONFIG_HOME=$effective_config_home"
 printf '%s\n' "$DATA_HOME" > "$work/data-home"
 printf '%s\n' "$config_home" > "$work/config-home"
 
-declare -a yard_names=()
-if [ -d "$legacy_yards" ]; then
-  for source in "$legacy_yards"/*.env; do
-    [ -e "$source" ] || continue
-    name="$(basename "$source" .env)"
-    case "$name" in ''|*[!a-z0-9_-]*|[-_]*) fail "unsafe legacy yard name: $name" ;; esac
-    install_copy "$source" "$config_home/yards/$name.env"
-    yard_names+=("$name")
-  done
-fi
+mapfile -t yard_names < <(jq -r \
+  '.entries[] | select(.kind == "yard-config" or .kind == "flat-yard-config") | .destination |
+   split("/")[-2]' <<<"$manifest_json" | sort -u)
 
 "$candidate_yard" _migrate apply >/dev/null \
   || fail "candidate could not migrate default and registered state"

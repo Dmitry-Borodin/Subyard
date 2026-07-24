@@ -3,6 +3,7 @@ package architecture
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -17,6 +18,8 @@ func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {
 		"scripts/lib/cache.sh", "scripts/state/transport.sh", "scripts/yard-boot-reconcile.sh",
 		"scripts/sy-stage.sh", "scripts/build-engine.sh", "scripts/package-engine.sh",
 		"scripts/bootstrap-runtime.sh", "scripts/install-cli.sh",
+		"scripts/08-git-identity.sh", "scripts/agent-configs.sh",
+		"scripts/status-probe.sh", "scripts/lib/env.sh",
 		"tests/legacy-source-install.sh", "tests/real-host/installed-cli.sh",
 	} {
 		if _, err := os.Lstat(filepath.Join(root, retired)); err == nil {
@@ -38,9 +41,7 @@ func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {
 		t.Fatal(closeErr)
 	}
 	definitions := manifest.Commands()
-	allowedHandlers := map[string]bool{
-		"00-check-host.sh": true, "security-lint.sh": true,
-	}
+	allowedHandlers := map[string]bool{}
 	handlers := make(map[string]bool)
 	for _, definition := range definitions {
 		if strings.HasPrefix(definition.Handler, "@") {
@@ -67,6 +68,7 @@ func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {
 	}
 
 	contracts := productionShellContracts()
+	leafContracts := productionLeafContracts()
 	actual := append(shellFiles(t, filepath.Join(root, "scripts")),
 		shellFiles(t, filepath.Join(root, "config", "profiles"))...)
 	actual = append(actual, shellFiles(t, filepath.Join(root, "config", "agents"))...)
@@ -83,7 +85,8 @@ func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {
 		}
 		delete(contracts, path)
 		if contract.kind != "leaf" && contract.kind != "library" &&
-			contract.kind != "embedded" && contract.kind != "profile" {
+			contract.kind != "embedded" && contract.kind != "profile" &&
+			contract.kind != "bootstrap" {
 			t.Errorf("%s has invalid shell contract %q", path, contract.kind)
 		}
 		owner, err := os.ReadFile(filepath.Join(root, contract.owner))
@@ -94,19 +97,42 @@ func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {
 		if !strings.Contains(string(owner), contract.reference) {
 			t.Errorf("%s is no longer called by %s through %q", path, contract.owner, contract.reference)
 		}
+		if contract.kind == "leaf" {
+			leaf, ok := leafContracts[path]
+			if !ok {
+				t.Errorf("physical leaf has no semantic owner contract: %s", path)
+				continue
+			}
+			delete(leafContracts, path)
+			if !strings.HasSuffix(contract.owner, ".go") {
+				t.Errorf("physical leaf %s has no Go owner: %s", path, contract.owner)
+			}
+			if leaf.kind == "reconcile" {
+				for _, marker := range []string{
+					"func (runtime Runtime) CheckStage",
+					"func (runtime Runtime) ApplyStage",
+					"func (runtime Runtime) VerifyStage",
+					`"` + leaf.name + `"`,
+				} {
+					if !strings.Contains(string(owner), marker) {
+						t.Errorf("%s lacks host-free check/apply/verify ownership in %s through %q",
+							path, contract.owner, marker)
+					}
+				}
+			}
+		}
 	}
 	for path := range contracts {
 		t.Errorf("shell owner contract outlived its file: %s", path)
+	}
+	for path := range leafContracts {
+		t.Errorf("semantic leaf owner contract outlived its file: %s", path)
 	}
 }
 
 func TestCriticalShellCallerGraphIsExact(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	expected := map[string][]string{
-		"00-check-host.sh": {
-			"config/commands.registry",
-			"internal/adapters/reconcileruntime/runtime.go",
-		},
 		"install-power-reconciler.sh": {
 			"internal/adapters/reconcileruntime/runtime.go",
 			"scripts/teardown-physical.sh",
@@ -115,11 +141,6 @@ func TestCriticalShellCallerGraphIsExact(t *testing.T) {
 			"internal/adapters/reconcileruntime/runtime.go",
 			"internal/cli/cli.go",
 			"scripts/03-create-subyard.sh",
-		},
-		"security-lint.sh": {
-			"config/commands.registry",
-			"internal/adapters/reconcileruntime/runtime.go",
-			"scripts/status-probe.sh",
 		},
 		"teardown-physical.sh": {
 			"internal/adapters/reconcileruntime/runtime.go",
@@ -193,6 +214,59 @@ func TestShellTestsStayOutsideProductionTrees(t *testing.T) {
 	}
 }
 
+func TestPhysicalShellConsumesOnlyPreparedControlPlaneState(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	allowedSources := map[string]bool{
+		"runtime.sh": true, "engine-context.sh": true, "ui.sh": true,
+		"lib-power.sh": true, "host.sh": true, "ssh-config.sh": true,
+	}
+	forbidden := []string{
+		"SUBYARD_CONFIG_LOADED", "SUBYARD_PROFILES_DIR", "YARD_TEMPLATE", "REMOTE_DEST",
+		"/config/yards", "resolve_project", "route_sync_target", "state_engine",
+		"stage_registry", "source_control_plane",
+	}
+	sourcePattern := regexp.MustCompile(`(?m)^[[:space:]]*\.[[:space:]]+["']?([^"';[:space:]]+)`)
+	for path, contract := range productionShellContracts() {
+		if contract.kind != "leaf" {
+			continue
+		}
+		if !strings.HasSuffix(contract.owner, ".go") {
+			t.Errorf("physical leaf %s has no Go owner: %s", path, contract.owner)
+		}
+		payload, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := uncommentShell(string(payload))
+		if !strings.Contains(text, "subyard_require_engine_context") {
+			t.Errorf("physical leaf does not fail closed without typed engine context: %s", path)
+		}
+		for _, token := range forbidden {
+			if strings.Contains(text, token) {
+				t.Errorf("physical leaf %s regained control-plane semantic %q", path, token)
+			}
+		}
+		for _, match := range sourcePattern.FindAllStringSubmatch(text, -1) {
+			target := filepath.Base(match[1])
+			if !allowedSources[target] {
+				t.Errorf("physical leaf %s sources non-boundary runtime %q", path, match[1])
+			}
+		}
+	}
+}
+
+func uncommentShell(value string) string {
+	var lines []string
+	for _, line := range strings.Split(value, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestProjectStateAndRoutingStayGoOwned(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	for _, retired := range []string{
@@ -243,7 +317,6 @@ func productionShellContracts() map[string]shellContract {
 	return map[string]shellContract{
 		"config/agents/ccusage/provision.sh":   {"profile", "config/agents.env", `agents/ccusage/provision.sh`},
 		"config/agents/opencode/provision.sh":  {"profile", "config/agents.env", `agents/opencode/provision.sh`},
-		"scripts/00-check-host.sh":             {"leaf", goReconcile, `"00-check-host.sh"`},
 		"scripts/01-install-incus.sh":          {"leaf", goReconcile, `"01-install-incus.sh"`},
 		"scripts/02-create-project.sh":         {"leaf", goReconcile, `"02-create-project.sh"`},
 		"scripts/03-create-subyard.sh":         {"leaf", goReconcile, `"03-create-subyard.sh"`},
@@ -251,37 +324,26 @@ func productionShellContracts() map[string]shellContract {
 		"scripts/05-mount-host-paths.sh":       {"leaf", goReconcile, `"05-mount-host-paths.sh"`},
 		"scripts/06-network.sh":                {"leaf", goReconcile, `"06-network.sh"`},
 		"scripts/07-ssh-access.sh":             {"leaf", goReconcile, `"07-ssh-access.sh"`},
-		"scripts/08-git-identity.sh":           {"leaf", goReconcile, `"08-git-identity.sh"`},
 		"scripts/09-yard-extras.sh":            {"leaf", goReconcile, `"09-yard-extras.sh"`},
-		"scripts/agent-configs.sh":             {"leaf", goReconcile, `"agent-configs.sh"`},
 		"scripts/e2e-lab/invoke.sh":            {"leaf", goCLI, `e2e-lab/invoke.sh`},
-		"scripts/e2e-lab/provision.sh":         {"embedded", "scripts/e2e-lab/reconcile.sh", `provision.sh`},
-		"scripts/e2e-lab/reconcile.sh":         {"leaf", goReconcile, `"e2e-lab/reconcile.sh"`},
-		"scripts/e2e-lab/status.sh":            {"embedded", "scripts/e2e-lab/reconcile.sh", `status.sh`},
-		"scripts/e2e-lab/worker.sh":            {"embedded", "scripts/e2e-lab/reconcile.sh", `worker.sh`},
+		"scripts/e2e-lab/provision.sh":         {"embedded", "internal/adapters/testvmsruntime/backend.go", `"provision.sh"`},
 		"scripts/install-key-tools.sh":         {"leaf", goReconcile, `"install-key-tools.sh"`},
 		"scripts/install-keys-auto-sync.sh":    {"leaf", goReconcile, `"install-keys-auto-sync.sh"`},
 		"scripts/install-power-reconciler.sh":  {"leaf", goReconcile, `"install-power-reconciler.sh"`},
-		"scripts/install-runtime-release.sh":   {"leaf", "internal/cli/update.go", `"install-runtime-release.sh"`},
-		"scripts/migrate-source-install.sh":    {"leaf", "dev/bootstrap-runtime.sh", `migrate-source-install.sh`},
-		"scripts/restore-source-install.sh":    {"leaf", "scripts/migrate-source-install.sh", `restore-source-install.sh`},
+		"scripts/install-runtime-release.sh":   {"bootstrap", "internal/cli/update.go", `"install-runtime-release.sh"`},
+		"scripts/migrate-source-install.sh":    {"bootstrap", "dev/bootstrap-runtime.sh", `migrate-source-install.sh`},
+		"scripts/restore-source-install.sh":    {"embedded", "scripts/migrate-source-install.sh", `restore-source-install.sh`},
 		"scripts/lib-power.sh":                 {"library", "scripts/lifecycle-guard.sh", `lib-power.sh`},
 		"scripts/lib-service.sh":               {"library", "config/profiles/android/resources/emulator/handler.sh", `lib-service.sh`},
-		"scripts/lib/config.sh":                {"library", "scripts/00-check-host.sh", `lib/config.sh`},
-		"scripts/lib/context.sh":               {"library", "scripts/00-check-host.sh", `lib/context.sh`},
-		"scripts/lib/e2e-agent-enrollment.sh":  {"library", "scripts/e2e-lab/reconcile.sh", `lib/e2e-agent-enrollment.sh`},
-		"scripts/lib/env.sh":                   {"library", "scripts/00-check-host.sh", `lib/env.sh`},
+		"scripts/lib/engine-context.sh":        {"library", "scripts/01-install-incus.sh", `lib/engine-context.sh`},
 		"scripts/lib/host.sh":                  {"library", "scripts/01-install-incus.sh", `lib/host.sh`},
-		"scripts/lib/registry.sh":              {"library", "scripts/00-check-host.sh", `lib/registry.sh`},
-		"scripts/lib/runtime.sh":               {"library", "scripts/00-check-host.sh", `lib/runtime.sh`},
+		"scripts/lib/runtime.sh":               {"library", "scripts/01-install-incus.sh", `lib/runtime.sh`},
 		"scripts/lib/ssh-config.sh":            {"library", "scripts/07-ssh-access.sh", `lib/ssh-config.sh`},
-		"scripts/lib/ui.sh":                    {"library", "scripts/00-check-host.sh", `lib/ui.sh`},
+		"scripts/lib/ui.sh":                    {"library", "scripts/01-install-incus.sh", `lib/ui.sh`},
 		"scripts/lifecycle-guard.sh":           {"leaf", goCLI, `"lifecycle-guard.sh"`},
-		"scripts/provision-profile.sh":         {"leaf", goCLI, `"scripts/provision-profile.sh"`},
-		"scripts/security-lint.sh":             {"leaf", goReconcile, `"security-lint.sh"`},
-		"scripts/status-probe.sh":              {"leaf", "internal/adapters/statusruntime/runtime.go", `"status-probe.sh"`},
+		"scripts/provision-profile.sh":         {"profile", goCLI, `"scripts/provision-profile.sh"`},
 		"scripts/teardown-physical.sh":         {"leaf", goCLI, `"scripts/teardown-physical.sh"`},
-		"scripts/vscode-remote-maintenance.sh": {"leaf", "scripts/lifecycle-guard.sh", `vscode-remote-maintenance.sh`},
+		"scripts/vscode-remote-maintenance.sh": {"embedded", "scripts/lifecycle-guard.sh", `vscode-remote-maintenance.sh`},
 
 		"config/profiles/android/emulator-control.sh":                    {"profile", "config/profiles/android/resources/emulator/handler.sh", `emulator-control.sh`},
 		"config/profiles/android/emulator-run.sh":                        {"profile", "config/profiles/android/resources/emulator/handler.sh", `emulator-run.sh`},
@@ -293,6 +355,30 @@ func productionShellContracts() map[string]shellContract {
 		"config/profiles/openclaw/resources/staging-gateway/handler.sh":  {"profile", "config/profiles/openclaw/resources/staging-gateway.res", `HANDLER=resources/staging-gateway/handler.sh`},
 		"config/profiles/openclaw/resources/staging-gateway/sy-stage.sh": {"embedded", "config/profiles/openclaw/resources/staging-gateway/handler.sh", `sy-stage.sh`},
 		"config/profiles/subyard-dev/provision.sh":                       {"profile", "internal/cli/provision.go", `"provision.sh"`},
+	}
+}
+
+type leafContract struct {
+	kind string
+	name string
+}
+
+func productionLeafContracts() map[string]leafContract {
+	return map[string]leafContract{
+		"scripts/01-install-incus.sh":         {"reconcile", "incus"},
+		"scripts/02-create-project.sh":        {"reconcile", "project"},
+		"scripts/03-create-subyard.sh":        {"reconcile", "instance"},
+		"scripts/04-provision-subyard.sh":     {"reconcile", "provision"},
+		"scripts/05-mount-host-paths.sh":      {"reconcile", "mounts"},
+		"scripts/06-network.sh":               {"reconcile", "network"},
+		"scripts/07-ssh-access.sh":            {"reconcile", "ssh"},
+		"scripts/09-yard-extras.sh":           {"reconcile", "extras"},
+		"scripts/install-key-tools.sh":        {"reconcile", "keys"},
+		"scripts/install-keys-auto-sync.sh":   {"reconcile", "keys"},
+		"scripts/install-power-reconciler.sh": {"reconcile", "power"},
+		"scripts/e2e-lab/invoke.sh":           {"command", "test-vms"},
+		"scripts/lifecycle-guard.sh":          {"command", "lifecycle"},
+		"scripts/teardown-physical.sh":        {"command", "teardown"},
 	}
 }
 

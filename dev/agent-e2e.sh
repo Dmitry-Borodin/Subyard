@@ -53,14 +53,16 @@ Usage:
   dev/agent-e2e.sh [--yard NAME] --prepare
   dev/agent-e2e.sh [--yard NAME] [--vm 1|2|both] -- COMMAND [ARG...]
   dev/agent-e2e.sh [--yard NAME] --ssh 1|2 [-- COMMAND [ARG...]]
+  dev/agent-e2e.sh [--yard NAME] --ssh-stdin 1|2 -- COMMAND [ARG...]
   dev/agent-e2e.sh [--yard NAME] --ssh-config
   dev/agent-e2e.sh [--yard NAME] --verify-boundary
 
 The normal form copies the current tracked, dirty and non-ignored public worktree to each selected
 VM, runs COMMAND as dev, streams output and removes every run directory. A direct ./bin/yard command
 first builds the explicit development candidate in that run directory. --ssh opens an ordinary guest
-terminal (or runs a direct guest command). --ssh-config prints the generated strict OpenSSH config
-path for direct `ssh -F PATH e2e-vm-1` use.
+terminal or runs a command with stdin closed. --ssh-stdin explicitly forwards stdin to a command.
+--ssh-config prints the generated strict OpenSSH config path for direct
+`ssh -F PATH e2e-vm-1` use.
 
 NAME defaults to test-yard. During a temporary migration, select the old yard explicitly with
 `--yard e2e-yard`; route and generated client state remain isolated per yard.
@@ -451,7 +453,7 @@ worktree_paths() {
 }
 
 build_bundle() {
-  local root="$1" bundle="$2" path resolved count=0
+  local root="$1" bundle="$2" path resolved count=0 archive inventory inventory_dir
   local -a paths=()
   while IFS= read -r -d '' path; do
     if [ ! -e "$root/$path" ] && [ ! -L "$root/$path" ]; then continue; fi
@@ -468,7 +470,21 @@ build_bundle() {
     count=$((count + 1))
   done < <(cd "$root" && worktree_paths)
   [ "$count" -gt 0 ] || die "public worktree is empty"
-  printf '%s\0' "${paths[@]}" | tar -C "$root" --null -T - -czf "$bundle"
+  inventory_dir="$(mktemp -d "$(dirname "$bundle")/.bundle-index.XXXXXX")"
+  inventory="$inventory_dir/.subyard-e2e-index"
+  while IFS= read -r -d '' path; do
+    if [ -e "$root/$path" ] || [ -L "$root/$path" ]; then
+      printf '%s\0' "$path"
+    fi
+  done < <(git -C "$root" ls-files --cached -z) > "$inventory"
+  chmod 0600 "$inventory"
+  touch -d @0 "$inventory"
+  archive="$bundle.tar"
+  printf '%s\0' "${paths[@]}" | tar -C "$root" --null -T - -cf "$archive"
+  tar -C "$inventory_dir" -rf "$archive" .subyard-e2e-index
+  gzip -n < "$archive" > "$bundle"
+  rm -f -- "$archive"
+  find "$inventory_dir" -depth -delete
 }
 
 write_guest_command() {
@@ -500,6 +516,15 @@ prepare_guest() {
   guest "$vm" mkdir "$directory/src" </dev/null || die "VM$vm source directory creation failed"
   guest "$vm" tar -xzf "$directory/worktree.tar.gz" -C "$directory/src" </dev/null \
     || die "VM$vm worktree extraction failed"
+  if guest "$vm" test -f "$directory/src/.subyard-e2e-index" </dev/null; then
+    guest "$vm" bash -c '
+      root="$1"
+      inventory="$root/.subyard-e2e-index"
+      git -C "$root" init -q
+      xargs -0 -r git -C "$root" --literal-pathspecs add -f -- < "$inventory"
+      rm -f -- "$inventory"
+    ' _ "$directory/src" </dev/null || die "VM$vm Git index reconstruction failed"
+  fi
   PREPARED_DIRECTORY="$directory"
 }
 
@@ -517,23 +542,35 @@ run_guest() {
 }
 
 run_direct_ssh() {
-  local vm="$1" command; shift
+  local vm="$1" forward_stdin="$2" command; shift 2
   prepare_client
   if [ "$#" -gt 0 ]; then
     command="$(quote_ssh_command "$@")"
-    exec ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command"
+    if [ "$forward_stdin" = 1 ]; then
+      exec ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command"
+    fi
+    exec ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command" </dev/null
   fi
+  [ "$forward_stdin" = 0 ] || die "--ssh-stdin requires a command"
   exec ssh -F "$CLIENT_CONFIG" -tt "e2e-vm-$vm"
 }
 
 main() {
-  local selector=both root bundle bundle_hash vm run_failed=0 cleanup_failed=0 mode=run ssh_vm=''
+  local selector=both root bundle bundle_hash vm run_failed=0 cleanup_failed=0
+  local mode=run ssh_vm='' ssh_stdin=0
   local -a selected=() command=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --yard) [ "$#" -ge 2 ] || die "--yard needs a yard name"; E2E_YARD="$2"; shift 2 ;;
       --vm) [ "$#" -ge 2 ] || die "--vm needs 1, 2 or both"; selector="$2"; shift 2 ;;
       --ssh) [ "$#" -ge 2 ] || die "--ssh needs 1 or 2"; mode=ssh; ssh_vm="$2"; shift 2 ;;
+      --ssh-stdin)
+        [ "$#" -ge 2 ] || die "--ssh-stdin needs 1 or 2"
+        mode=ssh
+        ssh_vm="$2"
+        ssh_stdin=1
+        shift 2
+        ;;
       --ssh-config) mode=config; shift ;;
       --prepare) mode=prepare; shift ;;
       --verify-boundary) mode=verify; shift ;;
@@ -549,7 +586,7 @@ main() {
     verify) [ "${#command[@]}" -eq 0 ] || die "--verify-boundary takes no command"; verify_boundary; return ;;
     ssh)
       case "$ssh_vm" in 1 | 2) ;; *) die "--ssh needs VM selector 1 or 2" ;; esac
-      run_direct_ssh "$ssh_vm" "${command[@]}"
+      run_direct_ssh "$ssh_vm" "$ssh_stdin" "${command[@]}"
       ;;
   esac
 

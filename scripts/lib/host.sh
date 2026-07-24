@@ -6,24 +6,12 @@ SUBYARD_HOST_SOURCED=1
 
 require_root() {
   [ "$(id -u)" -eq 0 ] && return 0
-  local why="${1:-it changes the host system}" operator_user operator_home name
-  local -a elevated_env sudo_args=()
+  local why="${1:-it changes the host system}" operator_user
+  local -a sudo_args=()
   if command -v sudo >/dev/null 2>&1; then
     operator_user="${SUBYARD_USER:-${SUDO_USER:-$(id -un)}}"
-    operator_home="${SUBYARD_OPERATOR_HOME:-$(subyard_operator_home)}"
-    elevated_env=(
-      "SUBYARD_ELEVATED=1"
-      "SUBYARD_USER=$operator_user"
-      "SUBYARD_OPERATOR_HOME=$operator_home"
-    )
-    # Preserve the normalized operator-owned roots and selected named yard across sudo's clean
-    # environment. Do not pass arbitrary ambient variables or credentials to the root process.
-    for name in SUBYARD_CONFIG_DIR SUBYARD_CONFIG_HOME SUBYARD_HOME YARD_RUNTIME_ROOT STORAGE_PATH \
-      HOST_BASE RESTRICTED_DISK_PATHS \
-      SUBYARD_YARD SUBYARD_YARD_EXPLICIT SUBYARD_TEARDOWN_KEEP_DATA \
-      SUBYARD_POWER_ENGINE_SOURCE; do
-      [ -z "${!name:-}" ] || elevated_env+=("$name=${!name}")
-    done
+    subyard_elevated_context
+    SUBYARD_ELEVATED_ENV+=("SUBYARD_USER=$operator_user")
     warn "this needs root: $why"
     if [ "${SUBYARD_SUDO_PREAUTHORIZED:-0}" = 1 ]; then
       info "re-running under pre-authorized sudo…"
@@ -31,7 +19,7 @@ require_root() {
     else
       info "re-running under sudo (you'll be asked for your password)…"
     fi
-    exec sudo "${sudo_args[@]}" -- env "${elevated_env[@]}" \
+    exec sudo "${sudo_args[@]}" -- env "${SUBYARD_ELEVATED_ENV[@]}" \
       "$SUBYARD_SCRIPT_PATH" ${SUBYARD_SCRIPT_ARGV[@]+"${SUBYARD_SCRIPT_ARGV[@]}"}
   fi
   printf '\n%sNeeds root and sudo is not installed — run as root:%s\n    %s%s %s%s\n\n' \
@@ -84,6 +72,10 @@ incus_preflight() {
     exit 1
   fi
   die "can't reach Incus — you're not in the 'incus-admin' group, or the daemon isn't running. Run 'yard init' first."
+}
+
+incus_project_has_isolated_images() {
+  [ "$(incus project get "$1" features.images 2>/dev/null)" != false ]
 }
 
 nm_unmanaged_guard() {

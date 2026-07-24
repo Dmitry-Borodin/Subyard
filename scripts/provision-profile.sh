@@ -2,11 +2,13 @@
 # Run one Go-selected profile hook inside the yard.
 set -euo pipefail
 
-[ "${SUBYARD_ENGINE_CONTEXT:-}" = 1 ] \
-  || { printf 'provision: prepared engine context required\n' >&2; exit 2; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/engine-context.sh
+. "$SCRIPT_DIR/lib/engine-context.sh"
+subyard_require_engine_context
 profile="${1:-}"
 case "$profile" in '' | *[!a-zA-Z0-9_-]*) printf 'provision: invalid profile\n' >&2; exit 2 ;; esac
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd "$SCRIPT_DIR/.." && pwd)"
 config="$root/config/profiles/$profile/profile.conf"
 hook="$root/config/profiles/$profile/provision.sh"
 [ -r "$config" ] && [ -r "$hook" ] || { printf 'provision: profile hook missing\n' >&2; exit 1; }

@@ -22,7 +22,7 @@ _yard_profiles() {
 
 # Registry yard names: 'default' plus every *.env basename under private/yards/ and
 # ~/.config/subyard/yards/ — read cheaply in the shell (NEVER invoke incus). Mirrors registry.sh's
-# yard_registry_names so completion and the CLI agree on valid yard names.
+# Keep discovery aligned with the CLI yard registry.
 _yard_yards() {
   local repo home d f
   local -a names dirs

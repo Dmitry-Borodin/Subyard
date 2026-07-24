@@ -57,6 +57,14 @@ rpc_negotiate() { # <engine> <engine-version> <protocol-version> <compatible|inc
   esac
 }
 
+staging_canary="$(mktemp --suffix=.env "$ROOT/config/staging/.package-canary.XXXXXX")"
+qa_canary="$(mktemp "$ROOT/config/qa-pool/.package-canary.XXXXXX")"
+untracked_canary="$ROOT/config/staging/.package-untracked-canary.txt"
+printf 'ignored staging secret\n' > "$staging_canary"
+printf 'ignored qa secret\n' > "$qa_canary"
+printf 'untracked local input\n' > "$untracked_canary"
+chmod 0600 "$staging_canary" "$qa_canary" "$untracked_canary"
+trap 'rm -f -- "$staging_canary" "$qa_canary" "$untracked_canary"; rm -rf "$TMP"' EXIT
 artifact_one="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.0.0-test)"
 bundle_one="$release/subyard-1.0.0-test-linux-amd64.tar.gz"
 [ -x "$release/subyard-install.sh" ] \
@@ -79,6 +87,23 @@ grep -Fxq './bin/yard' "$bundle_list" \
   && grep -Fxq './scripts/install-runtime-release.sh' "$bundle_list" \
   && grep -Fxq './config/commands.registry' "$bundle_list" \
   || fail 'runtime bundle does not contain the complete launcher contract'
+grep -Fxq './runtime-files.sha256' "$bundle_list" \
+  || fail 'runtime bundle exact file manifest is missing'
+! grep -Fq "$(basename "$staging_canary")" "$bundle_list" \
+  && ! grep -Fq "$(basename "$qa_canary")" "$bundle_list" \
+  && ! grep -Fq "$(basename "$untracked_canary")" "$bundle_list" \
+  || fail 'runtime bundle contains an untracked host-local canary'
+bundle_extract="$TMP/bundle-extract"
+install -d "$bundle_extract"
+tar -xzf "$bundle_one" -C "$bundle_extract"
+(
+  cd "$bundle_extract"
+  sha256sum -c runtime-files.sha256 >/dev/null
+  find . -type f ! -name runtime-files.sha256 -print | sort > "$TMP/bundle-actual.list"
+  sed -E 's/^[0-9a-fA-F]{64}  //' runtime-files.sha256 | sort > "$TMP/bundle-declared.list"
+)
+cmp -s "$TMP/bundle-actual.list" "$TMP/bundle-declared.list" \
+  || fail 'runtime bundle file manifest is not exact'
 for excluded in update-engine.sh power-state.sh bootstrap-runtime.sh build-engine.sh package-engine.sh install-cli.sh; do
   ! grep -Fq "/$excluded" "$bundle_list" \
     || fail "runtime bundle contains non-runtime script $excluded"

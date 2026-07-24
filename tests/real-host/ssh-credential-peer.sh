@@ -150,7 +150,7 @@ credential="$("$ROOT/.build/yard" keys list | awk -F '\t' '$8=="real-ssh" {print
 [ -n "$credential" ] || fail 'synthetic SSH credential was not created'
 "$ROOT/.build/yard" keys sync @remote-two --now --yes >/dev/null
 ssh peer-two -- bash -lc "$(printf '%q' 'yard keys materialize real-ssh --yes')" >/dev/null
-cmp -s "$expected" "$remote_root/consumer/config/staging/real-ssh.env" \
+cmp -s "$expected" "$remote_root/consumer/staging/real-ssh.env" \
   || fail 'real SSH peer did not decrypt the synchronized credential'
 if grep -R -F -q -- 'subyard-synthetic-real-ssh-fixture' "$local_keys" "$remote_keys"; then
   fail 'synthetic plaintext reached an SSH-synchronized ledger'
@@ -158,7 +158,7 @@ fi
 "$ROOT/.build/yard" keys revoke "$credential" --yes >/dev/null
 "$ROOT/.build/yard" keys sync @remote-two --now --yes >/dev/null
 ssh peer-two -- bash -lc "$(printf '%q' 'yard keys materialize real-ssh --yes')" >/dev/null
-[ ! -e "$remote_root/consumer/config/staging/real-ssh.env" ] \
+[ ! -e "$remote_root/consumer/staging/real-ssh.env" ] \
   || fail 'revoked SSH credential remained materialized'
 
 printf 'ok: real OpenSSH credential trust, sync, decrypt and revoke contract\n'

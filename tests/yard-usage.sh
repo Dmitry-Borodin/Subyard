@@ -103,7 +103,7 @@ cat > "$tmp/bin/ssh" <<'SH'
 printf '%s\0' "$@" > "$SSH_LOG"
 SH
 chmod +x "$tmp/bin/ssh"
-"$ROOT/bin/yard" -Y usage-remote usage >/dev/null
+env -u YARD_TYPE "$ROOT/bin/yard" -Y usage-remote usage >/dev/null
 mapfile -d '' -t ssh_args < "$SSH_LOG"
 payload="${ssh_args[-1]}"
 decoded="$(/bin/bash -c "printf '%s' $payload")"

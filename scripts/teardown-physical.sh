@@ -4,23 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/runtime.sh
 . "$SCRIPT_DIR/lib/runtime.sh"
-# shellcheck source=scripts/lib/env.sh
-. "$SCRIPT_DIR/lib/env.sh"
-# shellcheck source=scripts/lib/registry.sh
-. "$SCRIPT_DIR/lib/registry.sh"
-# shellcheck source=scripts/lib/context.sh
-. "$SCRIPT_DIR/lib/context.sh"
+# shellcheck source=scripts/lib/engine-context.sh
+. "$SCRIPT_DIR/lib/engine-context.sh"
+subyard_require_engine_context
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
-# shellcheck source=scripts/lib/config.sh
-. "$SCRIPT_DIR/lib/config.sh"
-subyard_context_load
 # shellcheck source=scripts/lib/host.sh
 . "$SCRIPT_DIR/lib/host.sh"
+# shellcheck source=scripts/lib/ssh-config.sh
+. "$SCRIPT_DIR/lib/ssh-config.sh"
 
 OPERATOR_USER="${SUBYARD_USER:-${SUDO_USER:-${USER:-root}}}"
 OPERATOR_HOME="$(getent passwd "$OPERATOR_USER" | cut -d: -f6)"
 [ -n "$OPERATOR_HOME" ] || OPERATOR_HOME="$HOME"
+OPERATOR_GROUP="$(id -gn "$OPERATOR_USER" 2>/dev/null || printf '%s\n' "$OPERATOR_USER")"
 
 INCUS_PROJECT="${INCUS_PROJECT:-subyard}"
 INSTANCE_NAME="${INSTANCE_NAME:-yard}"
@@ -40,6 +37,8 @@ YARD_SPACE_CACHE="$SUBYARD_HOME/space${YARD_NAME:+-$YARD_NAME}.cache"
 
 KEEP_DATA="${SUBYARD_TEARDOWN_KEEP_DATA:-}"
 case "$KEEP_DATA" in 0 | 1) ;; *) die "prepared teardown mode is required" ;; esac
+KEEP_SHARED="${SUBYARD_TEARDOWN_KEEP_SHARED:-}"
+case "$KEEP_SHARED" in 0 | 1) ;; *) die "prepared shared-infrastructure mode is required" ;; esac
 require_root "removing the NetworkManager guard, ufw rules, and the Incus storage data needs root"
 
 if [ "$KEEP_DATA" = 0 ] && command -v incus >/dev/null 2>&1 && ! incus info >/dev/null 2>&1; then
@@ -72,10 +71,15 @@ if [ "$KEEP_DATA" = 0 ]; then
     else
       ok "volume '$SRV_VOLUME' absent"
     fi
-    while IFS= read -r fp; do
-      [ -n "$fp" ] || continue
-      incus image delete "$fp" "${PROJ[@]}" >/dev/null 2>&1 && ok "deleted cached image ${fp:0:12}" || true
-    done < <(incus image list "${PROJ[@]}" -f csv -c f 2>/dev/null)
+    if incus_project_has_isolated_images "$INCUS_PROJECT"; then
+      while IFS= read -r fp; do
+        [ -n "$fp" ] || continue
+        incus image delete "$fp" "${PROJ[@]}" >/dev/null 2>&1 \
+          && ok "deleted cached image ${fp:0:12}" || true
+      done < <(incus image list "${PROJ[@]}" -f csv -c f 2>/dev/null)
+    else
+      ok "kept images shared from the default project"
+    fi
     while IFS= read -r prof; do
       [ -n "$prof" ] && [ "$prof" != default ] || continue
       incus profile delete "$prof" "${PROJ[@]}" >/dev/null 2>&1 && ok "deleted profile '$prof'" || true
@@ -94,7 +98,9 @@ if [ "$KEEP_DATA" = 0 ]; then
   echo "Bridge + storage pool:"
   if [ "$have_incus" = 1 ]; then
     others="$(incus list --all-projects -c n -f csv 2>/dev/null | grep -v '^$' || true)"
-    if [ -n "$others" ]; then
+    if [ "$KEEP_SHARED" = 1 ]; then
+      warn "other registered local yards exist — keeping shared bridge '$BRIDGE' and pool '$STORAGE_POOL'"
+    elif [ -n "$others" ]; then
       warn "other Incus instances exist — keeping shared bridge '$BRIDGE' and pool '$STORAGE_POOL':"
       printf '%s\n' "$others" | sed 's/^/      - /'
     else
@@ -137,12 +143,13 @@ snip="$OPERATOR_HOME/.ssh/$YARD_SNIP"; cfg="$OPERATOR_HOME/.ssh/config"
 rm -f "$snip" && ok "removed ~/.ssh/$YARD_SNIP (if present)"
 if [ -f "$cfg" ] && grep -qxF "Include $YARD_SNIP" "$cfg"; then
   grep -vxF "Include $YARD_SNIP" "$cfg" > "$cfg.tmp" && mv -f "$cfg.tmp" "$cfg"
-  chown "$OPERATOR_USER":"$(id -gn "$OPERATOR_USER" 2>/dev/null || echo "$OPERATOR_USER")" "$cfg" 2>/dev/null || true
+  chown "$OPERATOR_USER:$OPERATOR_GROUP" "$cfg" 2>/dev/null || true
   ok "removed 'Include $YARD_SNIP' from ~/.ssh/config"
 fi
 known="$SUBYARD_HOME/ssh/known_hosts"
 if [ -f "$known" ] && [ -n "${SSH_PORT:-}" ]; then
-  ssh-keygen -R "[127.0.0.1]:$SSH_PORT" -f "$known" >/dev/null 2>&1 || true
+  ssh_known_host_remove "$known" "[127.0.0.1]:$SSH_PORT" "$OPERATOR_USER" "$OPERATOR_GROUP" \
+    || die "could not clear this yard's SSH host-key entry"
   ok "cleared this yard's host-key entry ([127.0.0.1]:$SSH_PORT) from known_hosts"
 fi
 rm -rf "$YARD_STATE_DIR" && ok "removed yard state $YARD_STATE_DIR"

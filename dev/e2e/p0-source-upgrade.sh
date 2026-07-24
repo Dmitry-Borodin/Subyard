@@ -7,11 +7,17 @@ TOKEN="${2:-}"
 ARCHIVE="${3:-}"
 ARCHIVE_SHA256="${4:-}"
 SOURCE_REVISION="${5:-}"
+# shellcheck source=dev/e2e/lib-p0-capacity.sh
+. "$ROOT/dev/e2e/lib-p0-capacity.sh"
+p0_capacity_init "$TOKEN"
+
 MARKER="subyard-p0-source-$TOKEN"
 OPERATOR="subyardp0$TOKEN"
-OPERATOR_HOME="/home/$OPERATOR"
+SOURCE_STATE_ROOT="$P0_CAPACITY_STATE_ROOT/source-upgrade"
+OPERATOR_HOME="$SOURCE_STATE_ROOT/operator-home"
 SOURCE_ROOT="$OPERATOR_HOME/src"
-RELEASE_ROOT="/var/tmp/subyard-p0-source-release-$TOKEN"
+RELEASE_ROOT="$SOURCE_STATE_ROOT/releases"
+OPERATOR_PARENT_MODE="$SOURCE_STATE_ROOT/operator-parent-mode"
 SUDOERS="/etc/sudoers.d/subyard-p0-source-$TOKEN"
 PROJECT="subyard-e2e-yard"
 INSTANCE="yard-e2e-yard"
@@ -34,6 +40,7 @@ operator_env() {
     exec "$@"
   ' _ "$OPERATOR_HOME" env \
       HOME="$OPERATOR_HOME" USER="$OPERATOR" LOGNAME="$OPERATOR" SHELL=/bin/bash \
+      GOCACHE="$OPERATOR_HOME/.cache/go-build" GOMODCACHE="$OPERATOR_HOME/go/pkg/mod" \
       XDG_RUNTIME_DIR="/run/user/$uid" \
       DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
       "$@"
@@ -49,6 +56,7 @@ operator_no_go() {
     cd "$2"
     exec /usr/sbin/runuser -u "$1" -- env \
       HOME="$2" USER="$1" LOGNAME="$1" SHELL=/bin/bash \
+      GOCACHE="$2/.cache/go-build" GOMODCACHE="$2/go/pkg/mod" \
       PATH=/usr/sbin:/usr/bin:/sbin:/bin \
       XDG_RUNTIME_DIR="/run/user/$3" \
       DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$3/bus" \
@@ -62,6 +70,26 @@ operator_yard() {
 assert_fixture_project() {
   [ "$(incus project get "$PROJECT" user.subyard.p0-source 2>/dev/null)" = "$MARKER" ] \
     || die "refusing unmarked Incus project $PROJECT"
+}
+
+restore_operator_parent_access() {
+  local mode owner
+  [ -e "$OPERATOR_PARENT_MODE" ] || return 0
+  p0_capacity_assert_root_marker || return
+  [ -d "$SOURCE_STATE_ROOT" ] && [ ! -L "$SOURCE_STATE_ROOT" ] \
+    && [ "$(cat "$SOURCE_STATE_ROOT/.subyard-p0-marker" 2>/dev/null)" = \
+      "$P0_CAPACITY_MARKER" ] \
+    || die "refusing unmarked source state root $SOURCE_STATE_ROOT"
+  [ -f "$OPERATOR_PARENT_MODE" ] && [ ! -L "$OPERATOR_PARENT_MODE" ] \
+    || die "operator parent mode record is unsafe: $OPERATOR_PARENT_MODE"
+  owner="$(stat -c '%u' "$OPERATOR_PARENT_MODE")"
+  [ "$owner" = "$(id -u)" ] \
+    || die "operator parent mode record has an unexpected owner: $OPERATOR_PARENT_MODE"
+  mode="$(cat "$OPERATOR_PARENT_MODE")"
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] \
+    || die "operator parent mode record is invalid: $OPERATOR_PARENT_MODE"
+  sudo -n chmod "$mode" "$HOME"
+  find "$OPERATOR_PARENT_MODE" -delete
 }
 
 cleanup_fixture() {
@@ -107,13 +135,22 @@ cleanup_fixture() {
       || die "refusing unmarked release root $RELEASE_ROOT"
     sudo -n find "$RELEASE_ROOT" -depth -delete
   fi
+  restore_operator_parent_access
+  p0_capacity_remove_subtree "$SOURCE_STATE_ROOT"
+  p0_capacity_remove_build_cache
+  p0_capacity_remove_root_if_empty
 }
 
 prepare_operator() {
   local sudoers_tmp uid
   ! id "$OPERATOR" >/dev/null 2>&1 || die "fixture user $OPERATOR already exists"
   [ ! -e "$RELEASE_ROOT" ] || die "fixture release root already exists"
-  sudo -n useradd --create-home --shell /bin/bash "$OPERATOR"
+  [ ! -e "$OPERATOR_PARENT_MODE" ] \
+    || die "operator parent mode record already exists: $OPERATOR_PARENT_MODE"
+  stat -c '%a' "$HOME" > "$OPERATOR_PARENT_MODE"
+  chmod 0600 "$OPERATOR_PARENT_MODE"
+  sudo -n chmod o+x "$HOME"
+  sudo -n useradd --create-home --home-dir "$OPERATOR_HOME" --shell /bin/bash "$OPERATOR"
   sudo -n usermod -aG incus-admin "$OPERATOR"
   sudoers_tmp="$(mktemp /tmp/subyard-p0-sudoers.XXXXXX)"
   printf '%s ALL=(root) NOPASSWD: ALL\n' "$OPERATOR" > "$sudoers_tmp"
@@ -331,16 +368,17 @@ prepare_project() {
 }
 
 run_incus_installer() {
+  p0_capacity_prepare_platform_root
   (
     # shellcheck source=tests/helpers/test-context.sh
     . "$ROOT/tests/helpers/test-context.sh"
-    setup_test_context "$HOME/.subyard/p0-source-bootstrap-$TOKEN"
+    setup_test_context "$P0_CAPACITY_PLATFORM_ROOT/incus/p0-source-bootstrap-$TOKEN"
     export SUBYARD_USER
     SUBYARD_USER="$(id -un)"
     export SUBYARD_OPERATOR_HOME="$HOME"
     export SUBYARD_CONFIG_DIR="$ROOT/config"
     export SUBYARD_CONFIG_HOME="$HOME/.config/subyard"
-    export SUBYARD_HOME="$HOME/.subyard"
+    export SUBYARD_HOME="$P0_CAPACITY_PLATFORM_ROOT/incus"
     export STORAGE_PATH="$SUBYARD_HOME/incus/storage"
     export HOST_BASE="$SUBYARD_HOME/p0-source-host-data-$TOKEN"
     export RESTRICTED_DISK_PATHS="$HOST_BASE"
@@ -361,6 +399,7 @@ prepare() {
     || die 'source archive checksum mismatch'
   command -v go >/dev/null 2>&1 || die 'fixture preparation needs Go'
   command -v unshare >/dev/null 2>&1 || die 'unshare is required'
+  p0_capacity_reset_build_cache
   if ! incus info >/dev/null 2>&1 \
     || ! incus storage show default --project default >/dev/null 2>&1 \
     || ! incus network show incusbr0 --project default >/dev/null 2>&1; then
@@ -370,6 +409,9 @@ prepare() {
     bash "$ROOT/dev/e2e/p0-real-incus.sh"
   fi
   cleanup_fixture
+  p0_capacity_reset_build_cache
+  p0_capacity_prepare_subtree "$SOURCE_STATE_ROOT"
+  chmod 0711 "$SOURCE_STATE_ROOT"
   prepare_operator
   package_candidates
   prepare_project

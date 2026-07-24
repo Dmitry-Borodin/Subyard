@@ -78,7 +78,16 @@ Run the P0 matrix after the operator allocates both VMs:
 dev/e2e/p0-acceptance.sh
 ```
 
-It covers legacy upgrade, real Incus, rollback, SSH/RPC and cross-owner credential sync.
+It covers legacy upgrade, real Incus, rollback, SSH/RPC and cross-owner credential sync. Before
+provisioning, the lane rejects product or pool roots backed by tmpfs, insufficient root
+disk/inodes, or an undersized `/tmp` transient area. Heavy run-owned state and the disposable Go
+build cache live under a marker-owned `$HOME/.cache/subyard-p0-<allocation>/` root; the Go
+module/toolchain cache remains reusable across runs.
+
+The final report records measured peak root-disk, inode, tmpfs and RAM use for each VM. Cleanup
+then proves that the exact P0 state root, fixture releases/users, Incus projects and temporary
+pools are gone. The allocation, TTL, reusable module cache and allocation-level Incus image cache
+are not removed.
 
 Direct guest access:
 

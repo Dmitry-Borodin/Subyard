@@ -20,6 +20,12 @@ SOURCE_HASH=''
 SOURCE_COMMIT=''
 SOURCE_HOST_STARTED=0
 CANDIDATE_HASH=''
+CAPACITY_LOG_DIR=''
+declare -A CAPACITY_PID=()
+declare -A CAPACITY_FLAG=()
+declare -A DEFAULT_BUILD_CACHE_BEFORE=()
+declare -A MODULE_CACHE_BEFORE=()
+declare -A HOME_STATE_BEFORE=()
 
 die() { printf 'p0-acceptance: %s\n' "$*" >&2; exit 2; }
 public_tree_hash() {
@@ -56,10 +62,22 @@ clean_peers() { "$AGENT" --vm both -- bash dev/e2e/p0-guest.sh peer-clean "$TOKE
 clean_source_host() {
   run_source_vm clean
 }
+stop_capacity_monitors() {
+  local vm pid
+  for vm in 1 2; do
+    [ -z "${CAPACITY_FLAG[$vm]:-}" ] || find "${CAPACITY_FLAG[$vm]}" -delete 2>/dev/null || true
+  done
+  for vm in 1 2; do
+    pid="${CAPACITY_PID[$vm]:-}"
+    [ -z "$pid" ] || wait "$pid" >/dev/null 2>&1 || true
+    CAPACITY_PID[$vm]=''
+  done
+}
 cleanup() {
   local rc=$? cleanup_failed=0
   trap - EXIT INT TERM
   set +e
+  stop_capacity_monitors
   if [ -n "$PROBE_PID" ]; then
     kill -TERM -- "-$PROBE_PID" >/dev/null 2>&1
     wait "$PROBE_PID" >/dev/null 2>&1
@@ -81,8 +99,107 @@ cleanup() {
     || find "$SOURCE_ARCHIVE" -delete >/dev/null 2>&1 \
     || cleanup_failed=1
   [ -z "$PROBE_LOG" ] || find "$PROBE_LOG" -delete >/dev/null 2>&1 || cleanup_failed=1
+  [ -z "$CAPACITY_LOG_DIR" ] || find "$CAPACITY_LOG_DIR" -depth -delete \
+    >/dev/null 2>&1 || cleanup_failed=1
   [ "$cleanup_failed" = 0 ] || rc=3
   exit "$rc"
+}
+
+capacity_cache_snapshot() {
+  local vm="$1"
+  "$AGENT" --ssh "$vm" -- bash -c '
+    bytes() {
+      if [ -e "$1" ]; then du -sx -B1 "$1" | awk "{print \$1}"; else printf "0\n"; fi
+    }
+    build="$(env -u GOCACHE go env GOCACHE)"
+    modules="$(env -u GOMODCACHE go env GOMODCACHE)"
+    printf "%s\t%s\n" "$(bytes "$build")" "$(bytes "$modules")"
+  '
+}
+
+capacity_monitor() {
+  local vm="$1" flag="$2" log="$3"
+  while [ -e "$flag" ]; do
+    ssh -F "$CONFIG" -T -o ConnectTimeout=3 "e2e-vm-$vm" -- bash -c '
+      read -r root_used root_available < <(
+        df -B1 --output=used,avail / | awk "NR==2 {print \$1, \$2}"
+      )
+      inode_used="$(df --output=iused / | awk "NR==2 {print \$1}")"
+      tmp_used="$(df -B1 --output=used /tmp | awk "NR==2 {print \$1}")"
+      read -r memory_used memory_available < <(
+        awk "
+          /MemTotal:/ { total=\$2 }
+          /MemAvailable:/ { available=\$2 }
+          END { print (total-available)*1024, available*1024 }
+        " /proc/meminfo
+      )
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$(date +%s)" "$root_used" "$root_available" "$inode_used" "$tmp_used" \
+        "$memory_used" "$memory_available"
+    ' >> "$log" 2>/dev/null || true
+    sleep 1
+  done
+}
+
+start_capacity_monitors() {
+  local vm flag log
+  CAPACITY_LOG_DIR="$(mktemp -d /tmp/subyard-p0-capacity.XXXXXX)"
+  for vm in 1 2; do
+    flag="$CAPACITY_LOG_DIR/vm$vm.running"
+    log="$CAPACITY_LOG_DIR/vm$vm.tsv"
+    : > "$flag"
+    : > "$log"
+    CAPACITY_FLAG[$vm]="$flag"
+    capacity_monitor "$vm" "$flag" "$log" &
+    CAPACITY_PID[$vm]=$!
+  done
+}
+
+capacity_report() {
+  local vm log report root_used root_available inode_used tmp_used memory_used memory_available
+  local min_root_available="${P0_E2E_MIN_PEAK_ROOT_RESERVE_BYTES:-1073741824}"
+  local min_memory_available="${P0_E2E_MIN_PEAK_MEMORY_RESERVE_BYTES:-536870912}"
+  stop_capacity_monitors
+  for vm in 1 2; do
+    log="$CAPACITY_LOG_DIR/vm$vm.tsv"
+    report="$(awk -F '\t' '
+      NF == 7 {
+        if (!seen || $2 > root_used) root_used=$2
+        if (!seen || $3 < root_available) root_available=$3
+        if (!seen || $4 > inode_used) inode_used=$4
+        if (!seen || $5 > tmp_used) tmp_used=$5
+        if (!seen || $6 > memory_used) memory_used=$6
+        if (!seen || $7 < memory_available) memory_available=$7
+        seen=1
+      }
+      END {
+        if (seen) print root_used, root_available, inode_used, tmp_used, memory_used, memory_available
+      }
+    ' "$log")"
+    [ -n "$report" ] || die "VM$vm capacity monitor recorded no samples"
+    read -r root_used root_available inode_used tmp_used memory_used memory_available <<<"$report"
+    [ "$root_available" -ge "$min_root_available" ] \
+      || die "VM$vm peak root reserve fell below $min_root_available bytes: $root_available"
+    [ "$memory_available" -ge "$min_memory_available" ] \
+      || die "VM$vm peak memory reserve fell below $min_memory_available bytes: $memory_available"
+    printf '  [ ok ] VM%s measured peak root_used=%s root_reserve=%s inode_used=%s tmp_used=%s memory_used=%s memory_reserve=%s\n' \
+      "$vm" "$root_used" "$root_available" "$inode_used" "$tmp_used" \
+      "$memory_used" "$memory_available"
+  done
+}
+
+verify_cache_lifecycle() {
+  local vm after default_after module_after growth max_growth=33554432
+  for vm in 1 2; do
+    after="$(capacity_cache_snapshot "$vm")"
+    IFS=$'\t' read -r default_after module_after <<<"$after"
+    growth=$((default_after - DEFAULT_BUILD_CACHE_BEFORE[$vm]))
+    [ "$growth" -le "$max_growth" ] \
+      || die "VM$vm shared Go build cache grew by $growth bytes; P0 must use its disposable cache"
+    printf '  [ ok ] VM%s Go cache lifecycle default_build=%s->%s reusable_modules=%s->%s\n' \
+      "$vm" "${DEFAULT_BUILD_CACHE_BEFORE[$vm]}" "$default_after" \
+      "${MODULE_CACHE_BEFORE[$vm]}" "$module_after"
+  done
 }
 
 prepare_source_archive() {
@@ -188,6 +305,12 @@ ssh_state() {
   '
 }
 
+home_state() {
+  local vm="$1"
+  "$AGENT" --ssh "$vm" -- sh -c \
+    'stat -c "%a:%u:%g" "$HOME"'
+}
+
 transport_probes() {
   local rc=0 ready=0 stopped=0
   set +e
@@ -263,6 +386,13 @@ expires="$(awk -F '\t' '$1=="expires_at_epoch" {print $2}' <<<"$before")"
 vm1_ip="$(ssh -F "$CONFIG" -G e2e-vm-1 | awk '$1=="hostname" {print $2; exit}')"
 vm2_ip="$(ssh -F "$CONFIG" -G e2e-vm-2 | awk '$1=="hostname" {print $2; exit}')"
 
+for vm in 1 2; do
+  snapshot="$(capacity_cache_snapshot "$vm")"
+  IFS=$'\t' read -r DEFAULT_BUILD_CACHE_BEFORE[$vm] MODULE_CACHE_BEFORE[$vm] <<<"$snapshot"
+  HOME_STATE_BEFORE[$vm]="$(home_state "$vm")"
+  run_vm "$vm" capacity-preflight
+done
+start_capacity_monitors
 "$AGENT" --verify-boundary
 transport_probes
 run_lanes
@@ -324,9 +454,20 @@ done
 [ "$(public_tree_hash | sha256sum | awk '{print $1}')" = "$CANDIDATE_HASH" ] \
   || die 'public candidate changed during acceptance'
 assert_no_worktrees
+run_vm 1 capacity-verify-cleanup
+run_vm 2 capacity-verify-cleanup
+for vm in 1 2; do
+  [ "$(home_state "$vm")" = "${HOME_STATE_BEFORE[$vm]}" ] \
+    || die "VM$vm operator home permissions or ownership changed"
+done
+assert_no_worktrees
+verify_cache_lifecycle
+capacity_report
 "$AGENT" --verify-boundary
 after="$(ssh -F "$CONFIG" -T subyard-e2e-bastion </dev/null)" || die 'final allocation status failed'
 [ "$after" = "$before" ] || die 'acceptance changed allocation or TTL'
 
+find "$CAPACITY_LOG_DIR" -depth -delete
+CAPACITY_LOG_DIR=''
 trap - EXIT INT TERM
 printf 'ok: P0 two-VM acceptance passed without changing allocation\n'

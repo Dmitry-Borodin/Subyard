@@ -133,6 +133,10 @@ printf '%s\n' "$direct_ssh_stdin" | grep -Fq -- '-T e2e-vm-1 --' \
   || fail "explicit direct SSH stdin did not use the pinned non-TTY VM route"
 grep -Fq '"$AGENT" --ssh-stdin 1 --' "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 source archive does not opt in to direct SSH stdin"
+grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && grep -Fq 'capacity-verify-cleanup' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && grep -Fq 'capacity_report' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail "P0 acceptance does not enforce capacity preflight, peak reporting and exact cleanup"
 
 # Accept only two ready, unexpired VMs with pinned host keys.
 ensure_state_root
@@ -262,7 +266,8 @@ fi
 grep -Fq 'trap owner_cleanup EXIT' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not clean its candidate after failure"
 grep -Fq 'prepare_owner_go_cache' "$ROOT/dev/e2e/p0-guest.sh" \
-  && grep -Fq 'clean_tree "$OWNER_GO_CACHE_ROOT" "$MARKER"' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'p0_capacity_reset_build_cache' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'p0_capacity_remove_build_cache' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane leaves candidate Go caches on the disposable VM"
 grep -Fq 'dev/build-engine.sh --force' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not build an explicit source candidate"

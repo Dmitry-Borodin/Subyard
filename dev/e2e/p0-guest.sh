@@ -7,14 +7,26 @@ TOKEN="${2:-}"
 PEER_IP="${3:-}"
 PEER_PUBLIC_KEY="${4:-}"
 PEER_HOST_KEY="${5:-}"
+# shellcheck source=dev/e2e/lib-p0-capacity.sh
+. "$ROOT/dev/e2e/lib-p0-capacity.sh"
+p0_capacity_init "$TOKEN"
+
 PEER_ROOT="/tmp/subyard-p0-peer-$TOKEN"
-PEER_DATA_ROOT="$HOME/.cache/subyard-p0-peer-$TOKEN"
+PEER_STATE_ROOT="$P0_CAPACITY_STATE_ROOT/peer"
+PEER_DATA_ROOT="$PEER_STATE_ROOT/subyard"
+PEER_HOST_BASE="$PEER_STATE_ROOT/host-data"
+PEER_KEYS_ROOT="$PEER_STATE_ROOT/keys"
+PEER_KEYS_TOOLS="$PEER_STATE_ROOT/tools"
+PEER_KEYS_CONSUMER_ROOT="$PEER_STATE_ROOT/consumer"
 MARKER="subyard-p0-$TOKEN"
-PEER_INCUS_MARKER="$PEER_ROOT/.subyard-p0-incus-init"
+PEER_INCUS_MARKER="$PEER_STATE_ROOT/.subyard-p0-incus-init"
 PEER_INCUS_POOL="subyard-p0-$TOKEN"
-OWNER_YARD_DIR="${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}/yards"
+OWNER_ROOT="$P0_CAPACITY_STATE_ROOT/owner"
+OWNER_DATA_ROOT="$OWNER_ROOT/subyard"
+OWNER_CONFIG_HOME="$OWNER_ROOT/config"
+OWNER_YARD_DIR="$OWNER_CONFIG_HOME/yards"
 RENAME_BASE_REVISION="7c67ee3f423cf9f1596c2f5191f462d2b70adcdc"
-RENAME_BASE_ROOT="/tmp/subyard-p0-rename-base-$TOKEN"
+RENAME_BASE_ROOT="$OWNER_ROOT/rename-base"
 PEER_SSH_DIR="$PEER_ROOT/ssh"
 PEER_YARD_ENTRY="$HOME/.local/bin/yard"
 PEER_YARD_BACKUP="$PEER_ROOT/user-yard-entry.backup"
@@ -25,7 +37,6 @@ PEER_REAL_YARD_MARKER="$PEER_ROOT/.subyard-p0-real-yard"
 OWNER_BASELINE_IMAGES=''
 OWNER_BASELINE_CAPTURED=0
 OWNER_BASE_IMAGE="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
-OWNER_GO_CACHE_ROOT="/tmp/subyard-p0-go-cache-$TOKEN"
 
 die() { printf 'p0-guest: %s\n' "$*" >&2; exit 2; }
 valid_token() { [[ "$1" =~ ^[0-9]+$ ]]; }
@@ -49,13 +60,9 @@ clean_tree() { # guarded path marker
 }
 
 clean_peer_data() {
-  case "$PEER_DATA_ROOT" in "$HOME/.cache/subyard-p0-"*) ;;
-    *) die "unsafe peer data path $PEER_DATA_ROOT" ;;
-  esac
-  [ ! -e "$PEER_DATA_ROOT" ] \
-    || [ "$(cat "$PEER_ROOT/.subyard-p0-marker" 2>/dev/null)" = "$MARKER" ] \
-    || die "refusing to clean unmarked peer data $PEER_DATA_ROOT"
-  [ ! -e "$PEER_DATA_ROOT" ] || sudo -n find "$PEER_DATA_ROOT" -depth -delete
+  p0_capacity_remove_subtree "$PEER_STATE_ROOT"
+  p0_capacity_remove_build_cache
+  p0_capacity_remove_root_if_empty
 }
 
 owner_project_contract() {
@@ -84,8 +91,6 @@ owner_cleanup() {
   trap - EXIT
   set +e
   clean_tree "$source" "$MARKER" || cleanup_failed=1
-  clean_tree "$RENAME_BASE_ROOT" "$MARKER" || cleanup_failed=1
-  clean_tree "$OWNER_GO_CACHE_ROOT" "$MARKER" || cleanup_failed=1
   if [ -d "${SUBYARD_HOME:-$HOME/.subyard}/exports" ]; then
     while IFS= read -r patch; do find "$patch" -delete || cleanup_failed=1; done \
       < <(grep -RIl -- "$MARKER" "${SUBYARD_HOME:-$HOME/.subyard}/exports" 2>/dev/null)
@@ -114,16 +119,18 @@ owner_cleanup() {
         || cleanup_failed=1
     done < <(incus image list --project default --format csv -c f)
   fi
+  p0_capacity_remove_subtree "$OWNER_ROOT" || cleanup_failed=1
+  p0_capacity_remove_build_cache || cleanup_failed=1
+  p0_capacity_remove_root_if_empty || cleanup_failed=1
   [ "$cleanup_failed" = 0 ] || rc=3
   exit "$rc"
 }
 
 prepare_owner_go_cache() {
-  clean_tree "$OWNER_GO_CACHE_ROOT" "$MARKER"
-  install -d -m 0700 "$OWNER_GO_CACHE_ROOT"
-  printf '%s\n' "$MARKER" > "$OWNER_GO_CACHE_ROOT/.subyard-p0-marker"
-  export GOCACHE="$OWNER_GO_CACHE_ROOT/build"
-  export GOMODCACHE="$OWNER_GO_CACHE_ROOT/modules"
+  p0_capacity_reset_build_cache
+  p0_capacity_prepare_subtree "$OWNER_ROOT"
+  export SUBYARD_HOME="$OWNER_DATA_ROOT"
+  export SUBYARD_CONFIG_HOME="$OWNER_CONFIG_HOME"
 }
 
 write_owner_registration() { # <yard> <template> <ssh-port>
@@ -141,9 +148,9 @@ write_owner_registration() { # <yard> <template> <ssh-port>
 
 install_rename_base_runtime() {
   local arch release bundle
-  clean_tree "$RENAME_BASE_ROOT" "$MARKER"
+  [ ! -e "$RENAME_BASE_ROOT" ] \
+    || { p0_capacity_assert_root_marker; sudo -n find "$RENAME_BASE_ROOT" -depth -delete; }
   install -d -m 0700 "$RENAME_BASE_ROOT"
-  printf '%s\n' "$MARKER" > "$RENAME_BASE_ROOT/.subyard-p0-marker"
   git -C "$RENAME_BASE_ROOT" init -q
   git -C "$RENAME_BASE_ROOT" remote add origin https://github.com/Dmitry-Borodin/Subyard.git
   git -C "$RENAME_BASE_ROOT" fetch -q --depth 1 origin "$RENAME_BASE_REVISION"
@@ -280,25 +287,27 @@ owner() (
   bash tests/engine-release.sh
   ./bin/yard -Y test-yard teardown --yes
   ! incus project show subyard-test-yard >/dev/null 2>&1 || die 'candidate project remains after teardown'
-  [ -x "$HOME/.subyard/runtime/current/bin/yard" ] \
+  [ -x "$SUBYARD_HOME/runtime/current/bin/yard" ] \
     || die 'last-yard teardown removed the installed candidate runtime'
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
-    "$HOME/.subyard/runtime/current/bin/yard" --version >/dev/null \
+    "$SUBYARD_HOME/runtime/current/bin/yard" --version >/dev/null \
     || die 'installed candidate runtime is unusable after last-yard teardown'
   printf 'ok: VM1 owner, legacy upgrade, lifecycle, Incus and rollback\n'
 )
 
 controller() (
-  local temp
+  local temp='' rc
   [ "$SUBYARD_E2E_VM" = 2 ] || die 'controller lane requires VM2'
+  p0_capacity_reset_build_cache
+  p0_capacity_prepare_subtree "$P0_CAPACITY_STATE_ROOT/controller"
+  trap 'rc=$?; set +e; [ -z "$temp" ] || find "$temp" -depth -delete; p0_capacity_remove_subtree "$P0_CAPACITY_STATE_ROOT/controller"; p0_capacity_remove_build_cache; p0_capacity_remove_root_if_empty; exit "$rc"' EXIT
   shellcheck -x -S warning dev/e2e/p0-acceptance.sh dev/e2e/p0-guest.sh \
-    dev/e2e/p0-real-incus.sh dev/e2e/p0-source-upgrade.sh \
+    dev/e2e/lib-p0-capacity.sh dev/e2e/p0-real-incus.sh dev/e2e/p0-source-upgrade.sh \
     dev/build-engine.sh tests/build-engine.sh \
     tests/agent-e2e.sh tests/real-host/incus-contract.sh
   ./tests/run.sh
   bash tests/real-host/ssh-rpc.sh
-  temp="$(mktemp -d /tmp/subyard-p0-tools.XXXXXX)"
-  trap 'find "$temp" -depth -delete' EXIT
+  temp="$(mktemp -d "$P0_CAPACITY_STATE_ROOT/controller/tools.XXXXXX")"
   (
     # shellcheck source=tests/helpers/test-context.sh
     . tests/helpers/test-context.sh
@@ -313,7 +322,7 @@ controller() (
   SUBYARD_REAL_KEYS_TOOLS_DIR="$temp/tools" bash tests/real-host/credential-tools.sh
   SUBYARD_REAL_KEYS_TOOLS_DIR="$temp/tools" bash tests/real-host/ssh-credential-peer.sh
   find "$temp" -depth -delete
-  trap - EXIT
+  temp=''
   printf 'ok: VM2 suite, SSH RPC and real credential adapters\n'
 )
 
@@ -335,9 +344,9 @@ install_peer_wrapper() {
     printf 'export HOME=%q SUBYARD_OPERATOR_HOME=%q SUBYARD_CONFIG_HOME=%q\n' \
       "$PEER_ROOT/home" "$PEER_ROOT/home" "$PEER_ROOT/config"
     printf 'export SUBYARD_HOME=%q HOST_BASE=%q RESTRICTED_DISK_PATHS=%q\n' \
-      "$PEER_DATA_ROOT" "$PEER_ROOT/host-data" "$PEER_ROOT/host-data"
+      "$PEER_DATA_ROOT" "$PEER_HOST_BASE" "$PEER_HOST_BASE"
     printf 'export SUBYARD_KEYS_ROOT=%q SUBYARD_KEYS_TOOLS_DIR=%q SUBYARD_KEYS_CONSUMER_ROOT=%q\n' \
-      "$PEER_ROOT/keys" "$PEER_ROOT/tools" "$PEER_ROOT/consumer"
+      "$PEER_KEYS_ROOT" "$PEER_KEYS_TOOLS" "$PEER_KEYS_CONSUMER_ROOT"
     printf 'export SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE=1 SUBYARD_NO_AUDIT=1\n'
     printf 'exec %q/yard "$@"\n' "$PEER_ROOT/bin"
   } > "$wrapper"
@@ -382,8 +391,8 @@ remove_peer_wrapper() {
 bootstrap_peer_keys() {
   HOME="$PEER_ROOT/home" SUBYARD_OPERATOR_HOME="$PEER_ROOT/home" \
     SUBYARD_CONFIG_HOME="$PEER_ROOT/config" SUBYARD_HOME="$PEER_DATA_ROOT" \
-    HOST_BASE="$PEER_ROOT/host-data" RESTRICTED_DISK_PATHS="$PEER_ROOT/host-data" \
-    SUBYARD_KEYS_ROOT="$PEER_ROOT/keys" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
+    HOST_BASE="$PEER_HOST_BASE" RESTRICTED_DISK_PATHS="$PEER_HOST_BASE" \
+    SUBYARD_KEYS_ROOT="$PEER_KEYS_ROOT" SUBYARD_KEYS_TOOLS_DIR="$PEER_KEYS_TOOLS" \
     "$PEER_ROOT/bin/yard" _keys-init >/dev/null
 }
 
@@ -458,8 +467,13 @@ ensure_incus() {
 	id -nG | tr ' ' '\n' | grep -qx incus-admin || reexec_with_incus_group "$resume_mode"
 }
 
-ensure_owner_incus() { ensure_incus "$HOME/.subyard" '' owner; }
-ensure_peer_incus() { ensure_incus "$PEER_DATA_ROOT/incus-home" "$PEER_INCUS_MARKER" peer-prepare-resume; }
+ensure_owner_incus() {
+  p0_capacity_prepare_platform_root
+  ensure_incus "$P0_CAPACITY_PLATFORM_ROOT/incus" '' owner
+}
+ensure_peer_incus() {
+  ensure_incus "$PEER_STATE_ROOT/incus-home" "$PEER_INCUS_MARKER" peer-prepare-resume
+}
 
 ensure_peer_snapshot_fixture() {
   if incus project show subyard >/dev/null 2>&1; then
@@ -469,8 +483,9 @@ ensure_peer_snapshot_fixture() {
       || die "Incus instance 'subyard/yard' is not the peer fixture"
     return
   fi
-  install -d -m 0700 "$PEER_ROOT/incus-pool"
-  incus storage create "$PEER_INCUS_POOL" dir source="$PEER_ROOT/incus-pool" --project default >/dev/null
+  install -d -m 0700 "$PEER_STATE_ROOT/incus-pool"
+  incus storage create "$PEER_INCUS_POOL" dir source="$PEER_STATE_ROOT/incus-pool" \
+    --project default >/dev/null
   incus project create subyard -c features.images=false -c features.profiles=false \
     -c features.storage.volumes=false -c user.subyard.p0="$MARKER" >/dev/null
   incus init --empty yard --project subyard --storage "$PEER_INCUS_POOL" --no-profiles \
@@ -504,7 +519,7 @@ cleanup_peer_incus() {
 	if incus storage show default --project default >/dev/null 2>&1; then
 		source="$(incus storage get default source --project default)"
 		case "$source" in
-			"$PEER_DATA_ROOT/incus-home/storage"|"$PEER_DATA_ROOT/incus-home/incus/storage") ;;
+			"$PEER_STATE_ROOT/incus-home/storage"|"$PEER_STATE_ROOT/incus-home/incus/storage") ;;
 			*) die "refusing to clean non-peer storage pool at $source" ;;
 		esac
 		while IFS= read -r fingerprint; do
@@ -515,16 +530,19 @@ cleanup_peer_incus() {
 			&& incus network delete incusbr0 --project default >/dev/null
 		incus storage delete default --project default >/dev/null
 	fi
-	[ ! -e "$PEER_DATA_ROOT/incus-home" ] \
-		|| sudo -n find "$PEER_DATA_ROOT/incus-home" -depth -delete
+	[ ! -e "$PEER_STATE_ROOT/incus-home" ] \
+		|| sudo -n find "$PEER_STATE_ROOT/incus-home" -depth -delete
 }
 
 peer_prepare() {
   valid_ip "$PEER_IP" || die 'peer IP is invalid'
   peer_clean
+  p0_capacity_reset_build_cache
+  p0_capacity_prepare_subtree "$PEER_STATE_ROOT"
   install -d -m 0700 "$PEER_ROOT/src" "$PEER_ROOT/home" "$PEER_ROOT/config/yards"
 	printf '%s\n' "$MARKER" > "$PEER_ROOT/.subyard-p0-marker"
-  install -d -m 0700 "$PEER_DATA_ROOT"
+  install -d -m 0700 "$PEER_DATA_ROOT" "$PEER_HOST_BASE" "$PEER_KEYS_ROOT" \
+    "$PEER_KEYS_TOOLS" "$PEER_KEYS_CONSUMER_ROOT"
 	cp -a "$ROOT/." "$PEER_ROOT/src/"
 	ensure_peer_incus
 	peer_prepare_finish
@@ -539,7 +557,8 @@ peer_ssh() {
 }
 
 peer_prepare_finish() {
-  local release="$PEER_ROOT/release" version="p0-peer-vm-$SUBYARD_E2E_VM"
+  local release="$PEER_STATE_ROOT/releases" version="p0-peer-vm-$SUBYARD_E2E_VM"
+  p0_capacity_use_build_cache
 	[ -r "$PEER_ROOT/src/tests/helpers/source-control-plane.sh" ] \
 		|| die 'stable peer source is incomplete after incus-admin resume'
 	ensure_peer_snapshot_fixture
@@ -569,7 +588,7 @@ peer_prepare_finish() {
     # shellcheck source=config/host.env
     . "$PEER_ROOT/src/config/host.env"
     set +a
-    SUBYARD_HOME="$PEER_DATA_ROOT" SUBYARD_KEYS_TOOLS_DIR="$PEER_ROOT/tools" \
+    SUBYARD_HOME="$PEER_DATA_ROOT" SUBYARD_KEYS_TOOLS_DIR="$PEER_KEYS_TOOLS" \
       bash "$PEER_DATA_ROOT/runtime/current/scripts/install-key-tools.sh" -y >/dev/null
   )
   bootstrap_peer_keys
@@ -693,13 +712,14 @@ decode_frames() { # framed-input json-lines-output
 }
 
 peer_rpc() {
-  local request response body remote_engine
+  local request response body remote_engine remote_root
   valid_ip "$PEER_IP" || die 'peer IP is invalid'
-  remote_engine="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current/bin/yard-engine"
+  remote_root="/home/dev/.cache/subyard-p0-$TOKEN/peer/subyard/runtime/current"
+  remote_engine="$remote_root/bin/yard-engine"
   request="$PEER_ROOT/rpc-request"; response="$PEER_ROOT/rpc-response"; body="$PEER_ROOT/rpc-body"
   : > "$request"
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
-  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
@@ -710,7 +730,7 @@ peer_rpc() {
 
   : > "$request"
   append_frame '{"version":2,"type":"request","id":"bad","method":"rpc.negotiate"}' "$request"
-  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
@@ -721,7 +741,7 @@ peer_rpc() {
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
   append_frame '{"version":1,"type":"request","id":"events","operationId":"operation-events","method":"incus.events"}' "$request"
   append_frame '{"version":1,"type":"cancel","id":"cancel","operationId":"operation-events"}' "$request"
-  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root" \
     "$remote_engine" rpc --stdio < "$request" > "$response"
   decode_frames "$response" "$body"
   jq -s -e 'any(.[]; .id=="cancel" and .result.cancelled=="operation-events") and
@@ -729,11 +749,11 @@ peer_rpc() {
     "$body" >/dev/null || die 'live RPC cancellation failed'
 
   printf '\0\0\0\20broken' | peer_ssh "dev@$PEER_IP" -- \
-    env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" "$remote_engine" rpc --stdio >/dev/null 2>&1 || true
+    env SUBYARD_REPOSITORY_ROOT="$remote_root" "$remote_engine" rpc --stdio >/dev/null 2>&1 || true
   : > "$request"
   append_frame '{"version":1,"type":"request","id":"negotiate","method":"rpc.negotiate"}' "$request"
   append_frame '{"version":1,"type":"request","id":"snapshot","method":"system.snapshot"}' "$request"
-  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="/home/dev/.cache/subyard-p0-peer-$TOKEN/runtime/current" \
+  peer_ssh "dev@$PEER_IP" -- env SUBYARD_REPOSITORY_ROOT="$remote_root" \
     "$remote_engine" rpc --stdio \
     < "$request" > "$response"
   decode_frames "$response" "$body"
@@ -764,14 +784,15 @@ peer_credentials() {
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   source_hash="$(sha256sum "$expected" | awk '{print $1}')"
   remote_hash="$(peer_ssh "dev@$PEER_IP" -- sha256sum \
-    "/tmp/subyard-p0-peer-$TOKEN/consumer/staging/p0-cross-owner.env" | awk '{print $1}')"
+    "/home/dev/.cache/subyard-p0-$TOKEN/peer/consumer/staging/p0-cross-owner.env" \
+    | awk '{print $1}')"
   [ "$source_hash" = "$remote_hash" ] || die 'cross-owner credential materialization differs'
   "$PEER_YARD_ENTRY" keys revoke "$credential" --yes >/dev/null
   "$PEER_YARD_ENTRY" keys sync @peer --now --yes >/dev/null
   peer_ssh "dev@$PEER_IP" -- bash -lc \
     "$(printf '%q' 'yard keys materialize p0-cross-owner --yes')" >/dev/null
   ! peer_ssh "dev@$PEER_IP" -- test -e \
-    "/tmp/subyard-p0-peer-$TOKEN/consumer/staging/p0-cross-owner.env" \
+    "/home/dev/.cache/subyard-p0-$TOKEN/peer/consumer/staging/p0-cross-owner.env" \
     || die 'revoked cross-owner credential remains materialized'
   "$PEER_YARD_ENTRY" remote remove peer --yes >/dev/null
   printf 'ok: real cross-owner credential trust, sync and revoke\n'
@@ -857,7 +878,55 @@ peer_clean() {
   clean_tree "$PEER_ROOT" "$MARKER"
 }
 
+capacity_preflight() {
+  p0_capacity_preflight
+}
+
+capacity_verify_cleanup() {
+  local path project
+  [ ! -e "$P0_CAPACITY_STATE_ROOT" ] \
+    || die "P0 state root remains after cleanup: $P0_CAPACITY_STATE_ROOT"
+  [ ! -e "$HOME/.cache/subyard-p0-peer-$TOKEN" ] \
+    || die 'legacy peer data root remains after cleanup'
+  for path in \
+    "/tmp/subyard-p0-peer-$TOKEN" \
+    "/tmp/subyard-p0-project-$TOKEN" \
+    "/tmp/subyard-p0-rename-base-$TOKEN" \
+    "/tmp/subyard-p0-go-cache-$TOKEN" \
+    "/tmp/subyard-p0-source-$TOKEN.tar.gz" \
+    "/var/tmp/subyard-p0-source-release-$TOKEN"; do
+    [ ! -e "$path" ] || die "legacy or transient P0 state remains after cleanup: $path"
+  done
+  [ -z "$(find /tmp -maxdepth 1 -name 'subyard-p0-incus.*' -print -quit)" ] \
+    || die 'real-Incus transient directory remains after cleanup'
+  if command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; then
+    ! incus storage show "$PEER_INCUS_POOL" --project default >/dev/null 2>&1 \
+      || die "P0 Incus pool remains after cleanup: $PEER_INCUS_POOL"
+    for project in subyard-p0-real-incus subyard-e2e-yard subyard-test-yard subyard; do
+      ! incus project show "$project" >/dev/null 2>&1 \
+        || die "P0 Incus project remains after cleanup: $project"
+    done
+    if incus storage show default --project default >/dev/null 2>&1; then
+      p0_capacity_require_persistent_path \
+        "$(incus storage get default source --project default)" incus-default-pool
+    fi
+  fi
+  if [ "$SUBYARD_E2E_VM" = 1 ]; then
+    ! id "subyardp0$TOKEN" >/dev/null 2>&1 \
+      || die "source-upgrade fixture user remains after cleanup: subyardp0$TOKEN"
+    [ ! -e "/etc/sudoers.d/subyard-p0-source-$TOKEN" ] \
+      || die 'source-upgrade sudoers fixture remains after cleanup'
+  fi
+  printf '  [ ok ] Go caches after lane reusable_modules=%s default_build=%s\n' \
+    "$(p0_capacity_cache_bytes "$P0_CAPACITY_MODULE_CACHE")" \
+    "$(p0_capacity_cache_bytes "$P0_CAPACITY_DEFAULT_BUILD_CACHE")"
+  printf 'ok: VM%s exact P0 state, pools, projects and releases removed\n' \
+    "$SUBYARD_E2E_VM"
+}
+
 case "$MODE" in
+  capacity-preflight) capacity_preflight ;;
+  capacity-verify-cleanup) capacity_verify_cleanup ;;
   owner) owner ;;
   controller) controller ;;
   peer-prepare) peer_prepare ;;

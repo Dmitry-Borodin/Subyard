@@ -2,6 +2,7 @@
 build-engine.sh
 emulator-process-identity.sh
 lib-power-network.sh
+p0-capacity.sh
 runtime-privilege-reexec.sh
 ssh-config.sh
 teardown-runtime-preservation.sh

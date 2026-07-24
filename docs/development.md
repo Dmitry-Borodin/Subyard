@@ -50,12 +50,12 @@ links `~/.local/bin/{yard,sy}` to the verified runtime, and configures login PAT
 `subyard-<version>-linux-<arch>.tar.gz` runtime under `.build/release/`, each with a detached SHA-256,
 compatibility manifest and provenance. A `vMAJOR.MINOR.PATCH` tag runs the full gate and publishes
 both architectures to a tag-backed GitHub Release. `yard update` verifies all release inputs, applies
-registered state migrations, publishes an immutable release directory and atomically switches
-`current`; the prior runtime is retained through `previous`. `yard update --rollback` checks and swaps
-those complete runtimes without a download. First install and runtime execution require no Go or source checkout.
-State schema compatibility remains fail-closed, and interrupted, incomplete or incompatible releases
-cannot replace the working runtime. Upgrade apply currently tightens valid legacy project-state
-permissions to `0600`; payload and schema changes still require an explicit registered migration.
+the candidate's migration registry, publishes an immutable release directory and atomically rotates
+`current`/`previous`. See [release migrations](control-plane.md#release-migrations) for the runtime
+contract and [real-host acceptance](real-host-acceptance.md) for its test lane. First install and
+runtime execution require no Go or source checkout; interrupted or incompatible releases cannot
+replace the working runtime. Recognized pre-0.1 source installs continue through
+[`scripts/migrate-source-install.sh`](../scripts/migrate-source-install.sh).
 
 `./tests/run.sh` is the single unprivileged gate. It runs formatting, vet, race-enabled Go tests, a
 short parser fuzz smoke, the static binary build, and all Bash unit/contract/integration tests. It

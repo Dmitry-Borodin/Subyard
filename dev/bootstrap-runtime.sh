@@ -162,6 +162,7 @@ printf 'channel=%s available=%s platform=%s/%s\n' "$CHANNEL" "$VERSION" "$os" "$
   --bundle "$bundle" --checksum "$checksum" --manifest "$manifest" --provenance "$provenance"
 
 migrated_source=0
+# Required pre-0.1 compatibility ingress; its removal gate lives in the runtime script.
 if "$RUNTIME_ROOT/current/scripts/migrate-source-install.sh" \
   --runtime-root "$RUNTIME_ROOT" --bin-dir "$BIN_DIR" --rc "$RC" --login-rc "$LOGIN_RC" \
   --data-home "$DATA_HOME"; then

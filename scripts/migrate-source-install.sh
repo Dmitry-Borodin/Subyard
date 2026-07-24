@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One-time migration from a recognized source-linked CLI to an immutable runtime.
+# One-time migration from a recognized pre-0.1 source-linked CLI to an immutable runtime.
+# Removal requires a separate compatibility review no earlier than 2026-10-24.
 set -euo pipefail
 
 RUNTIME_ROOT=''; BIN_DIR=''; RC=''; LOGIN_RC=''; DATA_HOME=''

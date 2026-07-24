@@ -12,6 +12,10 @@ export SUBYARD_HOME="$TMP/data"
 
 fail() { printf 'engine release: %s\n' "$*" >&2; exit 1; }
 yard_update() { YARD_ENGINE_PATH="$release_engine" "$ROOT/bin/yard" update --yes "$@"; }
+installed_update() {
+  YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
+    "$runtime_root/current/bin/yard" update --yes "$@"
+}
 
 workflow="$ROOT/.github/workflows/release.yml"
 [ -r "$workflow" ] || fail 'tag release workflow is missing'
@@ -65,7 +69,12 @@ printf 'ignored qa secret\n' > "$qa_canary"
 printf 'untracked local input\n' > "$untracked_canary"
 chmod 0600 "$staging_canary" "$qa_canary" "$untracked_canary"
 trap 'rm -f -- "$staging_canary" "$qa_canary" "$untracked_canary"; rm -rf "$TMP"' EXIT
-artifact_one="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.0.0-test)"
+legacy_installer="$ROOT/tests/fixtures/migrations/v0.1.0-install-runtime-release.sh"
+[ "$(sha256sum "$legacy_installer" | cut -d' ' -f1)" = \
+  168dbaa00dfe3d86471358993e63d6b50c02d5af4bb136a6da3c4e39229780dd ] \
+  || fail 'the pinned v0.1.0 runtime installer fixture changed'
+artifact_one="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.0.0-test \
+  --runtime-installer "$legacy_installer")"
 bundle_one="$release/subyard-1.0.0-test-linux-amd64.tar.gz"
 [ -x "$release/subyard-install.sh" ] \
   && [ -x "$release/subyard-install-runtime-release.sh" ] \
@@ -78,7 +87,8 @@ bundle_one="$release/subyard-1.0.0-test-linux-amd64.tar.gz"
   && [ -r "$bundle_one.manifest.json" ] && [ -r "$bundle_one.provenance.json" ] \
   || fail 'self-contained runtime bundle contract is missing'
 jq -e '.schemaVersion == 1 and .kind == "runtime" and .version == "1.0.0-test" and
-  .rpc.min == 1 and .rpc.max == 1' "$bundle_one.manifest.json" >/dev/null \
+  .rpc.min == 1 and .rpc.max == 1 and .migrationSchema == 1 and
+  .minimumConfigLayout == 1 and .configLayout == 1' "$bundle_one.manifest.json" >/dev/null \
   || fail 'runtime bundle manifest is incompatible'
 bundle_list="$TMP/runtime-bundle.list"
 tar -tzf "$bundle_one" > "$bundle_list"
@@ -86,6 +96,7 @@ grep -Fxq './bin/yard' "$bundle_list" \
   && grep -Fxq './bin/yard-engine' "$bundle_list" \
   && grep -Fxq './scripts/install-runtime-release.sh' "$bundle_list" \
   && grep -Fxq './config/commands.registry' "$bundle_list" \
+  && grep -Fxq './config/migrations.json' "$bundle_list" \
   || fail 'runtime bundle does not contain the complete launcher contract'
 grep -Fxq './runtime-files.sha256' "$bundle_list" \
   || fail 'runtime bundle exact file manifest is missing'
@@ -196,10 +207,12 @@ install -d -m 0700 "$(dirname "$legacy_state")"
 printf '%s\n' '{"schema":1,"projectId":"legacy-12345678","name":"Legacy","hostPath":"/host/Legacy","yardPath":"/srv/workspaces/legacy-12345678/src","mode":"sync","sshHost":"yard"}' > "$legacy_state"
 chmod 0664 "$legacy_state"
 
-artifact_two="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.1.0-test)"
+artifact_two="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.1.0-test \
+  --migration-registry "$ROOT/tests/fixtures/migrations/layout-2.json")"
 bundle_two="$release/subyard-1.1.0-test-linux-amd64.tar.gz"
 release_engine="$artifact_two"
-jq -e '.version == "1.1.0-test" and .rpc.min == 1 and .rpc.max == 1' \
+jq -e '.version == "1.1.0-test" and .rpc.min == 1 and .rpc.max == 1 and
+  .migrationSchema == 1 and .minimumConfigLayout == 1 and .configLayout == 2' \
   "$artifact_two.manifest.json" >/dev/null
 rpc_negotiate "$artifact_two" 1.1.0-test 1 compatible artifact-two-v1
 
@@ -228,6 +241,19 @@ fi
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'failed offline check changed the current runtime'
 
+migration_source="$SUBYARD_CONFIG_HOME/migration-fixture/legacy/config.env"
+migration_destination="$SUBYARD_CONFIG_HOME/migration-fixture/current/config.env"
+migration_final="$SUBYARD_CONFIG_HOME/migration-fixture/final/config.env"
+install -d -m 0700 "$(dirname "$migration_source")"
+printf 'TOKEN=synthetic-layout\n' > "$migration_source"
+chmod 0600 "$migration_source"
+state_before_check="$(sha256sum "$SUBYARD_CONFIG_HOME/migrations/state.json")"
+YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
+  installed_update --runtime-root "$runtime_root" --version 1.1.0-test --check >/dev/null
+[ "$state_before_check" = "$(sha256sum "$SUBYARD_CONFIG_HOME/migrations/state.json")" ] \
+  && [ -f "$migration_source" ] && [ ! -e "$migration_destination" ] \
+  || fail 'update check changed config or migration state'
+
 partial="$TMP/partial"; install -d "$partial"
 install -m 0644 "$bundle_two" "$partial/$(basename "$bundle_two")"
 install -m 0644 "$bundle_two.sha256" "$bundle_two.manifest.json" "$partial/"
@@ -238,16 +264,49 @@ fi
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'interrupted/incomplete update replaced the current runtime'
 
-YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/cache" \
-  yard_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
+# Exercise the pinned v0.1 updater; candidate startup must finalize its prepared migration.
+installed_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \
   || fail 'runtime upgrade did not switch current'
 [ "$("$runtime_root/previous/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'runtime upgrade did not retain previous'
-yard_update --runtime-root "$runtime_root" --rollback >/dev/null
+[ ! -e "$migration_source" ] && [ ! -L "$migration_source" ] \
+  && grep -Fxq 'TOKEN=synthetic-layout' "$migration_destination" \
+  && jq -e '.layout == 2' "$SUBYARD_CONFIG_HOME/migrations/state.json" >/dev/null \
+  || fail 'v0.1-style update did not commit the synthetic layout migration'
+installed_update --runtime-root "$runtime_root" --rollback >/dev/null
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'runtime rollback did not restore previous'
 [ "$("$runtime_root/previous/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \
   || fail 'runtime rollback did not retain the replaced release'
+[ -f "$migration_source" ] && [ ! -e "$migration_destination" ] \
+  && jq -e '.layout == 1' "$SUBYARD_CONFIG_HOME/migrations/state.json" >/dev/null \
+  || fail 'runtime rollback did not restore the previous data layout'
 
-printf 'ok: release publishing and runtimes are verified, offline-safe, atomic and rollback-capable\n'
+installed_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
+[ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \
+  && [ ! -e "$migration_source" ] && [ -f "$migration_destination" ] \
+  && jq -e '.layout == 2' "$SUBYARD_CONFIG_HOME/migrations/state.json" >/dev/null \
+  || fail 'roll-forward through the same release pair was not idempotent'
+
+artifact_three="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.2.0-test \
+  --migration-registry "$ROOT/tests/fixtures/migrations/layout-3.json")"
+jq -e '.version == "1.2.0-test" and .configLayout == 3' \
+  "$artifact_three.manifest.json" >/dev/null \
+  || fail 'third runtime did not publish layout 3'
+installed_update --runtime-root "$runtime_root" --version 1.2.0-test >/dev/null
+[ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.2.0-test ] \
+  && [ ! -e "$migration_destination" ] && [ ! -L "$migration_destination" ] \
+  && grep -Fxq 'TOKEN=synthetic-layout' "$migration_final" \
+  && jq -e '.layout == 3' "$SUBYARD_CONFIG_HOME/migrations/state.json" >/dev/null \
+  || fail 'second migration rotation did not commit layout 3'
+[ "$(find "$SUBYARD_CONFIG_HOME/migrations/transactions" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ] \
+  || fail 'stale recovery was not removed after the next successful rotation'
+
+installed_update --runtime-root "$runtime_root" --rollback >/dev/null
+[ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.1.0-test ] \
+  && [ -f "$migration_destination" ] && [ ! -e "$migration_final" ] \
+  && jq -e '.layout == 2' "$SUBYARD_CONFIG_HOME/migrations/state.json" >/dev/null \
+  || fail 'layout 3 rollback did not restore runtime and data layout 2'
+
+printf 'ok: release runtimes and versioned migrations are verified, offline-safe and rollback-capable\n'

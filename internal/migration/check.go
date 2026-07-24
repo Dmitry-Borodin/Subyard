@@ -12,12 +12,18 @@ import (
 )
 
 type Report struct {
-	SchemaVersion          int  `json:"schemaVersion"`
-	ProjectStateSchema     int  `json:"projectStateSchema"`
-	CredentialSchema       int  `json:"credentialSchema"`
-	ProjectStoresValidated int  `json:"projectStoresValidated"`
-	CredentialRevisions    int  `json:"credentialRevisions"`
-	Changed                bool `json:"changed"`
+	SchemaVersion          int      `json:"schemaVersion"`
+	ProjectStateSchema     int      `json:"projectStateSchema"`
+	CredentialSchema       int      `json:"credentialSchema"`
+	Layout                 int      `json:"layout,omitempty"`
+	TargetLayout           int      `json:"targetLayout,omitempty"`
+	RequiredMigrations     []string `json:"requiredMigrations,omitempty"`
+	AffectedResources      []string `json:"affectedResources,omitempty"`
+	Phase                  string   `json:"phase,omitempty"`
+	ProjectStoresValidated int      `json:"projectStoresValidated"`
+	CredentialRevisions    int      `json:"credentialRevisions"`
+	Pending                bool     `json:"pending,omitempty"`
+	Changed                bool     `json:"changed"`
 }
 
 // Check validates every existing store before an engine replacement without

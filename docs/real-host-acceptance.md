@@ -49,8 +49,8 @@ offline and incomplete-download behavior, atomic upgrade/rollback layout, stdio 
 supported/unsupported protocol negotiation. On the E2E lane, install two versioned runtimes on VM1,
 connect from VM2 over SSH stdio, upgrade the owner while the controller stays on the previous
 version, and then run `yard update --rollback`. The upgrade path
-runs `_migrate apply` before switching `current`; rollback checks the retained runtime before swapping
-`current` and `previous`.
+is covered by the [source-upgrade lane](../dev/e2e/p0-source-upgrade.sh): pre-0.1 and v0.1 paths,
+reboots, old-path removal, and rollback/roll-forward for default and named yards.
 
 Use two synthetic credential peers to exercise pinned SOPS/age tooling and the real SSH path:
 reciprocal trust, a shared record, an exclusive assignment move, sync, materialization and revoke.

@@ -405,6 +405,8 @@ SOURCE_ARCHIVE_REMOTE=''
 find "$SOURCE_ARCHIVE" -delete
 SOURCE_ARCHIVE=''
 reboot_vm1
+run_source_vm resume
+reboot_vm1
 run_source_vm finish
 SOURCE_HOST_STARTED=0
 VM1_YARD_ENTRY="$(yard_entry_state 1)"

@@ -119,6 +119,16 @@ mode matches the original Bash writer's `0666 & umask` output are tightened in p
 through a no-follow file descriptor; symlinks, malformed records and anomalous modes remain
 fail-closed. The same repair is registered in `_migrate apply` for release upgrades.
 
+### Release migrations
+
+Release-owned transitions are declared in
+[`config/migrations.json`](../config/migrations.json). The
+[`internal/migration`](../internal/migration) package validates the registry and owns protected
+state/recovery; `_migrate check` is read-only. The
+[runtime installer](../scripts/install-runtime-release.sh) prepares data before activation,
+finalizes it only after the candidate is active, and restores the previous layout on rollback.
+Migrations cannot execute release scripts or leave compatibility symlinks at old paths.
+
 Before a project adapter starts, Go resolves paths/names/qualified selectors across yards, loads the
 owning context, validates the typed record and supplies a `SUBYARD_PROJECT_*` snapshot. Physical
 project adapters require that snapshot; they do not reload config, parse selectors or open state.

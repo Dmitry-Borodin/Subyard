@@ -147,6 +147,12 @@ func (cli *CLI) Run(ctx context.Context) int {
 		cli.usage()
 		return 0
 	}
+	if remaining[0] != "_migrate" {
+		if err := cli.finalizeActiveMigration(); err != nil {
+			cli.errorf("finish interrupted runtime migration: %v", err)
+			return 1
+		}
+	}
 	if code, handled := cli.globalQuery(remaining); handled {
 		return code
 	}
@@ -1452,7 +1458,9 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		return 0
 	}
 	if len(arguments) != 1 ||
-		(arguments[0] != "paths" && arguments[0] != "check" && arguments[0] != "apply") {
+		(arguments[0] != "paths" && arguments[0] != "check" &&
+			arguments[0] != "apply" && arguments[0] != "finalize" &&
+			arguments[0] != "rollback" && arguments[0] != "cleanup") {
 		cli.errorf("internal: invalid _migrate action")
 		return 2
 	}
@@ -1508,11 +1516,43 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 	if keysRoot == "" {
 		keysRoot = filepath.Join(configHome, "keys")
 	}
+	runtimeRoot := environment["YARD_RUNTIME_ROOT"]
+	if runtimeRoot == "" {
+		runtimeRoot = filepath.Join(environment["SUBYARD_HOME"], "runtime")
+	}
+	runtimeRoot = runtimeRootForRepository(cli.options.RepositoryRoot, runtimeRoot)
+	releaseOptions := migration.ReleaseOptions{
+		RegistryPath:       filepath.Join(cli.options.RepositoryRoot, "config", "migrations.json"),
+		RepositoryRoot:     cli.options.RepositoryRoot,
+		RuntimeRoot:        runtimeRoot,
+		ConfigHome:         configHome,
+		DataHome:           environment["SUBYARD_HOME"],
+		Version:            Version,
+		ProjectDirectories: projectDirectories,
+		Credentials:        credentialmeta.Reader{Root: keysRoot},
+	}
 	var report migration.Report
-	if arguments[0] == "apply" {
-		report, err = migration.Apply(ctx, projectDirectories, credentialmeta.Reader{Root: keysRoot})
-	} else {
-		report, err = migration.Check(ctx, projectDirectories, credentialmeta.Reader{Root: keysRoot})
+	switch arguments[0] {
+	case "apply":
+		report, err = migration.ApplyRelease(ctx, releaseOptions)
+	case "finalize":
+		var changed bool
+		changed, err = migration.FinalizeActive(releaseOptions)
+		if err == nil {
+			report, err = migration.CheckRelease(ctx, releaseOptions)
+			report.Changed = changed
+		}
+	case "rollback":
+		report, err = migration.RollbackRelease(releaseOptions)
+	case "cleanup":
+		var removed int
+		removed, err = migration.CleanupRelease(releaseOptions)
+		if err == nil {
+			report, err = migration.CheckRelease(ctx, releaseOptions)
+			report.Changed = removed > 0
+		}
+	default:
+		report, err = migration.CheckRelease(ctx, releaseOptions)
 	}
 	if err != nil {
 		cli.errorf("state migration %s: %v", arguments[0], err)
@@ -1523,6 +1563,46 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		return 1
 	}
 	return 0
+}
+
+func (cli *CLI) finalizeActiveMigration() error {
+	operatorHome := cli.env["SUBYARD_OPERATOR_HOME"]
+	if operatorHome == "" {
+		operatorHome = cli.env["HOME"]
+	}
+	if operatorHome == "" {
+		return nil
+	}
+	configHome := cli.env["SUBYARD_CONFIG_HOME"]
+	if configHome == "" {
+		configHome = filepath.Join(operatorHome, ".config", "subyard")
+	}
+	dataHome := cli.env["SUBYARD_HOME"]
+	if dataHome == "" {
+		dataHome = filepath.Join(operatorHome, ".subyard")
+	}
+	runtimeRoot := cli.env["YARD_RUNTIME_ROOT"]
+	if runtimeRoot == "" {
+		runtimeRoot = filepath.Join(dataHome, "runtime")
+	}
+	runtimeRoot = runtimeRootForRepository(cli.options.RepositoryRoot, runtimeRoot)
+	_, err := migration.FinalizeActive(migration.ReleaseOptions{
+		RegistryPath:   filepath.Join(cli.options.RepositoryRoot, "config", "migrations.json"),
+		RepositoryRoot: cli.options.RepositoryRoot,
+		RuntimeRoot:    runtimeRoot,
+		ConfigHome:     filepath.Clean(configHome),
+		DataHome:       filepath.Clean(dataHome),
+		Version:        Version,
+	})
+	return err
+}
+
+func runtimeRootForRepository(repositoryRoot, fallback string) string {
+	releases := filepath.Dir(filepath.Clean(repositoryRoot))
+	if filepath.Base(releases) == "releases" {
+		return filepath.Dir(releases)
+	}
+	return filepath.Clean(fallback)
 }
 
 func validStateValue(kind, value string) bool {

@@ -40,14 +40,17 @@ path_is_broad_host_root() {
 }
 
 subyard_elevated_context() {
-  local name
+  local name root_home
+  root_home="$(getent passwd root 2>/dev/null | cut -d: -f6 || true)"
+  [ -n "$root_home" ] || root_home=/root
   SUBYARD_ELEVATED_ENV=(
+    "HOME=$root_home"
     "SUBYARD_ELEVATED=1"
     "SUBYARD_ENGINE_CONTEXT=1"
     "SUBYARD_ENGINE_CONTEXT_SCHEMA=1"
   )
   for name in \
-    HOME ASSUME_YES PROG YARD_ENGINE YARD_VERSION \
+    ASSUME_YES PROG YARD_ENGINE YARD_VERSION \
     SUBYARD_USER SUBYARD_OPERATOR_HOME SUBYARD_CONFIG_DIR SUBYARD_CONFIG_HOME SUBYARD_HOME \
     SUBYARD_CONFIG_SHARED_DIR SUBYARD_CONFIG_HOST_DIR SUBYARD_CONFIG_YARD_DIR \
     SUBYARD_CONFIG_GENERATED_DIR \

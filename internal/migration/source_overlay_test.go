@@ -10,7 +10,7 @@ import (
 )
 
 func TestDiscoverSourceInstallExactAllowlist(t *testing.T) {
-	root := t.TempDir()
+	root := ownedOverlayTempDir(t)
 	files := map[string]string{
 		"private/config.env":                    "AGENT_codex_RULES=\"$SUBYARD_CONFIG_DIR/../private/agents/codex/rules/repo.rules\"\n",
 		"private/yards/demo.env":                "SSH_PORT=2223\n",
@@ -102,7 +102,7 @@ func TestDiscoverSourceInstallRejectsUnsafeAndUnsupportedInputs(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := ownedOverlayTempDir(t)
 			test.edit(t, root)
 			if _, err := DiscoverSourceInstall(root); err == nil ||
 				!strings.Contains(err.Error(), test.want) {
@@ -113,9 +113,9 @@ func TestDiscoverSourceInstallRejectsUnsafeAndUnsupportedInputs(t *testing.T) {
 }
 
 func TestDiscoverSourceInstallIncludesPreviousOverlayAndFlatYards(t *testing.T) {
-	source := t.TempDir()
-	dataHome := t.TempDir()
-	configHome := t.TempDir()
+	source := ownedOverlayTempDir(t)
+	dataHome := ownedOverlayTempDir(t)
+	configHome := ownedOverlayTempDir(t)
 	writeOverlayFixture(t, filepath.Join(dataHome, "config.env"),
 		"AGENT_codex_RULES=\"$SUBYARD_CONFIG_DIR/../private/agents/codex/repo.rules\"\n")
 	writeOverlayFixture(t,
@@ -159,7 +159,7 @@ func TestDiscoverSourceInstallIncludesPreviousOverlayAndFlatYards(t *testing.T) 
 }
 
 func TestNormalizeLegacyYardConfig(t *testing.T) {
-	root := t.TempDir()
+	root := ownedOverlayTempDir(t)
 	source := filepath.Join(root, "legacy.env")
 	destination := filepath.Join(root, "normalized.env")
 	writeOverlayFixture(t, source,
@@ -215,4 +215,13 @@ func writeOverlayFixture(t *testing.T, path, contents string) {
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func ownedOverlayTempDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }

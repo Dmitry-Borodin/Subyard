@@ -33,9 +33,10 @@ func TestConfigPathsShowsEffectiveLayersWithoutValues(t *testing.T) {
 	}
 	output := stdout.String()
 	for _, expected := range []string{
-		"runtime-defaults: " + filepath.Join(root, "config"),
-		"config-root: " + configHome,
-		"asset codex.rules: " + hostRule + " (host)",
+		"shipped-defaults: " + filepath.Join(root, "config"),
+		"configuration-root: " + configHome,
+		"source host-scalar-settings: " + filepath.Join(configHome, "config.env") + " (present)",
+		"file-setting codex.rules: " + hostRule + " (scope=host, role=file settings, consumer=",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("config paths omitted %q:\n%s", expected, output)
@@ -43,6 +44,104 @@ func TestConfigPathsShowsEffectiveLayersWithoutValues(t *testing.T) {
 	}
 	if strings.Contains(output, "private-canary-value") || strings.Contains(output, home+"/.subyard/operator-overlay") {
 		t.Fatalf("config paths leaked a value or legacy source:\n%s", output)
+	}
+}
+
+func TestConfigShowExplainsScalarDerivedAndFileSettingsWithoutSecrets(t *testing.T) {
+	root, _, configHome, environment := configCommandFixture(t)
+	hostRule := filepath.Join(
+		configHome, "overrides", "host", "agents", "codex", "rules", "repo.rules",
+	)
+	writeConfigCommandFile(t, hostRule, "secret-file-contents\n")
+	writeConfigCommandFile(t, filepath.Join(configHome, "config.env"),
+		"SSH_PORT=2200\nSECRET_TOKEN=s3cr3t-host-value\n")
+	yardFile := filepath.Join(configHome, "yards", "named", "config.env")
+	writeConfigCommandFile(t, yardFile, "SSH_PORT=2300\n")
+	environment = append(environment, "SSH_PORT=2400", "SECRET_TOKEN=s3cr3t-command-value")
+
+	for _, test := range []struct {
+		name      string
+		arguments []string
+		contains  []string
+	}{
+		{
+			name: "summary", arguments: []string{"-Y", "named", "config", "show"},
+			contains: []string{
+				"SETTING", "SSH_PORT", "2400", "command", "environment", "next command",
+				"AGENT_codex_RULES", hostRule, "config apply",
+			},
+		},
+		{
+			name:      "scalar precedence",
+			arguments: []string{"-Y", "named", "config", "show", "SSH_PORT"},
+			contains: []string{
+				"setting: SSH_PORT", "effective: 2400", "shipped defaults",
+				filepath.Join(configHome, "config.env") + ":1", yardFile + ":1",
+				"environment", "overridden", "effective",
+			},
+		},
+		{
+			name:      "derived setting",
+			arguments: []string{"-Y", "named", "config", "show", "INSTANCE_NAME"},
+			contains: []string{
+				"setting: INSTANCE_NAME", "effective: yard-named", "derived from yard name",
+			},
+		},
+		{
+			name:      "file setting",
+			arguments: []string{"-Y", "named", "config", "show", "AGENT_codex_RULES"},
+			contains: []string{
+				"setting: AGENT_codex_RULES", hostRule, "file settings",
+				"effective file source",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			program, err := New(Options{
+				RepositoryRoot: root, Program: "yard", Arguments: test.arguments,
+				Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code := program.Run(context.Background()); code != 0 {
+				t.Fatalf("config show failed: code=%d stderr=%s", code, stderr.String())
+			}
+			output := stdout.String()
+			for _, expected := range test.contains {
+				if !strings.Contains(output, expected) {
+					t.Fatalf("config show omitted %q:\n%s", expected, output)
+				}
+			}
+			for _, secret := range []string{
+				"s3cr3t-host-value", "s3cr3t-command-value", "secret-file-contents",
+			} {
+				if strings.Contains(output+stderr.String(), secret) {
+					t.Fatalf("config show leaked %q:\n%s%s", secret, output, stderr.String())
+				}
+			}
+		})
+	}
+
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"-Y", "named", "config", "show", "SECRET_TOKEN"},
+		Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 2 ||
+		!strings.Contains(stderr.String(), `unknown setting "SECRET_TOKEN"`) {
+		t.Fatalf("unknown setting diagnostic: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	for _, secret := range []string{"s3cr3t-host-value", "s3cr3t-command-value"} {
+		if strings.Contains(stdout.String()+stderr.String(), secret) {
+			t.Fatalf("unknown setting diagnostic leaked %q", secret)
+		}
 	}
 }
 
@@ -82,9 +181,9 @@ func TestConfigStatusAndApplyAllLocalExcludeRemoteYards(t *testing.T) {
 	if code := program.Run(context.Background()); code != 0 {
 		t.Fatalf("config status failed: code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "yard default: converged") ||
-		!strings.Contains(stdout.String(), "yard named: converged") ||
-		strings.Contains(stdout.String(), "yard remote:") {
+	if !strings.Contains(stdout.String(), "yard default materialized-config: converged") ||
+		!strings.Contains(stdout.String(), "yard named materialized-config: converged") ||
+		strings.Contains(stdout.String(), "yard remote materialized-config:") {
 		t.Fatalf("all-local selection is wrong:\n%s", stdout.String())
 	}
 
@@ -140,7 +239,7 @@ func TestConfigStatusDetectsGuestDriftWithoutPrintingContents(t *testing.T) {
 	}
 }
 
-func TestConfigApplyRejectsUnsafeOperatorTreeBeforeMutation(t *testing.T) {
+func TestConfigApplyRejectsUnsafeSettingsTreeBeforeMutation(t *testing.T) {
 	root, _, configHome, environment := configCommandFixture(t)
 	unsafe := filepath.Join(configHome, "overrides", "host", "unsafe.conf")
 	writeConfigCommandFile(t, unsafe, "value\n")
@@ -180,7 +279,7 @@ func TestConfigValidationExcludesRuntimeStateTrees(t *testing.T) {
 		}
 	}
 	if err := validateManagedConfigTree(configHome); err != nil {
-		t.Fatalf("runtime state was treated as managed operator config: %v", err)
+		t.Fatalf("runtime state was treated as managed settings: %v", err)
 	}
 }
 

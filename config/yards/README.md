@@ -16,20 +16,24 @@ yard @openclaw status
 yard yards
 ```
 
-Precedence is:
+Scalar-setting precedence is:
 
 ```text
-runtime defaults
-  -> overrides/shared
-  -> config.env + overrides/host
-  -> yards/<name>/config.env + yard overrides
+shipped defaults
+  -> host-wide config.env
+  -> yard derivations + selected shipped profile
+  -> yards/<name>/config.env
   -> command environment
 ```
 
+The `overrides/shared`, `overrides/host` and yard `overrides` directories replace known file
+settings; they are not generic scalar layers.
+
 Public profiles remain in the immutable runtime. Set `YARD_TEMPLATE=<profile>` for a reusable yard
-template or `YARD_PROFILES="<profile> ..."` to limit project profiles. Run `yard config paths` to
-inspect effective sources, and `yard config status --all-local` / `yard config apply --all-local`
-to verify or apply agent files to local yards. Remote yards are excluded from `--all-local`.
+template or `YARD_PROFILES="<profile> ..."` to limit project profiles. Run
+`yard -Y <name> config show` to inspect effective settings and `yard config paths` to inspect storage
+roles. `yard config status --all-local` / `yard config apply --all-local` verify or refresh
+materialized agent files in local yards; remote yards are excluded from `--all-local`.
 
 `yard teardown` removes only the selected yard and preserves the host credential ledger. Managed
 mounts stay under that yard's `HOST_BASE`; `yard bind` is the explicit exception.
@@ -41,4 +45,5 @@ YARD_TEMPLATE=test-vms
 SSH_PORT=2223
 ```
 
-See [`docs/test-vms.md`](../../docs/test-vms.md) and [`docs/keys.md`](../../docs/keys.md).
+See [Subyard configuration](../../docs/configuration.md), [`docs/test-vms.md`](../../docs/test-vms.md)
+and [`docs/keys.md`](../../docs/keys.md).

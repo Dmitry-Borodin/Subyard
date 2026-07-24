@@ -58,10 +58,20 @@ func TestLoadNamedContext(t *testing.T) {
 		t.Fatalf("public yard template was not applied: %#v", ctx)
 	}
 	if loaded.Environment["E2E_VM_CPU"] != "1" {
-		t.Fatalf("machine yard file did not override its template: %#v", loaded.Environment)
+		t.Fatalf("yard settings did not override the selected template: %#v", loaded.Environment)
 	}
 	if ctx.Paths.HostBase != filepath.Join(root, "host") {
 		t.Fatalf("host base was not normalized: %s", ctx.Paths.HostBase)
+	}
+	hostBaseTrace := loaded.Settings["HOST_BASE"]
+	assertEffectiveSetting(
+		t, hostBaseTrace, filepath.Join(root, "host"), "yard", "scalar settings",
+		filepath.Join(yardDir, "named.env"),
+	)
+	if !strings.Contains(
+		effectiveSettingDetail(hostBaseTrace), "normalized path",
+	) {
+		t.Fatalf("normalized setting provenance omitted its transformation: %#v", hostBaseTrace)
 	}
 	if ctx.YardType != domain.YardLocal {
 		t.Fatalf("unexpected yard type: %s", ctx.YardType)
@@ -96,7 +106,7 @@ func TestRetiredE2EVMTemplateReportsMigrationAndTeardown(t *testing.T) {
 	}
 }
 
-func TestLoadMachineConfigAndMigratedPrivateAssets(t *testing.T) {
+func TestLoadHostSettingsAndMigratedPrivateAssets(t *testing.T) {
 	root := t.TempDir()
 	operatorHome := filepath.Join(root, "home")
 	configHome := filepath.Join(operatorHome, ".config", "subyard")
@@ -144,7 +154,7 @@ func TestLoadMachineConfigAndMigratedPrivateAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !loaded.Context.DevSudo {
-		t.Fatal("machine-local global overlay was not loaded")
+		t.Fatal("host-wide scalar settings were not loaded")
 	}
 	wantRules := filepath.Join(hostAgents, "codex", "repo.rules")
 	if loaded.Environment["AGENT_codex_RULES"] != wantRules {
@@ -166,14 +176,15 @@ func TestLoadMachineConfigAndMigratedPrivateAssets(t *testing.T) {
 		loaded.Environment["SUBYARD_CONFIG_HOST_DIR"] != filepath.Join(configHome, "overrides", "host") ||
 		loaded.Environment["SUBYARD_CONFIG_GENERATED_DIR"] != filepath.Join(configHome, "generated") ||
 		loaded.Environment["SUBYARD_KEYS_CONSUMER_ROOT"] != filepath.Join(configHome, "generated") {
-		t.Fatalf("persistent operator config root is not canonical: %#v", loaded.Environment)
+		t.Fatalf("persistent configuration root is not canonical: %#v", loaded.Environment)
 	}
 	if loaded.Environment["SUBYARD_CONFIG_DIR"] != shipped {
-		t.Fatalf("runtime config root leaked from migration overlay: %q", loaded.Environment["SUBYARD_CONFIG_DIR"])
+		t.Fatalf("shipped-defaults root leaked from migration input: %q",
+			loaded.Environment["SUBYARD_CONFIG_DIR"])
 	}
 }
 
-func TestOperatorConfigPrecedenceAndYardAssetOverride(t *testing.T) {
+func TestSettingsPrecedenceAndYardFileOverride(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	temp := t.TempDir()
 	home := filepath.Join(temp, "home")
@@ -217,6 +228,7 @@ func TestOperatorConfigPrecedenceAndYardAssetOverride(t *testing.T) {
 	withEnvironment := cloneStringMap(base)
 	withEnvironment["AGENT_codex_RULES"] = external
 	withEnvironment["DEV_SUDO"] = "1"
+	withEnvironment["SECRET_TOKEN"] = "must-not-be-traced"
 	environmentLoaded, err := Load(LoadOptions{
 		RepositoryRoot: root, OperatorHome: home, YardName: "named",
 		Environment: withEnvironment, DisablePrivate: true,
@@ -229,6 +241,70 @@ func TestOperatorConfigPrecedenceAndYardAssetOverride(t *testing.T) {
 		t.Fatalf("command environment did not win: asset=%s sudo=%v",
 			environmentLoaded.Environment["AGENT_codex_RULES"], environmentLoaded.Context.DevSudo)
 	}
+	if _, ok := environmentLoaded.Settings["SECRET_TOKEN"]; ok {
+		t.Fatal("unknown environment variable was exposed as a Subyard setting")
+	}
+	assertEffectiveSetting(
+		t, environmentLoaded.Settings["DEV_SUDO"], "1", "command", "command override", "environment",
+	)
+	assertEffectiveSetting(
+		t, namedLoaded.Settings["AGENT_codex_RULES"], yard, "yard", "file settings", yard,
+	)
+	assertEffectiveSetting(
+		t, namedLoaded.Settings["INSTANCE_NAME"], "yard-named", "yard", "derived", "",
+	)
+	if !settingTraceContains(
+		environmentLoaded.Settings["DEV_SUDO"], "host", "scalar settings",
+		filepath.Join(configHome, "config.env"), 1, "overridden",
+	) || !settingTraceContains(
+		environmentLoaded.Settings["DEV_SUDO"], "yard", "scalar settings",
+		filepath.Join(configHome, "yards", "named", "config.env"), 1, "overridden",
+	) {
+		t.Fatalf("scalar provenance omitted host or yard assignments: %#v",
+			environmentLoaded.Settings["DEV_SUDO"])
+	}
+}
+
+func assertEffectiveSetting(
+	t *testing.T,
+	trace SettingTrace,
+	value, scope, role, path string,
+) {
+	t.Helper()
+	if trace.EffectiveValue != value {
+		t.Fatalf("%s effective value = %q, want %q: %#v", trace.Name, trace.EffectiveValue, value, trace)
+	}
+	for _, resolution := range trace.Resolutions {
+		if resolution.Status == "effective" && resolution.Scope == scope &&
+			resolution.Role == role && (path == "" || resolution.Path == path) {
+			return
+		}
+	}
+	t.Fatalf("%s has no effective %s/%s source %q: %#v", trace.Name, scope, role, path, trace)
+}
+
+func settingTraceContains(
+	trace SettingTrace,
+	scope, role, path string,
+	line int,
+	status string,
+) bool {
+	for _, resolution := range trace.Resolutions {
+		if resolution.Scope == scope && resolution.Role == role && resolution.Path == path &&
+			resolution.Line == line && resolution.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func effectiveSettingDetail(trace SettingTrace) string {
+	for _, resolution := range trace.Resolutions {
+		if resolution.Status == "effective" {
+			return resolution.Detail
+		}
+	}
+	return ""
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

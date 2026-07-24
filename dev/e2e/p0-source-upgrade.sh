@@ -224,7 +224,7 @@ verify_migration() {
   operator_env test -x "$SOURCE_ROOT/.build/yard" \
     || die 'source checkout was changed or removed'
   operator_env cmp "$SOURCE_ROOT/private/config.env" "$OPERATOR_HOME/.config/subyard/config.env" \
-    || die 'machine config was not migrated'
+    || die 'host settings were not migrated'
   operator_env bash -c \
     'sed "s/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/" "$1" | cmp - "$2"' _ \
     "$SOURCE_ROOT/private/yards/e2e-yard.env" \
@@ -249,7 +249,7 @@ verify_migration() {
     "$OPERATOR_HOME/.config/subyard/secrets/legacy/unclassified/qa-pool/operator-note.local" \
     || die 'unclassified ignored input was not retained'
   operator_env test ! -e "$OPERATOR_HOME/.subyard/config.env" \
-    || die 'legacy machine config remained under the data home'
+    || die 'legacy host settings remained under the data home'
   operator_env test ! -e "$OPERATOR_HOME/.subyard/operator-overlay" \
     || die 'legacy operator overlay remained under the data home'
   operator_env test -x "$OPERATOR_HOME/.subyard/recovery/pre-go-source/restore.sh" \
@@ -257,14 +257,22 @@ verify_migration() {
 }
 
 verify_config_workflow() {
-  local paths host_hash guest_hash status_output status_rc
+  local paths show_output host_hash guest_hash status_output status_rc
   paths="$(operator_yard -Y e2e-yard config paths)"
-  grep -Fq "config-root: $OPERATOR_HOME/.config/subyard" <<<"$paths" \
-    || die 'config paths did not report the persistent operator root'
-  grep -Fq "$OPERATOR_HOME/.config/subyard/overrides/host/agents/codex/repo.rules (host)" \
+  grep -Fq "configuration-root: $OPERATOR_HOME/.config/subyard" <<<"$paths" \
+    || die 'config paths did not report the persistent configuration root'
+  grep -Fq \
+    "$OPERATOR_HOME/.config/subyard/overrides/host/agents/codex/repo.rules (scope=host, role=file settings, consumer=" \
     <<<"$paths" || die 'config paths did not resolve the migrated Codex asset'
   ! grep -Fq 'source-staging-fixture' <<<"$paths" \
     || die 'config paths printed a secret value'
+  show_output="$(operator_yard -Y e2e-yard config show SSH_PORT)"
+  grep -Fq 'effective: 2223' <<<"$show_output" \
+    && grep -Fq "$OPERATOR_HOME/.config/subyard/yards/e2e-yard/config.env" <<<"$show_output" \
+    && grep -Fq 'effective' <<<"$show_output" \
+    || die 'config show did not explain the effective yard setting'
+  ! grep -Eq 'source-(staging|qa|profile)-fixture' <<<"$show_output" \
+    || die 'config show printed a secret value'
   set +e
   status_output="$(operator_yard -Y e2e-yard config status --all-local 2>&1)"
   status_rc=$?
@@ -272,8 +280,9 @@ verify_config_workflow() {
   printf '%s\n' "$status_output"
   if [ "$status_rc" -ne 0 ]; then
     [ "$status_rc" -eq 1 ] \
-      && grep -Fq 'yard e2e-yard: drift' <<<"$status_output" \
-      && grep -Fq 'config status: agent config drift in yards: e2e-yard' <<<"$status_output" \
+      && grep -Fq 'yard e2e-yard materialized-config: drift' <<<"$status_output" \
+      && grep -Fq 'config status: materialized agent config drift in yards: e2e-yard' \
+        <<<"$status_output" \
       || die 'config status failed for a reason other than expected agent drift'
   fi
   ! grep -Eq 'source-(staging|qa|profile)-fixture' <<<"$status_output" \

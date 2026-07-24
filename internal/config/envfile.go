@@ -10,6 +10,8 @@ import (
 
 type environment map[string]string
 
+type assignmentObserver func(name, value string, line int)
+
 func ReadAssignments(path string) (map[string]string, error) {
 	return ReadAssignmentsOver(path, nil)
 }
@@ -30,6 +32,10 @@ func ReadAssignmentsOver(path string, base map[string]string) (map[string]string
 }
 
 func applyEnvFile(path string, values environment) error {
+	return applyEnvFileObserved(path, values, nil)
+}
+
+func applyEnvFileObserved(path string, values environment, observer assignmentObserver) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -59,7 +65,12 @@ func applyEnvFile(path string, values environment) error {
 		if quote != 0 {
 			continue
 		}
-		if err := applyRecord(record.String(), values); err != nil {
+		recordObserver := func(name, value string) {
+			if observer != nil {
+				observer(name, value, recordLine)
+			}
+		}
+		if err := applyRecord(record.String(), values, recordObserver); err != nil {
 			return fmt.Errorf("%s:%d: %w", path, recordLine, err)
 		}
 		record.Reset()
@@ -96,7 +107,7 @@ func scanQuote(line string, quote byte) byte {
 	return quote
 }
 
-func applyRecord(record string, values environment) error {
+func applyRecord(record string, values environment, observer func(name, value string)) error {
 	record = strings.TrimSpace(record)
 	if strings.HasPrefix(record, ":") {
 		expression := strings.TrimSpace(strings.TrimPrefix(record, ":"))
@@ -104,7 +115,7 @@ func applyRecord(record string, values environment) error {
 		if !expand {
 			return nil
 		}
-		_, err := expandValue(value, values)
+		_, err := expandValue(value, values, observer)
 		return err
 	}
 	if strings.HasPrefix(record, "export ") {
@@ -122,13 +133,19 @@ func applyRecord(record string, values environment) error {
 	value, expand := decodeValue(raw)
 	if !expand {
 		values[name] = value
+		if observer != nil {
+			observer(name, value)
+		}
 		return nil
 	}
-	value, err := expandValue(value, values)
+	value, err := expandValue(value, values, observer)
 	if err != nil {
 		return err
 	}
 	values[name] = value
+	if observer != nil {
+		observer(name, value)
+	}
 	return nil
 }
 
@@ -145,7 +162,11 @@ func decodeValue(value string) (string, bool) {
 	return value, true
 }
 
-func expandValue(value string, values environment) (string, error) {
+func expandValue(
+	value string,
+	values environment,
+	observer func(name, value string),
+) (string, error) {
 	if strings.Contains(value, "$(") || strings.ContainsRune(value, '`') {
 		return "", errors.New("command substitution is not allowed in config")
 	}
@@ -171,7 +192,7 @@ func expandValue(value string, values environment) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			expanded, err := expandParameter(value[index+2:end], values)
+			expanded, err := expandParameter(value[index+2:end], values, observer)
 			if err != nil {
 				return "", err
 			}
@@ -212,7 +233,11 @@ func parameterEnd(value string, start int) (int, error) {
 	return 0, errors.New("unterminated parameter expansion")
 }
 
-func expandParameter(expression string, values environment) (string, error) {
+func expandParameter(
+	expression string,
+	values environment,
+	observer func(name, value string),
+) (string, error) {
 	name, operator, fallback := splitParameter(expression)
 	if !ValidVariable(name) {
 		return "", fmt.Errorf("invalid parameter name %q", name)
@@ -225,7 +250,7 @@ func expandParameter(expression string, values environment) (string, error) {
 		if current != "" {
 			return current, nil
 		}
-		expanded, err := expandValue(fallback, values)
+		expanded, err := expandValue(fallback, values, observer)
 		if err != nil {
 			return "", err
 		}
@@ -237,6 +262,9 @@ func expandParameter(expression string, values environment) (string, error) {
 		}
 		if operator == ":=" {
 			values[name] = expanded
+			if observer != nil {
+				observer(name, expanded)
+			}
 		}
 		return expanded, nil
 	default:

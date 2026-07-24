@@ -44,6 +44,7 @@ SH
 chmod +x "$TMP/bin/id" "$TMP/bin/sudo"
 
 export MOCK_SUDO_LOG="$TMP/sudo.argv"
+ROOT_HOME="$(getent passwd root | cut -d: -f6)"
 (
   PATH="$TMP/bin:$PATH"
   SUBYARD_USER=operator
@@ -88,6 +89,7 @@ export MOCK_SUDO_LOG="$TMP/sudo.argv"
 )
 
 for expected in \
+  "HOME=$ROOT_HOME" \
   SUBYARD_ELEVATED=1 \
   SUBYARD_ENGINE_CONTEXT=1 \
   SUBYARD_ENGINE_CONTEXT_SCHEMA=1 \
@@ -115,6 +117,9 @@ grep -Fxq -- -n "$MOCK_SUDO_LOG" \
   || fail 'preauthorized sudo re-entry attempted an interactive password prompt'
 if grep -Fq 'AWS_SECRET_ACCESS_KEY' "$MOCK_SUDO_LOG"; then
   fail 'sudo re-entry copied a non-allowlisted variable'
+fi
+if grep -Fxq -- "HOME=$TMP/operator home" "$MOCK_SUDO_LOG"; then
+  fail 'sudo re-entry preserved the operator HOME for root-owned tools'
 fi
 
 printf 'ok: child phases own re-exec identity and preauthorized sudo preserves operator roots\n'

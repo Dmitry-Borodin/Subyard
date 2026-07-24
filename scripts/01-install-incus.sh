@@ -65,6 +65,22 @@ else
   require_root "the steps above install packages, edit group membership, and initialize Incus"
 fi
 
+# Elevated Incus commands use root's HOME. Older Subyard runs could preserve the
+# operator's HOME across sudo and leave the Incus client directory root-owned,
+# preventing the operator from using Incus after group activation. Repair only
+# root-owned nodes in that operator-owned client tree.
+operator_incus_config="$OPERATOR_HOME/.config/incus"
+if [ "$OPERATOR_USER" != root ] && [ -e "$operator_incus_config" ]; then
+  if [ -L "$operator_incus_config" ]; then
+    warn "not repairing symlinked Incus client config at $operator_incus_config"
+  elif [ -d "$operator_incus_config" ] \
+    && [ -n "$(find "$operator_incus_config" -xdev -uid 0 -print -quit)" ]; then
+    find "$operator_incus_config" -xdev -uid 0 \
+      -exec chown -h "$OPERATOR_USER:$OPERATOR_GROUP" {} +
+    ok "repaired operator ownership of $operator_incus_config"
+  fi
+fi
+
 # --- 1. ensure incus, recent enough for nested Docker ------------------------
 # Many distros still package an Incus older than MIN_INCUS_VER, so nested Docker (project-env
 # boxes) fails. With --zabbly (set by 'yard init' after a y/N prompt) we add the Zabbly LTS-6.0

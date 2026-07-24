@@ -318,7 +318,7 @@ archive_legacy_data "$DATA_HOME/config.env" legacy-data-config
 archive_legacy_data "$DATA_HOME/operator-overlay" legacy-operator-overlay
 
 paths_json="$("$candidate_yard" _migrate paths)" \
-  || fail "candidate could not resolve migrated machine config"
+  || fail "candidate could not resolve migrated host settings"
 effective_data_home="$(jq -er '.dataHome | select(type == "string" and startswith("/"))' <<<"$paths_json")" \
   || fail "candidate returned no valid data home"
 [ "$effective_data_home" = "$DATA_HOME" ] \

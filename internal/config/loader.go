@@ -22,8 +22,10 @@ type LoadOptions struct {
 }
 
 type Loaded struct {
-	Context     domain.Context
-	Environment map[string]string
+	Context             domain.Context
+	Environment         map[string]string
+	Settings            map[string]SettingTrace
+	ConfigurationLayers []ConfigurationLayer
 }
 
 type retiredYardTemplateError struct {
@@ -45,7 +47,8 @@ func LoadContext(options LoadOptions) (domain.Context, error) {
 }
 
 func Load(options LoadOptions) (Loaded, error) {
-	ctx, values, err := load(options)
+	tracker := newSettingTracker()
+	ctx, values, err := load(options, tracker)
 	if err != nil {
 		return Loaded{}, err
 	}
@@ -53,10 +56,16 @@ func Load(options LoadOptions) (Loaded, error) {
 	for name, value := range values {
 		environment[name] = value
 	}
-	return Loaded{Context: ctx, Environment: environment}, nil
+	return Loaded{
+		Context: ctx, Environment: environment, Settings: tracker.traces(values),
+		ConfigurationLayers: tracker.configurationLayers(),
+	}, nil
 }
 
-func load(options LoadOptions) (domain.Context, environment, error) {
+func load(
+	options LoadOptions,
+	tracker *settingTracker,
+) (domain.Context, environment, error) {
 	root, err := filepath.Abs(options.RepositoryRoot)
 	if err != nil {
 		return domain.Context{}, nil, fmt.Errorf("resolve repository root: %w", err)
@@ -87,37 +96,59 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 		dataHome = filepath.Join(values["SUBYARD_OPERATOR_HOME"], ".subyard")
 	}
 	values["SUBYARD_HOME"] = filepath.Clean(dataHome)
-	setOperatorConfigPaths(values, configHome, "default")
+	setConfigurationRolePaths(values, configHome, "default")
 
-	// Immutable runtime defaults are the lowest-precedence layer.
+	// Immutable shipped defaults are the lowest-precedence layer.
+	defaultLayer := tracker.addLayer(
+		"default", "shipped defaults", configDir, pathPresent(configDir), settingAny,
+	)
 	for _, name := range []string{"incus.project.env", "subyard.env", "host.env", "agents.env", "ports.env"} {
-		if err := applyOptional(filepath.Join(configDir, name), values); err != nil {
+		path := filepath.Join(configDir, name)
+		if err := applyOptionalTracked(path, values, tracker, defaultLayer); err != nil {
 			return domain.Context{}, nil, err
 		}
 	}
 	logicalAssets := agentAssetMappings(values, configDir)
+	sharedAssets := filepath.Join(configHome, "overrides", "shared", "agents")
+	sharedLayer := tracker.addLayer(
+		"shared", "file settings", sharedAssets, pathPresent(sharedAssets), settingFile,
+	)
 	if err := applyAgentAssetLayer(values, logicalAssets,
-		filepath.Join(configHome, "overrides", "shared", "agents")); err != nil {
+		sharedAssets, tracker, sharedLayer); err != nil {
 		return domain.Context{}, nil, err
 	}
 
-	machineConfig := filepath.Join(configHome, "config.env")
-	machineExists, err := regularFileExists(machineConfig)
+	hostSettingsFile := filepath.Join(configHome, "config.env")
+	hostSettingsExist, err := regularFileExists(hostSettingsFile)
 	if err != nil {
 		return domain.Context{}, nil, err
 	}
-	if machineExists {
-		if err := applyEnvFile(machineConfig, values); err != nil {
+	hostSettingsPath := hostSettingsFile
+	hostSettingsPresent := hostSettingsExist
+	if !hostSettingsExist && !options.DisablePrivate {
+		privateConfig := filepath.Join(configDir, "..", "private", "config.env")
+		if pathPresent(privateConfig) {
+			hostSettingsPath = privateConfig
+			hostSettingsPresent = true
+		}
+	}
+	hostSettingsLayer := tracker.addLayer(
+		"host", "scalar settings", hostSettingsPath, hostSettingsPresent, settingAny,
+	)
+	if hostSettingsExist {
+		if err := applyEnvFileTracked(
+			hostSettingsFile, values, tracker, hostSettingsLayer,
+		); err != nil {
 			return domain.Context{}, nil, err
 		}
-		if err := validateBootstrapConfigHome(values, configHome, machineConfig); err != nil {
+		if err := validateBootstrapConfigHome(values, configHome, hostSettingsFile); err != nil {
 			return domain.Context{}, nil, err
 		}
 	} else if !options.DisablePrivate {
 		// Source checkouts retain a read-only compatibility input until the
 		// installer moves it into configHome/config.env.
 		privateConfig := filepath.Join(configDir, "..", "private", "config.env")
-		if err := applyOptional(privateConfig, values); err != nil {
+		if err := applyOptionalTracked(privateConfig, values, tracker, hostSettingsLayer); err != nil {
 			return domain.Context{}, nil, err
 		}
 		if err := validateBootstrapConfigHome(values, configHome, privateConfig); err != nil {
@@ -126,8 +157,12 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 	}
 	values["SUBYARD_CONFIG_DIR"] = configDir
 	extendAgentAssetMappings(logicalAssets, values)
+	hostAssets := filepath.Join(configHome, "overrides", "host", "agents")
+	hostFileLayer := tracker.addLayer(
+		"host", "file settings", hostAssets, pathPresent(hostAssets), settingFile,
+	)
 	if err := applyAgentAssetLayer(values, logicalAssets,
-		filepath.Join(configHome, "overrides", "host", "agents")); err != nil {
+		hostAssets, tracker, hostFileLayer); err != nil {
 		return domain.Context{}, nil, err
 	}
 
@@ -144,39 +179,57 @@ func load(options LoadOptions) (domain.Context, environment, error) {
 		if !domain.SafeName(yardName) {
 			return domain.Context{}, nil, fmt.Errorf("invalid yard name %q", yardName)
 		}
-		applyYardDerivations(yardName, values)
+		yardDerivationLayer := tracker.addLayer(
+			"yard", "derived", "yard name "+yardName, true, settingScalar,
+			"HOST_BASE", "INCUS_PROJECT", "INSTANCE_NAME", "RESTRICTED_DISK_PATHS",
+			"SRV_VOLUME", "SSH_HOST",
+		)
+		applyYardDerivations(yardName, values, tracker, yardDerivationLayer)
 		yardFile, err := findYardFile(root, yardName, values, options.YardDirs)
 		if err != nil {
 			return domain.Context{}, nil, err
 		}
-		if err := applyYardConfig(configDir, yardName, yardFile, values); err != nil {
+		if err := applyYardConfigTracked(
+			configDir, yardName, yardFile, values, tracker,
+		); err != nil {
 			return domain.Context{}, nil, err
 		}
 		if err := validateBootstrapConfigHome(values, configHome, yardFile); err != nil {
 			return domain.Context{}, nil, err
 		}
 		extendAgentAssetMappings(logicalAssets, values)
+		yardAssets := filepath.Join(configHome, "yards", yardName, "overrides", "agents")
+		yardFileLayer := tracker.addLayer(
+			"yard", "file settings", yardAssets, pathPresent(yardAssets), settingFile,
+		)
 		if err := applyAgentAssetLayer(values, logicalAssets,
-			filepath.Join(configHome, "yards", yardName, "overrides", "agents")); err != nil {
+			yardAssets, tracker, yardFileLayer); err != nil {
 			return domain.Context{}, nil, err
 		}
 	}
 
 	// The process environment is the final layer. Engine-forwarded contexts
 	// have already had inherited yard fields removed above.
+	commandLayer := tracker.addLayer(
+		"command", "command override", "environment", true, settingAny,
+	)
 	for name, value := range commandEnvironment {
 		values[name] = value
+		tracker.record(commandLayer, name, value, "environment", 0, "")
 	}
 	values["SUBYARD_CONFIG_DIR"] = configDir
 	values["SUBYARD_CONFIG_HOME"] = configHome
-	setOperatorConfigPaths(values, configHome, yardName)
+	setConfigurationRolePaths(values, configHome, yardName)
 	if yardName != "default" {
 		values["YARD_NAME"] = yardName
 	}
-	if err := normalizeAgentAssetPaths(values); err != nil {
+	normalizationLayer := tracker.addLayer(
+		"derived", "derived", "resolver normalization", true, settingScalar, "E2E_VM_CPU",
+	)
+	if err := normalizeAgentAssetPaths(values, tracker); err != nil {
 		return domain.Context{}, nil, err
 	}
-	ctx, err := contextFrom(root, yardName, values)
+	ctx, err := contextFrom(root, yardName, values, tracker, defaultLayer, normalizationLayer)
 	return ctx, values, err
 }
 
@@ -211,7 +264,7 @@ func validateBootstrapConfigHome(values environment, expected, source string) er
 	return nil
 }
 
-func setOperatorConfigPaths(values environment, configHome, yardName string) {
+func setConfigurationRolePaths(values environment, configHome, yardName string) {
 	values["SUBYARD_CONFIG_SHARED_DIR"] = filepath.Join(configHome, "overrides", "shared")
 	values["SUBYARD_CONFIG_HOST_DIR"] = filepath.Join(configHome, "overrides", "host")
 	values["SUBYARD_CONFIG_SECRETS_DIR"] = filepath.Join(configHome, "secrets")
@@ -269,6 +322,8 @@ func applyAgentAssetLayer(
 	values environment,
 	mappings map[string]string,
 	agentsRoot string,
+	tracker *settingTracker,
+	layer settingLayerID,
 ) error {
 	for name, relative := range mappings {
 		candidate := filepath.Join(agentsRoot, relative)
@@ -278,6 +333,7 @@ func applyAgentAssetLayer(
 		}
 		if exists {
 			values[name] = candidate
+			tracker.record(layer, name, candidate, candidate, 0, "effective file source")
 		}
 	}
 	return nil
@@ -306,7 +362,10 @@ func regularFileExists(path string) (bool, error) {
 	return true, nil
 }
 
-func normalizeAgentAssetPaths(values environment) error {
+func normalizeAgentAssetPaths(
+	values environment,
+	tracker *settingTracker,
+) error {
 	for name, value := range values {
 		if !sourceValuedAgentSetting(name) || value == "" {
 			continue
@@ -330,6 +389,9 @@ func normalizeAgentAssetPaths(values environment) error {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		values[name] = path
+		if path != value {
+			tracker.normalize(name, path, "normalized absolute path")
+		}
 	}
 	return nil
 }
@@ -361,8 +423,16 @@ func resetInheritedContext(values environment) {
 }
 
 func applyYardConfig(configDir, yardName, yardFile string, values environment) error {
-	// A machine-local yard file selects one public profile. The profile is
-	// applied first and the machine file wins last.
+	return applyYardConfigTracked(configDir, yardName, yardFile, values, nil)
+}
+
+func applyYardConfigTracked(
+	configDir, yardName, yardFile string,
+	values environment,
+	tracker *settingTracker,
+) error {
+	// A named-yard settings file selects one public profile. The profile is
+	// applied first and the named-yard settings file wins last.
 	// Probe a copy because env files are declarative but may contain defaults that
 	// depend on the existing normalized environment.
 	probe := make(environment, len(values))
@@ -391,11 +461,55 @@ func applyYardConfig(configDir, yardName, yardFile string, values environment) e
 		if info.IsDir() {
 			return fmt.Errorf("unknown YARD_TEMPLATE %q in %s", template, yardFile)
 		}
-		if err := applyEnvFile(templateFile, values); err != nil {
-			return err
+		if tracker == nil {
+			if err := applyEnvFile(templateFile, values); err != nil {
+				return err
+			}
+		} else {
+			profileLayer := tracker.addLayer(
+				"yard", "shipped profile", templateFile, true, settingScalar,
+			)
+			if err := applyEnvFileTracked(templateFile, values, tracker, profileLayer); err != nil {
+				return err
+			}
 		}
 	}
-	return applyEnvFile(yardFile, values)
+	if tracker == nil {
+		return applyEnvFile(yardFile, values)
+	}
+	yardLayer := tracker.addLayer("yard", "scalar settings", yardFile, true, settingAny)
+	return applyEnvFileTracked(yardFile, values, tracker, yardLayer)
+}
+
+func applyEnvFileTracked(
+	path string,
+	values environment,
+	tracker *settingTracker,
+	layer settingLayerID,
+) error {
+	return applyEnvFileObserved(path, values, func(name, value string, line int) {
+		tracker.record(layer, name, value, path, line, "")
+	})
+}
+
+func applyOptionalTracked(
+	path string,
+	values environment,
+	tracker *settingTracker,
+	layer settingLayerID,
+) error {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return applyEnvFileTracked(path, values, tracker, layer)
+}
+
+func pathPresent(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func retiredE2EVMTemplateError(yardName, yardFile string) error {
@@ -464,53 +578,85 @@ func findYardFile(root, name string, values environment, explicit []string) (str
 	return "", fmt.Errorf("unknown yard %q", name)
 }
 
-func applyYardDerivations(name string, values environment) {
+func applyYardDerivations(
+	name string,
+	values environment,
+	tracker *settingTracker,
+	layer settingLayerID,
+) {
 	values["YARD_NAME"] = name
-	setYardDefault(values, "INSTANCE_NAME", "yard", "yard-"+name)
-	setYardDefault(values, "INCUS_PROJECT", "subyard", "subyard-"+name)
-	setYardDefault(values, "SSH_HOST", "yard", "yard-"+name)
-	setYardDefault(values, "SRV_VOLUME", "yard-srv", "yard-srv-"+name)
-	setYardDefault(values, "RESTRICTED_DISK_PATHS", "/srv/subyard", "/srv/subyard-"+name)
-	setYardDefault(values, "HOST_BASE", "/srv/subyard", "/srv/subyard-"+name)
+	setYardDefault(values, "INSTANCE_NAME", "yard", "yard-"+name, tracker, layer)
+	setYardDefault(values, "INCUS_PROJECT", "subyard", "subyard-"+name, tracker, layer)
+	setYardDefault(values, "SSH_HOST", "yard", "yard-"+name, tracker, layer)
+	setYardDefault(values, "SRV_VOLUME", "yard-srv", "yard-srv-"+name, tracker, layer)
+	setYardDefault(
+		values, "RESTRICTED_DISK_PATHS", "/srv/subyard", "/srv/subyard-"+name, tracker, layer,
+	)
+	setYardDefault(values, "HOST_BASE", "/srv/subyard", "/srv/subyard-"+name, tracker, layer)
 	configHome := values["SUBYARD_CONFIG_HOME"]
 	if configHome == "" {
 		configHome = filepath.Join(values["SUBYARD_OPERATOR_HOME"], ".config", "subyard")
 	}
 	setYardDefault(values, "SUBYARD_STATE_DIR", filepath.Join(configHome, "projects"),
-		filepath.Join(configHome, "yards", name, "projects"))
+		filepath.Join(configHome, "yards", name, "projects"), tracker, layer)
 }
 
-func setYardDefault(values environment, name, generic, derived string) {
+func setYardDefault(
+	values environment,
+	name, generic, derived string,
+	tracker *settingTracker,
+	layer settingLayerID,
+) {
 	if values[name] == "" || values[name] == generic {
 		values[name] = derived
+		tracker.record(layer, name, derived, "", 0, "derived from yard name")
 	}
 }
 
-func setDefault(values environment, name, value string) {
+func setDefault(
+	values environment,
+	name, value string,
+	tracker *settingTracker,
+	layer settingLayerID,
+) {
 	if values[name] == "" {
 		values[name] = value
+		tracker.record(layer, name, value, "built-in resolver default", 0, "")
 	}
 }
 
-func contextFrom(root, yardName string, values environment) (domain.Context, error) {
-	setDefault(values, "YARD_TYPE", "local")
-	setDefault(values, "INSTANCE_TYPE", "container")
-	setDefault(values, "INSTANCE_NAME", "yard")
-	setDefault(values, "INCUS_PROJECT", "subyard")
-	setDefault(values, "INCUS_BRIDGE", "incusbr0")
-	setDefault(values, "SSH_HOST", "yard")
-	setDefault(values, "DEV_USER", "dev")
-	setDefault(values, "NESTED_E2E_VMS", "0")
-	setDefault(values, "E2E_VM_IMAGE", "images:debian/13/cloud")
-	setDefault(values, "E2E_VM_CPU", "2")
-	setDefault(values, "E2E_VM_MEMORY", "4GiB")
-	setDefault(values, "E2E_VM_DISK", "10GiB")
-	setDefault(values, "E2E_VM_TTL_MINUTES", "240")
-	setDefault(values, "E2E_VM_BOOT_TIMEOUT", "300")
+func contextFrom(
+	root, yardName string,
+	values environment,
+	tracker *settingTracker,
+	defaultLayer, normalizationLayer settingLayerID,
+) (domain.Context, error) {
+	setDefault(values, "YARD_TYPE", "local", tracker, defaultLayer)
+	setDefault(values, "INSTANCE_TYPE", "container", tracker, defaultLayer)
+	setDefault(values, "INSTANCE_NAME", "yard", tracker, defaultLayer)
+	setDefault(values, "INCUS_PROJECT", "subyard", tracker, defaultLayer)
+	setDefault(values, "INCUS_BRIDGE", "incusbr0", tracker, defaultLayer)
+	setDefault(values, "SSH_HOST", "yard", tracker, defaultLayer)
+	setDefault(values, "DEV_USER", "dev", tracker, defaultLayer)
+	setDefault(values, "NESTED_E2E_VMS", "0", tracker, defaultLayer)
+	setDefault(values, "E2E_VM_IMAGE", "images:debian/13/cloud", tracker, defaultLayer)
+	setDefault(values, "E2E_VM_CPU", "2", tracker, defaultLayer)
+	setDefault(values, "E2E_VM_MEMORY", "4GiB", tracker, defaultLayer)
+	setDefault(values, "E2E_VM_DISK", "10GiB", tracker, defaultLayer)
+	setDefault(values, "E2E_VM_TTL_MINUTES", "240", tracker, defaultLayer)
+	setDefault(values, "E2E_VM_BOOT_TIMEOUT", "300", tracker, defaultLayer)
+	for _, name := range []string{"STORAGE_PATH", "HOST_BASE", "RESTRICTED_DISK_PATHS"} {
+		raw := values[name]
+		clean := filepath.Clean(raw)
+		values[name] = clean
+		if clean != raw {
+			tracker.normalize(name, clean, "normalized path")
+		}
+	}
 	configHome := values["SUBYARD_CONFIG_HOME"]
 	dataHome := values["SUBYARD_HOME"]
-	hostBase := filepath.Clean(values["HOST_BASE"])
-	restrictedBase := filepath.Clean(values["RESTRICTED_DISK_PATHS"])
+	hostBase := values["HOST_BASE"]
+	restrictedBase := values["RESTRICTED_DISK_PATHS"]
 	if hostBase != restrictedBase {
 		return domain.Context{}, errors.New("HOST_BASE must equal RESTRICTED_DISK_PATHS")
 	}
@@ -538,11 +684,18 @@ func contextFrom(root, yardName string, values environment) (domain.Context, err
 	if err != nil {
 		return domain.Context{}, err
 	}
-	e2eVMCPU, err := resolveE2EVMCPU(values["E2E_VM_CPU"], runtime.NumCPU())
+	rawE2EVMCPU := values["E2E_VM_CPU"]
+	e2eVMCPU, err := resolveE2EVMCPU(rawE2EVMCPU, runtime.NumCPU())
 	if err != nil {
 		return domain.Context{}, err
 	}
 	values["E2E_VM_CPU"] = e2eVMCPU
+	if e2eVMCPU != rawE2EVMCPU {
+		tracker.record(
+			normalizationLayer, "E2E_VM_CPU", e2eVMCPU, "", 0,
+			"resolved from "+rawE2EVMCPU,
+		)
+	}
 	if err := validateE2EConfig(values); err != nil {
 		return domain.Context{}, err
 	}

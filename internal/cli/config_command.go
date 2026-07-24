@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/config"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
@@ -27,16 +28,40 @@ type configAsset struct {
 	Name        string
 	Source      string
 	Destination string
+	Scope       string
+	Role        string
 }
 
 func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments []string) int {
 	if len(arguments) == 0 || commandHelpRequested(arguments) {
 		fmt.Fprintf(cli.options.Stdout,
-			"Usage: %s config paths | status [--all-local] | apply [--all-local] [--yes]\n",
+			"Usage: %s config show [SETTING] | paths | status [--all-local] | apply [--all-local] [--yes]\n"+
+				"  show    explain effective Subyard settings and their sources (read-only)\n"+
+				"  paths   list configuration sources and storage roles (read-only)\n"+
+				"  status  check materialized file settings in running local yards (read-only)\n"+
+				"  apply   refresh materialized file settings in running local yards\n",
 			cli.options.Program)
 		return 0
 	}
 	action := arguments[0]
+	switch action {
+	case "show":
+		if len(arguments) > 2 {
+			cli.errorf("config show accepts at most one setting name")
+			return 2
+		}
+		name := ""
+		if len(arguments) == 2 {
+			name = arguments[1]
+		}
+		return cli.writeConfigShow(loaded, name)
+	case "paths":
+		if len(arguments) != 1 {
+			cli.errorf("config paths accepts no options")
+			return 2
+		}
+		return cli.writeConfigPaths(loaded)
+	}
 	allLocal, assumeYes := false, cli.env["ASSUME_YES"] == "1"
 	for _, argument := range arguments[1:] {
 		switch argument {
@@ -50,15 +75,9 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 		}
 	}
 	switch action {
-	case "paths":
-		if len(arguments) != 1 {
-			cli.errorf("config paths accepts no options")
-			return 2
-		}
-		return cli.writeConfigPaths(loaded)
 	case "status", "apply":
 	default:
-		cli.errorf("config expects paths, status or apply")
+		cli.errorf("config expects show, paths, status or apply")
 		return 2
 	}
 	targets, err := cli.localConfigTargets(loaded, allLocal)
@@ -76,18 +95,135 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 	return cli.applyConfig(ctx, targets, assumeYes)
 }
 
+func (cli *CLI) writeConfigShow(loaded config.Loaded, requested string) int {
+	if requested != "" {
+		name, trace, ok := findSettingTrace(loaded.Settings, requested)
+		if !ok {
+			cli.errorf("config show: unknown setting %q", requested)
+			return 2
+		}
+		writeSettingTrace(cli.options.Stdout, name, trace)
+		return 0
+	}
+
+	writer := tabwriter.NewWriter(cli.options.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "SETTING\tEFFECTIVE\tSCOPE\tSOURCE\tAPPLIES")
+	for _, name := range config.SettingNames(loaded.Settings) {
+		trace := loaded.Settings[name]
+		resolution, configured := effectiveSettingResolution(trace)
+		if !configured && trace.EffectiveValue == "" {
+			continue
+		}
+		scope, source := "-", "-"
+		if configured {
+			scope = resolution.Scope
+			source = settingResolutionSource(resolution)
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
+			name, settingDisplayValue(trace.EffectiveValue, trace.Sensitive, true),
+			scope, source, trace.Application)
+	}
+	_ = writer.Flush()
+	return 0
+}
+
+func findSettingTrace(
+	settings map[string]config.SettingTrace,
+	requested string,
+) (string, config.SettingTrace, bool) {
+	if trace, ok := settings[requested]; ok {
+		return requested, trace, true
+	}
+	for name, trace := range settings {
+		if strings.EqualFold(name, requested) {
+			return name, trace, true
+		}
+	}
+	return "", config.SettingTrace{}, false
+}
+
+func writeSettingTrace(output io.Writer, name string, trace config.SettingTrace) {
+	fmt.Fprintf(output, "setting: %s\n", name)
+	fmt.Fprintf(output, "effective: %s\n",
+		settingDisplayValue(trace.EffectiveValue, trace.Sensitive, false))
+	fmt.Fprintf(output, "applies: %s\n", trace.Application)
+	fmt.Fprintln(output, "precedence:")
+	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "  SCOPE\tROLE\tSOURCE\tVALUE\tSTATUS")
+	for _, resolution := range trace.Resolutions {
+		value := "<unset>"
+		if resolution.Status != "unset" {
+			value = settingDisplayValue(resolution.Value, trace.Sensitive, false)
+		}
+		source := settingResolutionSource(resolution)
+		if resolution.Detail != "" {
+			source += " (" + resolution.Detail + ")"
+		}
+		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\t%s\n",
+			resolution.Scope, resolution.Role, source, value, resolution.Status)
+	}
+	_ = writer.Flush()
+}
+
+func effectiveSettingResolution(
+	trace config.SettingTrace,
+) (config.SettingResolution, bool) {
+	for _, resolution := range trace.Resolutions {
+		if resolution.Status == "effective" {
+			return resolution, true
+		}
+	}
+	return config.SettingResolution{}, false
+}
+
+func settingResolutionSource(resolution config.SettingResolution) string {
+	source := resolution.Path
+	if source == "" {
+		source = resolution.Role
+	}
+	if resolution.Line > 0 {
+		source += fmt.Sprintf(":%d", resolution.Line)
+	}
+	return source
+}
+
+func settingDisplayValue(value string, sensitive, compact bool) string {
+	if sensitive {
+		return "[redacted]"
+	}
+	if value == "" {
+		return "<unset>"
+	}
+	value = strings.NewReplacer(
+		"\\", "\\\\", "\n", "\\n", "\r", "\\r", "\t", "\\t",
+	).Replace(value)
+	characters := []rune(value)
+	if compact && len(characters) > 72 {
+		return string(characters[:69]) + "..."
+	}
+	return value
+}
+
 func (cli *CLI) writeConfigPaths(loaded config.Loaded) int {
 	values := loaded.Environment
-	fmt.Fprintf(cli.options.Stdout, "runtime-defaults: %s\n", loaded.Context.Paths.ConfigDir)
-	fmt.Fprintf(cli.options.Stdout, "config-root: %s\n", loaded.Context.Paths.ConfigHome)
+	fmt.Fprintf(cli.options.Stdout, "shipped-defaults: %s\n", loaded.Context.Paths.ConfigDir)
+	fmt.Fprintf(cli.options.Stdout, "configuration-root: %s\n", loaded.Context.Paths.ConfigHome)
+	for _, layer := range loaded.ConfigurationLayers {
+		state := "missing"
+		if layer.Present {
+			state = "present"
+		}
+		label := strings.ReplaceAll(layer.Scope+"-"+layer.Role, " ", "-")
+		fmt.Fprintf(cli.options.Stdout, "source %s: %s (%s)\n", label, layer.Path, state)
+	}
 	for _, layer := range []struct {
 		name, key string
 	}{
-		{"shared-overrides", "SUBYARD_CONFIG_SHARED_DIR"},
-		{"host-overrides", "SUBYARD_CONFIG_HOST_DIR"},
-		{"yard-overrides", "SUBYARD_CONFIG_YARD_DIR"},
-		{"secrets", "SUBYARD_CONFIG_SECRETS_DIR"},
-		{"generated", "SUBYARD_CONFIG_GENERATED_DIR"},
+		{"shared-file-settings", "SUBYARD_CONFIG_SHARED_DIR"},
+		{"host-file-settings", "SUBYARD_CONFIG_HOST_DIR"},
+		{"yard-configuration", "SUBYARD_CONFIG_YARD_DIR"},
+		{"secret-inputs", "SUBYARD_CONFIG_SECRETS_DIR"},
+		{"generated-consumers", "SUBYARD_CONFIG_GENERATED_DIR"},
 	} {
 		value := values[layer.key]
 		if value == "" {
@@ -95,14 +231,27 @@ func (cli *CLI) writeConfigPaths(loaded config.Loaded) int {
 		}
 		fmt.Fprintf(cli.options.Stdout, "%s: %s\n", layer.name, value)
 	}
+	fmt.Fprintf(cli.options.Stdout, "credential-ledger: %s\n",
+		filepath.Join(loaded.Context.Paths.ConfigHome, "keys"))
+	fmt.Fprintf(cli.options.Stdout, "project-state: %s\n", loaded.Context.Paths.StateDir)
+	fmt.Fprintf(cli.options.Stdout, "support-tools: %s\n",
+		filepath.Join(loaded.Context.Paths.ConfigHome, "tools"))
 	assets, err := effectiveConfigAssets(loaded)
 	if err != nil {
 		cli.errorf("config paths: %v", err)
 		return 1
 	}
 	for _, asset := range assets {
-		fmt.Fprintf(cli.options.Stdout, "asset %s: %s (%s)\n",
-			asset.Name, asset.Source, configPathScope(asset.Source, values))
+		scope, role := asset.Scope, asset.Role
+		if scope == "" {
+			scope = configPathScope(asset.Source, values)
+		}
+		if role == "" {
+			role = "file setting"
+		}
+		fmt.Fprintf(cli.options.Stdout,
+			"file-setting %s: %s (scope=%s, role=%s, consumer=%s)\n",
+			asset.Name, asset.Source, scope, role, asset.Destination)
 	}
 	return 0
 }
@@ -116,7 +265,7 @@ func configPathScope(path string, values map[string]string) string {
 		{"SUBYARD_CONFIG_SHARED_DIR", "shared"},
 		{"SUBYARD_CONFIG_GENERATED_DIR", "generated"},
 		{"SUBYARD_CONFIG_SECRETS_DIR", "secret"},
-		{"SUBYARD_CONFIG_DIR", "runtime-default"},
+		{"SUBYARD_CONFIG_DIR", "default"},
 	} {
 		if root := values[layer.key]; root != "" && pathWithinCLI(path, root) {
 			return layer.name
@@ -196,13 +345,15 @@ func (cli *CLI) configStatus(
 		if err != nil {
 			return fmt.Errorf("yard %s: %w", target.Name, err)
 		}
-		fmt.Fprintf(cli.options.Stdout, "yard %s: %s\n", target.Name, state)
+		fmt.Fprintf(cli.options.Stdout, "yard %s materialized-config: %s\n", target.Name, state)
 		if drift {
 			drifted = append(drifted, target.Name)
 		}
 	}
 	if len(drifted) != 0 {
-		return fmt.Errorf("agent config drift in yards: %s", strings.Join(drifted, ", "))
+		return fmt.Errorf(
+			"materialized agent config drift in yards: %s", strings.Join(drifted, ", "),
+		)
 	}
 	return nil
 }
@@ -230,11 +381,12 @@ func (cli *CLI) applyConfig(ctx context.Context, targets []configTarget, assumeY
 		if state == "running" || state == "drift" {
 			running = append(running, target)
 		} else {
-			fmt.Fprintf(cli.options.Stdout, "yard %s: %s; skipped\n", target.Name, state)
+			fmt.Fprintf(cli.options.Stdout,
+				"yard %s materialized-config: %s; skipped\n", target.Name, state)
 		}
 	}
 	if len(running) == 0 {
-		fmt.Fprintln(cli.options.Stdout, "config apply: no running local yards")
+		fmt.Fprintln(cli.options.Stdout, "config apply: no running local yards to refresh")
 		return 0
 	}
 	if !assumeYes {
@@ -246,8 +398,11 @@ func (cli *CLI) applyConfig(ctx context.Context, targets []configTarget, assumeY
 		for _, target := range running {
 			names = append(names, target.Name)
 		}
-		accepted, err := prompt.Confirm(ctx, "Apply operator config",
-			[]string{"refresh agent configs in local running yards: " + strings.Join(names, ", ")})
+		accepted, err := prompt.Confirm(ctx, "Apply Subyard file settings",
+			[]string{
+				"refresh materialized agent configs in local running yards: " +
+					strings.Join(names, ", "),
+			})
 		if err != nil {
 			cli.errorf("config apply: %v", err)
 			return 1
@@ -304,7 +459,7 @@ func (cli *CLI) configTargetDrift(
 	check bool,
 ) (string, bool, error) {
 	if target.Loaded.Context.YardType == domain.YardRemote {
-		return "remote (host config only)", false, nil
+		return "remote (settings only; consumers not checked)", false, nil
 	}
 	incus, executor := cli.statusPorts()
 	info, err := incus.Instance(ctx, target.Loaded.Context.IncusProject,
@@ -355,7 +510,8 @@ func effectiveConfigAssets(loaded config.Loaded) ([]configAsset, error) {
 			return nil, fmt.Errorf("invalid agent name %q", agent)
 		}
 		for _, kind := range []string{"CONFIG", "RULES"} {
-			source := values["AGENT_"+agent+"_"+kind]
+			settingName := "AGENT_" + agent + "_" + kind
+			source := values[settingName]
 			destination := values["AGENT_"+agent+"_"+kind+"_DEST"]
 			if source == "" || destination == "" {
 				continue
@@ -364,10 +520,16 @@ func effectiveConfigAssets(loaded config.Loaded) ([]configAsset, error) {
 				strings.HasPrefix(filepath.Clean(destination), ".."+string(filepath.Separator)) {
 				return nil, fmt.Errorf("invalid %s %s destination", agent, kind)
 			}
-			result = append(result, configAsset{
+			asset := configAsset{
 				Name: agent + "." + strings.ToLower(kind), Source: source,
 				Destination: filepath.Join("/home", loaded.Context.DevUser, destination),
-			})
+			}
+			if trace, ok := loaded.Settings[settingName]; ok {
+				if resolution, found := effectiveSettingResolution(trace); found {
+					asset.Scope, asset.Role = resolution.Scope, resolution.Role
+				}
+			}
+			result = append(result, asset)
 		}
 	}
 	sort.Slice(result, func(left, right int) bool { return result[left].Name < result[right].Name })

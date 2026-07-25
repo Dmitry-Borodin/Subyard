@@ -1,10 +1,9 @@
 package config
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 )
 
 type SettingApplication string
@@ -28,8 +27,15 @@ type SettingResolution struct {
 type SettingTrace struct {
 	Name           string
 	EffectiveValue string
+	Kind           SettingKind
+	Type           SettingValueType
+	Aliases        []string
+	Scopes         []SettingScope
+	Syncable       bool
+	Merge          string
 	Application    SettingApplication
 	Sensitive      bool
+	Owner          string
 	Resolutions    []SettingResolution
 }
 
@@ -40,6 +46,12 @@ type ConfigurationLayer struct {
 	Present bool
 }
 
+type FileSettingMapping struct {
+	Name        string
+	Relative    string
+	Application SettingApplication
+}
+
 type settingKind uint8
 
 const (
@@ -47,91 +59,6 @@ const (
 	settingFile
 	settingAny
 )
-
-type settingDefinition struct {
-	Application SettingApplication
-	Sensitive   bool
-	Kind        settingKind
-}
-
-var scalarSettingApplications = map[string]SettingApplication{
-	"ADB_CONSOLE_EMULATOR_PORT": SettingNextCommand,
-	"ADB_CONSOLE_PROXY_PORT":    SettingNextCommand,
-	"ADB_EMULATOR_PORT":         SettingNextCommand,
-	"ADB_PROXY_PORT":            SettingNextCommand,
-	"AGENTS":                    SettingYardInit,
-	"BASE_IMAGE":                SettingYardInit,
-	"BASE_IMAGE_FALLBACK":       SettingYardInit,
-	"DEV_SUDO":                  SettingYardInit,
-	"DEV_UID":                   SettingYardInit,
-	"DEV_USER":                  SettingYardInit,
-	"E2E_VM_BOOT_TIMEOUT":       SettingNextCommand,
-	"E2E_VM_CPU":                SettingNextCommand,
-	"E2E_VM_DISK":               SettingNextCommand,
-	"E2E_VM_IMAGE":              SettingNextCommand,
-	"E2E_VM_MEMORY":             SettingNextCommand,
-	"E2E_VM_TTL_MINUTES":        SettingNextCommand,
-	"FORWARD_SSH_AGENT":         SettingYardInit,
-	"HOST_BASE":                 SettingNextCommand,
-	"HOST_CLAUDE_MD":            SettingYardInit,
-	"HOST_CODEX_AGENTS_MD":      SettingYardInit,
-	"HOST_LINKS":                SettingYardInit,
-	"HOST_MOUNTS":               SettingYardInit,
-	"HOST_OPENCODE_AGENTS_MD":   SettingYardInit,
-	"INCUS_BRIDGE":              SettingYardInit,
-	"INCUS_PROJECT":             SettingNextCommand,
-	"INSTANCE_NAME":             SettingNextCommand,
-	"INSTANCE_TYPE":             SettingYardInit,
-	"LIMITS_CPU":                SettingYardInit,
-	"LIMITS_MEMORY":             SettingYardInit,
-	"NESTED_E2E_VMS":            SettingYardInit,
-	"REMOTE_DEST":               SettingNextCommand,
-	"REMOTE_DEV_USER":           SettingNextCommand,
-	"REMOTE_SSH_PORT":           SettingNextCommand,
-	"REMOTE_YARD":               SettingNextCommand,
-	"RESTRICTED_DISK_PATHS":     SettingYardInit,
-	"SHIFT_MODE":                SettingYardInit,
-	"SRV_POOL":                  SettingYardInit,
-	"SRV_VOLUME":                SettingYardInit,
-	"SSH_HOST":                  SettingNextCommand,
-	"SSH_PORT":                  SettingNextCommand,
-	"STORAGE_PATH":              SettingYardInit,
-	"YARD_CAPABILITIES":         SettingYardInit,
-	"YARD_CAPS":                 SettingYardInit,
-	"YARD_DEVICES":              SettingYardInit,
-	"YARD_MOUNTS":               SettingYardInit,
-	"YARD_PROFILES":             SettingYardInit,
-	"YARD_TEMPLATE":             SettingYardInit,
-	"YARD_TYPE":                 SettingNextCommand,
-}
-
-func settingDefinitionFor(name string) (settingDefinition, bool) {
-	if application, ok := scalarSettingApplications[name]; ok {
-		return settingDefinition{Application: application, Kind: settingScalar}, true
-	}
-	if !strings.HasPrefix(name, "AGENT_") {
-		return settingDefinition{}, false
-	}
-	for _, suffix := range []string{
-		"_CONFIG_DEST", "_RULES_DEST", "_COMMAND", "_CONFIG", "_PERSIST", "_PROVISION", "_RULES",
-	} {
-		agent, found := strings.CutSuffix(strings.TrimPrefix(name, "AGENT_"), suffix)
-		if !found || !domain.SafeName(agent) {
-			continue
-		}
-		switch suffix {
-		case "_CONFIG", "_RULES":
-			return settingDefinition{Application: SettingConfigApply, Kind: settingFile}, true
-		case "_CONFIG_DEST", "_RULES_DEST":
-			return settingDefinition{Application: SettingConfigApply, Kind: settingScalar}, true
-		case "_PROVISION":
-			return settingDefinition{Application: SettingYardInit, Kind: settingFile}, true
-		default:
-			return settingDefinition{Application: SettingYardInit, Kind: settingScalar}, true
-		}
-	}
-	return settingDefinition{}, false
-}
 
 type settingLayerID int
 
@@ -188,7 +115,7 @@ func (tracker *settingTracker) record(
 	line int,
 	detail string,
 ) {
-	if _, ok := settingDefinitionFor(name); !ok {
+	if _, ok := LookupSetting(name); !ok {
 		return
 	}
 	tracker.order++
@@ -226,22 +153,22 @@ func (tracker *settingTracker) configurationLayers() []ConfigurationLayer {
 }
 
 func (tracker *settingTracker) traces(values environment) map[string]SettingTrace {
-	names := make(map[string]struct{}, len(scalarSettingApplications)+len(tracker.assignments))
-	for name := range scalarSettingApplications {
+	names := make(map[string]struct{}, len(catalog)+len(tracker.assignments))
+	for name := range catalog {
 		names[name] = struct{}{}
 	}
 	for name := range tracker.assignments {
 		names[name] = struct{}{}
 	}
 	for name := range values {
-		if _, ok := settingDefinitionFor(name); ok {
+		if _, ok := LookupSetting(name); ok {
 			names[name] = struct{}{}
 		}
 	}
 
 	result := make(map[string]SettingTrace, len(names))
 	for name := range names {
-		definition, ok := settingDefinitionFor(name)
+		definition, ok := LookupSetting(name)
 		if !ok {
 			continue
 		}
@@ -254,10 +181,15 @@ func (tracker *settingTracker) traces(values environment) map[string]SettingTrac
 		}
 		trace := SettingTrace{
 			Name: name, EffectiveValue: values[name],
-			Application: definition.Application, Sensitive: definition.Sensitive,
+			Kind: definition.Kind, Type: definition.Type,
+			Aliases:  append([]string(nil), definition.Aliases...),
+			Scopes:   append([]SettingScope(nil), definition.Scopes...),
+			Syncable: definition.Syncable, Merge: definition.Merge,
+			Application: definition.Application,
+			Sensitive:   definition.Sensitive, Owner: definition.Owner,
 		}
 		for _, layer := range tracker.layers {
-			if layer.Kind != settingAny && layer.Kind != definition.Kind {
+			if layer.Kind != settingAny && layer.Kind != internalSettingKind(definition.Kind) {
 				continue
 			}
 			if len(layer.Names) != 0 {
@@ -295,6 +227,13 @@ func (tracker *settingTracker) traces(values environment) map[string]SettingTrac
 	return result
 }
 
+func internalSettingKind(kind SettingKind) settingKind {
+	if kind == SettingFile {
+		return settingFile
+	}
+	return settingScalar
+}
+
 func SettingNames(settings map[string]SettingTrace) []string {
 	names := make([]string, 0, len(settings))
 	for name := range settings {
@@ -302,4 +241,62 @@ func SettingNames(settings map[string]SettingTrace) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func SyncableFileMappings(loaded Loaded) []FileSettingMapping {
+	var result []FileSettingMapping
+	seen := map[string]struct{}{}
+	agentsRoot := filepath.Join(loaded.Context.Paths.ConfigDir, "agents")
+	for name, trace := range loaded.Settings {
+		if trace.Kind != SettingFile || !trace.Syncable {
+			continue
+		}
+		for _, resolution := range trace.Resolutions {
+			if resolution.Scope != "default" || resolution.Status == "unset" ||
+				resolution.Value == "" {
+				continue
+			}
+			relative, err := filepath.Rel(agentsRoot, filepath.Clean(resolution.Value))
+			if err != nil || relative == "." || filepath.IsAbs(relative) ||
+				relative == ".." ||
+				strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				continue
+			}
+			relative = filepath.ToSlash(relative)
+			if _, exists := seen[relative]; exists {
+				continue
+			}
+			seen[relative] = struct{}{}
+			result = append(result, FileSettingMapping{
+				Name: name, Relative: relative, Application: trace.Application,
+			})
+			break
+		}
+	}
+	sort.Slice(result, func(left, right int) bool {
+		return result[left].Relative < result[right].Relative
+	})
+	return result
+}
+
+func ResolvedSettingCatalog(loaded Loaded) []SettingDefinition {
+	result := SettingCatalog()
+	for index := range result {
+		result[index] = ResolvedSettingDefinition(loaded, result[index])
+	}
+	return result
+}
+
+func ResolvedSettingDefinition(loaded Loaded, definition SettingDefinition) SettingDefinition {
+	trace, ok := loaded.Settings[definition.Name]
+	if !ok {
+		return definition
+	}
+	for _, resolution := range trace.Resolutions {
+		if resolution.Scope == "default" && resolution.Status != "unset" {
+			definition.Default = resolution.Value
+			definition.HasDefault = true
+		}
+	}
+	return definition
 }

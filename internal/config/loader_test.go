@@ -195,8 +195,10 @@ func TestSettingsPrecedenceAndYardFileOverride(t *testing.T) {
 	external := filepath.Join(temp, "external.rules")
 	for path, value := range map[string]string{
 		shared: "shared\n", host: "host\n", yard: "yard\n", external: "external\n",
-		filepath.Join(configHome, "config.env"):                   "DEV_SUDO=1\nAGENT_codex_RULES=" + external + "\n",
-		filepath.Join(configHome, "yards", "named", "config.env"): "DEV_SUDO=0\nSSH_PORT=3333\n",
+		filepath.Join(configHome, "overrides", "shared", "config.env"): "BASE_IMAGE=shared:image\n",
+		filepath.Join(configHome, "config.env"): "DEV_SUDO=1\nBASE_IMAGE=host:image\n" +
+			"AGENT_codex_RULES=" + external + "\n",
+		filepath.Join(configHome, "yards", "named", "config.env"): "DEV_SUDO=0\nSSH_PORT=3333\nBASE_IMAGE=yard:image\n",
 	} {
 		writeFixture(t, path, value)
 	}
@@ -228,6 +230,7 @@ func TestSettingsPrecedenceAndYardFileOverride(t *testing.T) {
 	withEnvironment := cloneStringMap(base)
 	withEnvironment["AGENT_codex_RULES"] = external
 	withEnvironment["DEV_SUDO"] = "1"
+	withEnvironment["BASE_IMAGE"] = "command:image"
 	withEnvironment["SECRET_TOKEN"] = "must-not-be-traced"
 	environmentLoaded, err := Load(LoadOptions{
 		RepositoryRoot: root, OperatorHome: home, YardName: "named",
@@ -248,6 +251,10 @@ func TestSettingsPrecedenceAndYardFileOverride(t *testing.T) {
 		t, environmentLoaded.Settings["DEV_SUDO"], "1", "command", "command override", "environment",
 	)
 	assertEffectiveSetting(
+		t, environmentLoaded.Settings["BASE_IMAGE"], "command:image",
+		"command", "command override", "environment",
+	)
+	assertEffectiveSetting(
 		t, namedLoaded.Settings["AGENT_codex_RULES"], yard, "yard", "file settings", yard,
 	)
 	assertEffectiveSetting(
@@ -262,6 +269,76 @@ func TestSettingsPrecedenceAndYardFileOverride(t *testing.T) {
 	) {
 		t.Fatalf("scalar provenance omitted host or yard assignments: %#v",
 			environmentLoaded.Settings["DEV_SUDO"])
+	}
+	baseImage := environmentLoaded.Settings["BASE_IMAGE"]
+	for _, expected := range []struct {
+		scope, path string
+	}{
+		{"shared", filepath.Join(configHome, "overrides", "shared", "config.env")},
+		{"host", filepath.Join(configHome, "config.env")},
+		{"yard", filepath.Join(configHome, "yards", "named", "config.env")},
+		{"command", "environment"},
+	} {
+		found := false
+		for _, resolution := range baseImage.Resolutions {
+			if resolution.Scope == expected.scope && resolution.Path == expected.path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("BASE_IMAGE trace omitted %s layer %s: %#v",
+				expected.scope, expected.path, baseImage)
+		}
+	}
+}
+
+func TestPersistentSettingsValidationFailsClosed(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	for _, test := range []struct {
+		name, relative, content, want string
+	}{
+		{"unknown", "config.env", "SSHH_PORT=2222\n", "unknown setting"},
+		{"wrong shared scope", "overrides/shared/config.env", "DEV_SUDO=1\n", "not allowed in shared scope"},
+		{"wrong type", "config.env", "SSH_PORT=70000\n", "must be in range"},
+		{"bad mount", "config.env", "HOST_MOUNTS=../escape:/mnt/cache:rw:0755\n", "invalid mount"},
+		{"secret-like", "config.env", "BASE_IMAGE=password=hidden\n", "secret material"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			temp := t.TempDir()
+			home := filepath.Join(temp, "home")
+			configHome := filepath.Join(home, ".config", "subyard")
+			writeFixture(t, filepath.Join(configHome, test.relative), test.content)
+			_, err := Load(LoadOptions{
+				RepositoryRoot: root, OperatorHome: home, DisablePrivate: true,
+				Environment: map[string]string{
+					"SUBYARD_OPERATOR_HOME": home, "SUBYARD_CONFIG_HOME": configHome,
+					"SUBYARD_HOME": filepath.Join(home, ".subyard"),
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("wanted %q rejection, got %v", test.want, err)
+			}
+		})
+	}
+}
+
+func TestProductionLoaderRejectsPendingConfigurationTransaction(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	temporary := t.TempDir()
+	home := filepath.Join(temporary, "home")
+	configHome := filepath.Join(home, ".config", "subyard")
+	writeFixture(t, filepath.Join(configHome, ".sync", "transaction.json"), "{}\n")
+	options := LoadOptions{
+		RepositoryRoot: root, OperatorHome: home, DisablePrivate: true,
+		Environment: map[string]string{
+			"SUBYARD_OPERATOR_HOME": home, "SUBYARD_CONFIG_HOME": configHome,
+			"SUBYARD_HOME": filepath.Join(home, ".subyard"),
+		},
+	}
+	if _, err := Load(options); err == nil ||
+		!strings.Contains(err.Error(), "interrupted configuration transaction") {
+		t.Fatalf("production resolver accepted a pending transaction: %v", err)
 	}
 }
 

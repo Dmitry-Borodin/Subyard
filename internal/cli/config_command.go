@@ -14,7 +14,9 @@ import (
 	"syscall"
 	"text/tabwriter"
 
+	"github.com/Dmitry-Borodin/Subyard/internal/application"
 	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Dmitry-Borodin/Subyard/internal/configsync"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
 )
@@ -33,18 +35,35 @@ type configAsset struct {
 }
 
 func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments []string) int {
+	assumeYes := cli.env["ASSUME_YES"] == "1"
+	if len(arguments) != 0 && (arguments[0] == "-y" || arguments[0] == "--yes") {
+		assumeYes = true
+		arguments = arguments[1:]
+	}
 	if len(arguments) == 0 || commandHelpRequested(arguments) {
 		fmt.Fprintf(cli.options.Stdout,
-			"Usage: %s config show [SETTING] | paths | status [--all-local] | apply [--all-local] [--yes]\n"+
+			"Usage: %s config fields [SETTING] | show [SETTING] | paths | status [--all-local] | apply [--all-local] [--yes] | sync <checkout> [--check] [--adopt] [--yes]\n"+
+				"  fields  list the typed public settings contract (read-only)\n"+
 				"  show    explain effective Subyard settings and their sources (read-only)\n"+
 				"  paths   list configuration sources and storage roles (read-only)\n"+
 				"  status  check materialized file settings in running local yards (read-only)\n"+
-				"  apply   refresh materialized file settings in running local yards\n",
+				"  apply   refresh materialized file settings in running local yards\n"+
+				"  sync    validate and import versioned non-secret desired settings\n",
 			cli.options.Program)
 		return 0
 	}
 	action := arguments[0]
 	switch action {
+	case "fields":
+		if len(arguments) > 2 {
+			cli.errorf("config fields accepts at most one setting name")
+			return 2
+		}
+		name := ""
+		if len(arguments) == 2 {
+			name = arguments[1]
+		}
+		return cli.writeConfigFields(loaded, name)
 	case "show":
 		if len(arguments) > 2 {
 			cli.errorf("config show accepts at most one setting name")
@@ -61,8 +80,10 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 			return 2
 		}
 		return cli.writeConfigPaths(loaded)
+	case "sync":
+		return cli.runConfigSync(ctx, loaded, arguments[1:], assumeYes)
 	}
-	allLocal, assumeYes := false, cli.env["ASSUME_YES"] == "1"
+	allLocal := false
 	for _, argument := range arguments[1:] {
 		switch argument {
 		case "--all-local":
@@ -77,7 +98,7 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 	switch action {
 	case "status", "apply":
 	default:
-		cli.errorf("config expects show, paths, status or apply")
+		cli.errorf("config expects fields, show, paths, status, apply or sync")
 		return 2
 	}
 	targets, err := cli.localConfigTargets(loaded, allLocal)
@@ -93,6 +114,392 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 		return 0
 	}
 	return cli.applyConfig(ctx, targets, assumeYes)
+}
+
+func (cli *CLI) writeConfigFields(loaded config.Loaded, requested string) int {
+	if requested != "" {
+		definition, ok := config.LookupSetting(requested)
+		if !ok {
+			cli.errorf("config fields: unknown setting %q", requested)
+			return 2
+		}
+		writeSettingDefinition(
+			cli.options.Stdout, config.ResolvedSettingDefinition(loaded, definition),
+		)
+		return 0
+	}
+	writer := tabwriter.NewWriter(cli.options.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "SETTING\tKIND\tTYPE\tDEFAULT\tSCOPES\tSYNCABLE\tMERGE\tAPPLIES\tOWNER")
+	for _, definition := range config.ResolvedSettingCatalog(loaded) {
+		defaultValue := "<none>"
+		if definition.HasDefault {
+			defaultValue = settingDisplayValue(
+				definition.Default, definition.Sensitive, true,
+			)
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			definition.Name, definition.Kind, definition.Type,
+			defaultValue, settingScopeList(definition.Scopes), yesNo(definition.Syncable),
+			definition.Merge, definition.Application, definition.Owner)
+	}
+	_ = writer.Flush()
+	fmt.Fprintln(cli.options.Stdout,
+		"AGENT_<name>_{CONFIG,RULES,CONFIG_DEST,RULES_DEST,PROVISION,COMMAND,CHECK,PERSIST} are typed catalog patterns.")
+	return 0
+}
+
+func (cli *CLI) runConfigSync(
+	ctx context.Context,
+	loaded config.Loaded,
+	arguments []string,
+	assumeYes bool,
+) int {
+	if loaded.Context.YardType == domain.YardRemote {
+		forwarded := append([]string{"sync"}, arguments...)
+		if assumeYes {
+			forwarded = append(forwarded, "--yes")
+		}
+		return cli.forwardRemote(ctx, loaded.Context, "config", forwarded)
+	}
+	source, check, adopt := "", false, false
+	for _, argument := range arguments {
+		switch argument {
+		case "--check":
+			check = true
+		case "--adopt":
+			adopt = true
+		case "-y", "--yes":
+			assumeYes = true
+		default:
+			if strings.HasPrefix(argument, "-") {
+				cli.errorf("config sync: unknown option %q", argument)
+				return 2
+			}
+			if source != "" {
+				cli.errorf("config sync accepts exactly one checkout path")
+				return 2
+			}
+			source = argument
+		}
+	}
+	if source == "" {
+		cli.errorf("config sync requires a versioned checkout path")
+		return 2
+	}
+	if !check {
+		if err := configsync.Recover(loaded.Context.Paths.ConfigHome); err != nil {
+			cli.errorf("config sync recovery: %v", err)
+			return 1
+		}
+	}
+	options := configsync.Options{
+		SourceRoot: source, ConfigHome: loaded.Context.Paths.ConfigHome,
+		RepositoryRoot: cli.options.RepositoryRoot,
+		OperatorHome:   loaded.Context.Paths.OperatorHome,
+		Environment:    cli.baseEnv, FileSettings: config.SyncableFileMappings(loaded),
+		Adopt: adopt, YardInUse: cli.configSyncYardInUse(loaded),
+	}
+	plan, err := configsync.BuildPlan(options)
+	if err != nil {
+		if errors.Is(err, configsync.ErrRecoveryPending) && check {
+			cli.errorf("config sync --check: interrupted transaction requires recovery by a normal config sync")
+		} else {
+			cli.errorf("config sync: %v", err)
+		}
+		return 1
+	}
+	writeConfigSyncPlan(cli.options.Stdout, plan)
+	if check {
+		if plan.NeedsApply() {
+			fmt.Fprintln(cli.options.Stdout, "config sync check: changes required")
+			return 1
+		}
+		fmt.Fprintln(cli.options.Stdout, "config sync check: converged")
+		return 0
+	}
+	if plan.NeedsConfirmation() {
+		consequences := make([]string, 0, len(plan.Changes)+1)
+		if plan.InitializeHostID {
+			consequences = append(consequences, "record owner host ID "+plan.HostID)
+		}
+		for _, change := range plan.Changes {
+			consequences = append(consequences, change.Action+" "+change.Path)
+		}
+		orchestrator := cli.operationOrchestrator(
+			cli.env["SUBYARD_OPERATION_ID"], loaded, nil, nil,
+		)
+		operation, err := orchestrator.Prepare(loaded.Context, domain.CommandPolicy{
+			Name: "config sync", Effect: domain.CommandMutate,
+			RemotePolicy: domain.RemoteOnOwner, Consequences: consequences,
+		})
+		if err != nil {
+			cli.errorf("config sync: %v", err)
+			return 1
+		}
+		operation, err = orchestrator.Confirm(ctx, operation, assumeYes)
+		if errors.Is(err, application.ErrDeclined) {
+			cli.errorf("config sync: operation declined")
+			return 1
+		}
+		if err != nil {
+			cli.errorf("config sync: %v", err)
+			return 1
+		}
+		orchestrator.Runner = configSyncAdapter{plan: plan}
+		if _, _, err := orchestrator.RunAdapter(ctx, operation, domain.AdapterRequest{
+			OperationID: operation.OperationID, Adapter: "config-sync", Action: "apply",
+		}, nil); err != nil {
+			cli.errorf("config sync: %v", err)
+			return 1
+		}
+	} else if err := configsync.Apply(plan); err != nil {
+		cli.errorf("config sync: %v", err)
+		return 1
+	}
+	if !plan.NeedsApply() {
+		fmt.Fprintln(cli.options.Stdout, "config sync: already converged")
+		return 0
+	}
+	fmt.Fprintf(cli.options.Stdout, "config sync: applied generation %d\n", plan.Generation)
+	cli.writeConfigSyncFollowups(loaded, plan)
+	return 0
+}
+
+type configSyncAdapter struct {
+	plan configsync.Plan
+}
+
+func (adapter configSyncAdapter) Run(
+	_ context.Context,
+	request domain.AdapterRequest,
+	_ io.Reader,
+) (domain.AdapterResult, string, error) {
+	if request.Adapter != "config-sync" || request.Action != "apply" {
+		return domain.AdapterResult{}, "", errors.New("invalid config sync adapter request")
+	}
+	if err := configsync.Apply(adapter.plan); err != nil {
+		return domain.AdapterResult{}, "", err
+	}
+	return domain.AdapterResult{
+		Schema: 1, OperationID: request.OperationID, Status: "ok",
+		Output: map[string]any{"generation": adapter.plan.Generation},
+	}, "", nil
+}
+
+func writeConfigSyncPlan(output io.Writer, plan configsync.Plan) {
+	fmt.Fprintln(output, "Versioned configuration sync")
+	fmt.Fprintf(output, "  source-commit: %s\n", plan.SourceCommit)
+	fmt.Fprintf(output, "  source-digest: %s\n", plan.SourceDigest)
+	fmt.Fprintf(output, "  owner-host: %s\n", plan.HostID)
+	fmt.Fprintf(output, "  generation: %d -> %d\n",
+		plan.PreviousGeneration, plan.Generation)
+	if plan.InitializeHostID {
+		fmt.Fprintln(output, "  initialize: host-id")
+	}
+	if len(plan.Changes) == 0 {
+		if plan.ManifestChanged {
+			fmt.Fprintln(output, "  managed paths: unchanged (manifest metadata update)")
+		} else {
+			fmt.Fprintln(output, "  managed paths: unchanged")
+		}
+		return
+	}
+	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "  ACTION\tPATH\tDIGEST\tAPPLIES\tDETAIL")
+	for _, change := range plan.Changes {
+		applications := make([]string, 0, len(change.Applications))
+		for _, application := range change.Applications {
+			applications = append(applications, string(application))
+		}
+		detail := change.Detail
+		if detail == "" {
+			detail = "-"
+		}
+		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\t%s\n",
+			change.Action, change.Path, configSyncDigestTransition(change),
+			strings.Join(applications, ","), detail)
+	}
+	_ = writer.Flush()
+}
+
+func configSyncDigestTransition(change configsync.Change) string {
+	short := func(value string) string {
+		if value == "" {
+			return "-"
+		}
+		if len(value) > 12 {
+			return value[:12]
+		}
+		return value
+	}
+	return short(change.BeforeDigest) + "->" + short(change.AfterDigest)
+}
+
+func (cli *CLI) configSyncYardInUse(loaded config.Loaded) configsync.YardUseProbe {
+	return func(name string) (string, bool, error) {
+		projectRoot := filepath.Join(
+			loaded.Context.Paths.ConfigHome, "yards", name, "projects",
+		)
+		entries, err := os.ReadDir(projectRoot)
+		if err == nil && len(entries) != 0 {
+			return "project state exists", true, nil
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", false, err
+		}
+		target, err := cli.loadInventoryLoaded(name, loaded)
+		if err != nil {
+			return "", false, err
+		}
+		incus, _ := cli.statusPorts()
+		_, err = incus.Instance(
+			context.Background(), target.Context.IncusProject, target.Context.InstanceName,
+		)
+		if err == nil {
+			return "managed Incus yard exists", true, nil
+		}
+		if errors.Is(err, ports.ErrInstanceNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+}
+
+func (cli *CLI) writeConfigSyncFollowups(loaded config.Loaded, plan configsync.Plan) {
+	needsApply, needsInit, nextCommand := false, false, false
+	initAll, applyAll := false, false
+	initYards, applyYards := map[string]struct{}{}, map[string]struct{}{}
+	for _, change := range plan.Changes {
+		yard, scoped := configSyncPathYard(change.Path)
+		for _, application := range change.Applications {
+			switch application {
+			case config.SettingNextCommand:
+				nextCommand = true
+			case config.SettingConfigApply:
+				needsApply = true
+				if scoped {
+					applyYards[yard] = struct{}{}
+				} else {
+					applyAll = true
+				}
+			case config.SettingYardInit:
+				needsInit = true
+				if scoped {
+					initYards[yard] = struct{}{}
+				} else {
+					initAll = true
+				}
+			}
+		}
+	}
+	if !nextCommand && !needsApply && !needsInit {
+		return
+	}
+	fmt.Fprintln(cli.options.Stdout, "Next actions")
+	if nextCommand {
+		fmt.Fprintln(cli.options.Stdout, "  next command: effective automatically")
+	}
+	if needsApply {
+		if applyAll {
+			fmt.Fprintf(cli.options.Stdout, "  config apply: %s config apply --all-local\n",
+				cli.options.Program)
+		} else {
+			for _, name := range sortedSet(applyYards) {
+				fmt.Fprintf(cli.options.Stdout, "  config apply: %s -Y %s config apply\n",
+					cli.options.Program, name)
+			}
+		}
+	}
+	if needsInit {
+		names := sortedSet(initYards)
+		if initAll {
+			names = cli.configSyncLocalYards(loaded)
+		}
+		for _, name := range names {
+			if name == "default" {
+				fmt.Fprintf(cli.options.Stdout, "  yard init: %s init\n", cli.options.Program)
+			} else {
+				fmt.Fprintf(cli.options.Stdout, "  yard init: %s -Y %s init\n",
+					cli.options.Program, name)
+			}
+		}
+	}
+}
+
+func (cli *CLI) configSyncLocalYards(loaded config.Loaded) []string {
+	directories := config.RegistryDirectories(
+		loaded.Context.Paths.ConfigDir, loaded.Context.Paths.ConfigHome,
+	)
+	names, err := config.YardNames(directories...)
+	if err != nil {
+		return []string{"default"}
+	}
+	var result []string
+	for _, name := range names {
+		target, err := cli.loadInventoryLoaded(name, loaded)
+		if err == nil && target.Context.YardType != domain.YardRemote {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+func configSyncPathYard(path string) (string, bool) {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	if len(parts) >= 3 && parts[0] == "yards" && domain.SafeName(parts[1]) {
+		return parts[1], true
+	}
+	return "", false
+}
+
+func sortedSet(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func writeSettingDefinition(output io.Writer, definition config.SettingDefinition) {
+	fmt.Fprintf(output, "setting: %s\n", definition.Name)
+	fmt.Fprintf(output, "kind: %s\n", definition.Kind)
+	fmt.Fprintf(output, "type: %s\n", definition.Type)
+	defaultValue := "<none>"
+	if definition.HasDefault {
+		defaultValue = settingDisplayValue(definition.Default, definition.Sensitive, false)
+	}
+	fmt.Fprintf(output, "default: %s\n", defaultValue)
+	fmt.Fprintf(output, "scopes: %s\n", settingScopeList(definition.Scopes))
+	fmt.Fprintf(output, "syncable: %s\n", yesNo(definition.Syncable))
+	fmt.Fprintf(output, "sensitive: %s\n", yesNo(definition.Sensitive))
+	fmt.Fprintf(output, "merge: %s\n", definition.Merge)
+	fmt.Fprintf(output, "applies: %s\n", definition.Application)
+	fmt.Fprintf(output, "owner: %s\n", definition.Owner)
+	if len(definition.Aliases) != 0 {
+		fmt.Fprintf(output, "deprecated-aliases: %s\n", strings.Join(definition.Aliases, ", "))
+	}
+	if len(definition.Enum) != 0 {
+		fmt.Fprintf(output, "values: %s\n", strings.Join(definition.Enum, ", "))
+	}
+	if definition.Minimum != 0 || definition.Maximum != 0 {
+		fmt.Fprintf(output, "range: %d..%d\n", definition.Minimum, definition.Maximum)
+	}
+}
+
+func settingScopeList(scopes []config.SettingScope) string {
+	values := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		values = append(values, string(scope))
+	}
+	return strings.Join(values, ",")
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func (cli *CLI) writeConfigShow(loaded config.Loaded, requested string) int {
@@ -146,7 +553,15 @@ func writeSettingTrace(output io.Writer, name string, trace config.SettingTrace)
 	fmt.Fprintf(output, "setting: %s\n", name)
 	fmt.Fprintf(output, "effective: %s\n",
 		settingDisplayValue(trace.EffectiveValue, trace.Sensitive, false))
+	fmt.Fprintf(output, "type: %s %s\n", trace.Kind, trace.Type)
+	fmt.Fprintf(output, "allowed-scopes: %s\n", settingScopeList(trace.Scopes))
+	fmt.Fprintf(output, "syncable: %s\n", yesNo(trace.Syncable))
+	fmt.Fprintf(output, "merge: %s\n", trace.Merge)
 	fmt.Fprintf(output, "applies: %s\n", trace.Application)
+	fmt.Fprintf(output, "owner: %s\n", trace.Owner)
+	if len(trace.Aliases) != 0 {
+		fmt.Fprintf(output, "deprecated-aliases: %s\n", strings.Join(trace.Aliases, ", "))
+	}
 	fmt.Fprintln(output, "precedence:")
 	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(writer, "  SCOPE\tROLE\tSOURCE\tVALUE\tSTATUS")
@@ -236,6 +651,30 @@ func (cli *CLI) writeConfigPaths(loaded config.Loaded) int {
 	fmt.Fprintf(cli.options.Stdout, "project-state: %s\n", loaded.Context.Paths.StateDir)
 	fmt.Fprintf(cli.options.Stdout, "support-tools: %s\n",
 		filepath.Join(loaded.Context.Paths.ConfigHome, "tools"))
+	syncStatus, err := configsync.ReadStatus(
+		loaded.Context.Paths.ConfigHome, cli.baseEnv,
+	)
+	if err != nil {
+		cli.errorf("config paths: %v", err)
+		return 1
+	}
+	hostIDState := "saved"
+	if syncStatus.HostIDPending {
+		hostIDState = "proposed; saved by first config sync"
+	}
+	fmt.Fprintf(cli.options.Stdout, "owner-host-id: %s (%s)\n",
+		syncStatus.HostID, hostIDState)
+	fmt.Fprintf(cli.options.Stdout, "versioned-config-manifest: %s\n",
+		syncStatus.ManifestPath)
+	if syncStatus.ManifestPresent {
+		fmt.Fprintf(cli.options.Stdout, "versioned-config-source-commit: %s\n",
+			syncStatus.SourceCommit)
+		fmt.Fprintf(cli.options.Stdout, "versioned-config-generation: %d\n",
+			syncStatus.Generation)
+	}
+	if syncStatus.RecoveryRequired {
+		fmt.Fprintln(cli.options.Stdout, "versioned-config-recovery: required")
+	}
 	assets, err := effectiveConfigAssets(loaded)
 	if err != nil {
 		cli.errorf("config paths: %v", err)

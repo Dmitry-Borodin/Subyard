@@ -5,15 +5,20 @@ temporary command overrides into one effective configuration. Use the CLI to ins
 the files remain the source of truth.
 
 ```sh
+yard config fields
+yard config fields SSH_PORT
 yard config show
 yard config show SSH_PORT
 yard -Y demo config show
 yard config paths
 ```
 
-`config show` lists effective non-secret settings, their winning scope and source, and how they are
-consumed. Passing one setting name shows every applicable layer as `effective`, `overridden`, or
-`unset`. Secret inputs and unrelated environment variables are not settings and are never included.
+`config fields` is the public typed field reference. It reports the shipped default, kind, type,
+allowed scopes, syncability, merge mode, application mode and domain owner from the same catalog
+used by the production resolver. `config show` lists effective non-secret settings, their winning
+scope and source, and how they are consumed. Passing one setting name shows every applicable layer
+as `effective`, `overridden`, or `unset`. Unknown fields, wrong scopes and invalid values fail
+closed; secret inputs and unrelated environment variables are not settings.
 
 ## Storage roles
 
@@ -22,6 +27,7 @@ configuration:
 
 | Path | Role |
 |---|---|
+| `overrides/shared/config.env` | Explicitly shareable scalar settings |
 | `config.env` | Host-wide scalar settings |
 | `overrides/shared/` | Explicitly shareable non-secret file settings |
 | `overrides/host/` | File settings specific to this owner host |
@@ -38,7 +44,8 @@ Immutable shipped defaults stay in the installed runtime and do not belong in th
 
 ## Scalar settings
 
-Host-wide values go in `config.env`:
+Common portable values may go in `overrides/shared/config.env` only when `config fields` lists the
+`shared` scope. Host-wide values go in `config.env`:
 
 ```sh
 DEV_SUDO=1
@@ -56,6 +63,7 @@ Scalar precedence is:
 
 ```text
 shipped defaults
+  -> explicitly shareable scalar settings
   -> host-wide scalar settings
   -> named-yard derivations and selected shipped profile
   -> named-yard scalar settings
@@ -63,8 +71,9 @@ shipped defaults
 ```
 
 The default yard omits the named-yard layers. A command environment value is temporary and has the
-highest precedence. `yard [-Y <yard>] config show <SETTING>` is the authoritative explanation of the
-actual chain, including derived values.
+highest precedence. It is never persisted by config sync. `yard [-Y <yard>] config show <SETTING>`
+is the authoritative explanation of the actual chain, including derived values. Start from
+[`config/settings.env.example`](../config/settings.env.example).
 
 ## File settings
 
@@ -92,3 +101,122 @@ with `config show`.
 
 Remote yard definitions can be inspected with `yard -Y <remote> config show`. `--all-local` never
 changes remote owner hosts implicitly.
+
+## Versioned private configuration
+
+Keep private desired settings in a separate clean Git checkout. Do not turn the entire
+`$SUBYARD_CONFIG_HOME` into a checkout: it also contains project state, credential records, generated
+consumers and support tools. `.gitignore`, a symlink farm or recursive `rsync --delete` is not an
+ownership boundary.
+
+The checkout root contains a tracked `subyard-config.json`:
+
+```json
+{
+  "schemaVersion": 1
+}
+```
+
+Its fixed managed layout is:
+
+```text
+subyard-config.json
+shared/
+  config.env
+  overrides/
+    agents/...
+hosts/
+  <HostID>/
+    config.env
+    overrides/
+      agents/...
+    yards/
+      <yard>/
+        config.env
+        overrides/
+          agents/...
+```
+
+`config.env` under the selected host is required, even when empty. Scalar assignments must be
+syncable in their exact shared, host or yard scope. Versioned file settings are regular,
+non-executable files at catalog-known paths below `overrides/agents`; path assignments in
+`config.env` are rejected. The source manifest schema is
+[`config/subyard-config.schema.json`](../config/subyard-config.schema.json).
+
+The first sync snapshots an owner-host ID. By default it uses the current hostname; set
+`SUBYARD_HOST_ID=<safe-id>` for the first invocation to choose another value. The saved
+`$SUBYARD_CONFIG_HOME/host-id` is local identity state, is never imported from Git and is not renamed
+by later syncs. Each host selects only `shared` and `hosts/<HostID>`, so two hosts may have yards with
+the same name without collapsing them.
+
+Use Git itself for transport and history:
+
+```sh
+git -C ~/.local/share/subyard-config pull --ff-only
+yard config sync ~/.local/share/subyard-config --check
+yard config sync ~/.local/share/subyard-config
+```
+
+`--check` is read-only, never prompts, and exits non-zero when an apply or local manifest update is
+needed. A changing sync prints the source commit and exact redacted managed-path plan, then asks once.
+It does not run `init`, `start`, `stop`, `teardown`, `config apply`, project operations or Git
+commands. Follow-up commands are printed by application mode.
+
+An existing unmanaged target requires a reviewed first import with `--adopt`. Later local edits are
+reported as managed drift and restored only through the confirmed exact plan. A path removed from Git
+is deleted only when the local manifest owned its previous exact digest. Removing a yard definition
+fails while its Incus yard or project state still exists; sync never becomes teardown.
+
+The source must be an operator-owned Git worktree root with a clean selected subtree. Tracked,
+untracked, ignored, unmerged, symlinked, hard-linked, executable or group/world-writable inputs fail
+closed. `projects`, desired power, observed Incus state, SSH trust, secrets, keys, generated
+consumers, exports, logs, storage and support tools are outside the source schema and local manifest.
+
+To roll back desired settings, check out or revert the intended Git revision and run the same check
+and sync commands. An interrupted confirmed transaction is recovered before the next mutating sync;
+`--check` reports pending recovery without changing the live root.
+
+When invoked for a registered remote yard, `config sync` runs on that owner host. The checkout path
+therefore names a path on the owner host; the controller does not upload its checkout and there is no
+implicit all-host fan-out.
+
+### Bootstrapping an existing host
+
+First choose the stable owner-host ID that will name this host's subtree. Before creating files,
+classify current values with `yard config fields` and inspect their provenance with
+`yard config show`. Only fields marked `syncable: yes` may be copied:
+
+- portable fields that explicitly allow `shared` go to `shared/config.env`;
+- host-specific fields go to `hosts/<HostID>/config.env`;
+- named-yard fields go to `hosts/<HostID>/yards/<yard>/config.env`;
+- catalog-known agent config and rules files keep their relative path below the matching
+  `overrides/agents` directory;
+- secrets, keys, generated consumers, project state, host identity, desired power and support tools
+  stay local and are never copied.
+
+A minimal new checkout can be prepared without reading or copying the whole live root:
+
+```sh
+checkout=$HOME/.local/share/subyard-config
+host_id=replace-with-stable-host-id
+
+install -d -m 0700 "$checkout/hosts/$host_id"
+git -C "$checkout" init
+printf '%s\n' '{"schemaVersion":1}' >"$checkout/subyard-config.json"
+: >"$checkout/hosts/$host_id/config.env"
+git -C "$checkout" add subyard-config.json "hosts/$host_id/config.env"
+git -C "$checkout" commit -m 'Add Subyard configuration source'
+```
+
+Move reviewed assignments and known override files into that layout, commit them, then preview the
+first import with the same ID and explicit adoption:
+
+```sh
+SUBYARD_HOST_ID=$host_id yard config sync "$checkout" --check --adopt
+SUBYARD_HOST_ID=$host_id yard config sync "$checkout" --adopt
+```
+
+Do not copy `~/.config/subyard` recursively. In particular, do not add ignored secret or runtime
+paths just to make the worktree appear clean: selected ignored and untracked source paths are
+rejected. After the first successful sync, the saved local `host-id` is authoritative and the
+environment override is no longer needed.

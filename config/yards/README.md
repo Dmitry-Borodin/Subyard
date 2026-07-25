@@ -20,14 +20,16 @@ Scalar-setting precedence is:
 
 ```text
 shipped defaults
+  -> explicitly shareable scalar settings
   -> host-wide config.env
   -> yard derivations + selected shipped profile
   -> yards/<name>/config.env
   -> command environment
 ```
 
-The `overrides/shared`, `overrides/host` and yard `overrides` directories replace known file
-settings; they are not generic scalar layers.
+`overrides/shared/config.env` is the typed shared scalar layer. The other files below
+`overrides/shared`, `overrides/host` and yard `overrides` replace catalog-known file settings; they
+are not arbitrary configuration trees.
 
 Public profiles remain in the immutable runtime. Set `YARD_TEMPLATE=<profile>` for a reusable yard
 template or `YARD_PROFILES="<profile> ..."` to limit project profiles. Run

@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,7 +56,7 @@ func TestConfigShowExplainsScalarDerivedAndFileSettingsWithoutSecrets(t *testing
 	)
 	writeConfigCommandFile(t, hostRule, "secret-file-contents\n")
 	writeConfigCommandFile(t, filepath.Join(configHome, "config.env"),
-		"SSH_PORT=2200\nSECRET_TOKEN=s3cr3t-host-value\n")
+		"SSH_PORT=2200\n")
 	yardFile := filepath.Join(configHome, "yards", "named", "config.env")
 	writeConfigCommandFile(t, yardFile, "SSH_PORT=2300\n")
 	environment = append(environment, "SSH_PORT=2400", "SECRET_TOKEN=s3cr3t-command-value")
@@ -283,6 +285,180 @@ func TestConfigValidationExcludesRuntimeStateTrees(t *testing.T) {
 	}
 }
 
+func TestConfigSyncCheckIsReadOnlyAndMutationPromptsOnce(t *testing.T) {
+	root, _, configHome, environment := configCommandFixture(t)
+	environment = append(environment, "SUBYARD_HOST_ID=owner-a")
+	source := filepath.Join(t.TempDir(), "source")
+	if err := os.MkdirAll(filepath.Join(source, "hosts", "owner-a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigCommandFile(t, filepath.Join(source, "subyard-config.json"),
+		"{\n  \"schemaVersion\": 1\n}\n")
+	writeConfigCommandFile(t, filepath.Join(source, "hosts", "owner-a", "config.env"),
+		"SSH_PORT=2290\n")
+	runConfigSyncGit(t, source, "init", "-q")
+	runConfigSyncGit(t, source, "add", "-A")
+	runConfigSyncGit(t, source,
+		"-c", "user.name=Subyard Test", "-c", "user.email=test@invalid",
+		"commit", "-q", "-m", "initial")
+
+	checkPrompt := &testkit.Prompt{}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", source, "--check", "--adopt"},
+		Environment: environment, WorkingDir: root, Prompt: checkPrompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stdout.String(), "changes required") {
+		t.Fatalf("config sync check: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(checkPrompt.Seen) != 0 {
+		t.Fatalf("read-only check prompted: %#v", checkPrompt.Seen)
+	}
+	content, err := os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || len(content) != 0 {
+		t.Fatalf("read-only check changed live config: %q %v", content, err)
+	}
+	if _, err := os.Lstat(filepath.Join(configHome, ".sync", "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only check wrote a manifest: %v", err)
+	}
+
+	applyPrompt := &testkit.Prompt{Answers: []bool{true}}
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", source, "--adopt"},
+		Environment: environment, WorkingDir: root, Prompt: applyPrompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("config sync apply: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(applyPrompt.Seen) != 1 {
+		t.Fatalf("config sync prompted %d times: %#v", len(applyPrompt.Seen), applyPrompt.Seen)
+	}
+	content, err = os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || string(content) != "SSH_PORT=2290\n" {
+		t.Fatalf("config sync did not apply host settings: %q %v", content, err)
+	}
+
+	convergedPrompt := &testkit.Prompt{}
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", source},
+		Environment: environment, WorkingDir: root, Prompt: convergedPrompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 ||
+		!strings.Contains(stdout.String(), "already converged") {
+		t.Fatalf("converged config sync: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(convergedPrompt.Seen) != 0 {
+		t.Fatalf("converged sync prompted: %#v", convergedPrompt.Seen)
+	}
+}
+
+func TestConfigSyncCheckLeavesRecoveryPendingAndMutationRecoversFirst(t *testing.T) {
+	root, _, configHome, environment := configCommandFixture(t)
+	environment = append(environment, "SUBYARD_HOST_ID=owner-a")
+	transactionID := "1-dddddddddddddddd"
+	transactionRoot := filepath.Join(
+		configHome, ".sync", "transactions", transactionID,
+	)
+	if err := os.MkdirAll(transactionRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigCommandFile(
+		t, filepath.Join(configHome, ".sync", "transaction.json"),
+		fmt.Sprintf(`{
+  "schemaVersion": 1,
+  "id": %q,
+  "phase": "applying",
+  "planDigest": %q,
+  "newManifestDigest": %q,
+  "applied": 0,
+  "entries": []
+}
+`, transactionID, strings.Repeat("a", 64), strings.Repeat("b", 64)),
+	)
+	source := filepath.Join(t.TempDir(), "source")
+	if err := os.MkdirAll(filepath.Join(source, "hosts", "owner-a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigCommandFile(t, filepath.Join(source, "subyard-config.json"),
+		"{\n  \"schemaVersion\": 1\n}\n")
+	writeConfigCommandFile(t, filepath.Join(source, "hosts", "owner-a", "config.env"),
+		"SSH_PORT=2291\n")
+	runConfigSyncGit(t, source, "init", "-q")
+	runConfigSyncGit(t, source, "add", "-A")
+	runConfigSyncGit(t, source,
+		"-c", "user.name=Subyard Test", "-c", "user.email=test@invalid",
+		"commit", "-q", "-m", "initial")
+
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", source, "--check", "--adopt"},
+		Environment: environment, WorkingDir: root, Prompt: &testkit.Prompt{},
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stderr.String(), "interrupted transaction requires recovery") {
+		t.Fatalf("pending recovery check: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Lstat(filepath.Join(configHome, ".sync", "transaction.json")); err != nil {
+		t.Fatalf("read-only check changed pending recovery state: %v", err)
+	}
+
+	prompt := &testkit.Prompt{Answers: []bool{true}}
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", source, "--adopt"},
+		Environment: environment, WorkingDir: root, Prompt: prompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("recovery-first sync: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(prompt.Seen) != 1 {
+		t.Fatalf("recovery-first sync prompted %d times: %#v", len(prompt.Seen), prompt.Seen)
+	}
+	if _, err := os.Lstat(filepath.Join(configHome, ".sync", "transaction.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful recovery left its journal: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || string(content) != "SSH_PORT=2291\n" {
+		t.Fatalf("recovery-first sync did not apply source: %q %v", content, err)
+	}
+}
+
 type recordingConfigApplier struct {
 	yards []string
 }
@@ -357,5 +533,14 @@ func appendHashSteps(t *testing.T, fake *testkit.Incus, loaded config.Loaded) {
 				Stdout: []byte(fmt.Sprintf("%s  %s\n", hash, asset.Destination)), ExitCode: 0,
 			},
 		})
+	}
+}
+
+func runConfigSyncGit(t *testing.T, directory string, arguments ...string) {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", directory}, arguments...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(arguments, " "), err, output)
 	}
 }

@@ -33,6 +33,7 @@ import (
 	"github.com/Dmitry-Borodin/Subyard/internal/audit"
 	"github.com/Dmitry-Borodin/Subyard/internal/command"
 	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Dmitry-Borodin/Subyard/internal/configsync"
 	"github.com/Dmitry-Borodin/Subyard/internal/credential"
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/migration"
@@ -187,6 +188,37 @@ func (cli *CLI) Run(ctx context.Context) int {
 	if core && definition.Handler == "@migrate" {
 		return cli.runMigration(ctx, yard, commandArguments)
 	}
+	if core && definition.Handler == "@config" {
+		configSync, check := configSyncInvocation(commandArguments)
+		if configSync {
+			operatorHome := cli.env["SUBYARD_OPERATOR_HOME"]
+			if operatorHome == "" {
+				operatorHome = cli.env["HOME"]
+			}
+			configHome, resolveErr := config.ResolveConfigHome(operatorHome, cli.env)
+			if resolveErr != nil {
+				cli.errorf("config sync: %v", resolveErr)
+				return 2
+			}
+			pending, pendingErr := config.PendingConfigurationTransaction(configHome)
+			if pendingErr != nil {
+				cli.errorf("config sync: %v", pendingErr)
+				return 1
+			}
+			if pending && check {
+				cli.errorf(
+					"config sync --check: interrupted transaction requires recovery by a normal config sync",
+				)
+				return 1
+			}
+			if pending {
+				if recoveryErr := configsync.Recover(configHome); recoveryErr != nil {
+					cli.errorf("config sync recovery: %v", recoveryErr)
+					return 1
+				}
+			}
+		}
+	}
 	remotePlane := command.RemoteForward
 	if core {
 		remotePlane = definition.Remote
@@ -338,6 +370,21 @@ func (cli *CLI) Run(ctx context.Context) int {
 		}
 	}
 	return code
+}
+
+func configSyncInvocation(arguments []string) (bool, bool) {
+	if len(arguments) != 0 && (arguments[0] == "-y" || arguments[0] == "--yes") {
+		arguments = arguments[1:]
+	}
+	if len(arguments) == 0 || arguments[0] != "sync" {
+		return false, false
+	}
+	for _, argument := range arguments[1:] {
+		if argument == "--check" {
+			return true, true
+		}
+	}
+	return true, false
 }
 
 func (cli *CLI) projectObserver() ports.ProjectObserver {
@@ -1979,48 +2026,21 @@ func structuredAdapterContext(yard domain.Context) map[string]string {
 	}
 }
 
-var structuredCommandConfigKeys = map[string]struct{}{
-	"ADB_CONSOLE_EMULATOR_PORT": {}, "ADB_CONSOLE_PROXY_PORT": {},
-	"ADB_EMULATOR_PORT": {}, "ADB_PROXY_PORT": {},
-	"AGENTS": {}, "BASE_IMAGE": {}, "BASE_IMAGE_FALLBACK": {},
-	"CCUSAGE_PROVISION": {}, "CCUSAGE_SHA256_AMD64": {}, "CCUSAGE_SHA256_ARM64": {},
-	"CCUSAGE_VERSION": {}, "E2E_VM_BOOT_TIMEOUT": {}, "E2E_VM_CPU": {}, "E2E_VM_DISK": {},
-	"E2E_VM_IMAGE": {}, "E2E_VM_MEMORY": {}, "E2E_VM_TTL_MINUTES": {},
-	"HOST_CLAUDE_MD": {}, "HOST_CODEX_AGENTS_MD": {}, "HOST_OPENCODE_AGENTS_MD": {},
-	"HOST_LINKS": {}, "HOST_MOUNTS": {},
-	"LIMITS_CPU": {}, "LIMITS_MEMORY": {}, "SRV_POOL": {}, "SRV_VOLUME": {},
-	"SUBYARD_AGE_SHA256_AMD64": {}, "SUBYARD_AGE_SHA256_ARM64": {}, "SUBYARD_AGE_VERSION": {},
-	"SUBYARD_KEYS_CONSUMER_ROOT": {}, "SUBYARD_KEYS_ROOT": {}, "SUBYARD_KEYS_SYSTEMD_DIR": {},
+var structuredRuntimeRoleKeys = map[string]struct{}{
+	"SUBYARD_KEYS_CONSUMER_ROOT":       {},
 	"SUBYARD_KEYS_PROD_FINGERPRINTS":   {},
-	"SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE": {}, "SUBYARD_KEYS_TOOLS_DIR": {}, "SUBYARD_POWER_LIBEXEC_DIR": {},
-	"SUBYARD_CONFIG_GENERATED_DIR": {}, "SUBYARD_CONFIG_HOST_DIR": {},
+	"SUBYARD_KEYS_SYSTEMD_SKIP_ENABLE": {},
+	"SUBYARD_CONFIG_GENERATED_DIR":     {}, "SUBYARD_CONFIG_HOST_DIR": {},
 	"SUBYARD_CONFIG_SHARED_DIR": {}, "SUBYARD_CONFIG_YARD_DIR": {},
-	"SUBYARD_POWER_RECONCILER_PATH": {}, "SUBYARD_POWER_UNIT_PATH": {},
-	"SUBYARD_SOPS_SHA256_AMD64": {}, "SUBYARD_SOPS_SHA256_ARM64": {}, "SUBYARD_SOPS_VERSION": {},
 	"YARD_RUNTIME_ROOT": {},
-	"YARD_CAPABILITIES": {}, "YARD_DEVICES": {}, "YARD_MOUNTS": {}, "YARD_PROFILES": {},
-	"YARD_TEMPLATE": {},
-}
-
-func structuredAgentConfigKey(name string) bool {
-	if !strings.HasPrefix(name, "AGENT_") {
-		return false
-	}
-	for _, suffix := range []string{
-		"_COMMAND", "_CONFIG", "_CONFIG_DEST", "_PERSIST", "_PROVISION", "_RULES", "_RULES_DEST",
-	} {
-		agent, found := strings.CutSuffix(strings.TrimPrefix(name, "AGENT_"), suffix)
-		if found && domain.SafeName(agent) {
-			return true
-		}
-	}
-	return false
 }
 
 func structuredCommandContext(loaded config.Loaded) map[string]string {
 	values := structuredAdapterContext(loaded.Context)
 	for name, value := range loaded.Environment {
-		if _, ok := structuredCommandConfigKeys[name]; ok || structuredAgentConfigKey(name) {
+		_, setting := config.LookupSetting(name)
+		_, runtimeRole := structuredRuntimeRoleKeys[name]
+		if setting || runtimeRole {
 			values[name] = value
 		}
 	}

@@ -18,7 +18,19 @@ type LoadOptions struct {
 	YardName       string
 	Environment    map[string]string
 	DisablePrivate bool
+	SyncSource     bool
+	ConfigLocked   bool
+	LayerPaths     *LayerPaths
 	YardDirs       []string
+}
+
+type LayerPaths struct {
+	SharedSettings string
+	SharedAssets   string
+	HostSettings   string
+	HostAssets     string
+	YardSettings   map[string]string
+	YardAssets     map[string]string
 }
 
 type Loaded struct {
@@ -91,6 +103,22 @@ func load(
 		return domain.Context{}, nil, err
 	}
 	values["SUBYARD_CONFIG_HOME"] = configHome
+	if !options.ConfigLocked {
+		unlock, err := LockRoot(configHome, false)
+		if err != nil {
+			return domain.Context{}, nil, err
+		}
+		defer unlock()
+	}
+	pending, err := PendingConfigurationTransaction(configHome)
+	if err != nil {
+		return domain.Context{}, nil, err
+	}
+	if pending {
+		return domain.Context{}, nil, errors.New(
+			"an interrupted configuration transaction requires recovery with yard config sync",
+		)
+	}
 	dataHome := values["SUBYARD_HOME"]
 	if dataHome == "" {
 		dataHome = filepath.Join(values["SUBYARD_OPERATOR_HOME"], ".subyard")
@@ -108,8 +136,30 @@ func load(
 			return domain.Context{}, nil, err
 		}
 	}
+	sharedSettingsFile := filepath.Join(configHome, "overrides", "shared", "config.env")
+	if options.LayerPaths != nil {
+		sharedSettingsFile = options.LayerPaths.SharedSettings
+	}
+	sharedSettingsExist, err := regularFileExists(sharedSettingsFile)
+	if err != nil {
+		return domain.Context{}, nil, err
+	}
+	sharedSettingsLayer := tracker.addLayer(
+		"shared", "scalar settings", sharedSettingsFile, sharedSettingsExist, settingScalar,
+	)
+	if sharedSettingsExist {
+		if err := applyEnvFileTrackedValidated(
+			sharedSettingsFile, values, tracker, sharedSettingsLayer,
+			ScopeShared, options.SyncSource,
+		); err != nil {
+			return domain.Context{}, nil, err
+		}
+	}
 	logicalAssets := agentAssetMappings(values, configDir)
 	sharedAssets := filepath.Join(configHome, "overrides", "shared", "agents")
+	if options.LayerPaths != nil {
+		sharedAssets = options.LayerPaths.SharedAssets
+	}
 	sharedLayer := tracker.addLayer(
 		"shared", "file settings", sharedAssets, pathPresent(sharedAssets), settingFile,
 	)
@@ -119,13 +169,16 @@ func load(
 	}
 
 	hostSettingsFile := filepath.Join(configHome, "config.env")
+	if options.LayerPaths != nil {
+		hostSettingsFile = options.LayerPaths.HostSettings
+	}
 	hostSettingsExist, err := regularFileExists(hostSettingsFile)
 	if err != nil {
 		return domain.Context{}, nil, err
 	}
 	hostSettingsPath := hostSettingsFile
 	hostSettingsPresent := hostSettingsExist
-	if !hostSettingsExist && !options.DisablePrivate {
+	if !hostSettingsExist && !options.DisablePrivate && options.LayerPaths == nil {
 		privateConfig := filepath.Join(configDir, "..", "private", "config.env")
 		if pathPresent(privateConfig) {
 			hostSettingsPath = privateConfig
@@ -136,20 +189,25 @@ func load(
 		"host", "scalar settings", hostSettingsPath, hostSettingsPresent, settingAny,
 	)
 	if hostSettingsExist {
-		if err := applyEnvFileTracked(
+		if err := applyEnvFileTrackedValidated(
 			hostSettingsFile, values, tracker, hostSettingsLayer,
+			ScopeHost, options.SyncSource,
 		); err != nil {
 			return domain.Context{}, nil, err
 		}
 		if err := validateBootstrapConfigHome(values, configHome, hostSettingsFile); err != nil {
 			return domain.Context{}, nil, err
 		}
-	} else if !options.DisablePrivate {
+	} else if !options.DisablePrivate && options.LayerPaths == nil {
 		// Source checkouts retain a read-only compatibility input until the
 		// installer moves it into configHome/config.env.
 		privateConfig := filepath.Join(configDir, "..", "private", "config.env")
-		if err := applyOptionalTracked(privateConfig, values, tracker, hostSettingsLayer); err != nil {
-			return domain.Context{}, nil, err
+		if pathPresent(privateConfig) {
+			if err := applyEnvFileTrackedValidated(
+				privateConfig, values, tracker, hostSettingsLayer, ScopeHost, false,
+			); err != nil {
+				return domain.Context{}, nil, err
+			}
 		}
 		if err := validateBootstrapConfigHome(values, configHome, privateConfig); err != nil {
 			return domain.Context{}, nil, err
@@ -158,6 +216,9 @@ func load(
 	values["SUBYARD_CONFIG_DIR"] = configDir
 	extendAgentAssetMappings(logicalAssets, values)
 	hostAssets := filepath.Join(configHome, "overrides", "host", "agents")
+	if options.LayerPaths != nil {
+		hostAssets = options.LayerPaths.HostAssets
+	}
 	hostFileLayer := tracker.addLayer(
 		"host", "file settings", hostAssets, pathPresent(hostAssets), settingFile,
 	)
@@ -185,12 +246,20 @@ func load(
 			"SRV_VOLUME", "SSH_HOST",
 		)
 		applyYardDerivations(yardName, values, tracker, yardDerivationLayer)
-		yardFile, err := findYardFile(root, yardName, values, options.YardDirs)
-		if err != nil {
-			return domain.Context{}, nil, err
+		yardFile := ""
+		if options.LayerPaths != nil {
+			yardFile = options.LayerPaths.YardSettings[yardName]
+			if yardFile == "" {
+				return domain.Context{}, nil, fmt.Errorf("unknown yard %q", yardName)
+			}
+		} else {
+			yardFile, err = findYardFile(root, yardName, values, options.YardDirs)
+			if err != nil {
+				return domain.Context{}, nil, err
+			}
 		}
 		if err := applyYardConfigTracked(
-			configDir, yardName, yardFile, values, tracker,
+			configDir, yardName, yardFile, values, tracker, options.SyncSource,
 		); err != nil {
 			return domain.Context{}, nil, err
 		}
@@ -199,6 +268,9 @@ func load(
 		}
 		extendAgentAssetMappings(logicalAssets, values)
 		yardAssets := filepath.Join(configHome, "yards", yardName, "overrides", "agents")
+		if options.LayerPaths != nil {
+			yardAssets = options.LayerPaths.YardAssets[yardName]
+		}
 		yardFileLayer := tracker.addLayer(
 			"yard", "file settings", yardAssets, pathPresent(yardAssets), settingFile,
 		)
@@ -214,6 +286,11 @@ func load(
 		"command", "command override", "environment", true, settingAny,
 	)
 	for name, value := range commandEnvironment {
+		if _, ok := LookupSetting(name); ok {
+			if err := ValidateSetting(ScopeCommand, name, value, false); err != nil {
+				return domain.Context{}, nil, fmt.Errorf("environment: %w", err)
+			}
+		}
 		values[name] = value
 		tracker.record(commandLayer, name, value, "environment", 0, "")
 	}
@@ -254,6 +331,29 @@ func bootstrapConfigHome(values environment) (string, error) {
 		return "", errors.New("SUBYARD_CONFIG_HOME must be absolute")
 	}
 	return filepath.Clean(configHome), nil
+}
+
+func ResolveConfigHome(operatorHome string, source map[string]string) (string, error) {
+	values := environmentFrom(source)
+	if operatorHome != "" {
+		values["SUBYARD_OPERATOR_HOME"] = operatorHome
+	}
+	if values["SUBYARD_OPERATOR_HOME"] == "" {
+		return "", errors.New("operator home is required")
+	}
+	return bootstrapConfigHome(values)
+}
+
+func PendingConfigurationTransaction(configHome string) (bool, error) {
+	path := filepath.Join(configHome, ".sync", "transaction.json")
+	_, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func validateBootstrapConfigHome(values environment, expected, source string) error {
@@ -325,6 +425,9 @@ func applyAgentAssetLayer(
 	tracker *settingTracker,
 	layer settingLayerID,
 ) error {
+	if agentsRoot == "" {
+		return nil
+	}
 	for name, relative := range mappings {
 		candidate := filepath.Join(agentsRoot, relative)
 		exists, err := regularFileExists(candidate)
@@ -423,13 +526,14 @@ func resetInheritedContext(values environment) {
 }
 
 func applyYardConfig(configDir, yardName, yardFile string, values environment) error {
-	return applyYardConfigTracked(configDir, yardName, yardFile, values, nil)
+	return applyYardConfigTracked(configDir, yardName, yardFile, values, nil, false)
 }
 
 func applyYardConfigTracked(
 	configDir, yardName, yardFile string,
 	values environment,
 	tracker *settingTracker,
+	syncSource bool,
 ) error {
 	// A named-yard settings file selects one public profile. The profile is
 	// applied first and the named-yard settings file wins last.
@@ -440,7 +544,7 @@ func applyYardConfigTracked(
 		probe[name] = value
 	}
 	delete(probe, "YARD_TEMPLATE")
-	if err := applyEnvFile(yardFile, probe); err != nil {
+	if err := applyEnvFileValidated(yardFile, probe, ScopeYard, syncSource, nil); err != nil {
 		return err
 	}
 	if template := probe["YARD_TEMPLATE"]; template != "" {
@@ -462,23 +566,29 @@ func applyYardConfigTracked(
 			return fmt.Errorf("unknown YARD_TEMPLATE %q in %s", template, yardFile)
 		}
 		if tracker == nil {
-			if err := applyEnvFile(templateFile, values); err != nil {
+			if err := applyEnvFileValidated(
+				templateFile, values, ScopeShipped, false, nil,
+			); err != nil {
 				return err
 			}
 		} else {
 			profileLayer := tracker.addLayer(
 				"yard", "shipped profile", templateFile, true, settingScalar,
 			)
-			if err := applyEnvFileTracked(templateFile, values, tracker, profileLayer); err != nil {
+			if err := applyEnvFileTrackedValidated(
+				templateFile, values, tracker, profileLayer, ScopeShipped, false,
+			); err != nil {
 				return err
 			}
 		}
 	}
 	if tracker == nil {
-		return applyEnvFile(yardFile, values)
+		return applyEnvFileValidated(yardFile, values, ScopeYard, syncSource, nil)
 	}
 	yardLayer := tracker.addLayer("yard", "scalar settings", yardFile, true, settingAny)
-	return applyEnvFileTracked(yardFile, values, tracker, yardLayer)
+	return applyEnvFileTrackedValidated(
+		yardFile, values, tracker, yardLayer, ScopeYard, syncSource,
+	)
 }
 
 func applyEnvFileTracked(
@@ -490,6 +600,59 @@ func applyEnvFileTracked(
 	return applyEnvFileObserved(path, values, func(name, value string, line int) {
 		tracker.record(layer, name, value, path, line, "")
 	})
+}
+
+type observedAssignment struct {
+	name  string
+	value string
+	line  int
+}
+
+func applyEnvFileTrackedValidated(
+	path string,
+	values environment,
+	tracker *settingTracker,
+	layer settingLayerID,
+	scope SettingScope,
+	requireSyncable bool,
+) error {
+	return applyEnvFileValidated(path, values, scope, requireSyncable,
+		func(name, value string, line int) {
+			tracker.record(layer, name, value, path, line, "")
+		})
+}
+
+func applyEnvFileValidated(
+	path string,
+	values environment,
+	scope SettingScope,
+	requireSyncable bool,
+	observer assignmentObserver,
+) error {
+	probe := cloneEnvironment(values)
+	var assignments []observedAssignment
+	if err := applyEnvFileObserved(path, probe, func(name, value string, line int) {
+		assignments = append(assignments, observedAssignment{name: name, value: value, line: line})
+	}); err != nil {
+		return err
+	}
+	for _, assignment := range assignments {
+		if err := ValidateSetting(scope, assignment.name, assignment.value, requireSyncable); err != nil {
+			return fmt.Errorf("%s:%d: %w", path, assignment.line, err)
+		}
+	}
+	for name := range values {
+		delete(values, name)
+	}
+	for name, value := range probe {
+		values[name] = value
+	}
+	if observer != nil {
+		for _, assignment := range assignments {
+			observer(assignment.name, assignment.value, assignment.line)
+		}
+	}
+	return nil
 }
 
 func applyOptionalTracked(

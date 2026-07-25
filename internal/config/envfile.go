@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -28,6 +29,23 @@ func ReadAssignmentsOver(path string, base map[string]string) (map[string]string
 	for name, value := range values {
 		result[name] = value
 	}
+	return result, nil
+}
+
+func AssignedSettingNames(path string) ([]string, error) {
+	values := environment{}
+	seen := map[string]struct{}{}
+	var result []string
+	if err := applyEnvFileObserved(path, values, func(name, _ string, _ int) {
+		if _, exists := seen[name]; exists {
+			return
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}); err != nil {
+		return nil, err
+	}
+	sort.Strings(result)
 	return result, nil
 }
 

@@ -16,6 +16,7 @@ import (
 
 type Backend struct {
 	RepositoryRoot string
+	DataHome       string
 	Dispatcher     string
 	Project        string
 	Instance       string
@@ -179,7 +180,21 @@ func (backend *Backend) state() (backendState, error) {
 		if yard == "" {
 			yard = "default"
 		}
-		state.clientDirectory = filepath.Join(backend.RepositoryRoot, "temp", "agent-e2e", yard)
+		persistent, persistentErr := EnrollmentDirectory(backend.DataHome, yard)
+		if persistentErr == nil {
+			managed, _, _, managedErr := CurrentEnrollment(persistent)
+			if managedErr != nil {
+				return state, managedErr
+			}
+			if managed {
+				state.clientDirectory = persistent
+			}
+		}
+		if state.clientDirectory == "" {
+			state.clientDirectory = filepath.Join(
+				backend.RepositoryRoot, "temp", "agent-e2e", yard,
+			)
+		}
 	}
 	key, configured, err := readEnrollment(filepath.Join(state.clientDirectory, "agent-access.pub"))
 	if err != nil {
@@ -224,14 +239,8 @@ func readEnrollment(path string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	if len(payload) == 0 || bytesCount(payload, '\n') != 1 || payload[len(payload)-1] != '\n' {
-		return "", false, errors.New("enrollment must contain exactly one newline-terminated key")
-	}
-	key, _, _, _, err := ssh.ParseAuthorizedKey(payload)
-	if err != nil || key.Type() != ssh.KeyAlgoED25519 {
-		return "", false, errors.New("enrollment is not an Ed25519 public key")
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), true, nil
+	key, _, err := ParseEnrollment(payload)
+	return key, err == nil, err
 }
 
 func (backend *Backend) routeConverged(state backendState) (bool, error) {

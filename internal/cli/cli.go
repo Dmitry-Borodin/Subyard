@@ -48,32 +48,33 @@ var Version = "0.1.0-dev"
 var operationCounter atomic.Uint64
 
 type Options struct {
-	RepositoryRoot  string
-	DispatcherPath  string
-	Program         string
-	Arguments       []string
-	Environment     []string
-	WorkingDir      string
-	Stdin           io.Reader
-	Stdout          io.Writer
-	Stderr          io.Writer
-	Incus           ports.Incus
-	Executor        ports.InstanceExecutor
-	ProjectData     ports.YardExecutor
-	ProjectDevices  ports.InstanceDeviceManager
-	ProjectArchive  ports.DirectoryArchiver
-	ProjectExports  ports.ProjectExportStore
-	ProjectVSCode   ports.VSCode
-	ProjectObserver ports.ProjectObserver
-	StatusFacts     ports.StatusFactsReader
-	Credentials     ports.CredentialMetadataReader
-	AdapterRunner   ports.AdapterRunner
-	InitPlatform    ports.InitPlatform
-	RemoteControl   ports.RemoteControl
-	Prompt          ports.Prompter
-	Config          ports.ConfigApplier
-	Clock           ports.Clock
-	Audit           ports.AuditSink
+	RepositoryRoot        string
+	DispatcherPath        string
+	Program               string
+	Arguments             []string
+	Environment           []string
+	WorkingDir            string
+	Stdin                 io.Reader
+	Stdout                io.Writer
+	Stderr                io.Writer
+	Incus                 ports.Incus
+	Executor              ports.InstanceExecutor
+	ProjectData           ports.YardExecutor
+	ProjectDevices        ports.InstanceDeviceManager
+	ProjectArchive        ports.DirectoryArchiver
+	ProjectExports        ports.ProjectExportStore
+	ProjectVSCode         ports.VSCode
+	ProjectObserver       ports.ProjectObserver
+	StatusFacts           ports.StatusFactsReader
+	Credentials           ports.CredentialMetadataReader
+	AdapterRunner         ports.AdapterRunner
+	InitPlatform          ports.InitPlatform
+	RemoteControl         ports.RemoteControl
+	Prompt                ports.Prompter
+	Config                ports.ConfigApplier
+	TestVMEnrollmentApply TestVMEnrollmentApplyFunc
+	Clock                 ports.Clock
+	Audit                 ports.AuditSink
 }
 
 type CLI struct {
@@ -334,7 +335,9 @@ func (cli *CLI) Run(ctx context.Context) int {
 		fmt.Fprintf(cli.options.Stdout, "Usage: %s provision [profile | --list]\n", cli.options.Program)
 		return 0
 	case "@test-vms":
-		fmt.Fprintf(cli.options.Stdout, "Usage: %s test-vms <up | status | down>\n", cli.options.Program)
+		fmt.Fprintf(cli.options.Stdout,
+			"Usage: %s test-vms <up | status | down | enroll --project PROJECT [--revoke]>\n",
+			cli.options.Program)
 		return 0
 	case "@teardown":
 		fmt.Fprintf(cli.options.Stdout, "Usage: %s teardown [--keep-data]\n", cli.options.Program)
@@ -2176,7 +2179,7 @@ func (cli *CLI) runStructuredCommand(
 	var testVMRun *testVMExecution
 	if definition.Handler == "@test-vms" {
 		var err error
-		testVMRun, err = prepareTestVMExecution(loaded, arguments)
+		testVMRun, err = cli.prepareTestVMExecution(ctx, loaded, arguments)
 		if err != nil {
 			cli.errorf("prepare test-vms: %v", err)
 			return 2
@@ -2895,7 +2898,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		}
 		var testVMRun *testVMExecution
 		if definition.Handler == "@test-vms" {
-			testVMRun, err = prepareTestVMExecution(loaded, arguments)
+			testVMRun, err = handler.cli.prepareTestVMExecution(ctx, loaded, arguments)
 			if err != nil {
 				return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
 			}

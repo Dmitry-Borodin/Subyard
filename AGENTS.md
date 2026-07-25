@@ -17,9 +17,11 @@ toolchain. Run `./tests/run.sh` before finishing shell or CLI changes. CI additi
 
 The operator owns `start`, `test-vms up/down` and `stop`. Agents use only allocated VMs.
 
-Before first use, run `dev/agent-e2e.sh --prepare`, then ask the operator to run
-`yard -Y test-yard init`. The private key stays under `~/.subyard/e2e/`; only its public half is
-written to ignored `temp/agent-e2e/test-yard/agent-access.pub`.
+Before first use, run `dev/agent-e2e.sh --prepare`. If the agent worktree is inside a normal
+developer yard, ask the L0 operator to run
+`yard -Y test-yard test-vms enroll --project <project>`; a shared L0 worktree may still use
+`yard -Y test-yard init`. The private key stays under the agent user's `~/.subyard/e2e/`; only its
+public half is written to ignored `temp/agent-e2e/test-yard/agent-access.pub`.
 
 Run checks from the current public worktree with:
 

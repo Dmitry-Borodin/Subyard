@@ -610,6 +610,7 @@ func (runtime Runtime) testVMBackend(desired string) *testvmsruntime.Backend {
 	environment := runtimeEnvironment(runtime.Environment)
 	return &testvmsruntime.Backend{
 		RepositoryRoot: runtime.RepositoryRoot,
+		DataHome:       runtime.Yard.Paths.DataHome,
 		Dispatcher:     environment["SUBYARD_DISPATCHER_PATH"],
 		Project:        runtime.Yard.IncusProject,
 		Instance:       runtime.Yard.InstanceName,

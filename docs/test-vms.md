@@ -23,16 +23,42 @@ YARD_TEMPLATE=test-vms
 SSH_PORT=2223
 ```
 
-Prepare the agent identity, then let the operator reconcile the yard:
+Prepare the agent identity in the worktree that will run tests:
 
 ```sh
 dev/agent-e2e.sh --prepare
-yard -Y test-yard init
 ```
 
 The private key stays under `~/.subyard/e2e/`. The ignored
 `temp/agent-e2e/test-yard/` directory contains only the enrollment public key, route and host-key
 pins. Without an enrollment request, agent ingress remains disabled.
+
+When that worktree is already on L0, the operator can reconcile it with:
+
+```sh
+yard -Y test-yard init
+```
+
+When the worktree and Codex run inside a normal developer yard, L0 cannot read that checkout through
+its immutable runtime. The operator instead bridges the fixed public artifacts through the registered
+project:
+
+```sh
+yard -Y test-yard test-vms enroll --project Subyard
+```
+
+The command reads only `temp/agent-e2e/test-yard/agent-access.pub`, shows the Ed25519 fingerprint and
+an exact plan, and asks once. It stores the active single-controller enrollment under the L0 Subyard
+data home, reconciles access in the already running lab without starting or stopping a yard or VM,
+then returns only `route.tsv` and `known_hosts` to the same project. Private agent, Git and Codex
+credentials never cross the boundary. Versioned private configuration sync does not manage this
+runtime access state.
+
+To revoke that controller while keeping the allocation running:
+
+```sh
+yard -Y test-yard test-vms enroll --project Subyard --revoke
+```
 
 The outer yard must remain a container. Inner Incus creates `e2e-vm-1` and `e2e-vm-2` as VMs.
 Init requires `/dev/kvm`, `/dev/vsock`, `/dev/vhost-vsock` and `/dev/net/tun`, then installs the

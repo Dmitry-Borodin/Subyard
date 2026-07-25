@@ -166,6 +166,73 @@ func TestBackendRejectsSymlinkEnrollment(t *testing.T) {
 	}
 }
 
+func TestBackendPrefersPersistentEnrollmentAcrossRuntimeRoots(t *testing.T) {
+	backend := fixtureBackend(t, false)
+	delete(backend.Environment, "SUBYARD_E2E_CLIENT_EXPORT_DIR")
+	backend.DataHome = filepath.Join(t.TempDir(), "data")
+	persistent, err := EnrollmentDirectory(backend.DataHome, backend.YardName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SetEnrollment(persistent, fixturePublicKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := backend.state()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.clientDirectory != persistent || first.agentConfigured != "1" {
+		t.Fatalf("first state = %#v", first)
+	}
+
+	replacement := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(replacement, "scripts", "e2e-lab"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(replacement, "scripts", "e2e-lab", "provision.sh"),
+		[]byte("replacement-provision\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backend.RepositoryRoot = replacement
+	second, err := backend.state()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.clientDirectory != persistent || second.agentKey != first.agentKey {
+		t.Fatalf("replacement runtime lost enrollment: %#v", second)
+	}
+}
+
+func TestExplicitRevokeDoesNotFallBackToLegacyCheckout(t *testing.T) {
+	backend := fixtureBackend(t, false)
+	delete(backend.Environment, "SUBYARD_E2E_CLIENT_EXPORT_DIR")
+	backend.DataHome = filepath.Join(t.TempDir(), "data")
+	legacy := filepath.Join(
+		backend.RepositoryRoot, "temp", "agent-e2e", backend.YardName,
+	)
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "agent-access.pub"),
+		[]byte(fixturePublicKey(t)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := EnrollmentDirectory(backend.DataHome, backend.YardName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SetEnrollment(persistent, ""); err != nil {
+		t.Fatal(err)
+	}
+	state, err := backend.state()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.clientDirectory != persistent || state.agentConfigured != "0" {
+		t.Fatalf("revoked state fell back to legacy enrollment: %#v", state)
+	}
+}
+
 func TestDisabledBackendRemovesPublishedRoute(t *testing.T) {
 	backend := fixtureBackend(t, false)
 	backend.Environment["NESTED_E2E_VMS"] = "0"

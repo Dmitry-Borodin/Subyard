@@ -38,8 +38,7 @@ yard status
 ```
 
 The runtime contains the engine, public profiles/config, completions and host adapters, but no
-source checkout, toolchain or private data. Recognized source installs are migrated in place; the
-old checkout and one-time recovery under `~/.subyard/recovery/pre-go-source/` are retained.
+source checkout, toolchain or private data.
 Shipped defaults are immutable; persistent [Subyard settings](docs/configuration.md) under
 `~/.config/subyard` override them by host or yard scope to form the effective configuration. Inspect
 it with `yard config show` and `yard config paths`. Upgrade with `yard update`; use

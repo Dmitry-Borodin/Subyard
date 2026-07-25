@@ -55,7 +55,10 @@ the candidate's migration registry, publishes an immutable release directory and
 contract and [real-host acceptance](real-host-acceptance.md) for its test lane. First install and
 runtime execution require no Go or source checkout; interrupted or incompatible releases cannot
 replace the working runtime. Recognized pre-0.1 source installs continue through
-[`scripts/migrate-source-install.sh`](../scripts/migrate-source-install.sh).
+[`scripts/migrate-source-install.sh`](../scripts/migrate-source-install.sh). That upgrade publishes a
+`prepared` recovery journal before importing config, archiving legacy inputs, migrating state,
+rewriting shell integration or atomically switching entrypoints. An interrupted source transaction
+is recovered fail-closed before the installer retries it.
 
 `./tests/run.sh` is the single unprivileged gate. It runs formatting, vet, race-enabled Go tests, a
 short parser fuzz smoke, the static binary build, and all Bash unit/contract/integration tests. It

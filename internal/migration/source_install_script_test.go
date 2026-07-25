@@ -123,6 +123,163 @@ func TestSourceInstallMigrationAndRecovery(t *testing.T) {
 	}
 }
 
+func TestSourceInstallMigrationRecoversInterruptedPhases(t *testing.T) {
+	requireJQ(t)
+	for _, test := range []struct {
+		fault, phase, step string
+	}{
+		{"prepared", "prepared", "none"},
+		{"config-import-temporary", "applying", "config-import"},
+		{"config-import", "applying", "config-import"},
+		{"legacy-archive", "applying", "legacy-archive"},
+		{"state-migration", "applying", "state-migration"},
+		{"shell-integration-temporary", "applying", "shell-integration"},
+		{"shell-integration-rc", "applying", "shell-integration"},
+		{"shell-integration", "applying", "shell-integration"},
+		{"entrypoint-switch-temporary", "applying", "entrypoint-switch"},
+		{"entrypoint-switch-sy", "applying", "entrypoint-switch"},
+		{"entrypoint-switch", "applying", "entrypoint-switch"},
+	} {
+		t.Run(test.fault, func(t *testing.T) {
+			fixture := newSourceInstallFixture(t,
+				"# Stable launcher for a release-installed native Go control-plane engine.")
+			rcBefore := readTestFile(t, fixture.rc)
+			loginBefore := readTestFile(t, fixture.login)
+
+			output, err := fixture.migrateWithFault(test.fault)
+			if err == nil || !strings.Contains(string(output), "fault injection after "+test.fault) {
+				t.Fatalf("fault point did not interrupt migration: err=%v output=%s", err, output)
+			}
+			recoveryRoot := filepath.Join(fixture.data, "recovery/pre-go-source")
+			transaction := string(readTestFile(t, filepath.Join(recoveryRoot, "transaction")))
+			if !strings.Contains(transaction, "phase="+test.phase+"\n") ||
+				!strings.Contains(transaction, "step="+test.step+"\n") {
+				t.Fatalf("interrupted transaction was not durable: %s", transaction)
+			}
+			assertRecognizedEntrypoints(t, fixture)
+			if _, err := os.Stat(filepath.Join(fixture.source, "bin/yard")); err != nil {
+				t.Fatalf("interruption damaged the source checkout: %v", err)
+			}
+
+			output, err = fixture.migrate()
+			if err != nil {
+				t.Fatalf("installer did not recover and retry: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), "recovered incomplete source migration; retrying") ||
+				!strings.Contains(string(output), "migrated source installation") {
+				t.Fatalf("installer did not report deterministic recovery: %s", output)
+			}
+			transaction = string(readTestFile(t, filepath.Join(recoveryRoot, "transaction")))
+			if !strings.Contains(transaction, "phase=complete\n") ||
+				!strings.Contains(transaction, "step=complete\n") {
+				t.Fatalf("retried transaction did not complete: %s", transaction)
+			}
+			assertRuntimeEntrypoints(t, fixture)
+			assertNoMigrationTemps(t, fixture)
+			if repeatOutput, repeatErr := fixture.migrate(); repeatErr == nil ||
+				exitStatus(repeatErr) != 3 || len(repeatOutput) != 0 {
+				t.Fatalf("completed retry was not idempotent: status=%d output=%s",
+					exitStatus(repeatErr), repeatOutput)
+			}
+
+			restoreFixture(t, fixture)
+			assertSourceEntrypoints(t, fixture)
+			if string(readTestFile(t, fixture.rc)) != string(rcBefore) ||
+				string(readTestFile(t, fixture.login)) != string(loginBefore) {
+				t.Fatal("recovery after interruption did not restore exact shell files")
+			}
+			assertSameFile(t, filepath.Join(fixture.source, "private/config.env"),
+				filepath.Join(fixture.data, "config.env"))
+		})
+	}
+}
+
+func TestSourceInstallIncompleteRecoveryRefusesOperatorDrift(t *testing.T) {
+	requireJQ(t)
+	fixture := newSourceInstallFixture(t,
+		"# Stable launcher for a release-installed native Go control-plane engine.")
+	if output, err := fixture.migrateWithFault("config-import"); err == nil {
+		t.Fatalf("config fault did not interrupt migration: %s", output)
+	}
+	target := filepath.Join(fixture.config, "config.env")
+	writeTestFile(t, target, 0o600, string(readTestFile(t, target))+"operator drift\n")
+
+	output, err := fixture.migrate()
+	if err == nil || !strings.Contains(string(output), "migrated file changed after installation") {
+		t.Fatalf("operator drift did not block automatic recovery: err=%v output=%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.data, "recovery/pre-go-source/transaction")); err != nil {
+		t.Fatalf("failed recovery did not retain its journal: %v", err)
+	}
+	assertSourceEntrypoints(t, fixture)
+	if _, err := os.Stat(filepath.Join(fixture.data, "config.env")); err != nil {
+		t.Fatalf("failed recovery changed the legacy source config: %v", err)
+	}
+}
+
+func TestSourceInstallCompletedRecoveryRefusesOperatorDrift(t *testing.T) {
+	requireJQ(t)
+	fixture := newSourceInstallFixture(t,
+		"# Stable launcher for a release-installed native Go control-plane engine.")
+	if output, err := fixture.migrate(); err != nil {
+		t.Fatalf("migration failed: %v\n%s", err, output)
+	}
+	writeTestFile(t, fixture.rc, 0o600, string(readTestFile(t, fixture.rc))+"# operator drift\n")
+
+	recovery := filepath.Join(fixture.data, "recovery/pre-go-source/restore.sh")
+	command := exec.Command(recovery)
+	command.Env = append(os.Environ(), "HOME="+fixture.home, "SUBYARD_HOME="+fixture.data)
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "shell file changed after migration") {
+		t.Fatalf("completed recovery overwrote operator drift: err=%v output=%s", err, output)
+	}
+	assertRuntimeEntrypoints(t, fixture)
+	if !strings.Contains(string(readTestFile(t, fixture.rc)), "# operator drift\n") {
+		t.Fatal("failed completed recovery changed the operator shell file")
+	}
+	if _, err := os.Stat(filepath.Join(fixture.data, "recovery/pre-go-source/transaction")); err != nil {
+		t.Fatalf("failed completed recovery did not retain its journal: %v", err)
+	}
+}
+
+func TestSourceInstallRecoveryRemovesCreatedConfigRoot(t *testing.T) {
+	requireJQ(t)
+	fixture := newSourceInstallFixture(t,
+		"# Stable launcher for a release-installed native Go control-plane engine.")
+	if err := os.Remove(fixture.config); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := fixture.migrate(); err != nil {
+		t.Fatalf("migration with absent config root failed: %v\n%s", err, output)
+	}
+
+	restoreFixture(t, fixture)
+	if _, err := os.Lstat(fixture.config); !os.IsNotExist(err) {
+		t.Fatalf("recovery retained the migration-created config root: %v", err)
+	}
+	assertSourceEntrypoints(t, fixture)
+}
+
+func TestSourceInstallRejectsUnknownTransactionStep(t *testing.T) {
+	requireJQ(t)
+	fixture := newSourceInstallFixture(t,
+		"# Stable launcher for a release-installed native Go control-plane engine.")
+	if output, err := fixture.migrateWithFault("prepared"); err == nil {
+		t.Fatalf("prepared fault did not interrupt migration: %s", output)
+	}
+	transaction := filepath.Join(fixture.data, "recovery/pre-go-source/transaction")
+	writeTestFile(t, transaction, 0o600, "schema=1\nphase=applying\nstep=unknown\n")
+
+	output, err := fixture.migrate()
+	if err == nil || !strings.Contains(string(output), "invalid source recovery transaction phase/step") {
+		t.Fatalf("unknown transaction step did not fail closed: err=%v output=%s", err, output)
+	}
+	assertSourceEntrypoints(t, fixture)
+	if _, err := os.Stat(transaction); err != nil {
+		t.Fatalf("invalid transaction journal was not retained: %v", err)
+	}
+}
+
 func TestSourceInstallMigrationConflictAndExistingIdenticalTarget(t *testing.T) {
 	requireJQ(t)
 	t.Run("conflict", func(t *testing.T) {
@@ -376,6 +533,10 @@ esac
 }
 
 func (fixture sourceInstallFixture) migrate() ([]byte, error) {
+	return fixture.migrateWithFault("")
+}
+
+func (fixture sourceInstallFixture) migrateWithFault(fault string) ([]byte, error) {
 	command := exec.Command(
 		filepath.Join(fixture.data, "runtime/current/scripts/migrate-source-install.sh"),
 		"--runtime-root", filepath.Join(fixture.data, "runtime"),
@@ -390,7 +551,20 @@ func (fixture sourceInstallFixture) migrate() ([]byte, error) {
 		"TEST_CONFIG_HOME="+fixture.config,
 		"TEST_SOURCE_ROOT="+fixture.source,
 	)
+	if fault != "" {
+		command.Env = append(command.Env, "SUBYARD_SOURCE_MIGRATION_FAULT_AFTER="+fault)
+	}
 	return command.CombinedOutput()
+}
+
+func restoreFixture(t *testing.T, fixture sourceInstallFixture) {
+	t.Helper()
+	recovery := filepath.Join(fixture.data, "recovery/pre-go-source/restore.sh")
+	command := exec.Command(recovery)
+	command.Env = append(os.Environ(), "HOME="+fixture.home, "SUBYARD_HOME="+fixture.data)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("source recovery failed: %v\n%s", err, output)
+	}
 }
 
 func assertSourceEntrypoints(t *testing.T, fixture sourceInstallFixture) {
@@ -400,6 +574,45 @@ func assertSourceEntrypoints(t *testing.T, fixture sourceInstallFixture) {
 		if err != nil || target != filepath.Join(fixture.source, "bin/yard") {
 			t.Fatalf("%s source entrypoint changed: target=%q err=%v", name, target, err)
 		}
+	}
+}
+
+func assertRuntimeEntrypoints(t *testing.T, fixture sourceInstallFixture) {
+	t.Helper()
+	runtimeLauncher := filepath.Join(fixture.data, "runtime/current/bin/yard")
+	for _, name := range []string{"yard", "sy"} {
+		target, err := os.Readlink(filepath.Join(fixture.bin, name))
+		if err != nil || target != runtimeLauncher {
+			t.Fatalf("%s runtime entrypoint mismatch: target=%q err=%v", name, target, err)
+		}
+	}
+}
+
+func assertRecognizedEntrypoints(t *testing.T, fixture sourceInstallFixture) {
+	t.Helper()
+	sourceLauncher := filepath.Join(fixture.source, "bin/yard")
+	runtimeLauncher := filepath.Join(fixture.data, "runtime/current/bin/yard")
+	for _, name := range []string{"yard", "sy"} {
+		target, err := os.Readlink(filepath.Join(fixture.bin, name))
+		if err != nil || (target != sourceLauncher && target != runtimeLauncher) {
+			t.Fatalf("%s interrupted entrypoint is unsafe: target=%q err=%v", name, target, err)
+		}
+	}
+}
+
+func assertNoMigrationTemps(t *testing.T, fixture sourceInstallFixture) {
+	t.Helper()
+	err := filepath.WalkDir(fixture.home, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.Contains(entry.Name(), ".subyard-migrate.") {
+			return fmt.Errorf("migration temporary path remained: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

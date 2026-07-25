@@ -1057,6 +1057,120 @@ func TestProjectSelectionRoutesAcrossYardsBeforeAdapter(t *testing.T) {
 	}
 }
 
+func TestProjectSelectorsDoNotLetBareNamesBeShadowedByHostPaths(t *testing.T) {
+	root, environment, stateDirectory := nativeFixture(t)
+	collidingPath := filepath.Join(root, "Subyard")
+	if err := os.MkdirAll(collidingPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pathID, err := state.ProjectID(collidingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.NewFileStore(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := domain.ProjectRecord{
+		Schema: 1, ProjectID: "Subyard-d2dfd1fb", Name: "Subyard",
+		HostPath: "https://github.com/example/Subyard.git",
+		YardPath: state.YardPath("Subyard-d2dfd1fb"), Mode: domain.ProjectGit,
+		SSHHost: "yard", Target: "yard",
+	}
+	if err := store.Put(context.Background(), registered); err != nil {
+		t.Fatal(err)
+	}
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := program.loadContext("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, selector := range []string{"Subyard", registered.ProjectID, "default/Subyard"} {
+		local, resolveErr := program.resolveLocalProject(
+			context.Background(), loaded.Context, store, selector,
+		)
+		if resolveErr != nil || local.Record.ProjectID != registered.ProjectID {
+			t.Fatalf("local selector %q resolved to %#v: %v", selector, local, resolveErr)
+		}
+		global, resolveErr := program.resolveGlobalProject(context.Background(), loaded.Context, selector)
+		if resolveErr != nil || global.Record.ProjectID != registered.ProjectID {
+			t.Fatalf("global selector %q resolved to %#v: %v", selector, global, resolveErr)
+		}
+	}
+
+	for _, command := range []string{"shell", "code", "up", "down", "info", "remove"} {
+		execution, prepareErr := program.prepareExistingProject(
+			context.Background(), loaded, command, []string{"Subyard"}, false,
+		)
+		if prepareErr != nil || execution.Record.ProjectID != registered.ProjectID {
+			t.Fatalf("%s selected %#v: %v", command, execution, prepareErr)
+		}
+	}
+
+	for _, selector := range []string{"./Subyard", collidingPath} {
+		if _, resolveErr := program.resolveLocalProject(
+			context.Background(), loaded.Context, store, selector,
+		); resolveErr == nil || !strings.Contains(resolveErr.Error(), selector) ||
+			strings.Contains(resolveErr.Error(), pathID) {
+			t.Fatalf("local explicit path %q returned unexpected error: %v", selector, resolveErr)
+		}
+		if _, resolveErr := program.resolveGlobalProject(
+			context.Background(), loaded.Context, selector,
+		); resolveErr == nil || !strings.Contains(resolveErr.Error(), selector) ||
+			strings.Contains(resolveErr.Error(), pathID) {
+			t.Fatalf("global explicit path %q returned unexpected error: %v", selector, resolveErr)
+		}
+	}
+
+	pathRecord := registered
+	pathRecord.ProjectID = pathID
+	pathRecord.Name = "LegacySource"
+	pathRecord.HostPath = collidingPath
+	pathRecord.YardPath = state.YardPath(pathID)
+	pathRecord.Mode = domain.ProjectSync
+	if err := store.Put(context.Background(), pathRecord); err != nil {
+		t.Fatal(err)
+	}
+	for _, selector := range []string{"./Subyard", collidingPath} {
+		local, resolveErr := program.resolveLocalProject(
+			context.Background(), loaded.Context, store, selector,
+		)
+		if resolveErr != nil || local.Record.ProjectID != pathID {
+			t.Fatalf("local explicit path %q resolved to %#v: %v", selector, local, resolveErr)
+		}
+		global, resolveErr := program.resolveGlobalProject(context.Background(), loaded.Context, selector)
+		if resolveErr != nil || global.Record.ProjectID != pathID {
+			t.Fatalf("global explicit path %q resolved to %#v: %v", selector, global, resolveErr)
+		}
+	}
+}
+
+func TestExplicitProjectPathSyntax(t *testing.T) {
+	for _, test := range []struct {
+		selector string
+		want     bool
+	}{
+		{selector: "Subyard"},
+		{selector: "Subyard-d2dfd1fb"},
+		{selector: "default/Subyard"},
+		{selector: "." + string(filepath.Separator) + "Subyard", want: true},
+		{selector: ".." + string(filepath.Separator) + "Subyard", want: true},
+		{selector: ".", want: true},
+		{selector: "..", want: true},
+		{selector: filepath.Join(string(filepath.Separator), "srv", "Subyard"), want: true},
+	} {
+		if got := isExplicitProjectPath(test.selector); got != test.want {
+			t.Fatalf("isExplicitProjectPath(%q) = %t, want %t", test.selector, got, test.want)
+		}
+	}
+}
+
 func TestParseShellArguments(t *testing.T) {
 	root, selector, command, help, err := parseShellArguments(
 		[]string{"--root", "Demo", "--", "sh", "-lc", "pwd"},

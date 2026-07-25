@@ -1627,22 +1627,24 @@ func (cli *CLI) resolveLocalProject(
 	store ports.ProjectStore,
 	selector string,
 ) (state.Match, error) {
-	path := selector
-	if !filepath.IsAbs(path) && cli.options.WorkingDir != "" {
-		path = filepath.Join(cli.options.WorkingDir, path)
+	if !isExplicitProjectPath(selector) {
+		return (state.Resolver{
+			Stores: map[string]ports.ProjectStore{yard.YardName: store},
+		}).Resolve(ctx, selector)
 	}
-	if _, err := os.Stat(path); err == nil {
-		id, err := state.ProjectID(path)
-		if err != nil {
-			return state.Match{}, err
-		}
-		record, err := store.Get(ctx, id)
-		if err != nil {
-			return state.Match{}, fmt.Errorf("%q is not in the yard", filepath.Base(path))
-		}
-		return state.Match{Yard: yard.YardName, Record: record}, nil
+	path := cli.projectSelectorPath(selector)
+	id, err := state.ProjectID(path)
+	if err != nil {
+		return state.Match{}, err
 	}
-	return (state.Resolver{Stores: map[string]ports.ProjectStore{yard.YardName: store}}).Resolve(ctx, selector)
+	record, err := store.Get(ctx, id)
+	if errors.Is(err, state.ErrNotFound) {
+		return state.Match{}, fmt.Errorf("project path %q is not in yard %s", selector, yard.YardName)
+	}
+	if err != nil {
+		return state.Match{}, err
+	}
+	return state.Match{Yard: yard.YardName, Record: record}, nil
 }
 
 func (cli *CLI) projectStores(ctx context.Context, yard domain.Context) (map[string]ports.ProjectStore, error) {
@@ -1678,18 +1680,37 @@ func (cli *CLI) resolveGlobalProject(
 	if err != nil {
 		return state.Match{}, err
 	}
-	path := selector
-	if !filepath.IsAbs(path) && cli.options.WorkingDir != "" {
-		path = filepath.Join(cli.options.WorkingDir, path)
+	resolver := state.Resolver{Stores: stores}
+	if !isExplicitProjectPath(selector) {
+		return resolver.Resolve(ctx, selector)
 	}
-	if _, err := os.Stat(path); err == nil {
-		id, err := state.ProjectID(path)
-		if err != nil {
-			return state.Match{}, err
-		}
-		return (state.Resolver{Stores: stores}).Resolve(ctx, id)
+	id, err := state.ProjectID(cli.projectSelectorPath(selector))
+	if err != nil {
+		return state.Match{}, err
 	}
-	return (state.Resolver{Stores: stores}).Resolve(ctx, selector)
+	match, err := resolver.Resolve(ctx, id)
+	if errors.Is(err, state.ErrAmbiguous) {
+		return state.Match{}, fmt.Errorf("%w: project path %q is registered in multiple yards",
+			state.ErrAmbiguous, selector)
+	}
+	if err != nil {
+		return state.Match{}, fmt.Errorf("project path %q is not in any yard", selector)
+	}
+	return match, nil
+}
+
+func isExplicitProjectPath(selector string) bool {
+	separator := string(filepath.Separator)
+	return filepath.IsAbs(selector) || selector == "." || selector == ".." ||
+		strings.HasPrefix(selector, "."+separator) ||
+		strings.HasPrefix(selector, ".."+separator)
+}
+
+func (cli *CLI) projectSelectorPath(selector string) string {
+	if filepath.IsAbs(selector) || cli.options.WorkingDir == "" {
+		return selector
+	}
+	return filepath.Join(cli.options.WorkingDir, selector)
 }
 
 func (cli *CLI) routeSyncProject(

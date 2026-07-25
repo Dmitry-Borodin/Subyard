@@ -3,6 +3,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="$ROOT/config/agents/paseo/sync-projects.mjs"
+NODE="${PASEO_TEST_NODE:-}"
+if [ -z "$NODE" ]; then
+  NODE="$(command -v node 2>/dev/null || true)"
+fi
+if [ -z "$NODE" ]; then
+  printf 'SKIP: Paseo project discovery unit test requires Node.js\n'
+  exit 0
+fi
+[ -x "$NODE" ] \
+  || { printf 'FAIL: PASEO_TEST_NODE is not executable: %s\n' "$NODE" >&2; exit 1; }
 TEMP="$(mktemp -d)"
 cleanup() { rm -rf -- "$TEMP"; }
 trap cleanup EXIT HUP INT TERM
@@ -91,7 +101,7 @@ run_sync() {
   PASEO_FAKE_LOG="$log" \
   PASEO_FAKE_ACTIVE="$workspace_root/alpha/src" \
   PASEO_FAKE_EMPTY_PROJECT="$workspace_root/beta/src" \
-    node "$HELPER_ENTRY" "$@"
+    "$NODE" "$HELPER_ENTRY" "$@"
 }
 
 run_sync --force

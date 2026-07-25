@@ -17,6 +17,25 @@ real_incus() { timeout --foreground "${P0_REAL_INCUS_COMMAND_TIMEOUT:-900}" incu
 real_incus_quiet() { real_incus "$@" >/dev/null; }
 project_exists() { real_incus project show "$PROJECT" >/dev/null 2>&1; }
 
+delete_marked_instance() {
+  local name="$1" attempt
+  for attempt in 1 2 3; do
+    real_incus config show "$name" --project "$PROJECT" >/dev/null 2>&1 || return
+    [ "$(real_incus config get "$name" user.subyard.p0 --project "$PROJECT")" = "$MARKER" ] \
+      || die "refusing to delete unmarked instance $name"
+    if real_incus delete "$name" --project "$PROJECT" --force >/dev/null; then
+      return
+    fi
+    real_incus config show "$name" --project "$PROJECT" >/dev/null 2>&1 || return
+    [ "$attempt" -lt 3 ] || die "could not delete marked instance $name after 3 attempts"
+    # A failed Incus VM stop can leave AppArmor teardown/reload briefly in
+    # flight. Keep recovery bounded and revalidate ownership before every try.
+    printf '  [warn] cleanup delete of %s failed; retrying (%s/3)\n' \
+      "$name" "$((attempt + 1))"
+    sleep 2
+  done
+}
+
 run_with_progress() {
   local label="$1" interval="${E2E_PROGRESS_INTERVAL:-10}" ticker rc started=$SECONDS
   shift
@@ -42,7 +61,7 @@ cleanup() {
       if real_incus config show "$name" --project "$PROJECT" >/dev/null 2>&1; then
         [ "$(real_incus config get "$name" user.subyard.p0 --project "$PROJECT")" = "$MARKER" ] \
           || die "refusing to clean unmarked instance $name"
-        real_incus delete "$name" --project "$PROJECT" --force >/dev/null
+        delete_marked_instance "$name"
       fi
     done
     [ -z "$(real_incus list --project "$PROJECT" -f csv -c n)" ] \
@@ -86,21 +105,39 @@ if ! real_incus image info "$CONTAINER_CACHE_ALIAS" --project default >/dev/null
   real_incus image alias create "$CONTAINER_CACHE_ALIAS" "$container_fingerprint" --project default
   printf '  [ ok ] retained test-owned container image alias %s\n' "$CONTAINER_CACHE_ALIAS"
 fi
-run_with_progress "launching real Incus VM (a clean allocation may download an image)" \
+launch_real_vm() {
   real_incus_quiet launch "$VM_IMAGE" p0-vm --vm --project "$PROJECT" \
-  --storage default \
-  -c limits.cpu=1 -c limits.memory=1GiB -c user.subyard.p0="$MARKER" \
-  -d root,size=5GiB
+    --storage default \
+    -c limits.cpu=1 -c limits.memory=1GiB -c user.subyard.p0="$MARKER" \
+    -d root,size=5GiB
+}
+run_with_progress "launching real Incus VM (a clean allocation may download an image)" \
+  launch_real_vm
 
-for name in p0-container p0-vm; do
+wait_ready() {
+  local name="$1" kind="$2" state='' replaced=0
   printf '  [ .. ] waiting for %s\n' "$name"
   for _ in $(seq 1 120); do
-    real_incus exec "$name" --project "$PROJECT" -- true >/dev/null 2>&1 && break
+    if real_incus exec "$name" --project "$PROJECT" -- true >/dev/null 2>&1; then
+      return 0
+    fi
+    state="$(real_incus list "$name" --project "$PROJECT" --format csv -c s)"
+    if [ "$state" = STOPPED ]; then
+      if [ "$kind" = virtual-machine ] && [ "$replaced" = 0 ]; then
+        printf '  [warn] %s stopped during first boot; replacing it once\n' "$name"
+        delete_marked_instance "$name"
+        run_with_progress "relaunching real Incus VM after first-boot stop" launch_real_vm
+        replaced=1
+      else
+        die "$name stopped before becoming ready"
+      fi
+    fi
     sleep 2
   done
-  real_incus exec "$name" --project "$PROJECT" -- true >/dev/null 2>&1 \
-    || die "$name did not become ready"
-done
+  die "$name did not become ready (last state: ${state:-unknown})"
+}
+wait_ready p0-container container
+wait_ready p0-vm virtual-machine
 
 TMP="$(mktemp -d /tmp/subyard-p0-incus.XXXXXX)"
 go test -c -tags realincus -o "$TMP/incusclient-real.test" ./internal/adapters/incusclient

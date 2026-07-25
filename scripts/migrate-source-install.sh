@@ -25,7 +25,6 @@ for path in "$RUNTIME_ROOT" "$BIN_DIR" "$RC" "$LOGIN_RC" "$DATA_HOME"; do
 done
 [ "$RUNTIME_ROOT" != / ] && [ "$BIN_DIR" != / ] && [ "$DATA_HOME" != / ] \
   || fail "refusing a filesystem-root migration path"
-case "$DATA_HOME" in "$HOME"/*) ;; *) fail "Subyard data home must be inside the operator home" ;; esac
 
 uid="$(id -u)"
 owned_regular() {
@@ -37,6 +36,28 @@ owned_directory() {
 owned_symlink() {
   [ -L "$1" ] && [ "$(stat -c '%u' -- "$1")" = "$uid" ]
 }
+
+recovery_parent="$DATA_HOME/recovery"
+recovery_root="$recovery_parent/pre-go-source"
+yard_link="$BIN_DIR/yard"
+sy_link="$BIN_DIR/sy"
+# A custom data home is supported for ordinary runtime installs. Apply the
+# source-migration containment policy only when source state or a recovery
+# transaction actually needs to be handled.
+if [ ! -e "$recovery_root" ] && [ ! -L "$recovery_root" ]; then
+  if [ ! -e "$yard_link" ] && [ ! -L "$yard_link" ] &&
+     [ ! -e "$sy_link" ] && [ ! -L "$sy_link" ]; then
+    exit 3
+  fi
+  if owned_symlink "$yard_link" && owned_symlink "$sy_link"; then
+    yard_target="$(readlink -f -- "$yard_link")" || fail "cannot resolve the yard link"
+    sy_target="$(readlink -f -- "$sy_link")" || fail "cannot resolve the sy link"
+    if [ "$yard_target" = "$sy_target" ]; then
+      case "$yard_target" in "$RUNTIME_ROOT"/*) exit 3 ;; esac
+    fi
+  fi
+fi
+case "$DATA_HOME" in "$HOME"/*) ;; *) fail "Subyard data home must be inside the operator home" ;; esac
 command -v sync >/dev/null 2>&1 || fail "sync is required for durable source migration"
 persist() {
   sync -f -- "$1" || fail "could not persist source migration state: $1"
@@ -45,8 +66,6 @@ persist_file() {
   sync -d -- "$1" || fail "could not persist source migration file: $1"
 }
 
-recovery_parent="$DATA_HOME/recovery"
-recovery_root="$recovery_parent/pre-go-source"
 read_transaction() {
   local transaction="$1" key value
   transaction_schema=''; transaction_phase=''; transaction_step=''
@@ -91,8 +110,6 @@ if [ -e "$recovery_root" ] || [ -L "$recovery_root" ]; then
   fi
 fi
 
-yard_link="$BIN_DIR/yard"
-sy_link="$BIN_DIR/sy"
 if [ ! -e "$yard_link" ] && [ ! -L "$yard_link" ] &&
    [ ! -e "$sy_link" ] && [ ! -L "$sy_link" ]; then
   exit 3

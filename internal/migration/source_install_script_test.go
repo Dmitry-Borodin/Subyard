@@ -123,6 +123,54 @@ func TestSourceInstallMigrationAndRecovery(t *testing.T) {
 	}
 }
 
+func TestSourceInstallMigrationSkipsCustomRuntimeDataHome(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	temp := t.TempDir()
+	home := filepath.Join(temp, "operator")
+	bin := filepath.Join(home, ".local/bin")
+	data := filepath.Join(temp, "runtime-data")
+	runtimeRoot := filepath.Join(data, "runtime")
+	rc := filepath.Join(home, ".bashrc")
+	login := filepath.Join(home, ".profile")
+	for _, directory := range []string{bin, filepath.Join(runtimeRoot, "current/bin")} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, rc, 0o600, "# fixture\n")
+	writeTestFile(t, login, 0o600, "# fixture\n")
+
+	run := func(t *testing.T) {
+		t.Helper()
+		command := exec.Command(
+			filepath.Join(root, "scripts/migrate-source-install.sh"),
+			"--runtime-root", runtimeRoot,
+			"--bin-dir", bin,
+			"--rc", rc,
+			"--login-rc", login,
+			"--data-home", data,
+		)
+		command.Env = append(os.Environ(), "HOME="+home)
+		output, err := command.CombinedOutput()
+		if err == nil || exitStatus(err) != 3 || len(output) != 0 {
+			t.Fatalf("non-source install was not skipped: status=%d output=%s",
+				exitStatus(err), output)
+		}
+	}
+
+	t.Run("entrypoints-absent", run)
+	t.Run("runtime-entrypoints", func(t *testing.T) {
+		runtimeLauncher := filepath.Join(runtimeRoot, "current/bin/yard")
+		writeTestFile(t, runtimeLauncher, 0o700, "#!/bin/sh\nexit 0\n")
+		for _, name := range []string{"yard", "sy"} {
+			if err := os.Symlink(runtimeLauncher, filepath.Join(bin, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		run(t)
+	})
+}
+
 func TestSourceInstallMigrationRecoversInterruptedPhases(t *testing.T) {
 	requireJQ(t)
 	for _, test := range []struct {

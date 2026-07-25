@@ -319,6 +319,15 @@ grep -Fq 'incus "$@" </dev/null; }' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'CONTAINER_CACHE_ALIAS="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'VM_CACHE_ALIAS="${P0_REAL_INCUS_VM_CACHE_ALIAS:-' "$ROOT/dev/e2e/p0-real-incus.sh" \
   || fail "P0 real-Incus lane leaves YAML-reading control-plane stdin open"
+grep -Fq 'wait_ready p0-container container' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'wait_ready p0-vm virtual-machine' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'stopped during first boot; replacing it once' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'relaunching real Incus VM after first-boot stop' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  || fail "P0 real-Incus lane does not bound first-boot VM recovery"
+grep -Fq 'cleanup delete of %s failed; retrying (%s/3)' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'refusing to delete unmarked instance' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'could not delete marked instance $name after 3 attempts' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  || fail "P0 real-Incus cleanup retry is not bounded to marked test instances"
 grep -Fq '"$AGENT" --ssh "$vm" --' "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 peer cleanup assertion bypasses direct-command argv quoting"
 grep -Fq 'cleanup_peer_incus' "$ROOT/dev/e2e/p0-guest.sh" \

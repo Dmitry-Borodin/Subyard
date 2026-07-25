@@ -5,6 +5,7 @@ engine-release.sh
 key-tools-install.sh
 init-project-convergence.sh
 opencode-agent-provision.sh
+paseo-project-sync.sh
 profile-resource-lifecycle.sh
 project-registry-convergence.sh
 remote-projects.sh

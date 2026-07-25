@@ -9,7 +9,33 @@ permissions:
   contents: write
 
 jobs:
+  paseo-headless:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native bundle tools
+        run: sudo apt-get update -qq && sudo apt-get install -y binutils build-essential jq xz-utils
+      - name: Build pinned Paseo headless bundle
+        run: |
+          artifact="$(dev/build-paseo-headless.sh --arch "${{ matrix.arch }}" --output-dir .build/paseo)"
+          tests/native/paseo-headless.sh --artifact "$artifact"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paseo-headless-${{ matrix.arch }}
+          path: .build/paseo/*
+          if-no-files-found: error
+
   publish:
+    needs: paseo-headless
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -26,6 +52,11 @@ jobs:
           mapfile -t shell_files < <(find scripts dev config/profiles config/agents tests -type f -name '*.sh' -print | sort)
           shellcheck -x -S warning bin/yard completions/yard.bash "${shell_files[@]}"
           ./tests/run.sh
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: paseo-headless-*
+          path: .build/release
+          merge-multiple: true
       - name: Real local crypto and OpenSSH adapter contracts
         run: bash tests/real-host/adapter-contracts.sh
       - name: Build release assets

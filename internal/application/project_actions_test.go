@@ -102,7 +102,7 @@ func TestProjectCloneOwnsSequenceAndMetadata(t *testing.T) {
 	result, _, err := runner.Run(context.Background(), domain.AdapterRequest{
 		Schema: 1, OperationID: "operation-clone", Adapter: "project", Action: "clone",
 	}, nil)
-	if err != nil || result.Status != "ok" || len(data.requests) != 4 {
+	if err != nil || result.Status != "ok" || len(data.requests) != 5 {
 		t.Fatalf("clone failed: result=%#v calls=%#v err=%v", result, data.requests, err)
 	}
 	if got := data.requests[2].Command; len(got) != 5 || got[0] != "git" || got[2] != "--" ||
@@ -145,8 +145,9 @@ func TestProjectRemoveCleansEnvironmentBeforeWorkspace(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(data.requests) != 5 || data.requests[0].Command[0] != "docker" ||
-		data.requests[4].Command[0] != "rm" || data.requests[4].Command[3] != "/srv/workspaces/demo-12345678" {
+	if len(data.requests) != 6 || data.requests[0].Command[0] != "docker" ||
+		data.requests[4].Command[0] != "rm" || data.requests[4].Command[3] != "/srv/workspaces/demo-12345678" ||
+		data.requests[5].Command[4] != projectHooksDispatcher {
 		t.Fatalf("unexpected removal order: %#v", data.requests)
 	}
 }
@@ -180,7 +181,8 @@ func TestProjectRemoveDetachesBindWithoutDeletingHostData(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(data.requests) != 0 || len(devices.removed) != 1 || devices.removed[0] != "ws-demo-12345678" {
+	if len(data.requests) != 1 || len(devices.removed) != 1 || devices.removed[0] != "ws-demo-12345678" ||
+		data.requests[0].Command[4] != projectHooksDispatcher {
 		t.Fatalf("bind removal crossed the data boundary: calls=%#v devices=%#v", data.requests, devices.removed)
 	}
 }
@@ -198,8 +200,9 @@ func TestProjectSyncStreamsArchiveAndWritesMetadata(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(data.requests) != 3 || data.requests[1].Command[0] != "tar" ||
-		string(data.requests[1].Stdin) != "archive" || data.requests[2].Command[0] != "tee" {
+	if len(data.requests) != 4 || data.requests[1].Command[0] != "tar" ||
+		string(data.requests[1].Stdin) != "archive" || data.requests[2].Command[0] != "tee" ||
+		data.requests[3].Command[4] != projectHooksDispatcher {
 		t.Fatalf("unexpected sync sequence: %#v", data.requests)
 	}
 }
@@ -218,8 +221,30 @@ func TestProjectBindUsesIncusDeviceAndWritesMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(devices.ensured) != 1 || devices.ensured[0] != "ws-demo-12345678" ||
-		len(data.requests) != 2 || data.requests[1].Command[0] != "tee" {
+		len(data.requests) != 3 || data.requests[1].Command[0] != "tee" ||
+		data.requests[2].Command[4] != projectHooksDispatcher {
 		t.Fatalf("unexpected bind sequence: calls=%#v devices=%#v", data.requests, devices.ensured)
+	}
+}
+
+func TestProjectHookFailureIsNonBlockingAndVisible(t *testing.T) {
+	data := &projectDataStub{}
+	data.run = func(request ports.InstanceExecRequest) (ports.InstanceExecResult, error) {
+		if len(request.Command) == 5 && request.Command[4] == projectHooksDispatcher {
+			return ports.InstanceExecResult{ExitCode: 1}, errors.New("hook failed")
+		}
+		return ports.InstanceExecResult{}, nil
+	}
+	runner := ProjectActionRunner{
+		Data:    data,
+		Yard:    domain.Context{YardType: domain.YardRemote, DevUser: "dev", DevUID: 1000},
+		Project: cloneRecord(),
+	}
+	result, message, err := runner.Run(context.Background(), domain.AdapterRequest{
+		Schema: 1, OperationID: "operation-clone", Adapter: "project", Action: "clone",
+	}, nil)
+	if err != nil || result.Status != "ok" || !strings.Contains(message, "optional agent project hook failed") {
+		t.Fatalf("hook changed project result: result=%#v message=%q err=%v", result, message, err)
 	}
 }
 

@@ -284,7 +284,7 @@ func agentSettingDefinition(name string) (SettingDefinition, bool) {
 	}
 	for _, suffix := range []string{
 		"_CONFIG_DEST", "_RULES_DEST", "_COMMAND", "_CONFIG", "_PERSIST",
-		"_PROVISION", "_RULES", "_CHECK",
+		"_PROJECTS_CHANGED", "_PROVISION", "_RULES", "_CHECK",
 	} {
 		agent, found := strings.CutSuffix(strings.TrimPrefix(name, "AGENT_"), suffix)
 		if !found || !domain.SafeName(agent) {
@@ -309,7 +309,7 @@ func agentSettingDefinition(name string) (SettingDefinition, bool) {
 				Scopes:   scopes(ScopeShipped, ScopeHost, ScopeYard, ScopeCommand),
 				Syncable: false, Merge: "replace", Application: SettingYardInit, Owner: "agent-integration",
 			}, true
-		case "_COMMAND", "_CHECK":
+		case "_COMMAND", "_CHECK", "_PROJECTS_CHANGED":
 			return SettingDefinition{
 				Kind: SettingScalar, Type: SettingExecutable,
 				Scopes:   scopes(ScopeShipped, ScopeHost, ScopeYard, ScopeCommand),

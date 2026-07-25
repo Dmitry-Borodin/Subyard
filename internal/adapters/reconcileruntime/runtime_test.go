@@ -322,6 +322,20 @@ func TestProvisionAgentCommandsAreValidated(t *testing.T) {
 	}
 }
 
+func TestProvisionAgentChecksAreValidated(t *testing.T) {
+	runtime := Runtime{Environment: []string{
+		"AGENTS=paseo", "AGENT_paseo_CHECK=paseo-check",
+	}}
+	checks, err := runtime.provisionAgentChecks()
+	if err != nil || len(checks) != 1 || checks[0] != "paseo-check" {
+		t.Fatalf("valid agent check rejected: %v, %v", checks, err)
+	}
+	runtime.Environment[1] = "AGENT_paseo_CHECK=bad check"
+	if _, err := runtime.provisionAgentChecks(); err == nil {
+		t.Fatal("unsafe agent check accepted")
+	}
+}
+
 func TestProjectProbeOwnsRestrictedPolicy(t *testing.T) {
 	incus := &testkit.Incus{
 		ServerInfo: ports.ServerInfo{Environment: "incus"},

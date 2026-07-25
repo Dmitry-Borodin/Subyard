@@ -975,6 +975,15 @@ func (runtime Runtime) provisionConverged(ctx context.Context) (bool, error) {
 	if ok, err := runtime.guestCheck(ctx, commandCheck); err != nil || !ok {
 		return false, err
 	}
+	checks, err := runtime.provisionAgentChecks()
+	if err != nil {
+		return false, err
+	}
+	for _, check := range checks {
+		if ok, err := runtime.guestCheck(ctx, []string{check}); err != nil || !ok {
+			return false, err
+		}
+	}
 	user := runtime.Yard.DevUser
 	if user == "" {
 		user = runtime.environmentDefault("DEV_USER", "dev")
@@ -1063,6 +1072,21 @@ func (runtime Runtime) provisionAgentCommands() ([]string, error) {
 		commands = append(commands, command)
 	}
 	return commands, nil
+}
+
+func (runtime Runtime) provisionAgentChecks() ([]string, error) {
+	checks := make([]string, 0)
+	for _, agent := range strings.Fields(runtime.environmentValue("AGENTS")) {
+		check := runtime.environmentValue("AGENT_" + agent + "_CHECK")
+		if check == "" {
+			continue
+		}
+		if !safeCommand(check) {
+			return nil, fmt.Errorf("agent %s check command is invalid", agent)
+		}
+		checks = append(checks, check)
+	}
+	return checks, nil
 }
 
 func (runtime Runtime) provisionLinksConverged(ctx context.Context, home string) (bool, error) {

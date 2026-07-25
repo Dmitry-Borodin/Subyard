@@ -190,13 +190,18 @@ artifact_arm="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 
 jq -e '.os == "linux" and .arch == "arm64" and .version == "1.0.0-test"' \
   "$artifact_arm.manifest.json" >/dev/null \
   || fail 'arm64 release contract was not published'
+for paseo_arch in amd64 arm64; do
+  paseo_asset="$release/paseo-headless-0.2.1-linux-$paseo_arch.tar.gz"
+  printf 'paseo test fixture for %s\n' "$paseo_arch" > "$paseo_asset"
+  (cd "$release" && sha256sum "$(basename "$paseo_asset")" > "$(basename "$paseo_asset").sha256")
+done
 printf 'must not be published\n' > "$release/unexpected-build-note"
 publish_list="$TMP/publish-assets.list"
 "$ROOT/dev/release-assets.sh" --release-dir "$release" --version 1.0.0-test > "$publish_list"
-[ "$(wc -l < "$publish_list")" -eq 19 ] \
+[ "$(wc -l < "$publish_list")" -eq 23 ] \
   && ! grep -Fq '.build.lock' "$publish_list" \
   && ! grep -Fq 'unexpected-build-note' "$publish_list" \
-  || fail 'release publishing does not use the exact 19-asset allowlist'
+  || fail 'release publishing does not use the exact 23-asset allowlist'
 while IFS= read -r publish_asset; do
   [ -f "$publish_asset" ] && [ ! -L "$publish_asset" ] \
     || fail "release allowlist contains an invalid asset: $publish_asset"

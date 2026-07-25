@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PASEO_INSTALL_ROOT="${PASEO_INSTALL_ROOT:-/opt/subyard/paseo/current}"
+PASEO_HOME="${PASEO_HOME:-/srv/agents/paseo}"
+NODE="$PASEO_INSTALL_ROOT/node/bin/node"
+HELPER="$PASEO_INSTALL_ROOT/app/libexec/paseo-sync-projects.mjs"
+
+[ -x "$NODE" ] || { printf 'paseo-sync-projects: pinned Node runtime is missing\n' >&2; exit 1; }
+[ -f "$HELPER" ] || { printf 'paseo-sync-projects: helper is missing\n' >&2; exit 1; }
+
+install -d -m 0700 "$PASEO_HOME"
+exec 9>"$PASEO_HOME/subyard-project-sync.lock"
+if ! flock -n 9; then
+  printf 'paseo-sync-projects: another sync is already running\n' >&2
+  exit 0
+fi
+exec "$NODE" "$HELPER" "$@"

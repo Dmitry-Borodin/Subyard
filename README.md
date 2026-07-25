@@ -48,7 +48,8 @@ repository, connect it explicitly on each owner host with
 
 Run `yard --help` or `yard <command> --help` for complete command usage.
 See the [control-plane architecture](docs/control-plane.md) for module ownership, stable extension
-contracts, test topology, and the real-host acceptance lane.
+contracts, test topology, and the real-host acceptance lane. Paseo Desktop support is available as
+an [opt-in agent package](docs/paseo.md).
 
 ## Everyday commands
 

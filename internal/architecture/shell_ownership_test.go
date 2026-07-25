@@ -317,6 +317,7 @@ func productionShellContracts() map[string]shellContract {
 	return map[string]shellContract{
 		"config/agents/ccusage/provision.sh":   {"profile", "config/agents.env", `agents/ccusage/provision.sh`},
 		"config/agents/opencode/provision.sh":  {"profile", "config/agents.env", `agents/opencode/provision.sh`},
+		"config/agents/paseo/provision.sh":     {"profile", "config/agents.env", `agents/paseo/provision.sh`},
 		"scripts/01-install-incus.sh":          {"leaf", goReconcile, `"01-install-incus.sh"`},
 		"scripts/02-create-project.sh":         {"leaf", goReconcile, `"02-create-project.sh"`},
 		"scripts/03-create-subyard.sh":         {"leaf", goReconcile, `"03-create-subyard.sh"`},

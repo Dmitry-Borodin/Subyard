@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/domain"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
@@ -31,6 +32,9 @@ type ProjectActionRunner struct {
 
 var workspaceUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 var extensionToken = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+const projectHooksDispatcher = "/usr/local/libexec/subyard/projects-changed"
+const projectHooksTimeout = 30 * time.Second
 
 func (runner ProjectActionRunner) Run(
 	ctx context.Context,
@@ -97,10 +101,34 @@ func (runner ProjectActionRunner) Run(
 		}
 		message = codeMessage
 	}
+	if request.Action == "clone" || request.Action == "remove" ||
+		request.Action == "sync" || request.Action == "bind" {
+		if warning := runner.notifyProjectsChanged(ctx); warning != "" {
+			message += warning
+		}
+	}
 	return domain.AdapterResult{
 		Schema: 1, OperationID: request.OperationID, Status: "ok",
 		Output: output,
 	}, message, nil
+}
+
+func (runner ProjectActionRunner) notifyProjectsChanged(ctx context.Context) string {
+	hookContext, cancel := context.WithTimeout(ctx, projectHooksTimeout)
+	defer cancel()
+	dev := uint32(runner.Yard.DevUID)
+	result, err := runner.Data.Execute(hookContext, runner.Yard, ports.InstanceExecRequest{
+		Command: []string{
+			"sh", "-c", `[ ! -x "$1" ] || exec "$1"`, "subyard", projectHooksDispatcher,
+		},
+		Environment: map[string]string{"HOME": "/home/" + runner.Yard.DevUser},
+		User:        dev,
+		Group:       dev,
+	})
+	if err == nil && result.ExitCode == 0 {
+		return ""
+	}
+	return "warning: an optional agent project hook failed; yard init will retry it\n"
 }
 
 func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {

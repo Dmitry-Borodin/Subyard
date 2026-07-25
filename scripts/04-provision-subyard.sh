@@ -177,12 +177,61 @@ for _agent in ${AGENTS:-}; do
   [ -n "$_provision" ] || continue
   [ -r "$_provision" ] || die "$_agent provision hook missing: $_provision"
   info "provisioning $_agent CLI in $INSTANCE_NAME"
-  incus exec "$INSTANCE_NAME" "${PROJ[@]}" --env DEV_USER="$DEV_USER" \
+  _agent_env=(--env DEV_USER="$DEV_USER" --env YARD_VERSION="${YARD_VERSION:-}")
+  incus exec "$INSTANCE_NAME" "${PROJ[@]}" "${_agent_env[@]}" \
     -- bash -euo pipefail -s < "$_provision" \
     || die "$_agent CLI provisioning failed"
+  _check_var="AGENT_${_agent}_CHECK"
+  _check="${!_check_var:-}"
+  if [ -n "$_check" ]; then
+    case "$_check" in *[!A-Za-z0-9._/-]*|'') die "$_agent check command is invalid" ;; esac
+    incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- timeout 90 "$_check" \
+      || die "$_agent package check failed"
+  fi
   ok "$_agent CLI ready"
 done
-unset _agent _provision_var _provision
+unset _agent _agent_env _check_var _check _provision_var _provision
+
+# Install one generic guest-side project lifecycle dispatcher. It contains only the enabled
+# package commands and executes them without a shell/eval. Project actions invoke this path
+# through their already-resolved local or remote yard data plane.
+_project_hooks=()
+for _agent in ${AGENTS:-}; do
+  _hook_var="AGENT_${_agent}_PROJECTS_CHANGED"
+  _hook="${!_hook_var:-}"
+  [ -n "$_hook" ] || continue
+  case "$_hook" in *[!A-Za-z0-9._/-]*|'') die "$_agent project hook command is invalid" ;; esac
+  _project_hooks+=("$_hook")
+done
+incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- bash -euo pipefail -s <<'EOS'
+install -d -m 0755 /etc/subyard /usr/local/libexec/subyard
+cat > /usr/local/libexec/subyard/projects-changed <<'DISPATCH'
+#!/usr/bin/env bash
+set -euo pipefail
+status=0
+while IFS= read -r hook; do
+  [ -n "$hook" ] || continue
+  "$hook" || status=1
+done < /etc/subyard/agent-project-hooks
+exit "$status"
+DISPATCH
+chmod 0755 /usr/local/libexec/subyard/projects-changed
+chown root:root /usr/local/libexec/subyard/projects-changed
+EOS
+printf '%s\n' "${_project_hooks[@]}" \
+  | incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- sh -euc '
+      temporary=$(mktemp /etc/subyard/.agent-project-hooks.XXXXXX)
+      cleanup_project_hooks() {
+        rm -f -- "$temporary"
+      }
+      trap cleanup_project_hooks EXIT HUP INT TERM
+      cat >"$temporary"
+      chmod 0644 "$temporary"
+      chown root:root "$temporary"
+      mv -f -- "$temporary" /etc/subyard/agent-project-hooks
+      trap - EXIT HUP INT TERM
+    ' || die "could not install agent project lifecycle hooks"
+unset _agent _hook_var _hook _project_hooks
 
 # --- 4. fix /dev/kvm device GID to the in-yard 'kvm' group --------------------
 echo "KVM gid:"

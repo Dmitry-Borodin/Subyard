@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/contracttest"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/contracttest"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 func TestManualClockAndMemoryState(t *testing.T) {

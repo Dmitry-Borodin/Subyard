@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 var ErrNotFound = errors.New("project state not found")

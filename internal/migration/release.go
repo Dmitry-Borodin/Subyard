@@ -14,8 +14,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 const (

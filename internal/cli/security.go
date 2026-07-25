@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/securityruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/adapters/securityruntime"
+	"github.com/Subyard/Subyard/internal/config"
 )
 
 func (cli *CLI) runSecurity(

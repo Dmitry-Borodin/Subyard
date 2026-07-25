@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 type Service struct {

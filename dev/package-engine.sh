@@ -65,7 +65,8 @@ if candidate_revision="$(git -C "$REPO" rev-parse --verify HEAD 2>/dev/null)" \
   revision="$candidate_revision"
 fi
 generated="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf '{"schemaVersion":1,"artifact":"%s","sha256":"%s","version":"%s","sourceRepository":"github.com/Dmitry-Borodin/Subyard","sourceRevision":"%s","generatedAt":"%s"}\n' \
+# Keep the v0.1 sourceRepository wire value so installed v0.1 runtimes accept the handoff release.
+printf '{"schemaVersion":1,"artifact":"%s","sha256":"%s","version":"%s","sourceRepository":"github.com/Dmitry-Borodin/Subyard","canonicalRepository":"github.com/Subyard/Subyard","sourceRevision":"%s","generatedAt":"%s"}\n' \
   "$(basename "$artifact")" "$artifact_hash" "$VERSION" "$revision" "$generated" \
   > "$artifact.provenance.json"
 chmod 0644 "$artifact.sha256" "$artifact.manifest.json" "$artifact.provenance.json"
@@ -123,7 +124,7 @@ printf '{"schemaVersion":1,"kind":"runtime","version":"%s","os":"%s","arch":"%s"
   "$VERSION" "$goos" "$goarch" "$migration_schema" "$minimum_layout" "$current_layout" \
   > "$bundle.manifest.json"
 bundle_hash="$(cut -d' ' -f1 "$bundle.sha256")"
-printf '{"schemaVersion":1,"artifact":"%s","sha256":"%s","version":"%s","sourceRepository":"github.com/Dmitry-Borodin/Subyard","sourceRevision":"%s","generatedAt":"%s"}\n' \
+printf '{"schemaVersion":1,"artifact":"%s","sha256":"%s","version":"%s","sourceRepository":"github.com/Dmitry-Borodin/Subyard","canonicalRepository":"github.com/Subyard/Subyard","sourceRevision":"%s","generatedAt":"%s"}\n' \
   "$(basename "$bundle")" "$bundle_hash" "$VERSION" "$revision" "$generated" \
   > "$bundle.provenance.json"
 chmod 0644 "$bundle.sha256" "$bundle.manifest.json" "$bundle.provenance.json"

@@ -10,13 +10,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 func TestPrepareValidatesOptionsAndKeepsChecksMutating(t *testing.T) {
 	home := t.TempDir()
 	var output bytes.Buffer
 	release := New(Config{Environment: map[string]string{"HOME": home}, Stdout: &output})
+	defaults, _, err := release.parse([]string{"--version", "1.2.3"})
+	if err != nil || defaults.repository != "Subyard/Subyard" {
+		t.Fatalf("invalid default release repository: %q, %v", defaults.repository, err)
+	}
 
 	help, err := release.Prepare(context.Background(), []string{"--help"})
 	if err != nil || help.Effect != domain.CommandRead || help.Execute(context.Background()) != nil ||

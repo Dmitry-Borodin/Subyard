@@ -13,14 +13,14 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/credentialruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/hostruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/securityruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/testvmsruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/application"
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/adapters/credentialruntime"
+	"github.com/Subyard/Subyard/internal/adapters/hostruntime"
+	"github.com/Subyard/Subyard/internal/adapters/securityruntime"
+	"github.com/Subyard/Subyard/internal/adapters/testvmsruntime"
+	"github.com/Subyard/Subyard/internal/application"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 type Runtime struct {

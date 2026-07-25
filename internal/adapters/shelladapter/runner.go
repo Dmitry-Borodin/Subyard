@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 const (

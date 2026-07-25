@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/hostruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/incusclient"
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/testvmsruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/application"
-	"github.com/Dmitry-Borodin/Subyard/internal/cli"
+	"github.com/Subyard/Subyard/internal/adapters/hostruntime"
+	"github.com/Subyard/Subyard/internal/adapters/incusclient"
+	"github.com/Subyard/Subyard/internal/adapters/testvmsruntime"
+	"github.com/Subyard/Subyard/internal/application"
+	"github.com/Subyard/Subyard/internal/cli"
 )
 
 func main() {

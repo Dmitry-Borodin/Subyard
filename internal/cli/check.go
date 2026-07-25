@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/hostruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/adapters/hostruntime"
+	"github.com/Subyard/Subyard/internal/config"
 )
 
 func (cli *CLI) runHostCheck(

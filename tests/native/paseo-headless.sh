@@ -90,7 +90,7 @@ jq -e --arg arch "$expected_arch" '
 jq -e --arg arch "$expected_arch" '
   .creationInfo.created == "1970-01-01T00:00:00Z" and
   .documentNamespace ==
-    ("https://github.com/Dmitry-Borodin/Subyard/sbom/paseo-headless-0.2.1-linux-" + $arch)
+    ("https://github.com/Subyard/Subyard/sbom/paseo-headless-0.2.1-linux-" + $arch)
 ' "$artifact/sbom.spdx.json" >/dev/null \
   || { printf 'test-paseo-headless: SBOM identity is not deterministic\n' >&2; exit 1; }
 

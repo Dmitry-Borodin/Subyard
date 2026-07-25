@@ -10,9 +10,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 var ErrContract = errors.New("security contract failed")

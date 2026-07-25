@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/credential"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/credential"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 func (runtime *Runtime) peerPath(name string) (string, error) {

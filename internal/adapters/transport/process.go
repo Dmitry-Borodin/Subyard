@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 const defaultLimit = 4 * 1024 * 1024

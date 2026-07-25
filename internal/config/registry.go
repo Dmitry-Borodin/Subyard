@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 // YardNames returns the configured yard names without evaluating their files.

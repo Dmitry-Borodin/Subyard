@@ -41,7 +41,7 @@ lock="$(dirname "$OUTPUT")/.build.lock"
   # packaged builds deliberately use isolated homes, and the explicit VERSION is authoritative.
   cd "$REPO"
   CGO_ENABLED=0 go build -buildvcs=false -mod=readonly -trimpath \
-    -ldflags "-s -w -X github.com/Dmitry-Borodin/Subyard/internal/cli.Version=$VERSION" \
+    -ldflags "-s -w -X github.com/Subyard/Subyard/internal/cli.Version=$VERSION" \
     -o "$tmp" ./cmd/yard
   chmod 0755 "$tmp"
   mv -f "$tmp" "$OUTPUT"

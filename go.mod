@@ -1,4 +1,4 @@
-module github.com/Dmitry-Borodin/Subyard
+module github.com/Subyard/Subyard
 
 go 1.25.6
 

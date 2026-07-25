@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/transport"
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/adapters/transport"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 var metadataCommand = []string{

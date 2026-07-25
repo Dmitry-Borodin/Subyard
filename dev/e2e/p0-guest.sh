@@ -152,7 +152,7 @@ install_rename_base_runtime() {
     || { p0_capacity_assert_root_marker; sudo -n find "$RENAME_BASE_ROOT" -depth -delete; }
   install -d -m 0700 "$RENAME_BASE_ROOT"
   git -C "$RENAME_BASE_ROOT" init -q
-  git -C "$RENAME_BASE_ROOT" remote add origin https://github.com/Dmitry-Borodin/Subyard.git
+  git -C "$RENAME_BASE_ROOT" remote add origin https://github.com/Subyard/Subyard.git
   git -C "$RENAME_BASE_ROOT" fetch -q --depth 1 origin "$RENAME_BASE_REVISION"
   git -C "$RENAME_BASE_ROOT" checkout -q --detach FETCH_HEAD
   [ "$(git -C "$RENAME_BASE_ROOT" rev-parse HEAD)" = "$RENAME_BASE_REVISION" ] \

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/config"
 	"golang.org/x/crypto/ssh"
 )
 

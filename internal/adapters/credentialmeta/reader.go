@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/credential"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/credential"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 const maximumRecordSize = 1024 * 1024

@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 var ErrInstanceNotFound = errors.New("instance not found")

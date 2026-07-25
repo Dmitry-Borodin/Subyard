@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 type remoteControlFixture struct {

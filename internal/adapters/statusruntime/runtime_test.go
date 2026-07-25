@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
-	"github.com/Dmitry-Borodin/Subyard/internal/resource"
-	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/resource"
+	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 type securityStub struct{ state string }

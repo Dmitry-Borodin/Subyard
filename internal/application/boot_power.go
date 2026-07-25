@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 type BootPowerResult struct {

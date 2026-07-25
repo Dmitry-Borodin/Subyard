@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/contracttest"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
+	"github.com/Subyard/Subyard/internal/contracttest"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 func TestProjectStoreConformance(t *testing.T) {

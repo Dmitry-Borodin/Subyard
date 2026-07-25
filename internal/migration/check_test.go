@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/contracttest"
-	"github.com/Dmitry-Borodin/Subyard/internal/state"
-	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
+	"github.com/Subyard/Subyard/internal/contracttest"
+	"github.com/Subyard/Subyard/internal/state"
+	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 func TestCheckValidatesExistingStoresWithoutCreatingMissingOnes(t *testing.T) {

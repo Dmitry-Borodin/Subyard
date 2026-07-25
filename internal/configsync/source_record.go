@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/config"
 )
 
 const sourceRecordSchema = 1

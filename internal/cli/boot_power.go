@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/application"
+	"github.com/Subyard/Subyard/internal/application"
 )
 
 func RunBootPower(

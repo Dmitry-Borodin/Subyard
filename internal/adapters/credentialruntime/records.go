@@ -18,8 +18,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/credential"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/credential"
+	"github.com/Subyard/Subyard/internal/domain"
 	"golang.org/x/term"
 )
 

@@ -7,11 +7,11 @@ import (
 	"io"
 	"os"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/shelladapter"
-	"github.com/Dmitry-Borodin/Subyard/internal/application"
-	"github.com/Dmitry-Borodin/Subyard/internal/command"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/adapters/shelladapter"
+	"github.com/Subyard/Subyard/internal/application"
+	"github.com/Subyard/Subyard/internal/command"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 type lifecycleExecution struct {

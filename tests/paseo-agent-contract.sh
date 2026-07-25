@@ -58,6 +58,8 @@ rg -q '^ReadWritePaths=@DEV_HOME@ /srv/agents/paseo /srv/workspaces$' \
   "$ROOT/config/agents/paseo/paseo.service.in" || fail "unit enabled a forbidden surface"
 rg -q 'PASEO_RELEASE_VERSION' "$ROOT/config/agents/paseo/provision.sh" \
   || fail "provision is not tied to the Subyard release"
+rg -q 'PASEO_RELEASE_REPOSITORY:-Subyard/Subyard' "$ROOT/config/agents/paseo/provision.sh" \
+  || fail "Paseo does not use the canonical release repository"
 rg -q 'files[.]sha256' "$ROOT/config/agents/paseo/provision.sh" \
   || fail "provision does not verify the deploy closure"
 rg -q 'PASEO_HEALTH_WAIT_SECONDS' "$ROOT/config/agents/paseo/bin/paseo-check" \

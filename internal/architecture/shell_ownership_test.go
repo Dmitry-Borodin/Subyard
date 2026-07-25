@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/command"
+	"github.com/Subyard/Subyard/internal/command"
 )
 
 func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {

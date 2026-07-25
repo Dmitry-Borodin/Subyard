@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/configsync"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
-	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/configsync"
+	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 func TestConfigPathsShowsEffectiveLayersWithoutValues(t *testing.T) {

@@ -39,7 +39,7 @@ runtime. Production does not use the source checkout:
 
 ```sh
 curl -fsSL --proto '=https' --tlsv1.2 \
-  https://github.com/Dmitry-Borodin/Subyard/releases/latest/download/subyard-install.sh | bash
+  https://github.com/Subyard/Subyard/releases/latest/download/subyard-install.sh | bash
 exec "$SHELL" -l
 ```
 

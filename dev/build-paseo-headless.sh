@@ -140,7 +140,7 @@ done < <(find "$app/node_modules" -type f -name '*.node' -print | sort)
 jq --arg arch "$TARGET_ARCH" '
   .creationInfo.created = "1970-01-01T00:00:00Z" |
   .documentNamespace =
-    ("https://github.com/Dmitry-Borodin/Subyard/sbom/paseo-headless-0.2.1-linux-" + $arch)
+    ("https://github.com/Subyard/Subyard/sbom/paseo-headless-0.2.1-linux-" + $arch)
 ' "$temporary/sbom.raw.spdx.json" >"$temporary/sbom.spdx.json"
 
 stage="$temporary/stage"

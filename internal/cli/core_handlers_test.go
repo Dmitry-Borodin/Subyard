@@ -16,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/testvmsruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/command"
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
-	"github.com/Dmitry-Borodin/Subyard/internal/state"
-	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
+	"github.com/Subyard/Subyard/internal/adapters/testvmsruntime"
+	"github.com/Subyard/Subyard/internal/command"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/state"
+	"github.com/Subyard/Subyard/internal/testkit"
 	"golang.org/x/crypto/ssh"
 )
 

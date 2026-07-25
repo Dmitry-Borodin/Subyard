@@ -15,14 +15,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/shelladapter"
-	"github.com/Dmitry-Borodin/Subyard/internal/application"
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
-	"github.com/Dmitry-Borodin/Subyard/internal/rpc"
-	"github.com/Dmitry-Borodin/Subyard/internal/state"
-	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
+	"github.com/Subyard/Subyard/internal/adapters/shelladapter"
+	"github.com/Subyard/Subyard/internal/application"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/rpc"
+	"github.com/Subyard/Subyard/internal/state"
+	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 type statusFactsStub struct{ value domain.StatusFacts }

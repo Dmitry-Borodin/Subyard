@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
-	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 func TestPowerServiceImportsAndCommitsAtomically(t *testing.T) {

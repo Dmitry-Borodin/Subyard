@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/contracttest"
-	"github.com/Dmitry-Borodin/Subyard/internal/rpc"
-	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
+	"github.com/Subyard/Subyard/internal/contracttest"
+	"github.com/Subyard/Subyard/internal/rpc"
+	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 func TestRPCProcessHelper(t *testing.T) {

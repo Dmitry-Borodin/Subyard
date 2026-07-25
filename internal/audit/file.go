@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 const defaultMaximum = int64(1024 * 1024)

@@ -3,7 +3,7 @@ package configsync
 import (
 	"errors"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/config"
 )
 
 const (

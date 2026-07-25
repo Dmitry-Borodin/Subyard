@@ -80,6 +80,8 @@ bundle_one="$release/subyard-1.0.0-test-linux-amd64.tar.gz"
   && [ -x "$release/subyard-install-runtime-release.sh" ] \
   && [ -r "$release/subyard-install-runtime-release.sh.sha256" ] \
   || fail 'standalone first-install assets are missing'
+grep -Fq 'YARD_RELEASE_REPOSITORY:-Subyard/Subyard' "$release/subyard-install.sh" \
+  || fail 'standalone installer does not use the canonical release repository'
 [ -x "$artifact_one" ] || { printf 'release artifact is not executable\n' >&2; exit 1; }
 [ -r "$artifact_one.sha256" ] && [ -r "$artifact_one.manifest.json" ] && [ -r "$artifact_one.provenance.json" ] \
   || { printf 'release checksum, manifest or provenance missing\n' >&2; exit 1; }
@@ -122,7 +124,8 @@ done
 jq -e '.schemaVersion == 1 and .version == "1.0.0-test" and .rpc.min == 1 and .rpc.max == 1 and
   .projectStateSchema == 1 and .credentialSchema == 1' "$artifact_one.manifest.json" >/dev/null
 jq -e '.schemaVersion == 1 and .version == "1.0.0-test" and
-  .sourceRepository == "github.com/Dmitry-Borodin/Subyard" and (.sha256 | length == 64)' \
+  .sourceRepository == "github.com/Dmitry-Borodin/Subyard" and
+  .canonicalRepository == "github.com/Subyard/Subyard" and (.sha256 | length == 64)' \
   "$artifact_one.provenance.json" >/dev/null
 rpc_negotiate "$artifact_one" 1.0.0-test 1 compatible artifact-one-v1
 rpc_negotiate "$artifact_one" 1.0.0-test 2 incompatible artifact-one-v2

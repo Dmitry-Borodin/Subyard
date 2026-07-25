@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 type Config struct {
@@ -97,7 +97,7 @@ func (runtime *Runtime) parse(arguments []string) (options, bool, error) {
 		home = filepath.Join(runtime.config.Environment["HOME"], ".subyard")
 	}
 	result := options{channel: "stable", root: filepath.Join(home, "runtime"), cache: filepath.Join(home, "releases"),
-		repository: first(runtime.config.Environment["YARD_RELEASE_REPOSITORY"], "Dmitry-Borodin/Subyard"),
+		repository: first(runtime.config.Environment["YARD_RELEASE_REPOSITORY"], "Subyard/Subyard"),
 		version:    runtime.config.Environment["YARD_RELEASE_VERSION"], baseURL: runtime.config.Environment["YARD_RELEASE_BASE_URL"],
 		tag: runtime.config.Environment["YARD_RELEASE_TAG"]}
 	if value := runtime.config.Environment["YARD_RUNTIME_ROOT"]; value != "" {

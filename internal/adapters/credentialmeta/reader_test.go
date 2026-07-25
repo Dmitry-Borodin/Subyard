@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 func TestReaderProjectsMetadataWithoutPayload(t *testing.T) {

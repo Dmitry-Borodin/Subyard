@@ -13,10 +13,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/application"
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/configsync"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/application"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/configsync"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 const sourceStagePrefix = ".subyard-config-source-"

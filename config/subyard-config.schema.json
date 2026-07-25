@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Dmitry-Borodin/Subyard/config/subyard-config.schema.json",
+  "$id": "https://github.com/Subyard/Subyard/config/subyard-config.schema.json",
   "title": "Subyard versioned desired configuration manifest",
   "type": "object",
   "additionalProperties": false,

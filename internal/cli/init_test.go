@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/reconcileruntime"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/adapters/reconcileruntime"
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 func TestPowerYardContextsAreDiscoveredWithoutChangingSelection(t *testing.T) {

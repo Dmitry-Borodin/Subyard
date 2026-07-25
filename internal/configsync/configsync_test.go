@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/config"
 )
 
 func TestVersionedConfigSyncAppliesOnlyTypedSelectedHostSettings(t *testing.T) {

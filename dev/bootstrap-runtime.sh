@@ -2,7 +2,7 @@
 # Bootstrap a host from release assets.
 set -euo pipefail
 
-REPOSITORY="${YARD_RELEASE_REPOSITORY:-Dmitry-Borodin/Subyard}"
+REPOSITORY="${YARD_RELEASE_REPOSITORY:-Subyard/Subyard}"
 CHANNEL=stable
 VERSION="${YARD_RELEASE_VERSION:-}"
 DATA_HOME="${SUBYARD_HOME:-$HOME/.subyard}"

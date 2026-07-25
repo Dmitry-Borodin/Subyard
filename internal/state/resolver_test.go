@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 func TestResolverQualifiedAndAmbiguous(t *testing.T) {

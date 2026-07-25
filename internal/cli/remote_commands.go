@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Dmitry-Borodin/Subyard/internal/adapters/remotecontrol"
-	"github.com/Dmitry-Borodin/Subyard/internal/application"
-	"github.com/Dmitry-Borodin/Subyard/internal/config"
-	"github.com/Dmitry-Borodin/Subyard/internal/domain"
-	"github.com/Dmitry-Borodin/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/adapters/remotecontrol"
+	"github.com/Subyard/Subyard/internal/application"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 func (cli *CLI) remoteService(loaded config.Loaded) application.RemoteService {

@@ -136,7 +136,7 @@ func TestNativeInitOwnsPlanResumeAndFinalization(t *testing.T) {
 			platform.preflightFresh, platform.applied)
 	}
 	if !strings.Contains(stdout.String(), "[do  ] Create the Incus project") ||
-		!strings.Contains(stdout.String(), "[skip] Provision the yard") {
+		!strings.Contains(stdout.String(), "[do  ] Provision the yard") {
 		t.Fatalf("init plan omitted live stage state:\n%s", stdout.String())
 	}
 

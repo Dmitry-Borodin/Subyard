@@ -10,12 +10,18 @@ import (
 
 type reconcileFixture struct {
 	converged map[string]bool
+	checkErr  map[string]error
+	checked   []string
 	failOnce  map[string]bool
 	verified  map[string]bool
 	applied   []string
 }
 
 func (fixture *reconcileFixture) CheckStage(_ context.Context, id string) (bool, error) {
+	fixture.checked = append(fixture.checked, id)
+	if err := fixture.checkErr[id]; err != nil {
+		return false, err
+	}
 	return fixture.converged[id], nil
 }
 
@@ -62,6 +68,22 @@ func TestReconcilerPlansLiveStateAndResumesAfterFailure(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fixture.applied, []string{"b", "b", "a"}) {
 		t.Fatalf("drift repair disturbed converged work: %#v", fixture.applied)
+	}
+}
+
+func TestReconcilerPlanDoesNotCheckStagesAfterFirstPendingStage(t *testing.T) {
+	stages := []ReconcileStage{{ID: "base", Label: "Base"}, {ID: "dependent", Label: "Dependent"}}
+	fixture := &reconcileFixture{
+		converged: map[string]bool{"base": false},
+		checkErr:  map[string]error{"dependent": errors.New("base is unavailable")},
+	}
+	plan, err := (Reconciler{Stages: stages, Runner: fixture}).Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Pending() != 2 || !reflect.DeepEqual(fixture.checked, []string{"base"}) {
+		t.Fatalf("dependent stages were checked before their prerequisites: plan=%#v checked=%v",
+			plan, fixture.checked)
 	}
 }
 

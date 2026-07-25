@@ -53,12 +53,18 @@ func (reconciler Reconciler) Plan(ctx context.Context) (ReconcilePlan, error) {
 		return ReconcilePlan{}, errors.New("reconcile stage runner is required")
 	}
 	plan := ReconcilePlan{Steps: make([]ReconcileStep, 0, len(reconciler.Stages))}
-	for _, stage := range reconciler.Stages {
+	for index, stage := range reconciler.Stages {
 		converged, err := reconciler.Runner.CheckStage(ctx, stage.ID)
 		if err != nil {
 			return ReconcilePlan{}, fmt.Errorf("check init stage %q: %w", stage.ID, err)
 		}
 		plan.Steps = append(plan.Steps, ReconcileStep{Stage: stage, Converged: converged})
+		if !converged {
+			for _, dependent := range reconciler.Stages[index+1:] {
+				plan.Steps = append(plan.Steps, ReconcileStep{Stage: dependent})
+			}
+			break
+		}
 	}
 	return plan, nil
 }

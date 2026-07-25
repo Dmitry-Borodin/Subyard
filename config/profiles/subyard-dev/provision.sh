@@ -23,13 +23,21 @@ install -d -o "$DEV_USER" -g "$DEV_GROUP" "$GOCACHE" "$GOMODCACHE" "$DEV_HOME/.c
 
 run_as_dev() {
   if [ "$(id -un)" = "$DEV_USER" ]; then
-    HOME="$DEV_HOME" "$@"
+    (
+      cd "$DEV_HOME"
+      HOME="$DEV_HOME" "$@"
+    )
   else
-    runuser -u "$DEV_USER" -- env HOME="$DEV_HOME" "$@"
+    runuser -u "$DEV_USER" -- env HOME="$DEV_HOME" \
+      sh -c 'cd "$HOME" && exec "$@"' sh "$@"
   fi
 }
 
-run_as_dev go env -w GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" GOTOOLCHAIN=auto
-run_as_dev go env GOCACHE GOMODCACHE GOTOOLCHAIN
+run_go_as_dev() {
+  run_as_dev env -u GOCACHE -u GOMODCACHE -u GOTOOLCHAIN go "$@"
+}
+
+run_go_as_dev env -w GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" GOTOOLCHAIN=auto
+run_go_as_dev env GOCACHE GOMODCACHE GOTOOLCHAIN
 printf 'subyard-dev provision OK: %s; shellcheck %s\n' \
-  "$(run_as_dev go version)" "$(shellcheck --version | awk '/^version:/ { print $2; exit }')"
+  "$(run_go_as_dev version)" "$(shellcheck --version | awk '/^version:/ { print $2; exit }')"

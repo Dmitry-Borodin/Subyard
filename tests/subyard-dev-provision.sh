@@ -21,8 +21,9 @@ for cache in /srv/cache/go-build /srv/cache/go-mod; do
 done
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/fake-bin" "$tmp/home"
+adapter_cwd="$tmp/adapter-cwd"
+trap 'chmod 0700 "$adapter_cwd" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/fake-bin" "$tmp/home" "$adapter_cwd"
 
 cat > "$tmp/fake-bin/apt-get" <<'APT'
 #!/usr/bin/env bash
@@ -31,12 +32,17 @@ APT
 cat > "$tmp/fake-bin/go" <<'GO'
 #!/usr/bin/env bash
 set -euo pipefail
+[ "$(pwd -P)" = "$SUBYARD_DEV_EXPECT_CWD" ] || {
+  printf 'go ran from %s, want %s\n' "$(pwd -P)" "$SUBYARD_DEV_EXPECT_CWD" >&2
+  exit 91
+}
 case "${1:-}" in
   env)
     if [ "${2:-}" = -w ]; then
       printf '%s\n' "${*:3}" >> "$SUBYARD_DEV_GO_LOG"
     else
-      printf '%s\n' "$GOCACHE" "$GOMODCACHE" auto
+      printf '%s\n' \
+        "$SUBYARD_DEV_EXPECT_GOCACHE" "$SUBYARD_DEV_EXPECT_GOMODCACHE" auto
     fi
     ;;
   version) printf '%s\n' 'go version go1.24.0 linux/amd64' ;;
@@ -61,9 +67,22 @@ common_env=(
   SUBYARD_DEV_HOME="$tmp/home"
   GOCACHE="$test_cache"
   GOMODCACHE="$test_mod_cache"
+  SUBYARD_DEV_EXPECT_CWD="$tmp/home"
+  SUBYARD_DEV_EXPECT_GOCACHE="$test_cache"
+  SUBYARD_DEV_EXPECT_GOMODCACHE="$test_mod_cache"
 )
 
-env "${common_env[@]}" bash "$HOOK" >/dev/null
+run_hook() {
+  chmod 0700 "$adapter_cwd"
+  (
+    cd "$adapter_cwd"
+    chmod 000 .
+    env "${common_env[@]}" bash "$HOOK" >/dev/null
+  )
+  chmod 0700 "$adapter_cwd"
+}
+
+run_hook
 [ -d "$test_cache" ] || fail "Go build cache was not created"
 [ -d "$test_mod_cache" ] || fail "Go module cache was not created"
 [ -d "$tmp/home/.config/go" ] || fail "Go user config directory was not created"
@@ -74,7 +93,7 @@ grep -Fxq "GOCACHE=$test_cache GOMODCACHE=$test_mod_cache GOTOOLCHAIN=auto" \
   "$SUBYARD_DEV_GO_LOG" || fail "persistent Go environment was not configured"
 
 # Re-provisioning converges to the same settings.
-env "${common_env[@]}" bash "$HOOK" >/dev/null
+run_hook
 [ "$(wc -l < "$SUBYARD_DEV_GO_LOG")" -eq 2 ] \
   || fail "Go environment was not re-applied exactly once per provision"
 

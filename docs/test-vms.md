@@ -40,7 +40,7 @@ The other physical defaults are:
 E2E_VM_IMAGE=images:debian/13/cloud
 E2E_VM_CPU=auto
 E2E_VM_MEMORY=4GiB
-E2E_VM_DISK=10GiB
+E2E_VM_DISK=20GiB
 E2E_VM_BOOT_TIMEOUT=300
 ```
 

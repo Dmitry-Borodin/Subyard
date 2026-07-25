@@ -90,7 +90,7 @@ func ConfigFromValues(values map[string]string) (Config, error) {
 		Enabled: enabled == "1", Project: value("E2E_VM_PROJECT", "subyard-e2e-vms"),
 		Network: value("E2E_VM_NETWORK", "incusbr0"),
 		Prefix:  value("E2E_VM_PREFIX", "e2e-vm"), Image: value("E2E_VM_IMAGE", "images:debian/13/cloud"),
-		CPU: cpu, Memory: value("E2E_VM_MEMORY", "4GiB"), Disk: value("E2E_VM_DISK", "10GiB"),
+		CPU: cpu, Memory: value("E2E_VM_MEMORY", "4GiB"), Disk: value("E2E_VM_DISK", "20GiB"),
 		SlotCount: slots, TTL: LeaseTTL, BootTimeout: boot, DevUser: value("DEV_USER", "dev"),
 		StateDir:       value("E2E_VM_STATE_DIR", "/var/lib/subyard/test-vms"),
 		PublicDir:      value("E2E_VM_PUBLIC_DIR", "/var/lib/subyard/test-vms-public"),

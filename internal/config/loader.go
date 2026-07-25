@@ -805,7 +805,7 @@ func contextFrom(
 	setDefault(values, "E2E_VM_IMAGE", "images:debian/13/cloud", tracker, defaultLayer)
 	setDefault(values, "E2E_VM_CPU", "2", tracker, defaultLayer)
 	setDefault(values, "E2E_VM_MEMORY", "4GiB", tracker, defaultLayer)
-	setDefault(values, "E2E_VM_DISK", "10GiB", tracker, defaultLayer)
+	setDefault(values, "E2E_VM_DISK", "20GiB", tracker, defaultLayer)
 	setDefault(values, "E2E_VM_SLOT_COUNT", "2", tracker, defaultLayer)
 	setDefault(values, "E2E_VM_BOOT_TIMEOUT", "300", tracker, defaultLayer)
 	for _, name := range []string{"STORAGE_PATH", "HOST_BASE", "RESTRICTED_DISK_PATHS"} {

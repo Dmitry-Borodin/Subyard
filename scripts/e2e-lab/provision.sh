@@ -305,7 +305,7 @@ reconcile_inner_incus() {
 : "${E2E_VM_IMAGE:=images:debian/13/cloud}"
 : "${E2E_VM_CPU:=4}"
 : "${E2E_VM_MEMORY:=4GiB}"
-: "${E2E_VM_DISK:=10GiB}"
+: "${E2E_VM_DISK:=20GiB}"
 : "${E2E_VM_SLOT_COUNT:=2}"
 : "${E2E_VM_BOOT_TIMEOUT:=300}"
 : "${E2E_VM_STATE_DIR:=/var/lib/subyard/test-vms}"

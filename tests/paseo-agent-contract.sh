@@ -43,6 +43,11 @@ jq -e '
     .value.version] == ["0.3.214"]
 ' "$lock" >/dev/null || fail "Claude Agent SDK lock drift"
 
+for workflow in ci.yml release.yml; do
+  grep -Eq 'apt-get install .* ripgrep( |$)' "$ROOT/.github/workflows/$workflow" \
+    || fail "$workflow does not install the ripgrep test dependency"
+done
+
 rg -q '^ExecStart=.*--listen 127[.]0[.]0[.]1:6767 .*--relay-use-tls .*--no-web-ui$' \
   "$ROOT/config/agents/paseo/paseo.service.in" || fail "unit listener/relay contract drift"
 rg -q '^ReadWritePaths=@DEV_HOME@ /srv/agents/paseo /srv/workspaces$' \

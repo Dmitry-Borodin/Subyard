@@ -140,33 +140,38 @@ Its fixed managed layout is:
 
 ```text
 subyard-config.json
-shared/
+shared/                         # optional common scope
   config.env
   overrides/
     agents/...
-hosts/
-  <HostID>/
-    config.env
+hosts/                          # optional host overlays
+  <HostID>/                     # optional selected-host overlay
+    config.env                  # optional host-wide scalars
     overrides/
       agents/...
     yards/
       <yard>/
-        config.env
+        config.env              # required for an existing yard entry
         overrides/
           agents/...
 ```
 
-`config.env` under the selected host is required, even when empty. Scalar assignments must be
-syncable in their exact shared, host or yard scope. Versioned file settings are regular,
-non-executable files at catalog-known paths below `overrides/agents`; path assignments in
-`config.env` are rejected. The source manifest schema is
+`shared/` and the selected `hosts/<HostID>/` overlay are independent and optional. A source with
+only the manifest is a valid empty desired state. A selected host directory may contain only
+`overrides/` or `yards/`; its `config.env` is optional. An existing
+`hosts/<HostID>/yards/<yard>/` entry still requires `config.env`, because the directory declares a
+yard that needs an unambiguous scalar definition. Scalar assignments must be syncable in their
+exact shared, host or yard scope. Versioned file settings are regular, non-executable files at
+catalog-known paths below `overrides/agents`; path assignments in `config.env` are rejected. The
+source manifest schema is
 [`config/subyard-config.schema.json`](../config/subyard-config.schema.json).
 
 The first sync snapshots an owner-host ID. By default it uses the current hostname; set
 `SUBYARD_HOST_ID=<safe-id>` for the first invocation to choose another value. The saved
 `$SUBYARD_CONFIG_HOME/host-id` is local identity state, is never imported from Git and is not renamed
-by later syncs. Each host selects only `shared` and `hosts/<HostID>`, so two hosts may have yards with
-the same name without collapsing them.
+by later syncs. It is not published or added to the source automatically. Each host selects only
+`shared` and its exact `hosts/<HostID>` overlay, so another host subtree is neither applied nor an
+enrollment requirement. Two hosts may have yards with the same name without collapsing them.
 
 After onboarding, use Git itself for transport and history. The registered path is available through
 `config source path`, and `config sync` no longer needs the path argument:
@@ -185,7 +190,10 @@ commands. Follow-up commands are printed by application mode.
 An existing unmanaged target requires a reviewed first import with `--adopt`. Later local edits are
 reported as managed drift and restored only through the confirmed exact plan. A path removed from Git
 is deleted only when the local manifest owned its previous exact digest. Removing a yard definition
-fails while its Incus yard or project state still exists; sync never becomes teardown.
+fails while its Incus yard or project state still exists; sync never becomes teardown. Removing the
+selected host subtree means an intentionally empty host overlay: the exact plan removes only its
+previously managed paths, subject to the same digest, drift and in-use guards. Unmanaged local paths
+are left alone.
 
 The source must be an operator-owned Git worktree root with a clean selected subtree. Tracked,
 untracked, ignored, unmerged, symlinked, hard-linked, executable or group/world-writable inputs fail
@@ -211,9 +219,8 @@ the repository and there is no implicit all-host fan-out.
 
 ### Bootstrapping an existing host
 
-First choose the stable owner-host ID that will name this host's subtree. Before creating files,
-classify current values with `yard config fields` and inspect their provenance with
-`yard config show`. Only fields marked `syncable: yes` may be copied:
+Before creating optional settings, classify current values with `yard config fields` and inspect
+their provenance with `yard config show`. Only fields marked `syncable: yes` may be copied:
 
 - portable fields that explicitly allow `shared` go to `shared/config.env`;
 - host-specific fields go to `hosts/<HostID>/config.env`;
@@ -228,31 +235,32 @@ root:
 
 ```sh
 checkout=$HOME/.local/share/subyard-config
-host_id=replace-with-stable-host-id
 
-install -d -m 0700 "$checkout/hosts/$host_id"
+install -d -m 0700 "$checkout"
 git -C "$checkout" init
 printf '%s\n' '{"schemaVersion":1}' >"$checkout/subyard-config.json"
-: >"$checkout/hosts/$host_id/config.env"
-git -C "$checkout" add subyard-config.json "hosts/$host_id/config.env"
+git -C "$checkout" add subyard-config.json
 git -C "$checkout" commit -m 'Add Subyard configuration source'
 git -C "$checkout" remote add origin git@github.com:you/subyard-config.git
 git -C "$checkout" push -u origin HEAD
 ```
 
-Move reviewed assignments and known override files into that layout and commit them. Connect the
-existing checkout by giving the same origin URL and path; the command shows the exact adoption plan
-and asks once:
+Add and commit `shared/config.env` only when common settings are needed. Add
+`hosts/<HostID>/config.env`, host overrides or yard definitions only for real differences belonging
+to that host; empty marker files are unnecessary. Connect the existing checkout by giving the same
+origin URL and path. The command performs local enrollment, shows the exact adoption plan and asks
+once:
 
 ```sh
 yard config source connect \
   git@github.com:you/subyard-config.git \
-  --host-id "$host_id" \
+  --host-id replace-with-stable-host-id \
   --checkout "$checkout"
 ```
 
 Do not copy `~/.config/subyard` recursively. In particular, do not add ignored secret or runtime
 paths just to make the worktree appear clean: selected ignored and untracked source paths are
 rejected. After `connect`, the checkout path and saved local `host-id` are authoritative. Each
-additional owner host runs its own `source connect` against a HostID subtree already committed to
-the repository.
+additional owner host runs its own `source connect`; a matching subtree does not need to exist in
+Git when that host uses only shared settings. Yard does not create a host entry or run Git
+commit/push.

@@ -570,6 +570,249 @@ func TestConfigSourceConnectClonesRegistersAndAppliesWithOnePrompt(t *testing.T)
 	}
 }
 
+func TestConfigSourceConnectOnboardsSharedOnlySource(t *testing.T) {
+	root, home, configHome, environment := configCommandFixture(t)
+	source := configSharedOnlyGitRepository(t)
+	checkout := filepath.Join(home, ".local", "share", "subyard-config")
+	prompt := &testkit.Prompt{Answers: []bool{true}}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "source", "connect", source, "--host-id", "owner-a",
+		},
+		Environment: environment, WorkingDir: root, Prompt: prompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("shared-only source connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(prompt.Seen) != 1 {
+		t.Fatalf("shared-only source connect prompted %d times: %#v",
+			len(prompt.Seen), prompt.Seen)
+	}
+	for _, expected := range []string{
+		"checkout: " + checkout,
+		"owner-host: owner-a",
+		"initialize: host-id",
+		"add",
+		"overrides/shared/config.env",
+		"config source: connected " + checkout,
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("shared-only source connect omitted %q:\n%s", expected, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "images:debian/13") {
+		t.Fatalf("source connect printed a configuration value:\n%s", stdout.String())
+	}
+	content, err := os.ReadFile(
+		filepath.Join(configHome, "overrides", "shared", "config.env"),
+	)
+	if err != nil || string(content) != "BASE_IMAGE=images:debian/13\n" {
+		t.Fatalf("source connect did not apply shared settings: %q %v", content, err)
+	}
+	content, err = os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || len(content) != 0 {
+		t.Fatalf("shared-only connect changed unmanaged host settings: %q %v", content, err)
+	}
+	content, err = os.ReadFile(configsync.HostIDPath(configHome))
+	if err != nil || string(content) != "owner-a\n" {
+		t.Fatalf("shared-only connect did not save local host ID: %q %v", content, err)
+	}
+	if _, err := os.Lstat(filepath.Join(checkout, "hosts")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source connect created a hosts tree in Git checkout: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "--check"},
+		Environment: environment, WorkingDir: root, Prompt: &testkit.Prompt{},
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 ||
+		!strings.Contains(stdout.String(), "config sync check: converged") {
+		t.Fatalf("shared-only repeated check: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+}
+
+func TestConfigSyncTransitionsBetweenSharedOnlyAndHostOverlay(t *testing.T) {
+	root, home, configHome, environment := configCommandFixture(t)
+	source := configSharedOnlyGitRepository(t)
+	checkout := filepath.Join(home, ".local", "share", "subyard-config")
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "source", "connect", source, "--host-id", "owner-a", "--yes",
+		},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("initial shared-only connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+
+	writeConfigCommandFile(
+		t, filepath.Join(source, "hosts", "owner-a", "config.env"), "SSH_PORT=2294\n",
+	)
+	commitConfigSource(t, source, "add owner-a overlay")
+	runConfigSyncGit(t, checkout, "pull", "--ff-only")
+	for _, directory := range []string{
+		filepath.Join(checkout, "hosts"),
+		filepath.Join(checkout, "hosts", "owner-a"),
+	} {
+		if err := os.Chmod(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(
+		filepath.Join(checkout, "hosts", "owner-a", "config.env"), 0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	checkPrompt := &testkit.Prompt{}
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "--check", "--adopt"},
+		Environment: environment, WorkingDir: root, Prompt: checkPrompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stdout.String(), "config sync check: changes required") ||
+		!strings.Contains(stdout.String(), "config.env") {
+		t.Fatalf("host overlay check: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(checkPrompt.Seen) != 0 {
+		t.Fatalf("host overlay --check prompted: %#v", checkPrompt.Seen)
+	}
+
+	declinePrompt := &testkit.Prompt{Answers: []bool{false}}
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "--adopt"},
+		Environment: environment, WorkingDir: root, Prompt: declinePrompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stderr.String(), "operation declined") {
+		t.Fatalf("declined host overlay: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	content, err := os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || len(content) != 0 {
+		t.Fatalf("declined host overlay changed live settings: %q %v", content, err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "--adopt"},
+		Environment: environment, WorkingDir: root,
+		Prompt: &testkit.Prompt{Answers: []bool{true}},
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("apply host overlay: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	content, err = os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || string(content) != "SSH_PORT=2294\n" {
+		t.Fatalf("host overlay was not applied: %q %v", content, err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(source, "hosts", "owner-a")); err != nil {
+		t.Fatal(err)
+	}
+	commitConfigSource(t, source, "remove owner-a overlay")
+	runConfigSyncGit(t, checkout, "pull", "--ff-only")
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "--check"},
+		Environment: environment, WorkingDir: root, Prompt: &testkit.Prompt{},
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stdout.String(), "delete") ||
+		!strings.Contains(stdout.String(), "config.env") {
+		t.Fatalf("host overlay removal check: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "--yes"},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("remove host overlay: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Lstat(filepath.Join(configHome, "config.env")); !errors.Is(
+		err, os.ErrNotExist,
+	) {
+		t.Fatalf("managed host overlay survived removal: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync"},
+		Environment: environment, WorkingDir: root, Prompt: &testkit.Prompt{},
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 ||
+		!strings.Contains(stdout.String(), "already converged") {
+		t.Fatalf("shared-only repeat sync: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+}
+
 func TestConfigSourceConnectDeclineLeavesNoCheckoutOrRegistration(t *testing.T) {
 	root, home, configHome, environment := configCommandFixture(t)
 	source := configSourceGitRepository(t, "owner-a", "SSH_PORT=2293\n")
@@ -784,6 +1027,26 @@ func configSourceGitRepository(
 		"-c", "user.name=Subyard Test", "-c", "user.email=test@invalid",
 		"commit", "-q", "-m", "initial")
 	return source
+}
+
+func configSharedOnlyGitRepository(t *testing.T) string {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), "source")
+	writeConfigCommandFile(t, filepath.Join(source, "subyard-config.json"),
+		"{\n  \"schemaVersion\": 1\n}\n")
+	writeConfigCommandFile(t, filepath.Join(source, "shared", "config.env"),
+		"BASE_IMAGE=images:debian/13\n")
+	runConfigSyncGit(t, source, "init", "-q")
+	commitConfigSource(t, source, "shared only")
+	return source
+}
+
+func commitConfigSource(t *testing.T, source, message string) {
+	t.Helper()
+	runConfigSyncGit(t, source, "add", "-A")
+	runConfigSyncGit(t, source,
+		"-c", "user.name=Subyard Test", "-c", "user.email=test@invalid",
+		"commit", "-q", "-m", message)
 }
 
 func configSourceGitOutput(

@@ -107,29 +107,46 @@ func readSource(options Options, hostID string) (sourceSnapshot, error) {
 	); err != nil {
 		return sourceSnapshot{}, fmt.Errorf("shared source: %w", err)
 	}
+	hostsRoot := filepath.Join(root, "hosts")
+	hostEntries, err := readOptionalDirectory(root, hostsRoot)
+	if err != nil {
+		return sourceSnapshot{}, fmt.Errorf("owner hosts: %w", err)
+	}
 	hostRoot := filepath.Join(root, "hosts", hostID)
-	if err := requireSourceDirectory(root, hostRoot); err != nil {
-		return sourceSnapshot{}, fmt.Errorf("owner host %q: %w", hostID, err)
+	hostPresent := false
+	for _, entry := range hostEntries {
+		if entry.Name() == hostID {
+			hostPresent = true
+			break
+		}
 	}
-	if err := validateChildren(hostRoot, map[string]bool{
-		"config.env": false, "overrides": true, "yards": true,
-	}); err != nil {
-		return sourceSnapshot{}, fmt.Errorf("owner host %q: %w", hostID, err)
-	}
-	if err := snapshot.readConfig(
-		filepath.Join(hostRoot, "config.env"), "config.env", config.ScopeHost, true,
-	); err != nil {
-		return sourceSnapshot{}, fmt.Errorf("owner host %q: %w", hostID, err)
-	}
-	if err := snapshot.readOverrides(
-		filepath.Join(hostRoot, "overrides"), "overrides/host/agents", allowedFiles,
-	); err != nil {
-		return sourceSnapshot{}, fmt.Errorf("owner host %q overrides: %w", hostID, err)
+	if hostPresent {
+		if _, err := readOptionalDirectory(root, hostRoot); err != nil {
+			return sourceSnapshot{}, fmt.Errorf("owner host %q: %w", hostID, err)
+		}
+		if err := validateChildren(hostRoot, map[string]bool{
+			"config.env": false, "overrides": true, "yards": true,
+		}); err != nil {
+			return sourceSnapshot{}, fmt.Errorf("owner host %q: %w", hostID, err)
+		}
+		if err := snapshot.readConfig(
+			filepath.Join(hostRoot, "config.env"), "config.env", config.ScopeHost, false,
+		); err != nil {
+			return sourceSnapshot{}, fmt.Errorf("owner host %q: %w", hostID, err)
+		}
+		if err := snapshot.readOverrides(
+			filepath.Join(hostRoot, "overrides"), "overrides/host/agents", allowedFiles,
+		); err != nil {
+			return sourceSnapshot{}, fmt.Errorf("owner host %q overrides: %w", hostID, err)
+		}
 	}
 	yardsRoot := filepath.Join(hostRoot, "yards")
-	entries, err := readOptionalDirectory(root, yardsRoot)
-	if err != nil {
-		return sourceSnapshot{}, err
+	var entries []os.DirEntry
+	if hostPresent {
+		entries, err = readOptionalDirectory(root, yardsRoot)
+		if err != nil {
+			return sourceSnapshot{}, fmt.Errorf("owner host %q yards: %w", hostID, err)
+		}
 	}
 	for _, entry := range entries {
 		name := entry.Name()
@@ -410,23 +427,6 @@ func validateChildren(root string, allowed map[string]bool) error {
 		}
 	}
 	return nil
-}
-
-func requireSourceDirectory(sourceRoot, path string) error {
-	if err := validateSourceAncestors(sourceRoot, path); err != nil {
-		return err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return errors.New("must be a real directory")
-	}
-	if !pathWithin(path, sourceRoot) {
-		return errors.New("directory escaped source root")
-	}
-	return validateOwnedMode(path, info, true)
 }
 
 func readOptionalDirectory(sourceRoot, path string) ([]os.DirEntry, error) {

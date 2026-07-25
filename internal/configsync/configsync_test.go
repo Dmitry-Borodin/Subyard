@@ -88,6 +88,174 @@ func TestVersionedConfigSyncAppliesOnlyTypedSelectedHostSettings(t *testing.T) {
 	}
 }
 
+func TestVersionedConfigSyncAllowsOptionalSharedAndSelectedHostScopes(t *testing.T) {
+	t.Run("manifest-only preserves unmanaged live settings", func(t *testing.T) {
+		fixture := newSyncFixture(t, "owner-a")
+		fixture.commit("manifest only")
+		writeSyncTestFile(
+			t, filepath.Join(fixture.configHome, "config.env"), "SSH_PORT=2299\n", 0o600,
+		)
+
+		plan, err := BuildPlan(fixture.options(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !plan.InitializeHostID || len(plan.Changes) != 0 {
+			t.Fatalf("unexpected manifest-only plan: %#v", plan)
+		}
+		if err := Apply(plan); err != nil {
+			t.Fatal(err)
+		}
+		assertSyncTestFile(
+			t, filepath.Join(fixture.configHome, "config.env"), "SSH_PORT=2299\n", 0o600,
+		)
+		assertSyncTestFile(t, HostIDPath(fixture.configHome), "owner-a\n", 0o600)
+	})
+
+	t.Run("shared-only without hosts", func(t *testing.T) {
+		fixture := newSyncFixture(t, "owner-a")
+		fixture.writeSource("shared/config.env", "BASE_IMAGE=images:debian/13\n")
+		fixture.commit("shared only")
+
+		plan, err := BuildPlan(fixture.options(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Changes) != 1 ||
+			plan.Changes[0].Path != "overrides/shared/config.env" {
+			t.Fatalf("unexpected shared-only plan: %#v", plan.Changes)
+		}
+		if err := Apply(plan); err != nil {
+			t.Fatal(err)
+		}
+		assertSyncTestFile(
+			t, filepath.Join(fixture.configHome, "overrides", "shared", "config.env"),
+			"BASE_IMAGE=images:debian/13\n", 0o600,
+		)
+	})
+
+	t.Run("host without scalar settings", func(t *testing.T) {
+		fixture := newSyncFixture(t, "owner-a")
+		fixture.writeSource(
+			"hosts/owner-a/overrides/agents/codex/rules/repo.rules", "allow\n",
+		)
+		fixture.writeSource(
+			"hosts/owner-a/yards/demo/config.env", "SSH_PORT=2234\n",
+		)
+		fixture.commit("host overlays without host config")
+
+		plan, err := BuildPlan(fixture.options(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Changes) != 2 {
+			t.Fatalf("unexpected host overlay plan: %#v", plan.Changes)
+		}
+		if err := Apply(plan); err != nil {
+			t.Fatal(err)
+		}
+		assertSyncTestFile(
+			t,
+			filepath.Join(
+				fixture.configHome, "overrides", "host", "agents", "codex", "rules",
+				"repo.rules",
+			),
+			"allow\n", 0o644,
+		)
+		assertSyncTestFile(
+			t, filepath.Join(fixture.configHome, "yards", "demo", "config.env"),
+			"SSH_PORT=2234\n", 0o600,
+		)
+	})
+
+	t.Run("other host is neither applied nor inspected", func(t *testing.T) {
+		fixture := newSyncFixture(t, "owner-a")
+		fixture.writeSource("hosts/owner-b/config.env", "SSH_PORT=3233\n")
+		fixture.commit("other host only")
+		fixture.writeSource("hosts/owner-b/config.env", "SSH_PORT=3299\n")
+
+		plan, err := BuildPlan(fixture.options(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Changes) != 0 {
+			t.Fatalf("other host entered selected plan: %#v", plan.Changes)
+		}
+		if err := Apply(plan); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(filepath.Join(fixture.configHome, "config.env")); !errors.Is(
+			err, os.ErrNotExist,
+		) {
+			t.Fatalf("other host settings reached live configuration: %v", err)
+		}
+	})
+}
+
+func TestVersionedConfigSyncKeepsOptionalScopeValidationFailClosed(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		write func(*syncFixture)
+		want  string
+	}{
+		{
+			name: "selected host is a file",
+			write: func(fixture *syncFixture) {
+				fixture.writeSource("hosts/owner-a", "not a directory\n")
+			},
+			want: "real source directory",
+		},
+		{
+			name: "selected host has an unknown child",
+			write: func(fixture *syncFixture) {
+				fixture.writeSource("hosts/owner-a/unknown.env", "SSH_PORT=2233\n")
+			},
+			want: "unexpected source path",
+		},
+		{
+			name: "yard entry has no scalar definition",
+			write: func(fixture *syncFixture) {
+				fixture.writeSource(
+					"hosts/owner-a/yards/demo/overrides/agents/codex/rules/repo.rules",
+					"allow\n",
+				)
+			},
+			want: "yard demo has no config.env definition",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newSyncFixture(t, "owner-a")
+			test.write(fixture)
+			fixture.commit("malformed selected host")
+			if _, err := BuildPlan(fixture.options(false)); err == nil ||
+				!strings.Contains(err.Error(), test.want) {
+				t.Fatalf("wanted %q rejection, got %v", test.want, err)
+			}
+		})
+	}
+
+	t.Run("untracked selected host appearance", func(t *testing.T) {
+		fixture := newSyncFixture(t, "owner-a")
+		fixture.commit("manifest only")
+		fixture.writeSource("hosts/owner-a/config.env", "SSH_PORT=2233\n")
+		if _, err := BuildPlan(fixture.options(false)); err == nil ||
+			!strings.Contains(err.Error(), "changes in managed paths") {
+			t.Fatalf("untracked selected host was accepted: %v", err)
+		}
+	})
+
+	t.Run("dirty shared scope", func(t *testing.T) {
+		fixture := newSyncFixture(t, "owner-a")
+		fixture.writeSource("shared/config.env", "BASE_IMAGE=images:debian/13\n")
+		fixture.commit("shared only")
+		fixture.writeSource("shared/config.env", "BASE_IMAGE=images:ubuntu/24.04\n")
+		if _, err := BuildPlan(fixture.options(false)); err == nil ||
+			!strings.Contains(err.Error(), "changes in managed paths") {
+			t.Fatalf("dirty shared scope was accepted: %v", err)
+		}
+	})
+}
+
 func TestVersionedConfigSyncRejectsDirtyUnknownSecretAndLocalOnlySource(t *testing.T) {
 	for _, test := range []struct {
 		name, content, want string
@@ -235,6 +403,84 @@ func TestVersionedConfigSyncGuardsYardDeletionAndKeepsSameNameHostScoped(t *test
 	if _, err := os.Lstat(filepath.Join(fixture.configHome, "yards", "demo", "config.env")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("managed yard definition was not deleted: %v", err)
 	}
+}
+
+func TestVersionedConfigSyncSafelyRemovesSelectedHostSubtree(t *testing.T) {
+	t.Run("managed host and yard paths", func(t *testing.T) {
+		fixture := newSyncFixture(t, "owner-a")
+		fixture.writeSource("hosts/owner-a/config.env", "SSH_PORT=2233\n")
+		fixture.writeSource("hosts/owner-a/yards/demo/config.env", "SSH_PORT=2234\n")
+		fixture.commit("selected host")
+		initial, err := BuildPlan(fixture.options(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Apply(initial); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.RemoveAll(filepath.Join(fixture.source, "hosts", "owner-a")); err != nil {
+			t.Fatal(err)
+		}
+		fixture.commit("remove selected host")
+		blocked := fixture.options(false)
+		blocked.YardInUse = func(string) (string, bool, error) {
+			return "project state exists", true, nil
+		}
+		if _, err := BuildPlan(blocked); err == nil ||
+			!strings.Contains(err.Error(), "project state exists") {
+			t.Fatalf("in-use host subtree deletion was accepted: %v", err)
+		}
+
+		plan, err := BuildPlan(fixture.options(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.Changes) != 2 {
+			t.Fatalf("unexpected host subtree deletion plan: %#v", plan.Changes)
+		}
+		for _, change := range plan.Changes {
+			if change.Action != "delete" {
+				t.Fatalf("host subtree deletion was not explicit: %#v", plan.Changes)
+			}
+		}
+		if err := Apply(plan); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{
+			"config.env", filepath.Join("yards", "demo", "config.env"),
+		} {
+			if _, err := os.Lstat(filepath.Join(fixture.configHome, path)); !errors.Is(
+				err, os.ErrNotExist,
+			) {
+				t.Fatalf("managed path %s survived host subtree deletion: %v", path, err)
+			}
+		}
+	})
+
+	t.Run("managed local drift", func(t *testing.T) {
+		fixture := newSyncFixture(t, "owner-a")
+		fixture.writeSource("hosts/owner-a/config.env", "SSH_PORT=2233\n")
+		fixture.commit("selected host")
+		initial, err := BuildPlan(fixture.options(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Apply(initial); err != nil {
+			t.Fatal(err)
+		}
+		writeSyncTestFile(
+			t, filepath.Join(fixture.configHome, "config.env"), "SSH_PORT=2299\n", 0o600,
+		)
+		if err := os.RemoveAll(filepath.Join(fixture.source, "hosts", "owner-a")); err != nil {
+			t.Fatal(err)
+		}
+		fixture.commit("remove selected host")
+		if _, err := BuildPlan(fixture.options(false)); err == nil ||
+			!strings.Contains(err.Error(), "local drift and cannot be deleted") {
+			t.Fatalf("drifted managed host settings were deleted: %v", err)
+		}
+	})
 }
 
 func TestVersionedConfigSyncGuardsMissingManagedYardDefinition(t *testing.T) {

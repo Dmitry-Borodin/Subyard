@@ -35,6 +35,19 @@ This checks the same server, instance, async exec, stdio-flush, operation-event 
 event-cancellation semantics covered by the fake Unix/WebSocket server. It executes only `printf`
 inside each selected running instance.
 
+## Versioned configuration source
+
+Run the shared-only source gate on an allocated VM:
+
+```sh
+dev/agent-e2e.sh --vm 1 -- bash ./dev/e2e/config-source-shared-only.sh
+```
+
+The gate uses a marked temporary root and a loopback OpenSSH Git remote. It verifies declined and
+confirmed onboarding, local HostID persistence, shared and host provenance, explicit external Git
+transport, idempotent sync and safe host-overlay removal. Its trap removes the Git remote, checkout,
+live configuration and SSH process; it never changes the outer yard lifecycle.
+
 ## Platform and release checks
 
 VM1 installs the candidate runtime, runs `init` twice, repairs a legacy fixture and verifies storage,

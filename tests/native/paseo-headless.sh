@@ -152,6 +152,8 @@ port="$("$node" -e '
   });
 ')"
 PASEO_HOME="$home" PASEO_RELAY_ENABLED=false PASEO_WEB_UI_ENABLED=false \
+PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD=false PASEO_DICTATION_ENABLED=false \
+PASEO_VOICE_MODE_ENABLED=false \
   "$node" "$cli" daemon start --foreground --home "$home" \
   --listen "127.0.0.1:$port" --no-relay --no-web-ui \
   >"$temporary/daemon.log" 2>&1 &

@@ -26,6 +26,38 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "_test-vms-facade" {
+		configPath := os.Getenv("SUBYARD_TEST_VMS_CONFIG")
+		if configPath == "" {
+			configPath = testvmsruntime.DefaultConfigPath
+		}
+		cfg, err := testvmsruntime.LoadConfig(configPath)
+		if err == nil {
+			runtime := &testvmsruntime.Runtime{
+				Config: cfg, ConfigPath: configPath, Stdout: os.Stderr, Stderr: os.Stderr,
+			}
+			store := testvmsruntime.LeaseStore{
+				Path: cfg.LeaseStatePath(), SlotCount: cfg.SlotCount,
+			}
+			err = (testvmsruntime.Facade{
+				Store:  store,
+				Output: os.Stdout,
+				OnAcquire: func(grant testvmsruntime.LeaseGrant, publicKey string) (
+					testvmsruntime.LeaseGrant, error,
+				) {
+					return runtime.AcquireSlot(ctx, store, grant, publicKey)
+				},
+				OnRelease: func(grant testvmsruntime.LeaseGrant) error {
+					return runtime.ReleaseSlot(ctx, grant)
+				},
+			}).Run(os.Getenv("SSH_ORIGINAL_COMMAND"))
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "test-vms: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "_test-vms-worker" {
 		configPath := os.Getenv("SUBYARD_TEST_VMS_CONFIG")
 		if configPath == "" {

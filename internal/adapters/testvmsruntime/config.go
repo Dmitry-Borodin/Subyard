@@ -31,12 +31,14 @@ var (
 type Config struct {
 	Enabled             bool
 	Project             string
+	Network             string
 	Prefix              string
 	Image               string
 	CPU                 int
 	Memory              string
 	Disk                string
-	TTL                 time.Duration
+	SlotCount           int
+	TTL                 time.Duration // Legacy single-allocation compatibility; not used for pair deletion.
 	BootTimeout         time.Duration
 	DevUser             string
 	StateDir            string
@@ -75,8 +77,7 @@ func ConfigFromValues(values map[string]string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	ttl, err := boundedMinutes(value("E2E_VM_TTL_MINUTES", "240"), 15, 1440,
-		"E2E_VM_TTL_MINUTES")
+	slots, err := positiveInt(value("E2E_VM_SLOT_COUNT", "2"), "E2E_VM_SLOT_COUNT")
 	if err != nil {
 		return Config{}, err
 	}
@@ -87,16 +88,17 @@ func ConfigFromValues(values map[string]string) (Config, error) {
 	}
 	result := Config{
 		Enabled: enabled == "1", Project: value("E2E_VM_PROJECT", "subyard-e2e-vms"),
-		Prefix: value("E2E_VM_PREFIX", "e2e-vm"), Image: value("E2E_VM_IMAGE", "images:debian/13/cloud"),
+		Network: value("E2E_VM_NETWORK", "incusbr0"),
+		Prefix:  value("E2E_VM_PREFIX", "e2e-vm"), Image: value("E2E_VM_IMAGE", "images:debian/13/cloud"),
 		CPU: cpu, Memory: value("E2E_VM_MEMORY", "4GiB"), Disk: value("E2E_VM_DISK", "10GiB"),
-		TTL: ttl, BootTimeout: boot, DevUser: value("DEV_USER", "dev"),
+		SlotCount: slots, TTL: LeaseTTL, BootTimeout: boot, DevUser: value("DEV_USER", "dev"),
 		StateDir:       value("E2E_VM_STATE_DIR", "/var/lib/subyard/test-vms"),
 		PublicDir:      value("E2E_VM_PUBLIC_DIR", "/var/lib/subyard/test-vms-public"),
 		AgentUser:      value("E2E_AGENT_USER", "subyard-e2e-agent"),
 		AgentPublicKey: values["E2E_AGENT_PUBLIC_KEY"],
 		AgentHome:      value("E2E_AGENT_HOME", "/var/lib/subyard/e2e-agent"),
 		StatusCommand: value("E2E_AGENT_STATUS_COMMAND",
-			DefaultInstalledPath+" _test-vms-status"),
+			"sudo -n "+DefaultInstalledPath+" _test-vms-facade"),
 		Incus: value("SUBYARD_INNER_INCUS", "incus"),
 	}
 	result.AgentAuthorizedKeys = value("E2E_AGENT_AUTHORIZED_KEYS",
@@ -110,6 +112,9 @@ func ConfigFromValues(values map[string]string) (Config, error) {
 func (cfg Config) Validate() error {
 	if !safeName.MatchString(cfg.Project) {
 		return fmt.Errorf("unsafe E2E_VM_PROJECT %q", cfg.Project)
+	}
+	if !safeName.MatchString(cfg.Network) {
+		return fmt.Errorf("unsafe E2E_VM_NETWORK %q", cfg.Network)
 	}
 	if !safeName.MatchString(cfg.Prefix) {
 		return fmt.Errorf("unsafe E2E_VM_PREFIX %q", cfg.Prefix)
@@ -141,7 +146,7 @@ func (cfg Config) Validate() error {
 			return fmt.Errorf("unsafe %s %q", name, path)
 		}
 	}
-	if cfg.StatusCommand != DefaultInstalledPath+" _test-vms-status" {
+	if cfg.StatusCommand != "sudo -n "+DefaultInstalledPath+" _test-vms-facade" {
 		return fmt.Errorf("unsafe E2E_AGENT_STATUS_COMMAND %q", cfg.StatusCommand)
 	}
 	if cfg.AgentPublicKey != "" {
@@ -157,13 +162,21 @@ func (cfg Config) Validate() error {
 }
 
 func (cfg Config) vm(index int) string { return cfg.Prefix + "-" + strconv.Itoa(index) }
-func (cfg Config) keyPath() string     { return filepath.Join(cfg.StateDir, "id_ed25519") }
-func (cfg Config) knownHosts() string  { return filepath.Join(cfg.StateDir, "known_hosts") }
-func (cfg Config) createdAt() string   { return filepath.Join(cfg.StateDir, "created-at") }
-func (cfg Config) failureLog() string  { return filepath.Join(cfg.StateDir, "last-failure.log") }
-func (cfg Config) keyRevision() string { return filepath.Join(cfg.StateDir, "worker-key-v2") }
-func (cfg Config) revokedKey() string  { return filepath.Join(cfg.StateDir, "revoked-worker.pub") }
-func (cfg Config) manifest() string    { return filepath.Join(cfg.PublicDir, "allocation.tsv") }
+func (cfg Config) slotProject(slot int) string {
+	return cfg.Project + "-slot-" + strconv.Itoa(slot)
+}
+func (cfg Config) slotVM(slot, index int) string {
+	return cfg.Prefix + "-slot-" + strconv.Itoa(slot) + "-" + strconv.Itoa(index)
+}
+func (cfg Config) keyPath() string        { return filepath.Join(cfg.StateDir, "id_ed25519") }
+func (cfg Config) knownHosts() string     { return filepath.Join(cfg.StateDir, "known_hosts") }
+func (cfg Config) createdAt() string      { return filepath.Join(cfg.StateDir, "created-at") }
+func (cfg Config) failureLog() string     { return filepath.Join(cfg.StateDir, "last-failure.log") }
+func (cfg Config) keyRevision() string    { return filepath.Join(cfg.StateDir, "worker-key-v2") }
+func (cfg Config) revokedKey() string     { return filepath.Join(cfg.StateDir, "revoked-worker.pub") }
+func (cfg Config) manifest() string       { return filepath.Join(cfg.PublicDir, "allocation.tsv") }
+func (cfg Config) leaseState() string     { return filepath.Join(cfg.StateDir, "leases.json") }
+func (cfg Config) LeaseStatePath() string { return cfg.leaseState() }
 
 func positiveInt(value, name string) (int, error) {
 	number, err := strconv.Atoi(value)

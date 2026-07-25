@@ -41,7 +41,7 @@ func fixtureBackend(t *testing.T, enrolled bool) *Backend {
 			"NESTED_E2E_VMS": "1", "DEV_USER": "dev",
 			"E2E_VM_IMAGE": "images:debian/13/cloud", "E2E_VM_CPU": "2",
 			"E2E_VM_MEMORY": "4GiB", "E2E_VM_DISK": "10GiB",
-			"E2E_VM_TTL_MINUTES": "1200", "E2E_VM_BOOT_TIMEOUT": "300",
+			"E2E_VM_SLOT_COUNT": "2", "E2E_VM_BOOT_TIMEOUT": "300",
 			"SUBYARD_E2E_CLIENT_EXPORT_DIR": client,
 		},
 		Output: io.Discard,
@@ -75,7 +75,7 @@ func TestBackendApplyInstallsCurrentEngineAndPublishesRoute(t *testing.T) {
 				return nil, nil, fmt.Errorf("wrong provision payload: %q", payload)
 			}
 			if !strings.Contains(joined, "--env E2E_AGENT_PUBLIC_KEY=ssh-ed25519 ") {
-				return nil, nil, fmt.Errorf("normalized enrollment was not forwarded")
+				return nil, nil, fmt.Errorf("enrolled controller key was not provisioned")
 			}
 			return nil, nil, nil
 		case joined == "exec yard-test --project subyard-test -- ip -4 -o route show default":
@@ -113,9 +113,20 @@ func TestBackendApplyInstallsCurrentEngineAndPublishesRoute(t *testing.T) {
 }
 
 func TestStoppedBackendConvergenceUsesExactBundleMarker(t *testing.T) {
-	backend := fixtureBackend(t, false)
+	backend := fixtureBackend(t, true)
 	state, err := backend.state()
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(state.clientDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state.clientDirectory, "route.tsv"),
+		[]byte("subyard-e2e-route-v1\nhostname\tfixture\nport\t22\nhost_key_alias\tfixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state.clientDirectory, "known_hosts"),
+		[]byte("subyard-e2e-bastion "+fixturePublicKey(t)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
@@ -228,7 +239,7 @@ func TestExplicitRevokeDoesNotFallBackToLegacyCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.clientDirectory != persistent || state.agentConfigured != "0" {
+	if state.clientDirectory != persistent || state.agentConfigured != "0" || state.agentKey != "" {
 		t.Fatalf("revoked state fell back to legacy enrollment: %#v", state)
 	}
 }

@@ -336,7 +336,7 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return 0
 	case "@test-vms":
 		fmt.Fprintf(cli.options.Stdout,
-			"Usage: %s test-vms <up | status | down | enroll --project PROJECT [--revoke]>\n",
+			"Usage: %s test-vms <status | revoke --slot N | recover --slot N | up | down | enroll --project PROJECT [--revoke]>\n",
 			cli.options.Program)
 		return 0
 	case "@teardown":
@@ -1949,7 +1949,8 @@ func (cli *CLI) operationOrchestrator(
 				path := filepath.Join(cli.options.RepositoryRoot, "scripts/e2e-lab/invoke.sh")
 				actions["test-vms"] = map[string]shelladapter.Action{
 					"up": {Path: path, Direct: true}, "status": {Path: path, Direct: true},
-					"down": {Path: path, Direct: true},
+					"down": {Path: path, Direct: true}, "revoke": {Path: path, Direct: true},
+					"recover": {Path: path, Direct: true},
 				}
 			} else if definition.Handler == "@teardown" {
 				path := filepath.Join(cli.options.RepositoryRoot, "scripts/teardown-physical.sh")

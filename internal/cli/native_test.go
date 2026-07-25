@@ -578,7 +578,7 @@ exit 90
 	}
 	commandValues := structuredCommandContext(config.Loaded{Context: loaded.Context, Environment: map[string]string{
 		"CCUSAGE_PROVISION":                "/config/agents/ccusage/provision.sh",
-		"E2E_VM_TTL_MINUTES":               "1200",
+		"E2E_VM_SLOT_COUNT":                "2",
 		"AGENT_codex_CONFIG":               "/config/agents/codex/config.toml",
 		"HOST_OPENCODE_AGENTS_MD":          "/home/operator/.config/opencode/AGENTS.md",
 		"YARD_RUNTIME_ROOT":                "/opt/subyard/runtime",
@@ -590,7 +590,7 @@ exit 90
 	}})
 	for name, expected := range map[string]string{
 		"CCUSAGE_PROVISION":                "/config/agents/ccusage/provision.sh",
-		"E2E_VM_TTL_MINUTES":               "1200",
+		"E2E_VM_SLOT_COUNT":                "2",
 		"AGENT_codex_CONFIG":               "/config/agents/codex/config.toml",
 		"HOST_OPENCODE_AGENTS_MD":          "/home/operator/.config/opencode/AGENTS.md",
 		"YARD_RUNTIME_ROOT":                "/opt/subyard/runtime",
@@ -1255,7 +1255,7 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		"start||@lifecycle||forward|mutate|public|lifecycle|simple|start|start|--yes --help|",
 		"stop||@lifecycle||forward|mutate|public|lifecycle|simple|stop|stop|--force --yes --help|",
 		"provision||@provision||forward|mutate|public|lifecycle|profiles|provision [profile]|provision|-l --list --yes --help|",
-		"test-vms||@test-vms||forward|mutate|public|lifecycle|simple|test-vms <command>|test-vms|--project --revoke --yes --help|up status down enroll",
+		"test-vms||@test-vms||forward|mutate|public|lifecycle|simple|test-vms <command>|test-vms|--slot --project --revoke --yes --help|status revoke recover up down enroll",
 		"teardown||@teardown||forward|mutate|public|lifecycle|teardown|teardown|teardown|--keep-data --yes --help|",
 		"status||@status||forward|read|public|lifecycle|status|status|status|--all --help|",
 		"logs||@logs||forward|read|public|lifecycle|simple|logs|logs|-f -n --yes --help|",

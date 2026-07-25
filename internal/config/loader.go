@@ -517,7 +517,7 @@ func resetInheritedContext(values environment) {
 		"YARD_NAME", "YARD_TYPE", "YARD_PROFILES", "INSTANCE_TYPE", "INSTANCE_NAME", "INCUS_PROJECT",
 		"INCUS_BRIDGE", "SSH_HOST", "SSH_PORT", "REMOTE_DEST", "REMOTE_YARD", "SHIFT_MODE",
 		"FORWARD_SSH_AGENT", "DEV_SUDO", "DEV_UID", "DEV_USER", "YARD_TEMPLATE", "NESTED_E2E_VMS",
-		"E2E_VM_IMAGE", "E2E_VM_CPU", "E2E_VM_MEMORY", "E2E_VM_DISK", "E2E_VM_TTL_MINUTES", "E2E_VM_BOOT_TIMEOUT",
+		"E2E_VM_IMAGE", "E2E_VM_CPU", "E2E_VM_MEMORY", "E2E_VM_DISK", "E2E_VM_SLOT_COUNT", "E2E_VM_BOOT_TIMEOUT",
 		"SUBYARD_STATE_DIR", "RESTRICTED_DISK_PATHS",
 		"HOST_BASE", "SRV_VOLUME",
 	} {
@@ -806,7 +806,7 @@ func contextFrom(
 	setDefault(values, "E2E_VM_CPU", "2", tracker, defaultLayer)
 	setDefault(values, "E2E_VM_MEMORY", "4GiB", tracker, defaultLayer)
 	setDefault(values, "E2E_VM_DISK", "10GiB", tracker, defaultLayer)
-	setDefault(values, "E2E_VM_TTL_MINUTES", "240", tracker, defaultLayer)
+	setDefault(values, "E2E_VM_SLOT_COUNT", "2", tracker, defaultLayer)
 	setDefault(values, "E2E_VM_BOOT_TIMEOUT", "300", tracker, defaultLayer)
 	for _, name := range []string{"STORAGE_PATH", "HOST_BASE", "RESTRICTED_DISK_PATHS"} {
 		raw := values[name]
@@ -969,7 +969,7 @@ func validateE2EConfig(values environment) error {
 		return errors.New("E2E_VM_DISK must be at least 10GiB")
 	}
 	for name, bounds := range map[string][2]int{
-		"E2E_VM_TTL_MINUTES": {15, 1440}, "E2E_VM_BOOT_TIMEOUT": {30, 1800},
+		"E2E_VM_SLOT_COUNT": {1, 1<<20 - 1}, "E2E_VM_BOOT_TIMEOUT": {30, 1800},
 	} {
 		value, err := strconv.Atoi(values[name])
 		if err != nil || value < bounds[0] || value > bounds[1] {

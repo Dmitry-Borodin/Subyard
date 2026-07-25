@@ -24,7 +24,7 @@ setup_test_context() { # <temp-root> [incus-project] [instance-name]
   export E2E_VM_CPU=2
   export E2E_VM_MEMORY=4GiB
   export E2E_VM_DISK=10GiB
-  export E2E_VM_TTL_MINUTES=240
+  export E2E_VM_SLOT_COUNT=2
   export E2E_VM_BOOT_TIMEOUT=300
   export INCUS_PROJECT="${2:-subyard}"
   export INCUS_BRIDGE=incusbr0

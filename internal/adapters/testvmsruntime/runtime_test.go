@@ -52,11 +52,11 @@ func fixtureConfig(t *testing.T) Config {
 	cfg := Config{
 		Enabled: true, Project: "subyard-e2e-vms", Prefix: "e2e-vm",
 		Image: "images:debian/13/cloud", CPU: 2, Memory: "1GiB", Disk: "10GiB",
-		TTL: 15 * time.Minute, BootTimeout: 30 * time.Second, DevUser: "dev",
+		SlotCount: 2, TTL: LeaseTTL, BootTimeout: 30 * time.Second, DevUser: "dev",
 		StateDir: filepath.Join(root, "state"), PublicDir: filepath.Join(root, "public"),
 		AgentUser: "root", AgentPublicKey: fixturePublicKey(t),
 		AgentHome:     filepath.Join(root, "agent"),
-		StatusCommand: DefaultInstalledPath + " _test-vms-status", Incus: "incus",
+		StatusCommand: "sudo -n " + DefaultInstalledPath + " _test-vms-facade", Incus: "incus",
 	}
 	cfg.AgentAuthorizedKeys = filepath.Join(cfg.AgentHome, ".ssh", "authorized_keys")
 	return cfg
@@ -75,6 +75,34 @@ func fixturePublicKey(t *testing.T) string {
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 }
 
+func TestAcquireSlotRejectsInsufficientCapacityBeforeMutation(t *testing.T) {
+	runtime := &Runtime{Config: fixtureConfig(t)}
+	runtime.AvailableBytes = func(string) (uint64, error) {
+		return 4 * 1024 * 1024 * 1024, nil
+	}
+	var mutations int
+	runtime.Runner = &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
+		joined := strings.Join(arguments, " ")
+		if strings.HasPrefix(joined, "info ") {
+			return nil, nil, errors.New("not found")
+		}
+		mutations++
+		return nil, nil, fmt.Errorf("unexpected mutation: %s", joined)
+	}}
+	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 2}
+	grant, err := store.Acquire("client", "SHA256:key", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runtime.AcquireSlot(context.Background(), store, grant, fixturePublicKey(t))
+	if err == nil || !strings.Contains(err.Error(), "insufficient test-vms pool capacity") {
+		t.Fatalf("capacity error = %v", err)
+	}
+	if mutations != 0 {
+		t.Fatalf("capacity preflight performed %d mutation(s)", mutations)
+	}
+}
+
 func TestConfigRejectsUnsafeRuntimeValues(t *testing.T) {
 	base := map[string]string{"NESTED_E2E_VMS": "1"}
 	if _, err := ConfigFromValues(base); err != nil {
@@ -82,7 +110,7 @@ func TestConfigRejectsUnsafeRuntimeValues(t *testing.T) {
 	}
 	for name, value := range map[string]string{
 		"E2E_VM_PROJECT": "../foreign", "E2E_VM_CPU": "0",
-		"E2E_VM_DISK": "9GiB", "E2E_VM_TTL_MINUTES": "14",
+		"E2E_VM_DISK": "9GiB", "E2E_VM_SLOT_COUNT": "0",
 		"E2E_VM_BOOT_TIMEOUT": "1801", "E2E_AGENT_HOME": "/home/dev",
 		"E2E_AGENT_STATUS_COMMAND": "/bin/sh",
 	} {
@@ -340,7 +368,7 @@ func TestAgentPolicyManifestAndStatusAreAtomic(t *testing.T) {
 	}
 }
 
-func TestExpiredAllocationIsCleaned(t *testing.T) {
+func TestLeaseReaperDoesNotDeleteRetainedAllocation(t *testing.T) {
 	cfg := fixtureConfig(t)
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -370,8 +398,11 @@ func TestExpiredAllocationIsCleaned(t *testing.T) {
 	if err := runtime.gc(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(callsText(runner.calls), "incus project delete "+cfg.Project) {
-		t.Fatal("expired project was not cleaned")
+	if strings.Contains(callsText(runner.calls), "incus project delete "+cfg.Project) {
+		t.Fatal("lease reaper deleted retained project")
+	}
+	if _, err := os.Stat(cfg.leaseState()); err != nil {
+		t.Fatalf("lease reaper did not initialize broker state: %v", err)
 	}
 }
 

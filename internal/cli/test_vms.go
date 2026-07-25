@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/Subyard/Subyard/internal/adapters/shelladapter"
@@ -37,6 +38,7 @@ type testVMEnrollmentSource struct {
 
 type testVMExecution struct {
 	action     string
+	slot       int
 	enrollment *testVMEnrollmentSource
 }
 
@@ -107,6 +109,7 @@ func (cli *CLI) prepareTestVMExecution(
 	action := ""
 	project := ""
 	revoke := false
+	slot := 0
 	for index := 0; index < len(arguments); index++ {
 		argument := arguments[index]
 		switch argument {
@@ -121,6 +124,16 @@ func (cli *CLI) prepareTestVMExecution(
 				return nil, errors.New("--project requires a selector")
 			}
 			project = arguments[index]
+		case "--slot":
+			index++
+			if index >= len(arguments) {
+				return nil, errors.New("--slot requires a number")
+			}
+			var err error
+			slot, err = strconv.Atoi(arguments[index])
+			if err != nil || slot < 1 {
+				return nil, errors.New("--slot requires a positive integer")
+			}
 		default:
 			if strings.HasPrefix(argument, "-") {
 				return nil, fmt.Errorf("unknown test-vms option %q", argument)
@@ -131,12 +144,25 @@ func (cli *CLI) prepareTestVMExecution(
 			action = argument
 		}
 	}
-	if action != "up" && action != "status" && action != "down" && action != "enroll" {
+	if action != "up" && action != "status" && action != "down" &&
+		action != "enroll" && action != "revoke" && action != "recover" {
 		return nil, fmt.Errorf("unknown test-vms command %q", action)
 	}
+	if action == "revoke" {
+		if slot == 0 || project != "" || revoke {
+			return nil, errors.New("revoke requires --slot N")
+		}
+		return &testVMExecution{action: action, slot: slot}, nil
+	}
+	if action == "recover" {
+		if slot == 0 || project != "" || revoke {
+			return nil, errors.New("recover requires --slot N")
+		}
+		return &testVMExecution{action: action, slot: slot}, nil
+	}
 	if action != "enroll" {
-		if project != "" || revoke {
-			return nil, errors.New("--project and --revoke are valid only with enroll")
+		if project != "" || revoke || slot != 0 {
+			return nil, errors.New("--project, --revoke and --slot are not valid for this command")
 		}
 		return &testVMExecution{action: action}, nil
 	}
@@ -204,6 +230,16 @@ func (execution *testVMExecution) policy(
 		consequences = []string{
 			"delete the two managed VMs and their inner Incus project",
 			"revoke agent forwarding and remove the synthetic worker identity",
+		}
+	case "revoke":
+		consequences = []string{
+			fmt.Sprintf("fence and stop active lease slot %d", execution.slot),
+			"retain both VM disks and the slot network/project",
+		}
+	case "recover":
+		consequences = []string{
+			fmt.Sprintf("recover quarantined lease slot %d", execution.slot),
+			"delete only marker-owned VM instances stuck in ERROR state",
 		}
 	case "enroll":
 		source := execution.enrollment
@@ -275,6 +311,11 @@ func (cli *CLI) executeTestVMs(
 		return result, err
 	}
 	arguments := []string{execution.action}
+	if execution.action == "revoke" {
+		arguments[0] = fmt.Sprintf("revoke-slot-%d", execution.slot)
+	} else if execution.action == "recover" {
+		arguments[0] = fmt.Sprintf("recover-slot-%d", execution.slot)
+	}
 	if execution.action != "status" {
 		arguments = append(arguments, "--yes")
 	}

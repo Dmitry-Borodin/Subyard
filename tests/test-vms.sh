@@ -14,10 +14,16 @@ printf '%s\n' "$source_guard" | bash -u -s \
   || fail "inner provisioner source guard rejected bash -s execution"
 ! grep -Eq 'usermod[[:space:]]+-aG[[:space:]]+(incus-admin|yard)' "$PROVISION" \
   || fail "inner provisioner grants dev access to privileged inner groups"
-grep -Fq 'iifname "incusbr0" drop' "$PROVISION" \
+grep -Fq 'iifname "e2e-vm-net-*" drop' "$PROVISION" \
+  && grep -Fq 'iifname "e2e-vm-net-*" oifname "e2e-vm-net-*" drop' "$PROVISION" \
   || fail "inner provisioner does not block guest-initiated access to L1"
 grep -Fq 'PasswordAuthentication no' "$PROVISION" \
   || fail "bastion provisioner does not disable password authentication"
+grep -Fq 'AuthorizedKeysFile /var/lib/subyard/e2e-agent/.ssh/authorized_keys' "$PROVISION" \
+  && grep -Fq 'NOPASSWD: /usr/local/libexec/subyard/test-vms-inner _test-vms-facade' "$PROVISION" \
+  || fail "enrolled controller admission is not bounded by the forced facade"
+grep -Fq 'subyard-e2e-slot-' "$PROVISION" \
+  || fail "physical provisioner does not isolate slot data accounts"
 grep -Fq 'apt-get install -y -qq --no-install-recommends' "$PROVISION" \
   || fail "inner VM backend installs optional QEMU desktop packages"
 grep -Fq 'apt-get clean' "$PROVISION" \
@@ -32,6 +38,10 @@ grep -Fq 'chown root:"$primary" "$home/.ssh/authorized_keys"' "$PROVISION" \
 grep -Fq '_test-vms-worker gc' "$PROVISION" \
   && grep -Fq '_test-vms-worker reconcile-access' "$PROVISION" \
   || fail "physical provisioner does not invoke the installed Go worker"
+grep -Fq 'subyard-test-vms-lease-reaper.timer' "$PROVISION" \
+  && grep -Fq '_test-vms-worker drain-all' "$PROVISION" \
+  && ! grep -Fq 'Remove expired Subyard disposable test VMs' "$PROVISION" \
+  || fail "physical provisioner did not replace allocation-age GC with lease reaping"
 
 mkdir -p "$TMP/invoke-bin"
 cat > "$TMP/invoke-bin/incus" <<'SH'

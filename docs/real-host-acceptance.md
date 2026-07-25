@@ -1,14 +1,15 @@
 # E2E VM acceptance
 
-The default `./tests/run.sh` is host-free. Live acceptance runs only on the two disposable VMs
-allocated by the operator with `yard -Y test-yard test-vms up`:
+The default `./tests/run.sh` is host-free. Live acceptance automatically leases one retained
+two-VM slot from the operator-owned running `test-yard`:
 
 ```sh
 dev/e2e/p0-acceptance.sh
 ```
 
-The agent does not change allocation lifecycle or work in the privileged outer yard. Never run
-these checks on the operator host or a working yard.
+The broker owns inner pair start/stop and the runner releases in a trap. The agent does not change
+outer-yard lifecycle or work in the privileged outer yard. Never run these checks on the operator
+host or a working yard.
 
 ## Official Incus client contract
 

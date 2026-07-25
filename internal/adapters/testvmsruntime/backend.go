@@ -32,6 +32,7 @@ type Backend struct {
 type backendState struct {
 	enabled         string
 	cpu             string
+	slotCount       string
 	agentKey        string
 	agentConfigured string
 	agentKeyHash    string
@@ -127,7 +128,7 @@ func (backend *Backend) Apply(ctx context.Context) (err error) {
 	arguments := []string{"exec", backend.Instance, "--project", backend.Project}
 	for _, name := range []string{
 		"NESTED_E2E_VMS", "DEV_USER", "E2E_VM_IMAGE", "E2E_VM_CPU", "E2E_VM_MEMORY",
-		"E2E_VM_DISK", "E2E_VM_TTL_MINUTES", "E2E_VM_BOOT_TIMEOUT",
+		"E2E_VM_DISK", "E2E_VM_SLOT_COUNT", "E2E_VM_BOOT_TIMEOUT",
 	} {
 		arguments = append(arguments, "--env", name+"="+backend.Environment[name])
 	}
@@ -166,6 +167,7 @@ func (backend *Backend) state() (backendState, error) {
 	}
 	state := backendState{
 		enabled: value("NESTED_E2E_VMS", "0"), cpu: value("E2E_VM_CPU", "4"),
+		slotCount:       value("E2E_VM_SLOT_COUNT", "2"),
 		provision:       filepath.Join(backend.RepositoryRoot, "scripts", "e2e-lab", "provision.sh"),
 		clientDirectory: backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"],
 	}
@@ -219,7 +221,7 @@ func (backend *Backend) state() (backendState, error) {
 	state.agentKeyHash = hex.EncodeToString(keyHash[:])
 	revision := sha256.Sum256([]byte(engineHash + "\n" + provisionHash + "\n"))
 	state.marker = strings.Join([]string{
-		state.enabled, hex.EncodeToString(revision[:]), state.agentKeyHash, state.cpu,
+		state.enabled, hex.EncodeToString(revision[:]), state.agentKeyHash, state.cpu, state.slotCount,
 	}, ":")
 	return state, nil
 }

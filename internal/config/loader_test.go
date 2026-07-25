@@ -459,14 +459,14 @@ func TestE2EConfigValidation(t *testing.T) {
 	valid := environment{
 		"E2E_VM_IMAGE": "images:debian/13/cloud", "E2E_VM_CPU": "2",
 		"E2E_VM_MEMORY": "4GiB", "E2E_VM_DISK": "10GiB",
-		"E2E_VM_TTL_MINUTES": "1200", "E2E_VM_BOOT_TIMEOUT": "300",
+		"E2E_VM_SLOT_COUNT": "2", "E2E_VM_BOOT_TIMEOUT": "300",
 	}
 	if err := validateE2EConfig(valid); err != nil {
 		t.Fatal(err)
 	}
 	for name, value := range map[string]string{
 		"E2E_VM_IMAGE": "-unsafe", "E2E_VM_CPU": "0", "E2E_VM_MEMORY": "4GB",
-		"E2E_VM_DISK": "9GiB", "E2E_VM_TTL_MINUTES": "1441", "E2E_VM_BOOT_TIMEOUT": "29",
+		"E2E_VM_DISK": "9GiB", "E2E_VM_SLOT_COUNT": "0", "E2E_VM_BOOT_TIMEOUT": "29",
 	} {
 		values := make(environment, len(valid))
 		for key, current := range valid {

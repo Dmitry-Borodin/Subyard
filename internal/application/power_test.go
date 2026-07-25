@@ -35,7 +35,8 @@ func TestPowerServiceImportsAndCommitsAtomically(t *testing.T) {
 
 func TestInitialPowerAndInitFence(t *testing.T) {
 	if InitialPower(domain.Context{}) != PowerRunning ||
-		InitialPower(domain.Context{YardName: "build"}) != PowerStopped {
+		InitialPower(domain.Context{YardName: "build"}) != PowerStopped ||
+		InitialPower(domain.Context{YardName: "test-lab", NestedE2EVMs: true}) != PowerRunning {
 		t.Fatal("initial power policy drifted")
 	}
 	incus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{

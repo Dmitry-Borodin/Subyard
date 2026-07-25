@@ -104,30 +104,41 @@ remove_group_member() {
 
 disable_agent_account() {
   local user="${E2E_AGENT_USER:-subyard-e2e-agent}" home="${E2E_AGENT_HOME:-/var/lib/subyard/e2e-agent}"
-  id -u "$user" >/dev/null 2>&1 || return 0
-  if command -v pkill >/dev/null 2>&1; then
-    pkill -KILL -u "$user" >/dev/null 2>&1 || true
-  fi
-  userdel --remove "$user" >/dev/null 2>&1 || {
-    usermod --lock "$user" >/dev/null 2>&1 || true
-    rm -f "$home/.ssh/authorized_keys"
-  }
+  local account
+  for account in "$user" $(getent passwd | cut -d: -f1 | grep '^subyard-e2e-slot-' || true); do
+    id -u "$account" >/dev/null 2>&1 || continue
+    if command -v pkill >/dev/null 2>&1; then
+      pkill -KILL -u "$account" >/dev/null 2>&1 || true
+    fi
+    userdel --remove "$account" >/dev/null 2>&1 || usermod --lock "$account" >/dev/null 2>&1 || true
+  done
+  rm -rf "$home" /var/lib/subyard/e2e-slots
 }
 
 disable_agent_sshd_policy() {
   local policy=/etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf
   [ -e "$policy" ] || return 0
   rm -f "$policy"
+  rm -f /etc/sudoers.d/subyard-test-vms-facade
   sshd -t
   systemctl reload ssh.service
 }
 
 reconcile_agent_sshd_policy() {
+  rm -f /usr/local/libexec/subyard/test-vms-authorized-key
+  cat > /etc/sudoers.d/subyard-test-vms-facade <<'EOF'
+Defaults:subyard-e2e-agent env_keep += "SSH_ORIGINAL_COMMAND"
+subyard-e2e-agent ALL=(root) NOPASSWD: /usr/local/libexec/subyard/test-vms-inner _test-vms-facade
+EOF
+  chmod 0440 /etc/sudoers.d/subyard-test-vms-facade
+  visudo -cf /etc/sudoers.d/subyard-test-vms-facade >/dev/null
   install -d -m 0755 /etc/ssh/sshd_config.d
   cat > /etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf <<'EOF'
 # Managed by Subyard; key authentication only.
 PasswordAuthentication no
 KbdInteractiveAuthentication no
+Match User subyard-e2e-agent
+    AuthorizedKeysFile /var/lib/subyard/e2e-agent/.ssh/authorized_keys
 EOF
   chmod 0644 /etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf
   sshd -t
@@ -136,10 +147,6 @@ EOF
 
 reconcile_agent_account() {
   local user="$E2E_AGENT_USER" home="$E2E_AGENT_HOME" primary group
-  if [ -z "$E2E_AGENT_PUBLIC_KEY" ]; then
-    disable_agent_account
-    return 0
-  fi
   if ! id -u "$user" >/dev/null 2>&1; then
     useradd --system --create-home --home-dir "$home" --shell /bin/sh "$user"
   fi
@@ -155,6 +162,32 @@ reconcile_agent_account() {
   touch "$home/.ssh/authorized_keys"
   chmod 0640 "$home/.ssh/authorized_keys"
   chown root:"$primary" "$home/.ssh/authorized_keys"
+}
+
+reconcile_slot_accounts() {
+  local slot user home primary
+  for slot in $(seq 1 "$E2E_VM_SLOT_COUNT"); do
+    user="subyard-e2e-slot-$slot"
+    home="/var/lib/subyard/e2e-slots/$slot"
+    if ! id -u "$user" >/dev/null 2>&1; then
+      useradd --system --create-home --home-dir "$home" --shell /bin/sh "$user"
+    fi
+    usermod --home "$home" --shell /bin/sh --password x "$user"
+    primary="$(id -gn "$user")"
+    install -d -m 0755 -o root -g root "$home"
+    install -d -m 0750 -o root -g "$primary" "$home/.ssh"
+    touch "$home/.ssh/authorized_keys"
+    chmod 0640 "$home/.ssh/authorized_keys"
+    chown root:"$primary" "$home/.ssh/authorized_keys"
+  done
+  while IFS=: read -r user _; do
+    slot="${user#subyard-e2e-slot-}"
+    [[ "$slot" =~ ^[0-9]+$ ]] || continue
+    [ "$slot" -le "$E2E_VM_SLOT_COUNT" ] || {
+      pkill -KILL -u "$user" >/dev/null 2>&1 || true
+      userdel --remove "$user"
+    }
+  done < <(getent passwd | grep '^subyard-e2e-slot-' || true)
 }
 
 reconcile_test_vm_state_directory() {
@@ -184,10 +217,14 @@ case "${1:-}" in
 table inet subyard_e2e {
   chain input {
     type filter hook input priority -10; policy accept;
-    iifname "incusbr0" ct direction reply ct state established,related accept
-    iifname "incusbr0" udp dport { 53, 67 } accept
-    iifname "incusbr0" tcp dport 53 accept
-    iifname "incusbr0" drop
+    iifname "e2e-vm-net-*" ct direction reply ct state established,related accept
+    iifname "e2e-vm-net-*" udp dport { 53, 67 } accept
+    iifname "e2e-vm-net-*" tcp dport 53 accept
+    iifname "e2e-vm-net-*" drop
+  }
+  chain forward {
+    type filter hook forward priority -10; policy accept;
+    iifname "e2e-vm-net-*" oifname "e2e-vm-net-*" drop
   }
 }
 RULES
@@ -269,7 +306,7 @@ reconcile_inner_incus() {
 : "${E2E_VM_CPU:=4}"
 : "${E2E_VM_MEMORY:=4GiB}"
 : "${E2E_VM_DISK:=10GiB}"
-: "${E2E_VM_TTL_MINUTES:=240}"
+: "${E2E_VM_SLOT_COUNT:=2}"
 : "${E2E_VM_BOOT_TIMEOUT:=300}"
 : "${E2E_VM_STATE_DIR:=/var/lib/subyard/test-vms}"
 : "${E2E_VM_PUBLIC_DIR:=/var/lib/subyard/test-vms-public}"
@@ -289,9 +326,8 @@ esac
 [ "$e2e_disk_mib" -ge 10240 ] \
   || { printf 'E2E_VM_DISK must be at least 10GiB\n' >&2; exit 1; }
 case "$E2E_VM_IMAGE" in '' | -* | *[!A-Za-z0-9._:/@+-]*) printf 'invalid E2E_VM_IMAGE\n' >&2; exit 1 ;; esac
-[[ "$E2E_VM_TTL_MINUTES" =~ ^[0-9]+$ ]] \
-  && [ "$E2E_VM_TTL_MINUTES" -ge 15 ] && [ "$E2E_VM_TTL_MINUTES" -le 1440 ] \
-  || { printf 'invalid E2E_VM_TTL_MINUTES\n' >&2; exit 1; }
+[[ "$E2E_VM_SLOT_COUNT" =~ ^[1-9][0-9]*$ ]] \
+  || { printf 'invalid E2E_VM_SLOT_COUNT\n' >&2; exit 1; }
 [[ "$E2E_VM_BOOT_TIMEOUT" =~ ^[0-9]+$ ]] \
   && [ "$E2E_VM_BOOT_TIMEOUT" -ge 30 ] && [ "$E2E_VM_BOOT_TIMEOUT" -le 1800 ] \
   || { printf 'invalid E2E_VM_BOOT_TIMEOUT\n' >&2; exit 1; }
@@ -323,7 +359,7 @@ install -d -m 0755 /etc/subyard
   printf 'E2E_VM_CPU=%q\n' "$E2E_VM_CPU"
   printf 'E2E_VM_MEMORY=%q\n' "$E2E_VM_MEMORY"
   printf 'E2E_VM_DISK=%q\n' "$E2E_VM_DISK"
-  printf 'E2E_VM_TTL_MINUTES=%q\n' "$E2E_VM_TTL_MINUTES"
+  printf 'E2E_VM_SLOT_COUNT=%q\n' "$E2E_VM_SLOT_COUNT"
   printf 'E2E_VM_BOOT_TIMEOUT=%q\n' "$E2E_VM_BOOT_TIMEOUT"
   printf 'E2E_VM_STATE_DIR=%q\n' "$E2E_VM_STATE_DIR"
   printf 'E2E_VM_PUBLIC_DIR=%q\n' "$E2E_VM_PUBLIC_DIR"
@@ -335,6 +371,8 @@ chmod 0644 /etc/subyard/test-vms.env
 
 if [ "$NESTED_E2E_VMS" = 0 ]; then
   systemctl disable --now subyard-test-vms-gc.timer >/dev/null 2>&1 || true
+  systemctl disable --now subyard-test-vms-lease-reaper.timer >/dev/null 2>&1 || true
+  systemctl disable --now subyard-test-vms-broker.service >/dev/null 2>&1 || true
   disable_inner_firewall
   disable_agent_account
   disable_agent_sshd_policy
@@ -389,14 +427,18 @@ remove_group_member "$DEV_USER" yard
 reconcile_test_vm_state_directory
 install -d -m 0755 -o root -g root "$E2E_VM_PUBLIC_DIR"
 reconcile_agent_account
+reconcile_slot_accounts
 reconcile_agent_sshd_policy
 
 reconcile_inner_incus
 install_inner_firewall
 
-cat > /etc/systemd/system/subyard-test-vms-gc.service <<'EOF'
+systemctl disable --now subyard-test-vms-gc.timer >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/subyard-test-vms-gc.service \
+  /etc/systemd/system/subyard-test-vms-gc.timer
+cat > /etc/systemd/system/subyard-test-vms-lease-reaper.service <<'EOF'
 [Unit]
-Description=Remove expired Subyard disposable test VMs
+Description=Fence expired Subyard test VM leases
 After=incus.service
 Requires=incus.service
 
@@ -404,20 +446,37 @@ Requires=incus.service
 Type=oneshot
 ExecStart=/usr/local/libexec/subyard/test-vms-inner _test-vms-worker gc
 EOF
-cat > /etc/systemd/system/subyard-test-vms-gc.timer <<'EOF'
+cat > /etc/systemd/system/subyard-test-vms-lease-reaper.timer <<'EOF'
 [Unit]
-Description=Check Subyard disposable test VM TTL
+Description=Check Subyard test VM lease heartbeats
 
 [Timer]
-OnBootSec=10min
-OnUnitActiveSec=10min
+OnBootSec=1min
+OnUnitActiveSec=1min
 Persistent=true
 
 [Install]
 WantedBy=timers.target
 EOF
+cat > /etc/systemd/system/subyard-test-vms-broker.service <<'EOF'
+[Unit]
+Description=Subyard test VM lease broker lifecycle
+After=incus.service
+Requires=incus.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/subyard/test-vms-inner _test-vms-worker gc
+ExecStop=/usr/local/libexec/subyard/test-vms-inner _test-vms-worker drain-all
+TimeoutStopSec=10min
+
+[Install]
+WantedBy=multi-user.target
+EOF
 systemctl daemon-reload
-systemctl enable --now subyard-test-vms-gc.timer
+systemctl enable --now subyard-test-vms-lease-reaper.timer
+systemctl enable --now subyard-test-vms-broker.service
 
 # Re-enroll without changing allocation state.
 /usr/local/libexec/subyard/test-vms-inner _test-vms-worker reconcile-access

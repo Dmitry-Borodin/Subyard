@@ -162,6 +162,21 @@ mv -f "$temp" "$authorized"`
 		"REVOKED_WORKER_KEY=" + revokedKey,
 		"AGENT_KEY_MARKER=" + agentKeyMarker,
 	}, "sh", "-eu", "-c", reconcile)
+	if err != nil {
+		return err
+	}
+	const reconcileRoot = `ssh_dir=/root/.ssh
+authorized="$ssh_dir/authorized_keys"
+install -d -m 0700 "$ssh_dir"
+touch "$authorized"
+temp="$(mktemp "$ssh_dir/.authorized-keys.XXXXXX")"
+awk -v marker="$AGENT_KEY_MARKER" '$NF != marker { print }' "$authorized" > "$temp"
+[ -z "$AGENT_KEY" ] || printf "%s %s\n" "$AGENT_KEY" "$AGENT_KEY_MARKER" >> "$temp"
+chmod 0600 "$temp"
+mv -f "$temp" "$authorized"`
+	_, err = runtime.guest(ctx, vm, []string{
+		"AGENT_KEY=" + agentKey, "AGENT_KEY_MARKER=" + agentKeyMarker,
+	}, "sh", "-eu", "-c", reconcileRoot)
 	return err
 }
 

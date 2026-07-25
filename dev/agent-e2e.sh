@@ -24,6 +24,15 @@ BASTION_KNOWN_HOSTS=""
 ALLOCATION_MANIFEST=""
 LOCAL_TEMP=""
 PREPARED_DIRECTORY=""
+GUEST_IDENTITY=""
+GUEST_USER=root
+DATA_USER=""
+LEASE_SLOT=""
+LEASE_ID=""
+LEASE_EPOCH=""
+LEASE_CAPABILITY=""
+LEASE_KEEPER_PID=""
+WAIT_SECONDS=0
 declare -A GUEST_DIRS=()
 declare -A VM_IP=()
 declare -A VM_HOST_KEY=()
@@ -51,6 +60,8 @@ usage() {
   cat <<'EOF'
 Usage:
   dev/agent-e2e.sh [--yard NAME] --prepare
+  dev/agent-e2e.sh [--yard NAME] --status
+  dev/agent-e2e.sh [--yard NAME] [--wait DURATION] [--vm 1|2|both] -- COMMAND [ARG...]
   dev/agent-e2e.sh [--yard NAME] [--vm 1|2|both] -- COMMAND [ARG...]
   dev/agent-e2e.sh [--yard NAME] --ssh 1|2 [-- COMMAND [ARG...]]
   dev/agent-e2e.sh [--yard NAME] --ssh-stdin 1|2 -- COMMAND [ARG...]
@@ -61,19 +72,16 @@ The normal form copies the current tracked, dirty and non-ignored public worktre
 VM, runs COMMAND as dev, streams output and removes every run directory. A direct ./bin/yard command
 first builds the explicit development candidate in that run directory. --ssh opens an ordinary guest
 terminal or runs a command with stdin closed. --ssh-stdin explicitly forwards stdin to a command.
---ssh-config prints the generated strict OpenSSH config path for direct
-`ssh -F PATH e2e-vm-1` use.
-
 NAME defaults to test-yard. During a temporary migration, select the old yard explicitly with
 `--yard e2e-yard`; route and generated client state remain isolated per yard.
 
 --prepare creates or verifies the shared controller identity at ~/.subyard/e2e/id_ed25519 and
 publishes only its public half to the selected yard's ignored
-temp/agent-e2e/NAME/agent-access.pub enrollment request. One controller identity is authorized on
-both VMs; each VM still has its own pinned SSH host key.
+temp/agent-e2e/NAME/agent-access.pub enrollment request. The enrolled controller reaches only the
+bounded facade. Every run creates a separate ephemeral guest key.
 
-The operator must allocate the lab first. This command never starts, stops, creates or deletes a
-yard, VM or inner Incus project, and it never obtains a shell in the privileged L1 yard.
+The operator owns the outer test yard. Acquire creates or starts only the selected inner slot pair;
+release fences access and stops that pair without deleting its disks.
 EOF
 }
 
@@ -128,8 +136,7 @@ prepare_enrollment() {
   ensure_identity
   ok "private controller identity ready at $IDENTITY"
   ok "public enrollment request written to $ENROLLMENT_PUBLIC_KEY"
-  info "for a developer-yard worktree, ask the L0 operator to run: yard -Y $E2E_YARD test-vms enroll --project PROJECT"
-  info "a shared L0 worktree can instead be reconciled with: yard -Y $E2E_YARD init"
+  info "ask the L0 operator to run: yard -Y $E2E_YARD test-vms enroll --project PROJECT"
 }
 
 valid_route_word() { [[ "$1" =~ ^[A-Za-z0-9._:%-]+$ ]]; }
@@ -230,24 +237,153 @@ render_client_config() {
     printf '    UserKnownHostsFile '; ssh_config_value "$BASTION_KNOWN_HOSTS"; printf '\n'
     [ -z "$BASTION_HOST_KEY_ALIAS" ] || [ "$BASTION_HOST_KEY_ALIAS" = none ] \
       || printf '    HostKeyAlias %s\n' "$BASTION_HOST_KEY_ALIAS"
+    if [ -n "$DATA_USER" ]; then
+      printf '\nHost subyard-e2e-data\n'
+      printf '    HostName %s\n' "$BASTION_HOSTNAME"
+      printf '    Port %s\n' "$BASTION_PORT"
+      printf '    User %s\n' "$DATA_USER"
+      printf '    IdentityFile '; ssh_config_value "$GUEST_IDENTITY"; printf '\n'
+      printf '    IdentitiesOnly yes\n'
+      printf '    BatchMode yes\n'
+      printf '    ForwardAgent no\n'
+      printf '    RequestTTY no\n'
+      printf '    StrictHostKeyChecking yes\n'
+      printf '    UserKnownHostsFile '; ssh_config_value "$BASTION_KNOWN_HOSTS"; printf '\n'
+      [ -z "$BASTION_HOST_KEY_ALIAS" ] || [ "$BASTION_HOST_KEY_ALIAS" = none ] \
+        || printf '    HostKeyAlias %s\n' "$BASTION_HOST_KEY_ALIAS"
+    fi
     if [ "${#VM_IP[@]}" -eq 2 ]; then
       for selector in 1 2; do
         alias="e2e-vm-$selector"
         printf '\nHost %s\n' "$alias"
         printf '    HostName %s\n' "${VM_IP[$selector]}"
         printf '    Port 22\n'
-        printf '    User dev\n'
-        printf '    IdentityFile '; ssh_config_value "$IDENTITY"; printf '\n'
+        printf '    User %s\n' "$GUEST_USER"
+        printf '    IdentityFile '; ssh_config_value "${GUEST_IDENTITY:-$IDENTITY}"; printf '\n'
         printf '    IdentitiesOnly yes\n'
         printf '    BatchMode yes\n'
         printf '    ForwardAgent no\n'
-        printf '    ProxyJump subyard-e2e-bastion\n'
+        printf '    ProxyJump subyard-e2e-data\n'
         printf '    HostKeyAlias %s\n' "$alias"
         printf '    StrictHostKeyChecking yes\n'
         printf '    UserKnownHostsFile '; ssh_config_value "$GUEST_KNOWN_HOSTS"; printf '\n'
       done
     fi
   }
+}
+
+ensure_client_id() {
+  local path="$STATE_ROOT/client-id" temp value
+  if [ -r "$path" ]; then
+    read -r value < "$path"
+  else
+    value="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    temp="$(mktemp "$STATE_ROOT/.client-id.XXXXXX")"
+    printf '%s\n' "$value" > "$temp"
+    chmod 0600 "$temp"
+    mv -f "$temp" "$path"
+  fi
+  [[ "$value" =~ ^[0-9a-f]{32}$ ]] || die "invalid persistent E2E client id"
+  printf '%s\n' "$value"
+}
+
+facade_request() {
+  local command="$1" bootstrap
+  ensure_identity
+  resolve_bastion_route
+  bootstrap="$(mktemp "$STATE_ROOT/.facade-config.XXXXXX")"
+  VM_IP=(); VM_HOST_KEY=()
+  render_client_config > "$bootstrap"
+  chmod 0600 "$bootstrap"
+  ssh -F "$bootstrap" -T subyard-e2e-bastion -- "$command" </dev/null
+  local rc=$?
+  rm -f "$bootstrap"
+  return "$rc"
+}
+
+parse_lease_grant() {
+  local response="$1" count selector name address key_type key_blob
+  [ "$(jq -r '.status // empty' <<<"$response")" = ok ] || return 1
+  LEASE_SLOT="$(jq -r '.grant.slot_id // empty' <<<"$response")"
+  LEASE_ID="$(jq -r '.grant.lease_id // empty' <<<"$response")"
+  LEASE_EPOCH="$(jq -r '.grant.lease_epoch // empty' <<<"$response")"
+  LEASE_CAPABILITY="$(jq -r '.grant.capability // empty' <<<"$response")"
+  DATA_USER="$(jq -r '.grant.data_user // empty' <<<"$response")"
+  case "$DATA_USER" in subyard-e2e-slot-[1-9]* ) ;; *) die "facade returned an invalid data user" ;; esac
+  [[ "$LEASE_SLOT" =~ ^slot-[0-9]{3}$ && "$LEASE_ID" =~ ^[0-9a-f]+$ \
+    && "$LEASE_EPOCH" =~ ^[1-9][0-9]*$ && "$LEASE_CAPABILITY" =~ ^[0-9a-f]+$ ]] \
+    || die "facade returned invalid lease credentials"
+  count="$(jq '.grant.targets | length' <<<"$response")"
+  [ "$count" = 2 ] || die "facade returned an incomplete VM pair"
+  VM_IP=(); VM_HOST_KEY=()
+  for selector in 1 2; do
+    name="$(jq -r --argjson selector "$selector" \
+      '.grant.targets[] | select(.selector == $selector) | .name' <<<"$response")"
+    address="$(jq -r --argjson selector "$selector" \
+      '.grant.targets[] | select(.selector == $selector) | .address' <<<"$response")"
+    key_type="$(jq -r --argjson selector "$selector" \
+      '.grant.targets[] | select(.selector == $selector) | .host_key_type' <<<"$response")"
+    key_blob="$(jq -r --argjson selector "$selector" \
+      '.grant.targets[] | select(.selector == $selector) | .host_key_blob' <<<"$response")"
+    [[ "$name" =~ ^e2e-vm-[a-z0-9-]+$ ]] || die "facade returned an unsafe VM name"
+    valid_ipv4 "$address" || die "facade returned an invalid VM address"
+    [ "$key_type" = ssh-ed25519 ] && [[ "$key_blob" =~ ^[A-Za-z0-9+/=]+$ ]] \
+      || die "facade returned an invalid VM host key"
+    VM_IP[$selector]="$address"
+    VM_HOST_KEY[$selector]="$key_type $key_blob"
+  done
+  printf 'e2e-vm-1 %s\ne2e-vm-2 %s\n' "${VM_HOST_KEY[1]}" "${VM_HOST_KEY[2]}" > "$GUEST_KNOWN_HOSTS"
+  chmod 0600 "$GUEST_KNOWN_HOSTS"
+}
+
+acquire_lease() {
+  local client fingerprint label=checkout purpose=agent-e2e type blob response code started
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  GUEST_IDENTITY="$LOCAL_TEMP/lease_id_ed25519"
+  ssh-keygen -q -t ed25519 -N '' -C subyard-e2e-lease -f "$GUEST_IDENTITY"
+  read -r type blob _ < "$GUEST_IDENTITY.pub"
+  client="$(ensure_client_id)"
+  fingerprint="$(ssh-keygen -lf "$IDENTITY.pub" -E sha256 | awk '{print $2}')"
+  started=$SECONDS
+  while true; do
+    response="$(facade_request "acquire $client $fingerprint $label $purpose $type $blob")" \
+      || die "test environment unavailable"
+    code="$(jq -r '.code // empty' <<<"$response")"
+    if parse_lease_grant "$response"; then
+      write_client_config
+      return 0
+    fi
+    [ "$code" = busy ] || die "lease acquire failed (${code:-invalid response})"
+    [ "$WAIT_SECONDS" -gt 0 ] && [ "$((SECONDS - started))" -lt "$WAIT_SECONDS" ] \
+      || { printf '%s\n' "$response" >&2; return 4; }
+    sleep 5
+  done
+}
+
+lease_command() {
+  printf '%s %s %s %s %s\n' "$1" "$LEASE_SLOT" "$LEASE_ID" "$LEASE_EPOCH" "$LEASE_CAPABILITY"
+}
+
+release_lease() {
+  [ -n "$LEASE_ID" ] || return 0
+  facade_request "$(lease_command release)" >/dev/null || return 1
+  LEASE_ID=""
+}
+
+lease_keeper() {
+  local owner_pid="$1"
+  while sleep 60; do
+    if ! facade_request "$(lease_command renew)" >/dev/null; then
+      printf 'agent-e2e: lease lost; stopping payload transport\n' >&2
+      kill -TERM "$owner_pid" >/dev/null 2>&1 || true
+      return 1
+    fi
+  done
+}
+
+start_lease_keeper() {
+  lease_keeper "$$" &
+  LEASE_KEEPER_PID=$!
 }
 
 write_client_config() {
@@ -326,17 +462,16 @@ prepare_client() {
 verify_boundary() {
   local before after output vm pty_log transfer_log probe expected_hash actual_hash rc
   local -a requested=()
-  prepare_client
-  before="$ALLOCATION_MANIFEST"
+  before="$(facade_request status)" || die "cannot read lease pool status"
 
   for probe in id 'sudo -n id' 'incus list' \
     'cat /var/lib/subyard/test-vms/worker-key' \
     '/usr/local/libexec/subyard/test-vms-worker up'; do
     read -r -a requested <<<"$probe"
     output="$(ssh -F "$CLIENT_CONFIG" -T subyard-e2e-bastion -- "${requested[@]}" </dev/null)" \
-      || die "forced bastion status probe failed"
-    [ "$output" = "$before" ] \
-      || { printf 'agent-e2e: bastion executed a requested L1 command\n' >&2; return 1; }
+      || die "forced facade probe failed"
+    [ "$(jq -r '.code // empty' <<<"$output")" = invalid_request ] \
+      || { printf 'agent-e2e: bastion did not reject a requested L1 command\n' >&2; return 1; }
   done
 
   pty_log="$(mktemp "$STATE_ROOT/.pty-probe.XXXXXX")"
@@ -401,8 +536,7 @@ verify_boundary() {
     fi
   done
 
-  after="$(ssh -F "$CLIENT_CONFIG" -T subyard-e2e-bastion </dev/null)" \
-    || die "post-probe allocation status failed"
+  after="$(facade_request status)" || die "post-probe lease pool status failed"
   [ "$after" = "$before" ] \
     || { printf 'agent-e2e: boundary probes changed allocation state\n' >&2; return 1; }
   ok "VM SSH works; L1 commands, PTY, transfers, dev login, forwarding and guest return paths are blocked"
@@ -436,6 +570,10 @@ cleanup_on_exit() {
   local rc=$? vm cleanup_failed=0
   trap - EXIT INT TERM
   set +e
+  if [ -n "$LEASE_KEEPER_PID" ]; then
+    kill "$LEASE_KEEPER_PID" >/dev/null 2>&1 || true
+    wait "$LEASE_KEEPER_PID" >/dev/null 2>&1 || true
+  fi
   for vm in "${!GUEST_DIRS[@]}"; do
     cleanup_guest "$vm" >/dev/null 2>&1 || cleanup_failed=1
   done
@@ -445,6 +583,7 @@ cleanup_on_exit() {
       ;;
     esac
   fi
+  release_lease || cleanup_failed=1
   [ "$cleanup_failed" = 0 ] || rc=3
   exit "$rc"
 }
@@ -544,21 +683,22 @@ run_guest() {
 
 run_direct_ssh() {
   local vm="$1" forward_stdin="$2" command; shift 2
-  prepare_client
   if [ "$#" -gt 0 ]; then
     command="$(quote_ssh_command "$@")"
     if [ "$forward_stdin" = 1 ]; then
-      exec ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command"
+      ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command"
+      return
     fi
-    exec ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command" </dev/null
+    ssh -F "$CLIENT_CONFIG" -T "e2e-vm-$vm" -- "$command" </dev/null
+    return
   fi
   [ "$forward_stdin" = 0 ] || die "--ssh-stdin requires a command"
-  exec ssh -F "$CLIENT_CONFIG" -tt "e2e-vm-$vm"
+  ssh -F "$CLIENT_CONFIG" -tt "e2e-vm-$vm"
 }
 
 main() {
   local selector=both root bundle bundle_hash vm run_failed=0 cleanup_failed=0
-  local mode=run ssh_vm='' ssh_stdin=0
+  local mode=run ssh_vm='' ssh_stdin=0 wait_value
   local -a selected=() command=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -573,6 +713,18 @@ main() {
         shift 2
         ;;
       --ssh-config) mode=config; shift ;;
+      --status) mode=status; shift ;;
+      --wait)
+        [ "$#" -ge 2 ] || die "--wait needs a duration"
+        wait_value="$2"
+        case "$wait_value" in
+          *m) WAIT_SECONDS=$((${wait_value%m} * 60)) ;;
+          *s) WAIT_SECONDS=${wait_value%s} ;;
+          *) die "--wait duration must use s or m" ;;
+        esac
+        [[ "$WAIT_SECONDS" =~ ^[0-9]+$ ]] || die "invalid --wait duration"
+        shift 2
+        ;;
       --prepare) mode=prepare; shift ;;
       --verify-boundary) mode=verify; shift ;;
       --) shift; command=("$@"); break ;;
@@ -583,11 +735,29 @@ main() {
   configure_yard_scope
   case "$mode" in
     prepare) [ "${#command[@]}" -eq 0 ] || die "--prepare takes no command"; prepare_enrollment; return ;;
+    status)
+      [ "${#command[@]}" -eq 0 ] || die "--status takes no command"
+      facade_request status || die "test environment unavailable"
+      return
+      ;;
     config) [ "${#command[@]}" -eq 0 ] || die "--ssh-config takes no command"; prepare_client; printf '%s\n' "$CLIENT_CONFIG"; return ;;
-    verify) [ "${#command[@]}" -eq 0 ] || die "--verify-boundary takes no command"; verify_boundary; return ;;
+    verify)
+      [ "${#command[@]}" -eq 0 ] || die "--verify-boundary takes no command"
+      trap cleanup_on_exit EXIT INT TERM
+      LOCAL_TEMP="$(mktemp -d "${TMPDIR:-/tmp}/subyard-agent-e2e.XXXXXX")"
+      acquire_lease
+      start_lease_keeper
+      verify_boundary
+      return
+      ;;
     ssh)
       case "$ssh_vm" in 1 | 2) ;; *) die "--ssh needs VM selector 1 or 2" ;; esac
+      trap cleanup_on_exit EXIT INT TERM
+      LOCAL_TEMP="$(mktemp -d "${TMPDIR:-/tmp}/subyard-agent-e2e.XXXXXX")"
+      acquire_lease
+      start_lease_keeper
       run_direct_ssh "$ssh_vm" "$ssh_stdin" "${command[@]}"
+      return
       ;;
   esac
 
@@ -599,9 +769,10 @@ main() {
   command -v tar >/dev/null 2>&1 || die "tar is required"
   command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
 
-  prepare_client
   trap cleanup_on_exit EXIT INT TERM
   LOCAL_TEMP="$(mktemp -d "${TMPDIR:-/tmp}/subyard-agent-e2e.XXXXXX")"
+  acquire_lease
+  start_lease_keeper
   bundle="$LOCAL_TEMP/worktree.tar.gz"
   info "packing current public worktree"
   build_bundle "$root" "$bundle"

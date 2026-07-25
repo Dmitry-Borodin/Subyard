@@ -74,7 +74,7 @@ Live platform and release acceptance runs only on operator-allocated E2E VMs; se
 [`real-host-acceptance.md`](real-host-acceptance.md).
 
 On a trusted KVM-capable host, the two-instance portion can run in an opt-in container yard through
-[`yard test-vms`](test-vms.md). Its lifecycle and ownership/TTL guards are covered host-free by
+[`yard test-vms`](test-vms.md). Its lifecycle, lease fencing and heartbeat expiry are covered host-free by
 `tests/test-vms.sh`; actual VM boot and SSH remain an E2E VM gate.
 
 ## Delivery spike

@@ -29,11 +29,11 @@ func (runtime *Runtime) killAgentSessions(ctx context.Context) {
 
 func (runtime *Runtime) writeAgentAuthorizedKeys(ip1, ip2 string) error {
 	cfg := runtime.Config
-	if cfg.AgentPublicKey == "" {
-		return nil
-	}
 	if _, err := user.Lookup(cfg.AgentUser); err != nil {
 		return errors.New("agent bastion account is missing; re-run yard init")
+	}
+	if cfg.AgentPublicKey == "" {
+		return nil
 	}
 	key, err := normalizedPublicKey(cfg.AgentPublicKey)
 	if err != nil {
@@ -322,8 +322,9 @@ func (runtime *Runtime) doctor(ctx context.Context, want map[string]string) erro
 		return errors.New("installed agent key differs")
 	}
 	if !cfg.Enabled {
-		if runtime.commandOK(ctx, "systemctl", "is-active", "--quiet", "subyard-test-vms-gc.timer") {
-			return errors.New("TTL timer remains active")
+		if runtime.commandOK(ctx, "systemctl", "is-active", "--quiet",
+			"subyard-test-vms-lease-reaper.timer") {
+			return errors.New("lease reaper remains active")
 		}
 		if runtime.commandOK(ctx, "systemctl", "is-active", "--quiet",
 			"subyard-test-vms-firewall.service") {
@@ -363,8 +364,8 @@ func (runtime *Runtime) doctor(ctx context.Context, want map[string]string) erro
 		return errors.New("Incus drop-in differs")
 	}
 	if !runtime.commandOK(ctx, "systemctl", "is-enabled", "--quiet",
-		"subyard-test-vms-gc.timer") {
-		return errors.New("TTL timer is disabled")
+		"subyard-test-vms-lease-reaper.timer") {
+		return errors.New("lease reaper is disabled")
 	}
 	if !runtime.commandOK(ctx, "systemctl", "is-active", "--quiet",
 		"subyard-test-vms-firewall.service") {
@@ -430,10 +431,14 @@ func (runtime *Runtime) doctor(ctx context.Context, want map[string]string) erro
 	}
 	authorized, err := os.ReadFile(cfg.AgentAuthorizedKeys)
 	if err != nil || !strings.HasPrefix(string(authorized), "restrict,") {
-		return errors.New("agent key restrictions are missing")
+		return errors.New("enrolled controller restrictions are missing")
 	}
 	if !strings.Contains(string(authorized), `command="`+cfg.StatusCommand+`"`) {
-		return errors.New("agent forced command differs")
+		return errors.New("controller forced facade differs")
+	}
+	if !fileContains("/etc/sudoers.d/subyard-test-vms-facade",
+		`subyard-e2e-agent ALL=(root) NOPASSWD: /usr/local/libexec/subyard/test-vms-inner _test-vms-facade`) {
+		return errors.New("bounded facade sudo policy differs")
 	}
 	return nil
 }

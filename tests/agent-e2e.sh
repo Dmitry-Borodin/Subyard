@@ -159,21 +159,35 @@ ensure_identity
   || fail "published enrollment request is not public-key readable"
 [ ! -e "$SHARED_ROUTE_DIR/id_ed25519" ] \
   || fail "controller private key entered the shared worktree directory"
+lease_blob="$(awk '{print $2}' "$IDENTITY.pub")"
+lease_response="$(printf '{"schema_version":1,"status":"ok","grant":{"slot_id":"slot-001","lease_id":"aabb","capability":"ccdd","lease_epoch":3,"data_user":"subyard-e2e-slot-1","targets":[{"selector":1,"name":"e2e-vm-1","address":"10.42.1.11","host_key_type":"ssh-ed25519","host_key_blob":"%s"},{"selector":2,"name":"e2e-vm-2","address":"10.42.1.12","host_key_type":"ssh-ed25519","host_key_blob":"%s"}]}}' "$lease_blob" "$lease_blob")"
+parse_lease_grant "$lease_response" \
+  || fail "valid lease grant was rejected"
+[ "$LEASE_SLOT" = slot-001 ] && [ "$DATA_USER" = subyard-e2e-slot-1 ] \
+  && [ "${VM_IP[1]}" = 10.42.1.11 ] && [ "${VM_IP[2]}" = 10.42.1.12 ] \
+  || fail "lease grant did not materialize exact fenced transport state"
+if (parse_lease_grant '{"status":"ok","grant":{"capability":"secret"}}') >/dev/null 2>&1; then
+  fail "incomplete lease grant was accepted"
+fi
 ensure_identity
 BASTION_HOSTNAME=127.0.0.1
 BASTION_PORT=2223
 BASTION_HOST_KEY_ALIAS=''
 BASTION_KNOWN_HOSTS="$TMP/bastion-known-hosts"
+DATA_USER=subyard-e2e-slot-1
+GUEST_IDENTITY="$TMP/lease-key"
+cp "$IDENTITY" "$GUEST_IDENTITY"
 printf '[127.0.0.1]:2223 %s\n' "$(normalized_public_key_file "$IDENTITY.pub")" > "$BASTION_KNOWN_HOSTS"
 write_client_config
-grep -Fxq '    ProxyJump subyard-e2e-bastion' "$CLIENT_CONFIG" \
-  || fail "VM aliases do not use the restricted bastion"
+grep -Fxq '    ProxyJump subyard-e2e-data' "$CLIENT_CONFIG" \
+  && grep -Fxq '    User subyard-e2e-slot-1' "$CLIENT_CONFIG" \
+  || fail "VM aliases do not use the lease-scoped data account"
 grep -Fxq '    ForwardAgent no' "$CLIENT_CONFIG" \
   || fail "generated SSH config permits agent forwarding"
 [ "$(grep -c '^Host e2e-vm-' "$CLIENT_CONFIG")" -eq 2 ] \
   || fail "generated SSH config does not expose exactly two VM aliases"
-[ "$(grep '^[[:space:]]*IdentityFile ' "$CLIENT_CONFIG" | sort -u | wc -l)" -eq 1 ] \
-  || fail "one controller identity was not reused consistently for both VM targets"
+[ "$(grep '^[[:space:]]*IdentityFile ' "$CLIENT_CONFIG" | sort -u | wc -l)" -eq 2 ] \
+  || fail "controller and ephemeral guest identities were not separated"
 
 cat > "$TMP/route-config" <<EOF
 Host fixture-e2e-yard
@@ -345,4 +359,4 @@ grep -Fq 's/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/' \
 ! grep -Fq 'test-vms-inner' "$ROOT/dev/agent-e2e.sh" \
   || fail "agent E2E transport still invokes the privileged lifecycle worker"
 
-printf 'ok: agent E2E uses pinned direct VM SSH and remains allocation-neutral and cleanup-owned\n'
+printf 'ok: agent E2E lease transport is pinned, fenced and cleanup-owned\n'

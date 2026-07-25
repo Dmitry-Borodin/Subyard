@@ -88,7 +88,7 @@ func (service PowerService) Intent(
 }
 
 func InitialPower(yard domain.Context) string {
-	if yard.YardName == "" || yard.YardName == "default" {
+	if yard.YardName == "" || yard.YardName == "default" || yard.NestedE2EVMs {
 		return PowerRunning
 	}
 	return PowerStopped

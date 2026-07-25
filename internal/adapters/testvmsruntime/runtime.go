@@ -23,6 +23,7 @@ type Runtime struct {
 	Stderr         io.Writer
 	Now            func() time.Time
 	Sleep          func(context.Context, time.Duration) error
+	AvailableBytes func(string) (uint64, error)
 	ExecutablePath string
 }
 
@@ -76,6 +77,30 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 	if _, err := runtime.Runner.LookPath(runtime.Config.Incus); err != nil {
 		return errors.New("inner Incus is not installed")
 	}
+	if strings.HasPrefix(action, "revoke-slot-") {
+		if !yes {
+			return errors.New("confirmation required (re-run with --yes for automation)")
+		}
+		number, err := strconv.Atoi(strings.TrimPrefix(action, "revoke-slot-"))
+		if err != nil || number < 1 || number > runtime.Config.SlotCount {
+			return errors.New("invalid revoke slot")
+		}
+		return runtime.RevokeSlot(ctx, LeaseStore{
+			Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
+		}, fmt.Sprintf("slot-%03d", number))
+	}
+	if strings.HasPrefix(action, "recover-slot-") {
+		if !yes {
+			return errors.New("confirmation required (re-run with --yes for automation)")
+		}
+		number, err := strconv.Atoi(strings.TrimPrefix(action, "recover-slot-"))
+		if err != nil || number < 1 || number > runtime.Config.SlotCount {
+			return errors.New("invalid recovery slot")
+		}
+		return runtime.RecoverSlot(ctx, LeaseStore{
+			Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
+		}, fmt.Sprintf("slot-%03d", number))
+	}
 	switch action {
 	case "up":
 		if !yes {
@@ -83,7 +108,12 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 		}
 		return runtime.up(ctx)
 	case "status":
-		return runtime.status(ctx)
+		return (Facade{
+			Store: LeaseStore{
+				Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
+			},
+			Output: runtime.Stdout,
+		}).Run("status")
 	case "down":
 		if !yes {
 			return errors.New("confirmation required (re-run with --yes for automation)")
@@ -93,6 +123,10 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 		return runtime.cleanupManaged(ctx, false)
 	case "gc":
 		return runtime.gc(ctx)
+	case "drain-all":
+		return runtime.DrainAll(ctx, LeaseStore{
+			Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
+		}, "outer yard stopping")
 	case "reconcile-access":
 		return runtime.reconcileExistingAgentAccess(ctx)
 	default:
@@ -103,8 +137,7 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 func (runtime *Runtime) up(ctx context.Context) (err error) {
 	cfg := runtime.Config
 	fmt.Fprintf(runtime.Stdout,
-		"Create/start exactly two disposable nested VMs with SSH and passwordless sudo.\n"+
-			"They expire automatically after %d minutes.\n", int(cfg.TTL/time.Minute))
+		"Create or start one retained two-VM lease slot with SSH and passwordless sudo.\n")
 	if err = runtime.restrictAgentAccess("provisioning"); err != nil {
 		return err
 	}
@@ -246,7 +279,8 @@ func (runtime *Runtime) ensureProject(ctx context.Context) error {
 	}
 	for _, setting := range [][2]string{
 		{"limits.instances", "2"}, {"limits.virtual-machines", "2"},
-		{"restricted", "true"}, {"user.subyard.managed", managedMarker},
+		{"restricted", "true"}, {"restricted.networks.access", cfg.Network},
+		{"user.subyard.managed", managedMarker},
 	} {
 		if _, err := runtime.incus(ctx, "project", "set", cfg.Project, setting[0], setting[1]); err != nil {
 			return err
@@ -268,7 +302,7 @@ func (runtime *Runtime) ensureProject(ctx context.Context) error {
 	}
 	if !linePresent(devices, "eth0") {
 		if _, err := runtime.incus(ctx, "profile", "device", "add", "default", "eth0",
-			"nic", "network=incusbr0", "name=eth0", "--project", cfg.Project); err != nil {
+			"nic", "network="+cfg.Network, "name=eth0", "--project", cfg.Project); err != nil {
 			return err
 		}
 	}
@@ -319,6 +353,10 @@ func (runtime *Runtime) ensureVM(ctx context.Context, vm string) error {
 	}
 	if _, err := runtime.incus(ctx, "config", "set", vm, "limits.memory",
 		cfg.Memory, "--project", cfg.Project); err != nil {
+		return err
+	}
+	if _, err := runtime.incus(ctx, "config", "set", vm, "boot.autostart",
+		"false", "--project", cfg.Project); err != nil {
 		return err
 	}
 	raw, err := runtime.incus(ctx, "config", "get", vm, "raw.apparmor", "--project", cfg.Project)
@@ -404,19 +442,10 @@ func (runtime *Runtime) status(ctx context.Context) error {
 }
 
 func (runtime *Runtime) gc(ctx context.Context) error {
-	if !runtime.projectExists(ctx) {
-		return nil
+	store := LeaseStore{
+		Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
 	}
-	marker, err := runtime.incus(ctx, "project", "get", runtime.Config.Project,
-		"user.subyard.managed")
-	if err != nil || strings.TrimSpace(marker) != managedMarker {
-		return nil
-	}
-	created, ok := readEpoch(runtime.Config.createdAt())
-	if !ok || runtime.Now().Sub(created) < runtime.Config.TTL {
-		return nil
-	}
-	return runtime.cleanupManaged(ctx, true)
+	return runtime.ReapExpired(ctx, store)
 }
 
 func (runtime *Runtime) cleanupManaged(ctx context.Context, quiet bool) error {

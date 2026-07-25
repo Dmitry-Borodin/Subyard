@@ -110,8 +110,18 @@ func (runtime *Runtime) writeManifest(
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(&payload, "vm\t1\t%s\t%s\t%s\n", cfg.vm(1), ip1, key1)
-		fmt.Fprintf(&payload, "vm\t2\t%s\t%s\t%s\n", cfg.vm(2), ip2, key2)
+		key1Type, key1Blob, found := strings.Cut(key1, " ")
+		if !found {
+			return errors.New("VM1 host identity has an invalid normalized form")
+		}
+		key2Type, key2Blob, found := strings.Cut(key2, " ")
+		if !found {
+			return errors.New("VM2 host identity has an invalid normalized form")
+		}
+		fmt.Fprintf(&payload, "vm\t1\t%s\t%s\t%s\t%s\n",
+			cfg.vm(1), ip1, key1Type, key1Blob)
+		fmt.Fprintf(&payload, "vm\t2\t%s\t%s\t%s\t%s\n",
+			cfg.vm(2), ip2, key2Type, key2Blob)
 	}
 	if err := writeAtomic(cfg.manifest(), []byte(payload.String()), 0o644); err != nil {
 		return err

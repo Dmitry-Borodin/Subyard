@@ -128,7 +128,8 @@ prepare_enrollment() {
   ensure_identity
   ok "private controller identity ready at $IDENTITY"
   ok "public enrollment request written to $ENROLLMENT_PUBLIC_KEY"
-  info "the operator can now reconcile it with: yard -Y $E2E_YARD init"
+  info "for a developer-yard worktree, ask the L0 operator to run: yard -Y $E2E_YARD test-vms enroll --project PROJECT"
+  info "a shared L0 worktree can instead be reconciled with: yard -Y $E2E_YARD init"
 }
 
 valid_route_word() { [[ "$1" =~ ^[A-Za-z0-9._:%-]+$ ]]; }
@@ -203,7 +204,7 @@ resolve_bastion_route() {
     fi
   done
   [ -n "$BASTION_KNOWN_HOSTS" ] || die \
-    "no pinned host key for $lookup; the operator must re-run 'yard -Y $E2E_YARD init'"
+    "no pinned host key for $lookup; for a developer-yard worktree the L0 operator must run 'yard -Y $E2E_YARD test-vms enroll --project PROJECT'"
 }
 
 ssh_config_value() {
@@ -314,7 +315,7 @@ prepare_client() {
   chmod 0600 "$bootstrap_config"
   if ! manifest="$(ssh -F "$bootstrap_config" -T subyard-e2e-bastion </dev/null)"; then
     rm -f "$bootstrap_config"
-    die "cannot read allocation status with the enrolled agent identity; run 'dev/agent-e2e.sh --yard $E2E_YARD --prepare', then ask the operator to re-run 'yard -Y $E2E_YARD init'"
+    die "cannot read allocation status with the enrolled agent identity; run 'dev/agent-e2e.sh --yard $E2E_YARD --prepare', then ask the L0 operator to run 'yard -Y $E2E_YARD test-vms enroll --project PROJECT'"
   fi
   rm -f "$bootstrap_config"
   parse_allocation_manifest "$manifest"

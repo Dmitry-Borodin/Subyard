@@ -319,7 +319,9 @@ func TestAgentPolicyManifestAndStatusAreAtomic(t *testing.T) {
 	if err := WritePublicStatus(&status, cfg.manifest()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(status.String(), "\nvm\t1\te2e-vm-1\t10.42.0.11\tssh-ed25519 ") {
+	expectedVMRecord := "\nvm\t1\te2e-vm-1\t10.42.0.11\t" +
+		strings.Replace(host1, " ", "\t", 1) + "\n"
+	if !strings.Contains(status.String(), expectedVMRecord) {
 		t.Fatalf("status = %q", status.String())
 	}
 	if mode := fileMode(t, cfg.manifest()); mode != 0o644 {

@@ -42,10 +42,11 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 	}
 	if len(arguments) == 0 || commandHelpRequested(arguments) {
 		fmt.Fprintf(cli.options.Stdout,
-			"Usage: %s config fields [SETTING] | show [SETTING] | paths | status [--all-local] | apply [--all-local] [--yes] | sync <checkout> [--check] [--adopt] [--yes]\n"+
+			"Usage: %s config fields [SETTING] | show [SETTING] | paths | source <connect|path> | status [--all-local] | apply [--all-local] [--yes] | sync [checkout] [--check] [--adopt] [--yes]\n"+
 				"  fields  list the typed public settings contract (read-only)\n"+
 				"  show    explain effective Subyard settings and their sources (read-only)\n"+
 				"  paths   list configuration sources and storage roles (read-only)\n"+
+				"  source  connect or inspect the owner-host private Git checkout\n"+
 				"  status  check materialized file settings in running local yards (read-only)\n"+
 				"  apply   refresh materialized file settings in running local yards\n"+
 				"  sync    validate and import versioned non-secret desired settings\n",
@@ -82,6 +83,8 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 		return cli.writeConfigPaths(loaded)
 	case "sync":
 		return cli.runConfigSync(ctx, loaded, arguments[1:], assumeYes)
+	case "source":
+		return cli.runConfigSource(ctx, loaded, arguments[1:], assumeYes)
 	}
 	allLocal := false
 	for _, argument := range arguments[1:] {
@@ -98,7 +101,7 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 	switch action {
 	case "status", "apply":
 	default:
-		cli.errorf("config expects fields, show, paths, status, apply or sync")
+		cli.errorf("config expects fields, show, paths, source, status, apply or sync")
 		return 2
 	}
 	targets, err := cli.localConfigTargets(loaded, allLocal)
@@ -183,8 +186,21 @@ func (cli *CLI) runConfigSync(
 		}
 	}
 	if source == "" {
-		cli.errorf("config sync requires a versioned checkout path")
-		return 2
+		record, exists, err := configsync.ReadSourceRecord(
+			loaded.Context.Paths.ConfigHome,
+		)
+		if err != nil {
+			cli.errorf("config sync: read registered source: %v", err)
+			return 1
+		}
+		if !exists {
+			cli.errorf(
+				"config sync: no checkout was provided or registered; run %s config source connect <git-url>",
+				cli.options.Program,
+			)
+			return 2
+		}
+		source = record.Checkout
 	}
 	if !check {
 		if err := configsync.Recover(loaded.Context.Paths.ConfigHome); err != nil {
@@ -666,6 +682,19 @@ func (cli *CLI) writeConfigPaths(loaded config.Loaded) int {
 		syncStatus.HostID, hostIDState)
 	fmt.Fprintf(cli.options.Stdout, "versioned-config-manifest: %s\n",
 		syncStatus.ManifestPath)
+	sourceRecord, sourceRegistered, err := configsync.ReadSourceRecord(
+		loaded.Context.Paths.ConfigHome,
+	)
+	if err != nil {
+		cli.errorf("config paths: %v", err)
+		return 1
+	}
+	if sourceRegistered {
+		fmt.Fprintf(cli.options.Stdout, "versioned-config-checkout: %s\n",
+			sourceRecord.Checkout)
+	} else {
+		fmt.Fprintln(cli.options.Stdout, "versioned-config-checkout: <not registered>")
+	}
 	if syncStatus.ManifestPresent {
 		fmt.Fprintf(cli.options.Stdout, "versioned-config-source-commit: %s\n",
 			syncStatus.SourceCommit)

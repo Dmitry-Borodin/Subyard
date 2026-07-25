@@ -50,6 +50,19 @@ func readSource(options Options, hostID string) (sourceSnapshot, error) {
 	if err := validateSourceDirectory(root); err != nil {
 		return sourceSnapshot{}, err
 	}
+	identityRoot := root
+	if options.SourceIdentityRoot != "" {
+		identityRoot, err = filepath.Abs(options.SourceIdentityRoot)
+		if err != nil {
+			return sourceSnapshot{}, err
+		}
+		identityRoot = filepath.Clean(identityRoot)
+		if identityRoot == string(filepath.Separator) {
+			return sourceSnapshot{}, errors.New(
+				"versioned configuration source identity cannot be the filesystem root",
+			)
+		}
+	}
 	commit, err := validateGitSource(root, hostID)
 	if err != nil {
 		return sourceSnapshot{}, err
@@ -81,7 +94,7 @@ func readSource(options Options, hostID string) (sourceSnapshot, error) {
 		allowedFiles[filepath.ToSlash(filepath.Clean(mapping.Relative))] = mapping
 	}
 	snapshot := sourceSnapshot{
-		root: root, id: digestBytes([]byte(root)), commit: commit, hostID: hostID,
+		root: root, id: digestBytes([]byte(identityRoot)), commit: commit, hostID: hostID,
 		manifest: manifest, files: map[string]candidateFile{},
 		scalarPath: map[string]string{},
 	}

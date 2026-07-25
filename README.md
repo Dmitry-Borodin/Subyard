@@ -41,7 +41,9 @@ The runtime contains the engine, public profiles/config, completions and host ad
 source checkout, toolchain or private data.
 Shipped defaults are immutable; persistent [Subyard settings](docs/configuration.md) under
 `~/.config/subyard` override them by shared, host or yard scope to form the effective configuration.
-Inspect it with `yard config show` and `yard config paths`. Upgrade with `yard update`; use
+Inspect it with `yard config show` and `yard config paths`. To use a private Git desired-config
+repository, connect it explicitly on each owner host with
+`yard config source connect <git-url> --host-id <id>`. Upgrade with `yard update`; use
 `yard update --rollback` to swap back to the retained previous runtime.
 
 Run `yard --help` or `yard <command> --help` for complete command usage.

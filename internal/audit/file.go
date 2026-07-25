@@ -16,7 +16,15 @@ import (
 
 const defaultMaximum = int64(1024 * 1024)
 
-var credentialURL = regexp.MustCompile(`(://[^/:@[:space:]]+:)[^/@[:space:]]+@|(://)[^/:@[:space:]]+@`)
+var (
+	credentialURL = regexp.MustCompile(
+		`(://[^/:@[:space:]]+:)[^/@[:space:]]+@|(://)[^/:@[:space:]]+@`,
+	)
+	urlQueryValue = regexp.MustCompile(
+		`([?&][^=&#[:space:]]+=)[^&#[:space:]]+`,
+	)
+	urlFragment = regexp.MustCompile(`(#[^[:space:]]*)`)
+)
 
 type Invocation struct {
 	Home        string
@@ -120,7 +128,10 @@ func redactArguments(arguments []string) string {
 		}
 		argument = strings.ReplaceAll(argument, "\n", "\\n")
 		argument = strings.ReplaceAll(argument, "\r", "\\r")
-		redacted = append(redacted, credentialURL.ReplaceAllString(argument, `${1}${2}***@`))
+		argument = credentialURL.ReplaceAllString(argument, `${1}${2}***@`)
+		argument = urlQueryValue.ReplaceAllString(argument, `${1}***`)
+		argument = urlFragment.ReplaceAllString(argument, `#***`)
+		redacted = append(redacted, argument)
 	}
 	return strings.Join(redacted, " ")
 }

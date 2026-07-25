@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Dmitry-Borodin/Subyard/internal/configsync"
 	"github.com/Dmitry-Borodin/Subyard/internal/ports"
 	"github.com/Dmitry-Borodin/Subyard/internal/testkit"
 )
@@ -459,6 +460,223 @@ func TestConfigSyncCheckLeavesRecoveryPendingAndMutationRecoversFirst(t *testing
 	}
 }
 
+func TestConfigSourceConnectClonesRegistersAndAppliesWithOnePrompt(t *testing.T) {
+	root, home, configHome, environment := configCommandFixture(t)
+	source := configSourceGitRepository(t, "owner-a", "SSH_PORT=2292\n")
+	checkout := filepath.Join(home, ".local", "share", "subyard-config")
+	prompt := &testkit.Prompt{Answers: []bool{true}}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "source", "connect", source,
+			"--host-id", "owner-a",
+		},
+		Environment: environment, WorkingDir: root, Prompt: prompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("source connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(prompt.Seen) != 1 {
+		t.Fatalf("source connect prompted %d times: %#v", len(prompt.Seen), prompt.Seen)
+	}
+	for _, expected := range []string{
+		"Configuration source onboarding",
+		"checkout: " + checkout,
+		"owner-host: owner-a",
+		"config source: connected " + checkout,
+		"config sync: applied generation 1",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("source connect omitted %q:\n%s", expected, stdout.String())
+		}
+	}
+	content, err := os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || string(content) != "SSH_PORT=2292\n" {
+		t.Fatalf("source connect did not apply host config: %q %v", content, err)
+	}
+	record, exists, err := configsync.ReadSourceRecord(configHome)
+	if err != nil || !exists || record.Checkout != checkout {
+		t.Fatalf("source record: %#v exists=%v err=%v", record, exists, err)
+	}
+	origin := strings.TrimSpace(configSourceGitOutput(
+		t, checkout, "remote", "get-url", "origin",
+	))
+	if origin != source {
+		t.Fatalf("cloned origin = %q, want %q", origin, source)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "source", "path"},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 ||
+		strings.TrimSpace(stdout.String()) != checkout {
+		t.Fatalf("source path: code=%d stdout=%q stderr=%q",
+			code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync"},
+		Environment: environment, WorkingDir: root, Prompt: &testkit.Prompt{},
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 ||
+		!strings.Contains(stdout.String(), "already converged") {
+		t.Fatalf("registered source sync: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+
+	idempotentPrompt := &testkit.Prompt{}
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "source", "connect", source,
+			"--host-id", "owner-a", "--checkout", checkout,
+		},
+		Environment: environment, WorkingDir: root, Prompt: idempotentPrompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 ||
+		!strings.Contains(stdout.String(), "already connected and converged") {
+		t.Fatalf("idempotent connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(idempotentPrompt.Seen) != 0 {
+		t.Fatalf("idempotent connect prompted: %#v", idempotentPrompt.Seen)
+	}
+}
+
+func TestConfigSourceConnectDeclineLeavesNoCheckoutOrRegistration(t *testing.T) {
+	root, home, configHome, environment := configCommandFixture(t)
+	source := configSourceGitRepository(t, "owner-a", "SSH_PORT=2293\n")
+	checkout := filepath.Join(home, "declined-source")
+	prompt := &testkit.Prompt{Answers: []bool{false}}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "source", "connect", source,
+			"--host-id", "owner-a", "--checkout", checkout,
+		},
+		Environment: environment, WorkingDir: root, Prompt: prompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stderr.String(), "operation declined") {
+		t.Fatalf("declined source connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Lstat(checkout); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("declined connect left checkout: %v", err)
+	}
+	if _, exists, err := configsync.ReadSourceRecord(configHome); err != nil || exists {
+		t.Fatalf("declined connect registered source: exists=%v err=%v", exists, err)
+	}
+	stages, err := filepath.Glob(filepath.Join(home, sourceStagePrefix+"*"))
+	if err != nil || len(stages) != 0 {
+		t.Fatalf("declined connect left stages: %#v err=%v", stages, err)
+	}
+	content, err := os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || len(content) != 0 {
+		t.Fatalf("declined connect changed live config: %q %v", content, err)
+	}
+}
+
+func TestConfigSourceConnectRejectsEmbeddedCredentialsAndRemoteForwards(t *testing.T) {
+	root, home, configHome, environment := configCommandFixture(t)
+	var stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "source", "connect",
+			"https://token@example.invalid/private.git",
+		},
+		Environment: environment, WorkingDir: root,
+		Stdout: &bytes.Buffer{}, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stderr.String(), "credentials must not be embedded") {
+		t.Fatalf("credential URL: code=%d stderr=%s", code, stderr.String())
+	}
+
+	writeConfigCommandFile(t,
+		filepath.Join(configHome, "yards", "remote", "config.env"),
+		"YARD_TYPE=remote\nREMOTE_DEST=owner.example\nREMOTE_YARD=inner\nSSH_PORT=4444\n")
+	fakeBin := filepath.Join(home, "fake-bin")
+	logPath := filepath.Join(home, "ssh-arguments")
+	writeConfigCommandFile(t, filepath.Join(fakeBin, "ssh"), `#!/bin/sh
+printf '%s\n' "$@" >"$SUBYARD_TEST_SSH_LOG"
+`, 0o700)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+	environment = append(environment,
+		"PATH="+os.Getenv("PATH"),
+		"SUBYARD_TEST_SSH_LOG="+logPath)
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"-Y", "remote", "config", "source", "connect",
+			"git@example.invalid:private/config.git",
+			"--host-id", "owner-b", "--yes",
+		},
+		Environment: environment, WorkingDir: root,
+		Stdout: &bytes.Buffer{}, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("remote source forwarding: code=%d stderr=%s", code, stderr.String())
+	}
+	forwarded, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(forwarded)
+	for _, expected := range []string{
+		"-t\nowner.example\n--\nbash\n-lc\n",
+		`'\''yard'\'' '\''-Y'\'' '\''inner'\'' '\''config'\'' '\''source'\'' '\''connect'\''`,
+		"git@example.invalid:private/config.git",
+		"--host-id",
+		"owner-b",
+		"--yes",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("remote source forwarding omitted %q:\n%s", expected, output)
+		}
+	}
+}
+
 type recordingConfigApplier struct {
 	yards []string
 }
@@ -490,12 +708,16 @@ func configCommandFixture(t *testing.T) (string, string, string, []string) {
 	return root, home, configHome, environment
 }
 
-func writeConfigCommandFile(t *testing.T, path, contents string, _ ...os.FileMode) {
+func writeConfigCommandFile(t *testing.T, path, contents string, modes ...os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+	mode := os.FileMode(0o600)
+	if len(modes) != 0 {
+		mode = modes[0]
+	}
+	if err := os.WriteFile(path, []byte(contents), mode); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -543,4 +765,37 @@ func runConfigSyncGit(t *testing.T, directory string, arguments ...string) {
 	if err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(arguments, " "), err, output)
 	}
+}
+
+func configSourceGitRepository(
+	t *testing.T,
+	hostID string,
+	hostConfig string,
+) string {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), "source")
+	writeConfigCommandFile(t, filepath.Join(source, "subyard-config.json"),
+		"{\n  \"schemaVersion\": 1\n}\n")
+	writeConfigCommandFile(t,
+		filepath.Join(source, "hosts", hostID, "config.env"), hostConfig)
+	runConfigSyncGit(t, source, "init", "-q")
+	runConfigSyncGit(t, source, "add", "-A")
+	runConfigSyncGit(t, source,
+		"-c", "user.name=Subyard Test", "-c", "user.email=test@invalid",
+		"commit", "-q", "-m", "initial")
+	return source
+}
+
+func configSourceGitOutput(
+	t *testing.T,
+	directory string,
+	arguments ...string,
+) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", directory}, arguments...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(arguments, " "), err, output)
+	}
+	return string(output)
 }

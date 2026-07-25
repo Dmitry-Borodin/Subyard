@@ -79,15 +79,16 @@ func (plan Plan) NeedsConfirmation() bool {
 type YardUseProbe func(name string) (reason string, inUse bool, err error)
 
 type Options struct {
-	SourceRoot     string
-	ConfigHome     string
-	RepositoryRoot string
-	OperatorHome   string
-	Environment    map[string]string
-	FileSettings   []config.FileSettingMapping
-	Adopt          bool
-	ConfigLocked   bool
-	YardInUse      YardUseProbe
+	SourceRoot         string
+	SourceIdentityRoot string
+	ConfigHome         string
+	RepositoryRoot     string
+	OperatorHome       string
+	Environment        map[string]string
+	FileSettings       []config.FileSettingMapping
+	Adopt              bool
+	ConfigLocked       bool
+	YardInUse          YardUseProbe
 }
 
 type Status struct {

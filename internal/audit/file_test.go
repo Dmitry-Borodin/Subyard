@@ -14,7 +14,10 @@ import (
 func TestWriteInvocationRedactsAndRotates(t *testing.T) {
 	home := t.TempDir()
 	invocation := Invocation{
-		Home: home, Command: "clone", Arguments: []string{"https://user:password@example.test/repo", "--", "secret"},
+		Home: home, Command: "clone", Arguments: []string{
+			"https://user:password@example.test/repo?token=private#credential",
+			"--", "secret",
+		},
 		WorkingDir: "/workspace", Yard: "named", Remote: "owner", Side: "host",
 		OperationID: "op-fixture",
 		Now:         time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC), PID: 42, Maximum: 1,
@@ -31,7 +34,9 @@ func TestWriteInvocationRedactsAndRotates(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(data)
-		if strings.Contains(text, "password") || strings.Contains(text, " secret") || !strings.Contains(text, "***") {
+		if strings.Contains(text, "password") || strings.Contains(text, "private") ||
+			strings.Contains(text, "credential") || strings.Contains(text, " secret") ||
+			!strings.Contains(text, "***") {
 			t.Fatalf("audit redaction failed in %s: %q", name, text)
 		}
 		if !strings.Contains(text, " op=op-fixture ") {

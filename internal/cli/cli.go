@@ -376,15 +376,22 @@ func configSyncInvocation(arguments []string) (bool, bool) {
 	if len(arguments) != 0 && (arguments[0] == "-y" || arguments[0] == "--yes") {
 		arguments = arguments[1:]
 	}
-	if len(arguments) == 0 || arguments[0] != "sync" {
+	if len(arguments) == 0 {
 		return false, false
 	}
-	for _, argument := range arguments[1:] {
-		if argument == "--check" {
-			return true, true
+	switch arguments[0] {
+	case "sync":
+		for _, argument := range arguments[1:] {
+			if argument == "--check" {
+				return true, true
+			}
 		}
+		return true, false
+	case "source":
+		return len(arguments) >= 2 && arguments[1] == "connect", false
+	default:
+		return false, false
 	}
-	return true, false
 }
 
 func (cli *CLI) projectObserver() ports.ProjectObserver {

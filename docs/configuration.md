@@ -109,6 +109,25 @@ Keep private desired settings in a separate clean Git checkout. Do not turn the 
 consumers and support tools. `.gitignore`, a symlink farm or recursive `rsync --delete` is not an
 ownership boundary.
 
+Release installation and migration never ask for a Git URL or require network access. Connect the
+private repository explicitly once on each physical owner host:
+
+```sh
+yard config source connect \
+  git@github.com:you/subyard-config.git \
+  --host-id workstation-a
+```
+
+`source connect` prepares the clone in a private temporary directory, validates its selected HostID
+and exact adoption plan, then asks once before installing the checkout, registering its path and
+applying that plan. The default destination is `~/.local/share/subyard-config`; use `--checkout` to
+select an existing checkout or another destination. An existing checkout must have the requested
+`origin`. A declined or invalid staged clone is removed.
+
+Yard does not store Git credentials. Configure SSH or a Git credential helper on that owner host;
+credential-bearing URLs, URL queries and fragments are rejected. `connect` performs only the initial
+clone. Yard never commits or pushes, and it does not run later `git fetch` or `git pull` commands.
+
 The checkout root contains a tracked `subyard-config.json`:
 
 ```json
@@ -149,12 +168,13 @@ The first sync snapshots an owner-host ID. By default it uses the current hostna
 by later syncs. Each host selects only `shared` and `hosts/<HostID>`, so two hosts may have yards with
 the same name without collapsing them.
 
-Use Git itself for transport and history:
+After onboarding, use Git itself for transport and history. The registered path is available through
+`config source path`, and `config sync` no longer needs the path argument:
 
 ```sh
-git -C ~/.local/share/subyard-config pull --ff-only
-yard config sync ~/.local/share/subyard-config --check
-yard config sync ~/.local/share/subyard-config
+git -C "$(yard config source path)" pull --ff-only
+yard config sync --check
+yard config sync
 ```
 
 `--check` is read-only, never prompts, and exits non-zero when an apply or local manifest update is
@@ -176,9 +196,18 @@ To roll back desired settings, check out or revert the intended Git revision and
 and sync commands. An interrupted confirmed transaction is recovered before the next mutating sync;
 `--check` reports pending recovery without changing the live root.
 
-When invoked for a registered remote yard, `config sync` runs on that owner host. The checkout path
-therefore names a path on the owner host; the controller does not upload its checkout and there is no
-implicit all-host fan-out.
+When invoked for a registered remote yard, `config source connect`, `config source path` and
+`config sync` run on that owner host:
+
+```sh
+yard -Y remote config source connect \
+  git@github.com:you/subyard-config.git \
+  --host-id remote-owner
+yard -Y remote config sync --check
+```
+
+The checkout and Git authentication stay on the owner host; the controller does not upload or cache
+the repository and there is no implicit all-host fan-out.
 
 ### Bootstrapping an existing host
 
@@ -194,7 +223,8 @@ classify current values with `yard config fields` and inspect their provenance w
 - secrets, keys, generated consumers, project state, host identity, desired power and support tools
   stay local and are never copied.
 
-A minimal new checkout can be prepared without reading or copying the whole live root:
+A minimal repository for the first host can be prepared without reading or copying the whole live
+root:
 
 ```sh
 checkout=$HOME/.local/share/subyard-config
@@ -206,17 +236,23 @@ printf '%s\n' '{"schemaVersion":1}' >"$checkout/subyard-config.json"
 : >"$checkout/hosts/$host_id/config.env"
 git -C "$checkout" add subyard-config.json "hosts/$host_id/config.env"
 git -C "$checkout" commit -m 'Add Subyard configuration source'
+git -C "$checkout" remote add origin git@github.com:you/subyard-config.git
+git -C "$checkout" push -u origin HEAD
 ```
 
-Move reviewed assignments and known override files into that layout, commit them, then preview the
-first import with the same ID and explicit adoption:
+Move reviewed assignments and known override files into that layout and commit them. Connect the
+existing checkout by giving the same origin URL and path; the command shows the exact adoption plan
+and asks once:
 
 ```sh
-SUBYARD_HOST_ID=$host_id yard config sync "$checkout" --check --adopt
-SUBYARD_HOST_ID=$host_id yard config sync "$checkout" --adopt
+yard config source connect \
+  git@github.com:you/subyard-config.git \
+  --host-id "$host_id" \
+  --checkout "$checkout"
 ```
 
 Do not copy `~/.config/subyard` recursively. In particular, do not add ignored secret or runtime
 paths just to make the worktree appear clean: selected ignored and untracked source paths are
-rejected. After the first successful sync, the saved local `host-id` is authoritative and the
-environment override is no longer needed.
+rejected. After `connect`, the checkout path and saved local `host-id` are authoritative. Each
+additional owner host runs its own `source connect` against a HostID subtree already committed to
+the repository.

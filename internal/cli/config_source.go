@@ -1,0 +1,675 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+
+	"github.com/Dmitry-Borodin/Subyard/internal/application"
+	"github.com/Dmitry-Borodin/Subyard/internal/config"
+	"github.com/Dmitry-Borodin/Subyard/internal/configsync"
+	"github.com/Dmitry-Borodin/Subyard/internal/domain"
+)
+
+const sourceStagePrefix = ".subyard-config-source-"
+
+type configSourceConnectOptions struct {
+	origin   string
+	checkout string
+	hostID   string
+}
+
+type preparedConfigSource struct {
+	checkout         string
+	stage            string
+	existingAncestor string
+	preview          configsync.Plan
+	options          configsync.Options
+	needsClone       bool
+	needsRegister    bool
+}
+
+func (cli *CLI) runConfigSource(
+	ctx context.Context,
+	loaded config.Loaded,
+	arguments []string,
+	assumeYes bool,
+) int {
+	if len(arguments) == 0 || commandHelpRequested(arguments) {
+		fmt.Fprintf(cli.options.Stdout,
+			"Usage: %s config source connect <git-url> [--host-id ID] [--checkout PATH] [--yes] | path\n"+
+				"  connect  clone, register and import a private Git configuration source\n"+
+				"  path     print the registered owner-host checkout path\n",
+			cli.options.Program)
+		return 0
+	}
+	action := arguments[0]
+	if action != "connect" && action != "path" {
+		cli.errorf("config source expects connect or path")
+		return 2
+	}
+	if loaded.Context.YardType == domain.YardRemote {
+		forwarded := append([]string{"source"}, arguments...)
+		if assumeYes && action == "connect" {
+			forwarded = append(forwarded, "--yes")
+		}
+		return cli.forwardRemote(ctx, loaded.Context, "config", forwarded)
+	}
+	if action == "path" {
+		if len(arguments) != 1 {
+			cli.errorf("config source path accepts no arguments")
+			return 2
+		}
+		record, exists, err := configsync.ReadSourceRecord(
+			loaded.Context.Paths.ConfigHome,
+		)
+		if err != nil {
+			cli.errorf("config source path: %v", err)
+			return 1
+		}
+		if !exists {
+			cli.errorf(
+				"config source path: no source is registered; run %s config source connect <git-url>",
+				cli.options.Program,
+			)
+			return 1
+		}
+		fmt.Fprintln(cli.options.Stdout, record.Checkout)
+		return 0
+	}
+	connect, parsedYes, err := cli.parseConfigSourceConnect(arguments[1:])
+	if err != nil {
+		cli.errorf("config source connect: %v", err)
+		return 2
+	}
+	assumeYes = assumeYes || parsedYes
+	prepared, err := cli.prepareConfigSource(ctx, loaded, connect)
+	if err != nil {
+		cli.errorf("config source connect: %v", err)
+		return 1
+	}
+	defer prepared.cleanup()
+
+	fmt.Fprintln(cli.options.Stdout, "Configuration source onboarding")
+	fmt.Fprintf(cli.options.Stdout, "  checkout: %s\n", prepared.checkout)
+	writeConfigSyncPlan(cli.options.Stdout, prepared.preview)
+	if !prepared.needsClone && !prepared.needsRegister &&
+		!prepared.preview.NeedsApply() {
+		fmt.Fprintln(cli.options.Stdout, "config source: already connected and converged")
+		return 0
+	}
+	consequences := make([]string, 0, len(prepared.preview.Changes)+3)
+	if prepared.needsClone {
+		consequences = append(consequences,
+			"install the prepared private Git checkout at "+prepared.checkout)
+	}
+	if prepared.needsRegister {
+		consequences = append(consequences,
+			"register the owner-host configuration source checkout")
+	}
+	if prepared.preview.InitializeHostID {
+		consequences = append(consequences,
+			"record owner host ID "+prepared.preview.HostID)
+	}
+	for _, change := range prepared.preview.Changes {
+		consequences = append(consequences, change.Action+" "+change.Path)
+	}
+	orchestrator := cli.operationOrchestrator(
+		cli.env["SUBYARD_OPERATION_ID"], loaded, nil, nil,
+	)
+	operation, err := orchestrator.Prepare(loaded.Context, domain.CommandPolicy{
+		Name: "config source connect", Effect: domain.CommandMutate,
+		RemotePolicy: domain.RemoteOnOwner, Consequences: consequences,
+	})
+	if err != nil {
+		cli.errorf("config source connect: %v", err)
+		return 1
+	}
+	operation, err = orchestrator.Confirm(ctx, operation, assumeYes)
+	if errors.Is(err, application.ErrDeclined) {
+		cli.errorf("config source connect: operation declined")
+		return 1
+	}
+	if err != nil {
+		cli.errorf("config source connect: %v", err)
+		return 1
+	}
+	adapter := &configSourceConnectAdapter{prepared: prepared}
+	orchestrator.Runner = adapter
+	if _, _, err := orchestrator.RunAdapter(ctx, operation, domain.AdapterRequest{
+		OperationID: operation.OperationID,
+		Adapter:     "config-source",
+		Action:      "connect",
+	}, nil); err != nil {
+		cli.errorf("config source connect: %v", err)
+		return 1
+	}
+	fmt.Fprintf(cli.options.Stdout, "config source: connected %s\n", prepared.checkout)
+	if adapter.plan.NeedsApply() {
+		fmt.Fprintf(cli.options.Stdout, "config sync: applied generation %d\n",
+			adapter.plan.Generation)
+		cli.writeConfigSyncFollowups(loaded, adapter.plan)
+	} else {
+		fmt.Fprintln(cli.options.Stdout, "config sync: already converged")
+	}
+	return 0
+}
+
+func (cli *CLI) parseConfigSourceConnect(
+	arguments []string,
+) (configSourceConnectOptions, bool, error) {
+	var result configSourceConnectOptions
+	assumeYes := false
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		switch argument {
+		case "--host-id", "--checkout":
+			if index+1 >= len(arguments) {
+				return result, false, fmt.Errorf("%s needs a value", argument)
+			}
+			index++
+			if argument == "--host-id" {
+				if result.hostID != "" {
+					return result, false, errors.New("--host-id may be specified only once")
+				}
+				result.hostID = arguments[index]
+			} else {
+				if result.checkout != "" {
+					return result, false, errors.New("--checkout may be specified only once")
+				}
+				result.checkout = arguments[index]
+			}
+		case "-y", "--yes":
+			assumeYes = true
+		default:
+			if strings.HasPrefix(argument, "-") {
+				return result, false, fmt.Errorf("unknown option %q", argument)
+			}
+			if result.origin != "" {
+				return result, false, errors.New("connect accepts exactly one Git URL")
+			}
+			result.origin = argument
+		}
+	}
+	if result.origin == "" {
+		return result, false, errors.New("a Git URL is required")
+	}
+	return result, assumeYes, nil
+}
+
+func (cli *CLI) prepareConfigSource(
+	ctx context.Context,
+	loaded config.Loaded,
+	request configSourceConnectOptions,
+) (*preparedConfigSource, error) {
+	origin, err := normalizeConfigGitSource(request.origin, cli.options.WorkingDir)
+	if err != nil {
+		return nil, err
+	}
+	record, registered, err := configsync.ReadSourceRecord(
+		loaded.Context.Paths.ConfigHome,
+	)
+	if err != nil {
+		return nil, err
+	}
+	checkout := request.checkout
+	if checkout == "" && registered {
+		checkout = record.Checkout
+	}
+	if checkout == "" {
+		checkout = filepath.Join(
+			loaded.Context.Paths.OperatorHome, ".local", "share", "subyard-config",
+		)
+	}
+	if !filepath.IsAbs(checkout) {
+		checkout = filepath.Join(cli.options.WorkingDir, checkout)
+	}
+	checkout, err = filepath.Abs(checkout)
+	if err != nil {
+		return nil, err
+	}
+	checkout = filepath.Clean(checkout)
+	if err := validateConfigSourceCheckoutBoundary(
+		checkout, loaded.Context.Paths, cli.options.RepositoryRoot,
+	); err != nil {
+		return nil, err
+	}
+	if registered && checkout != record.Checkout {
+		return nil, fmt.Errorf(
+			"configuration source is already registered at %s", record.Checkout,
+		)
+	}
+	prepared := &preparedConfigSource{
+		checkout:      checkout,
+		needsRegister: !registered,
+	}
+	info, statErr := os.Lstat(checkout)
+	switch {
+	case statErr == nil:
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, errors.New("configuration source checkout must be a real directory")
+		}
+		if err := verifyConfigGitOrigin(ctx, checkout, origin, cli.env); err != nil {
+			return nil, err
+		}
+	case errors.Is(statErr, os.ErrNotExist):
+		ancestor, err := privateCheckoutAncestor(filepath.Dir(checkout))
+		if err != nil {
+			return nil, err
+		}
+		stage, err := os.MkdirTemp(ancestor, sourceStagePrefix)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Chmod(stage, 0o700); err != nil {
+			_ = os.Remove(stage)
+			return nil, err
+		}
+		prepared.stage = stage
+		prepared.existingAncestor = ancestor
+		prepared.needsClone = true
+		if err := cli.cloneConfigSource(ctx, origin, stage); err != nil {
+			prepared.cleanup()
+			return nil, err
+		}
+	default:
+		return nil, statErr
+	}
+	sourceRoot := checkout
+	if prepared.needsClone {
+		sourceRoot = prepared.stage
+	}
+	environment := make(map[string]string, len(cli.baseEnv)+1)
+	for name, value := range cli.baseEnv {
+		environment[name] = value
+	}
+	if request.hostID != "" {
+		environment["SUBYARD_HOST_ID"] = request.hostID
+	}
+	prepared.options = configsync.Options{
+		SourceRoot: sourceRoot, SourceIdentityRoot: checkout,
+		ConfigHome:     loaded.Context.Paths.ConfigHome,
+		RepositoryRoot: cli.options.RepositoryRoot,
+		OperatorHome:   loaded.Context.Paths.OperatorHome,
+		Environment:    environment,
+		FileSettings:   config.SyncableFileMappings(loaded),
+		Adopt:          true,
+		YardInUse:      cli.configSyncYardInUse(loaded),
+	}
+	prepared.preview, err = configsync.BuildPlan(prepared.options)
+	if err != nil {
+		prepared.cleanup()
+		return nil, err
+	}
+	if request.hostID != "" && prepared.preview.HostID != request.hostID {
+		prepared.cleanup()
+		return nil, fmt.Errorf(
+			"saved owner host ID is %q, not requested %q",
+			prepared.preview.HostID, request.hostID,
+		)
+	}
+	return prepared, nil
+}
+
+func (cli *CLI) cloneConfigSource(
+	ctx context.Context,
+	origin string,
+	destination string,
+) error {
+	command := exec.CommandContext(ctx,
+		"git", "clone", "--quiet", "--", origin, destination,
+	)
+	command.Dir = filepath.Dir(destination)
+	command.Env = environmentList(cli.env, map[string]string{
+		"GIT_TERMINAL_PROMPT": "0",
+	})
+	var diagnostics bytes.Buffer
+	command.Stdout = io.Discard
+	command.Stderr = &diagnostics
+	if err := command.Run(); err != nil {
+		message := strings.TrimSpace(diagnostics.String())
+		if len(message) > 4096 {
+			message = message[:4096] + "..."
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf(
+			"Git clone failed; configure Git authentication on this owner host: %s",
+			message,
+		)
+	}
+	if err := hardenClonedConfigSource(destination); err != nil {
+		return fmt.Errorf("protect cloned configuration source: %w", err)
+	}
+	return verifyConfigGitOrigin(ctx, destination, origin, cli.env)
+}
+
+func hardenClonedConfigSource(root string) error {
+	gitDirectory := filepath.Join(root, ".git")
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == gitDirectory {
+			return filepath.SkipDir
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.Mode().IsRegular() {
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok || stat.Uid != uint32(os.Getuid()) {
+				return fmt.Errorf("cloned path is not operator-owned: %s", path)
+			}
+			if stat.Nlink != 1 {
+				return nil
+			}
+		}
+		protected := info.Mode().Perm() &^ 0o022
+		if protected == info.Mode().Perm() {
+			return nil
+		}
+		return os.Chmod(path, protected)
+	})
+}
+
+func verifyConfigGitOrigin(
+	ctx context.Context,
+	checkout string,
+	expected string,
+	environment map[string]string,
+) error {
+	command := exec.CommandContext(ctx,
+		"git", "-C", checkout, "remote", "get-url", "origin",
+	)
+	command.Env = environmentList(environment, map[string]string{
+		"GIT_TERMINAL_PROMPT": "0",
+	})
+	output, err := command.Output()
+	if err != nil {
+		return errors.New("configuration source checkout has no readable Git origin")
+	}
+	actual := strings.TrimSpace(string(output))
+	if actual != expected {
+		return fmt.Errorf(
+			"configuration source checkout origin does not match the requested Git URL",
+		)
+	}
+	return nil
+}
+
+func normalizeConfigGitSource(value, workingDirectory string) (string, error) {
+	if value == "" || value != strings.TrimSpace(value) ||
+		strings.ContainsAny(value, "\x00\r\n") {
+		return "", errors.New("Git URL is empty or contains unsafe characters")
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme == "" {
+			return "", errors.New("Git URL is invalid")
+		}
+		switch parsed.Scheme {
+		case "https", "ssh", "git", "file":
+		default:
+			return "", fmt.Errorf("Git URL scheme %q is not supported", parsed.Scheme)
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" {
+			return "", errors.New("Git URL must not contain a query or fragment")
+		}
+		if parsed.User != nil {
+			_, password := parsed.User.Password()
+			if password || parsed.Scheme == "https" {
+				return "", errors.New(
+					"Git credentials must not be embedded in the URL",
+				)
+			}
+		}
+		return value, nil
+	}
+	if configGitSCPStyle(value) {
+		return value, nil
+	}
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(workingDirectory, value)
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absolute), nil
+}
+
+func configGitSCPStyle(value string) bool {
+	colon := strings.IndexByte(value, ':')
+	slash := strings.IndexByte(value, '/')
+	if colon <= 0 || slash >= 0 && slash < colon {
+		return false
+	}
+	host := value[:colon]
+	if strings.ContainsAny(host, `\ `) {
+		return false
+	}
+	if at := strings.IndexByte(host, '@'); at >= 0 {
+		user := host[:at]
+		host = host[at+1:]
+		if user == "" || strings.Contains(user, ":") {
+			return false
+		}
+	}
+	return host != ""
+}
+
+func validateConfigSourceCheckoutBoundary(
+	checkout string,
+	paths domain.RuntimePaths,
+	repositoryRoot string,
+) error {
+	if checkout == string(filepath.Separator) || checkout == paths.OperatorHome {
+		return errors.New("configuration source checkout target is too broad")
+	}
+	for label, root := range map[string]string{
+		"live configuration": paths.ConfigHome,
+		"Subyard data":       paths.DataHome,
+		"runtime repository": repositoryRoot,
+	} {
+		if pathContains(checkout, root) || pathContains(root, checkout) {
+			return fmt.Errorf(
+				"configuration source checkout must not overlap %s root %s",
+				label, root,
+			)
+		}
+	}
+	return nil
+}
+
+func pathContains(root, target string) bool {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	relative, err := filepath.Rel(root, target)
+	return err == nil && relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func privateCheckoutAncestor(path string) (string, error) {
+	current := filepath.Clean(path)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if err := validatePrivateCheckoutDirectory(current, info); err != nil {
+				return "", err
+			}
+			return current, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		next := filepath.Dir(current)
+		if next == current {
+			return "", errors.New(
+				"configuration source checkout has no safe existing parent",
+			)
+		}
+		current = next
+	}
+}
+
+func validatePrivateCheckoutDirectory(path string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() ||
+		info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf(
+			"configuration source parent must be a private real directory: %s", path,
+		)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Getuid()) {
+		return fmt.Errorf(
+			"configuration source parent is not operator-owned: %s", path,
+		)
+	}
+	return nil
+}
+
+func installConfigSourceCheckout(
+	stage string,
+	checkout string,
+	existingAncestor string,
+) error {
+	if stage == "" {
+		return nil
+	}
+	parent := filepath.Dir(checkout)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return err
+	}
+	current := parent
+	for {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if err := validatePrivateCheckoutDirectory(current, info); err != nil {
+			return err
+		}
+		if current == existingAncestor {
+			break
+		}
+		next := filepath.Dir(current)
+		if next == current || !pathContains(existingAncestor, next) {
+			return errors.New("configuration source parent escaped its prepared root")
+		}
+		current = next
+	}
+	if _, err := os.Lstat(checkout); err == nil {
+		return errors.New("configuration source checkout appeared after preview")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(stage, checkout); err != nil {
+		return fmt.Errorf("install prepared configuration source checkout: %w", err)
+	}
+	return syncConfigSourceDirectoryChain(parent, existingAncestor)
+}
+
+func syncConfigSourceDirectoryChain(path, stop string) error {
+	current := path
+	for {
+		directory, err := os.Open(current)
+		if err != nil {
+			return err
+		}
+		syncErr := directory.Sync()
+		closeErr := directory.Close()
+		if syncErr != nil {
+			return syncErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if current == stop {
+			return nil
+		}
+		next := filepath.Dir(current)
+		if next == current || !pathContains(stop, next) {
+			return errors.New("configuration source durability path escaped its prepared root")
+		}
+		current = next
+	}
+}
+
+func (prepared *preparedConfigSource) cleanup() {
+	if prepared == nil || prepared.stage == "" {
+		return
+	}
+	parent := filepath.Dir(prepared.stage)
+	if parent != prepared.existingAncestor ||
+		!strings.HasPrefix(filepath.Base(prepared.stage), sourceStagePrefix) {
+		return
+	}
+	_ = os.RemoveAll(prepared.stage)
+	prepared.stage = ""
+}
+
+type configSourceConnectAdapter struct {
+	prepared *preparedConfigSource
+	plan     configsync.Plan
+}
+
+func (adapter *configSourceConnectAdapter) Run(
+	_ context.Context,
+	request domain.AdapterRequest,
+	_ io.Reader,
+) (domain.AdapterResult, string, error) {
+	if request.Adapter != "config-source" || request.Action != "connect" {
+		return domain.AdapterResult{}, "", errors.New(
+			"invalid configuration source adapter request",
+		)
+	}
+	prepared := adapter.prepared
+	if prepared.needsClone {
+		if err := installConfigSourceCheckout(
+			prepared.stage, prepared.checkout, prepared.existingAncestor,
+		); err != nil {
+			return domain.AdapterResult{}, "", err
+		}
+		prepared.stage = ""
+	}
+	finalOptions := prepared.options
+	finalOptions.SourceRoot = prepared.checkout
+	finalOptions.SourceIdentityRoot = prepared.checkout
+	finalPlan, err := configsync.BuildPlan(finalOptions)
+	if err != nil {
+		return domain.AdapterResult{}, "", fmt.Errorf(
+			"revalidate installed configuration source: %w", err,
+		)
+	}
+	if finalPlan.Digest != prepared.preview.Digest {
+		return domain.AdapterResult{}, "", errors.New(
+			"configuration source or live settings changed after preview; rerun connect",
+		)
+	}
+	if err := configsync.RegisterSource(
+		finalOptions.ConfigHome, prepared.checkout,
+	); err != nil {
+		return domain.AdapterResult{}, "", err
+	}
+	if err := configsync.Apply(finalPlan); err != nil {
+		return domain.AdapterResult{}, "", err
+	}
+	adapter.plan = finalPlan
+	return domain.AdapterResult{
+		Schema: 1, OperationID: request.OperationID, Status: "ok",
+		Output: map[string]any{
+			"checkout":   prepared.checkout,
+			"generation": finalPlan.Generation,
+		},
+	}, "", nil
+}

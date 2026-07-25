@@ -40,5 +40,82 @@ grep -Fqx "chgrp incus-admin $SUBYARD_UFW_RULES_FILE" "$access_log" \
   || fail "UFW probe access did not use incus-admin"
 grep -Fqx "chgrp root $SUBYARD_UFW_RULES_FILE" "$access_log" \
   || fail "UFW teardown access did not restore root ownership"
+unset -f getent chgrp chmod
 
-printf 'ok: network leaf parses persisted active-UFW policy\n'
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "is-active --quiet ufw") exit 3 ;;
+  "is-active NetworkManager")
+    case "${MOCK_NM_STATE:-inactive}" in
+      active) printf 'active\n'; exit 0 ;;
+      inactive) printf 'inactive\n'; exit 3 ;;
+      *) printf '%s\n' "$MOCK_NM_STATE"; exit 3 ;;
+    esac
+    ;;
+  *) exit 90 ;;
+esac
+SH
+cat > "$TMP/bin/incus" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  info) exit 0 ;;
+  "info yard --project subyard")
+    [ "${MOCK_INSTANCE_EXISTS:-1}" = 1 ]
+    ;;
+  "list yard --project subyard -f csv -c s")
+    printf '%s\n' "${MOCK_INSTANCE_STATE:-STOPPED}"
+    ;;
+  "list yard --project subyard -c4 -fcsv")
+    printf '%s\n' "${MOCK_INSTANCE_IP:-}"
+    ;;
+  *) exit 90 ;;
+esac
+SH
+cat > "$TMP/bin/ip" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "-4 route show default") printf '%s\n' "${MOCK_DEFAULT_ROUTE:-default via 192.0.2.1 dev eth0}" ;;
+  *) exit 90 ;;
+esac
+SH
+chmod +x "$TMP/bin/"*
+export PATH="$TMP/bin:$PATH"
+export MOCK_NM_STATE=inactive MOCK_INSTANCE_EXISTS=1 MOCK_INSTANCE_STATE=STOPPED
+export MOCK_INSTANCE_IP='' MOCK_DEFAULT_ROUTE='default via 192.0.2.1 dev eth0'
+
+# The network stage owns host guards, not desired-power reconciliation. A stopped instance is safe
+# here even when the later init finalizer still needs to restore desired=running.
+SUBYARD_POWER_DESIRED=running bash "$ROOT/scripts/06-network.sh" --verify \
+  || fail "stopped desired-running instance did not converge after network apply"
+SUBYARD_POWER_DESIRED=stopped bash "$ROOT/scripts/06-network.sh" --verify \
+  || fail "stopped desired-stopped instance did not converge after network apply"
+
+MOCK_INSTANCE_STATE=RUNNING MOCK_INSTANCE_IP=10.0.0.2 \
+  SUBYARD_POWER_DESIRED=running bash "$ROOT/scripts/06-network.sh" --verify \
+  || fail "running instance with an address did not converge"
+if MOCK_INSTANCE_STATE=RUNNING MOCK_INSTANCE_IP='' \
+  SUBYARD_POWER_DESIRED=running bash "$ROOT/scripts/06-network.sh" --verify; then
+  fail "running instance without an address converged"
+fi
+
+if MOCK_INSTANCE_STATE=STOPPED MOCK_DEFAULT_ROUTE='default dev incusbr0' \
+  SUBYARD_POWER_DESIRED=running bash "$ROOT/scripts/06-network.sh" --verify; then
+  fail "stopped instance bypassed the unsafe host-route guard"
+fi
+if MOCK_NM_STATE=unexpected MOCK_INSTANCE_STATE=STOPPED \
+  SUBYARD_POWER_DESIRED=running bash "$ROOT/scripts/06-network.sh" --verify; then
+  fail "stopped instance bypassed the unknown NetworkManager-state guard"
+fi
+
+if MOCK_INSTANCE_EXISTS=0 bash "$ROOT/scripts/06-network.sh" --check; then
+  fail "pre-apply network check accepted an absent instance"
+fi
+MOCK_INSTANCE_EXISTS=0 bash "$ROOT/scripts/06-network.sh" --verify \
+  || fail "fresh-init network verify rejected an instance created by a later stage"
+
+printf 'ok: network leaf owns guards independently from desired power\n'

@@ -373,6 +373,7 @@ func TestInstanceProbeOwnsVolumeAndNestedBoundary(t *testing.T) {
 		Reconcile: ports.ReconcileState{
 			InstanceFound: true, VolumeFound: true,
 			Instance: ports.InstanceInfo{
+				Status:      "Running",
 				LocalConfig: map[string]string{"security.nesting": "true"},
 				LocalDevices: map[string]map[string]string{
 					"srv": {"source": "yard-srv", "path": "/srv", "pool": "default"},
@@ -388,6 +389,14 @@ func TestInstanceProbeOwnsVolumeAndNestedBoundary(t *testing.T) {
 		HostDeviceRoot: deviceRoot,
 	}
 	assertStageConverged(t, runtime, true, "matching instance")
+	incus.Reconcile.Instance.Status = "Stopped"
+	incus.Reconcile.Instance.LocalConfig["user.subyard.managed"] = "true"
+	incus.Reconcile.Instance.LocalConfig["user.subyard.initialized"] = "true"
+	incus.Reconcile.Instance.LocalConfig["user.subyard.desired_power"] = "running"
+	assertStageConverged(t, runtime, false, "stopped desired-running power fence")
+	incus.Reconcile.Instance.LocalConfig["user.subyard.desired_power"] = "stopped"
+	assertStageConverged(t, runtime, true, "intentionally stopped instance")
+	incus.Reconcile.Instance.Status = "Running"
 	incus.Reconcile.Instance.LocalDevices["srv"]["source"] = "wrong"
 	assertStageConverged(t, runtime, false, "drifted volume")
 	incus.Reconcile.Instance.LocalDevices["srv"]["source"] = "yard-srv"

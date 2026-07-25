@@ -231,6 +231,18 @@ func (runtime Runtime) instanceConverged(ctx context.Context) (bool, error) {
 	if err != nil || !state.InstanceFound || !state.VolumeFound {
 		return false, err
 	}
+	switch {
+	case strings.EqualFold(state.Instance.Status, "running"):
+	case strings.EqualFold(state.Instance.Status, "stopped"):
+		// A completed desired=stopped yard is intentionally idle. Every other stopped state
+		// needs the existing instance stage to enter its guarded temporary-power fence before
+		// provision/SSH and the other live reconciliation stages run.
+		if !instanceIntentionallyStopped(state.Instance) {
+			return false, nil
+		}
+	default:
+		return false, nil
+	}
 	pool, volume := runtime.volumeNames()
 	devices := state.Instance.LocalDevices
 	srv, exists := devices["srv"]

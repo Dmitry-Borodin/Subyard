@@ -566,6 +566,11 @@ prepare() {
   operator_yard -Y e2e-yard start --yes
   operator_yard -Y e2e-yard check
   seed_previous_migration_inputs
+  [ "$(incus config get "$INSTANCE" user.subyard.desired_power --project "$PROJECT")" = running ] \
+    || die 'legacy yard did not persist desired=running before the stopped-upgrade fixture'
+  incus stop "$INSTANCE" --project "$PROJECT"
+  [ "$(incus list "$INSTANCE" --project "$PROJECT" -f csv -c s)" = STOPPED ] \
+    || die 'legacy yard did not enter the stopped desired-running upgrade fixture'
 
   bootstrap_candidate "$RELEASE_ROOT/a" "$VERSION_A"
   verify_migration
@@ -574,7 +579,13 @@ prepare() {
   bootstrap_candidate "$RELEASE_ROOT/a" "$VERSION_A"
   [ "$(operator_env grep -Fc '# Subyard CLI completion' "$OPERATOR_HOME/.bashrc")" = 1 ] \
     || die 'repeated bootstrap duplicated shell integration'
+  [ "$(incus list "$INSTANCE" --project "$PROJECT" -f csv -c s)" = STOPPED ] \
+    || die 'runtime bootstrap changed the physical state before confirmed init reconciliation'
   operator_yard -Y e2e-yard init --yes
+  [ "$(incus list "$INSTANCE" --project "$PROJECT" -f csv -c s)" = RUNNING ] \
+    || die 'init did not restore desired=running after stopped source upgrade'
+  [ "$(incus config get "$INSTANCE" user.subyard.desired_power --project "$PROJECT")" = running ] \
+    || die 'init changed desired power after stopped source upgrade'
   operator_yard -Y e2e-yard check
   operator_yard -Y e2e-yard init --yes
   verify_config_workflow

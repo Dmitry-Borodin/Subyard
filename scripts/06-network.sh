@@ -40,8 +40,14 @@ if [ "$mode" != apply ]; then
   [ "$mode" != verify ] || [ "$instance_exists" = 1 ] || exit 0
   [ "$instance_exists" = 1 ] || exit 1
   instance_state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
-  [ "$instance_state" != STOPPED ] || [ "${SUBYARD_POWER_DESIRED:-}" != stopped ] || exit 0
-  [ "$instance_state" = RUNNING ] || exit 1
+  # Desired power is restored by init's finalizer. A stopped instance is already safe for this
+  # stage: network convergence owns the host NM/UFW/route guards, not physical lifecycle state.
+  # A live instance still has to expose an address before the network stage can be considered ready.
+  case "$instance_state" in
+    STOPPED) exit 0 ;;
+    RUNNING) ;;
+    *) exit 1 ;;
+  esac
   [ -n "$(incus list "$INSTANCE_NAME" --project "$INCUS_PROJECT" -c4 -fcsv 2>/dev/null)" ]
   exit
 fi

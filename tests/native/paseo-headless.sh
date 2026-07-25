@@ -24,6 +24,38 @@ esac
 
 temporary="$(mktemp -d /tmp/subyard-paseo-smoke.XXXXXX)"
 daemon_launcher=''
+print_pid_tree() {
+  local pid prefix children child
+  pid="$1"
+  prefix="$2"
+  case "$pid" in
+    ''|*[!0-9]*) printf '%sPID unavailable\n' "$prefix" >&2; return ;;
+  esac
+  if [ ! -r "/proc/$pid/status" ]; then
+    printf '%spid=%s gone\n' "$prefix" "$pid" >&2
+    return
+  fi
+  printf '%spid=%s ' "$prefix" "$pid" >&2
+  awk '
+    $1 == "Name:" { name=$2 }
+    $1 == "State:" { state=$2 }
+    $1 == "PPid:" { ppid=$2 }
+    END { printf "ppid=%s state=%s name=%s\n", ppid, state, name }
+  ' "/proc/$pid/status" >&2
+  children=''
+  IFS= read -r children <"/proc/$pid/task/$pid/children" || true
+  for child in $children; do
+    print_pid_tree "$child" "$prefix  "
+  done
+}
+print_shutdown_diagnostics() {
+  local pid
+  printf '\nPaseo daemon log before cleanup:\n' >&2
+  tail -n 120 "$temporary/daemon.log" >&2 2>/dev/null || true
+  pid="$(jq -r '.pid // empty' "$home/paseo.pid" 2>/dev/null || true)"
+  printf '\nPaseo daemon process tree before cleanup:\n' >&2
+  print_pid_tree "$pid" '  '
+}
 cleanup() {
   if [ -n "$daemon_launcher" ] && [ -x "$temporary/artifact/node/bin/node" ]; then
     PASEO_HOME="$temporary/home" "$temporary/artifact/node/bin/node" \
@@ -168,7 +200,13 @@ PASEO_EXPECT_A="$workspaces/alpha/src" PASEO_EXPECT_B="$workspaces/beta/src" \
   child.onExit(() => process.exit(output.includes("paseo-pty-smoke") ? 0 : 1));
 ' "$artifact/app/node_modules/node-pty"
 
-PASEO_HOME="$home" "$node" "$cli" daemon stop --home "$home" >/dev/null
+stop_status=0
+PASEO_HOME="$home" "$node" "$cli" daemon stop --home "$home" >/dev/null \
+  || stop_status=$?
+if [ "$stop_status" -ne 0 ]; then
+  print_shutdown_diagnostics
+  exit "$stop_status"
+fi
 wait "$daemon_launcher"
 daemon_launcher=''
 printf 'PASS: native Paseo headless closure (%s)\n' "$expected_arch"

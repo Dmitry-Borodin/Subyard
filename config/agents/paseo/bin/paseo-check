@@ -8,6 +8,7 @@ PASEO_INSTALL_ROOT="${PASEO_INSTALL_ROOT:-/opt/subyard/paseo/current}"
 PASEO_DEV_USER="${PASEO_DEV_USER:-@DEV_USER@}"
 PASEO_DEV_HOME="${PASEO_DEV_HOME:-@DEV_HOME@}"
 PASEO_UNIT="${PASEO_UNIT:-paseo.service}"
+PASEO_HEALTH_WAIT_SECONDS="${PASEO_HEALTH_WAIT_SECONDS:-30}"
 PASEO_RELAY_WAIT_SECONDS="${PASEO_RELAY_WAIT_SECONDS:-60}"
 CONFIG="$PASEO_HOME/config.json"
 
@@ -60,8 +61,12 @@ main_pid="$(systemctl show "$PASEO_UNIT" -p MainPID --value)"
 case "$main_pid" in ''|0|*[!0-9]*) die "unit has no main process" ;; esac
 [ "$(stat -c %U "/proc/$main_pid")" = "$PASEO_DEV_USER" ] || die "process user drift"
 
-health="$(curl --fail --silent --show-error --max-time 5 http://127.0.0.1:6767/api/health)" \
-  || die "local health endpoint is unavailable"
+health=''
+health_deadline=$((SECONDS + PASEO_HEALTH_WAIT_SECONDS))
+until health="$(curl --fail --silent --max-time 5 http://127.0.0.1:6767/api/health 2>/dev/null)"; do
+  [ "$SECONDS" -lt "$health_deadline" ] || die "local health endpoint is unavailable"
+  sleep 1
+done
 jq -e '.status == "ok"' <<<"$health" >/dev/null || die "local health response is invalid"
 listeners="$(ss -H -ltn 'sport = :6767' 2>/dev/null || true)"
 [ -n "$listeners" ] || die "local listener is missing"

@@ -50,6 +50,8 @@ done
 
 rg -q '^ExecStart=.*--listen 127[.]0[.]0[.]1:6767 .*--relay-use-tls .*--no-web-ui$' \
   "$ROOT/config/agents/paseo/paseo.service.in" || fail "unit listener/relay contract drift"
+rg -q '^ExecStartPost=/usr/local/bin/paseo-sync-projects --wait --force$' \
+  "$ROOT/config/agents/paseo/paseo.service.in" || fail "startup sync has no bounded readiness wait"
 rg -q '^ReadWritePaths=@DEV_HOME@ /srv/agents/paseo /srv/workspaces$' \
   "$ROOT/config/agents/paseo/paseo.service.in" || fail "provider state is not writable"
 ! rg -qi 'updat|0[.]0[.]0[.]0|publicBaseUrl|serviceProxy' \
@@ -58,6 +60,8 @@ rg -q 'PASEO_RELEASE_VERSION' "$ROOT/config/agents/paseo/provision.sh" \
   || fail "provision is not tied to the Subyard release"
 rg -q 'files[.]sha256' "$ROOT/config/agents/paseo/provision.sh" \
   || fail "provision does not verify the deploy closure"
+rg -q 'PASEO_HEALTH_WAIT_SECONDS' "$ROOT/config/agents/paseo/bin/paseo-check" \
+  || fail "readiness has no bounded local health wait"
 rg -q 'ubuntu-24[.]04-arm' "$ROOT/.github/workflows/release.yml" \
   || fail "release has no native arm64 Paseo lane"
 rg -q 'AGENTS="claude codex opencode pi paseo"' "$ROOT/docs/paseo.md" \
@@ -68,5 +72,43 @@ rg -q 'ssh yard-<name> -- paseo-pair' "$ROOT/docs/paseo.md" \
 ! rg -qi 'paseo' "$ROOT/config/commands.registry" "$ROOT/internal/cli" \
   "$ROOT/internal/domain" "$ROOT/internal/rpc" "$ROOT/scripts/04-provision-subyard.sh" \
   || fail "Paseo-specific core CLI/domain/RPC plumbing appeared"
+
+wrapper_temp="$(mktemp -d)"
+cleanup_wrapper() { rm -rf -- "$wrapper_temp"; }
+trap cleanup_wrapper EXIT HUP INT TERM
+mkdir -p "$wrapper_temp/bin" "$wrapper_temp/runtime/node/bin" \
+  "$wrapper_temp/runtime/app/libexec" "$wrapper_temp/home"
+ln -s "$wrapper_temp/runtime" "$wrapper_temp/current"
+touch "$wrapper_temp/runtime/app/libexec/paseo-sync-projects.mjs"
+cat >"$wrapper_temp/runtime/node/bin/node" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >"$PASEO_FAKE_NODE_LOG"
+SH
+cat >"$wrapper_temp/bin/curl" <<'SH'
+#!/bin/sh
+count=0
+[ ! -r "$PASEO_FAKE_CURL_STATE" ] || count="$(cat "$PASEO_FAKE_CURL_STATE")"
+count=$((count + 1))
+printf '%s\n' "$count" >"$PASEO_FAKE_CURL_STATE"
+[ "${PASEO_FAKE_CURL_NEVER:-0}" != 1 ] && [ "$count" -ge 3 ]
+SH
+chmod 0755 "$wrapper_temp/runtime/node/bin/node" "$wrapper_temp/bin/curl"
+PASEO_FAKE_CURL_STATE="$wrapper_temp/curl-count" \
+PASEO_FAKE_NODE_LOG="$wrapper_temp/node.log" \
+PASEO_INSTALL_ROOT="$wrapper_temp/current" PASEO_HOME="$wrapper_temp/home" \
+PASEO_SYNC_WAIT_SECONDS=5 PATH="$wrapper_temp/bin:$PATH" \
+  "$ROOT/config/agents/paseo/bin/paseo-sync-projects" --wait --force
+[ "$(cat "$wrapper_temp/curl-count")" -eq 3 ] \
+  && grep -Fq 'paseo-sync-projects.mjs --force' "$wrapper_temp/node.log" \
+  || fail "startup sync did not wait for health or consumed the wrong arguments"
+rm -f "$wrapper_temp/node.log" "$wrapper_temp/curl-count"
+if PASEO_FAKE_CURL_NEVER=1 PASEO_FAKE_CURL_STATE="$wrapper_temp/curl-count" \
+  PASEO_FAKE_NODE_LOG="$wrapper_temp/node.log" \
+  PASEO_INSTALL_ROOT="$wrapper_temp/current" PASEO_HOME="$wrapper_temp/home" \
+  PASEO_SYNC_WAIT_SECONDS=1 PATH="$wrapper_temp/bin:$PATH" \
+    "$ROOT/config/agents/paseo/bin/paseo-sync-projects" --wait --force >/dev/null 2>&1; then
+  fail "startup sync accepted a daemon that never became healthy"
+fi
+[ ! -e "$wrapper_temp/node.log" ] || fail "startup sync ran after its health deadline"
 
 printf 'PASS: Paseo remains an opt-in generic agent package\n'

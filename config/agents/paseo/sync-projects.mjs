@@ -263,7 +263,9 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+const invokedPath = process.argv[1]
+  ? pathToFileURL(await realpath(path.resolve(process.argv[1]))).href
+  : "";
 if (import.meta.url === invokedPath) {
   main().catch((error) => {
     diagnostic(error instanceof Error ? error.message : String(error));

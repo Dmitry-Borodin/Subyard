@@ -7,6 +7,8 @@ TEMP="$(mktemp -d)"
 cleanup() { rm -rf -- "$TEMP"; }
 trap cleanup EXIT HUP INT TERM
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+HELPER_ENTRY="$TEMP/paseo-sync-projects.mjs"
+ln -s "$HELPER" "$HELPER_ENTRY"
 
 workspace_root="$TEMP/workspaces"
 paseo_home="$TEMP/paseo-home"
@@ -89,7 +91,7 @@ run_sync() {
   PASEO_FAKE_LOG="$log" \
   PASEO_FAKE_ACTIVE="$workspace_root/alpha/src" \
   PASEO_FAKE_EMPTY_PROJECT="$workspace_root/beta/src" \
-    node "$HELPER" "$@"
+    node "$HELPER_ENTRY" "$@"
 }
 
 run_sync --force

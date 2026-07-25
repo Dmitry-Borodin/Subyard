@@ -24,7 +24,7 @@ Environment=PASEO_DICTATION_ENABLED=false
 Environment=PASEO_VOICE_MODE_ENABLED=false
 Environment=PASEO_LOG_FORMAT=json
 ExecStart=/usr/local/bin/paseo daemon start --foreground --home /srv/agents/paseo --listen 127.0.0.1:6767 --relay-use-tls --no-web-ui
-ExecStartPost=/usr/local/bin/paseo-sync-projects --force
+ExecStartPost=/usr/local/bin/paseo-sync-projects --wait --force
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=75s

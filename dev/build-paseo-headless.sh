@@ -77,7 +77,7 @@ cp "$PACKAGE_DIR/bundle/package.json" "$PACKAGE_DIR/bundle/package-lock.json" "$
 (
   cd "$app"
   "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
-    ci --omit=dev --no-audit --no-fund
+    ci --omit=dev --no-audit --no-fund >&2
 )
 
 for package_spec in \
@@ -133,7 +133,7 @@ done < <(find "$app/node_modules" -type f -name '*.node' -print | sort)
       .then((module) => { if (!module) process.exit(1); });
   '
   "$node_root/bin/node" "$app/node_modules/@getpaseo/cli/bin/paseo" --version \
-    | grep -Fx "$PASEO_VERSION"
+    | grep -Fxq "$PASEO_VERSION"
   "$node_root/bin/node" "$node_root/lib/node_modules/npm/bin/npm-cli.js" \
     sbom --sbom-format spdx >"$temporary/sbom.raw.spdx.json"
 )

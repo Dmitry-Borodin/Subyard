@@ -123,6 +123,37 @@ func TestSourceInstallMigrationAndRecovery(t *testing.T) {
 	}
 }
 
+func TestSourceRecoveryAcceptsCanonicalTestYardRename(t *testing.T) {
+	requireJQ(t)
+	fixture := newSourceInstallFixture(t,
+		"# Stable launcher for a release-installed native Go control-plane engine.")
+	if output, err := fixture.migrate(); err != nil {
+		t.Fatalf("migration failed: %v\n%s", err, output)
+	}
+
+	recovery := filepath.Join(fixture.data, "recovery/pre-go-source")
+	created := filepath.Join(recovery, "created.tsv")
+	directories := filepath.Join(recovery, "created-directories.list")
+	oldFile := filepath.Join(fixture.config, "yards/e2e-yard/config.env")
+	newFile := filepath.Join(fixture.config, "yards/test-yard/config.env")
+	namedFile := filepath.Join(fixture.config, "yards/named/config.env")
+	for path, pair := range map[string][2]string{
+		created:     {namedFile, oldFile},
+		directories: {filepath.Dir(namedFile), filepath.Dir(oldFile)},
+	} {
+		payload := strings.ReplaceAll(string(readTestFile(t, path)), pair[0], pair[1])
+		writeTestFile(t, path, 0o600, payload)
+	}
+	if err := os.Rename(filepath.Dir(namedFile), filepath.Dir(newFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	restoreFixture(t, fixture)
+	if _, err := os.Lstat(newFile); !os.IsNotExist(err) {
+		t.Fatalf("recovery retained canonically renamed test-yard config: %v", err)
+	}
+}
+
 func TestSourceInstallMigrationSkipsCustomRuntimeDataHome(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	temp := t.TempDir()

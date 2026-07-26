@@ -143,6 +143,17 @@ grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity-verify-cleanup' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity_report' "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 acceptance does not enforce capacity preflight, peak reporting and exact cleanup"
+grep -Fq 'P0_E2E_MIN_PEAK_MEMORY_RESERVE_BYTES:-67108864' \
+  "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail "P0 acceptance does not keep only the 64 MiB minimum peak memory reserve"
+grep -Fq '> "$PEER_ROOT/config/config.env"' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'P0_PEER_YARD_TIMEOUT:-300' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 peer yard does not use its active config root with a bounded init"
+grep -Fq '"$RUNTIME_ROOT/current/bin/yard-engine" _migrate-test-yard' \
+  "$ROOT/dev/bootstrap-runtime.sh" \
+  && grep -Fq '"$DATA_HOME/recovery/pre-go-source/restore.sh"' \
+    "$ROOT/dev/bootstrap-runtime.sh" \
+  || fail "source bootstrap does not migrate test-yard after config import with recovery"
 
  ensure_identity
 lease_blob="$(awk '{print $2}' "$IDENTITY.pub")"

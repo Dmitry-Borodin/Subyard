@@ -17,11 +17,17 @@ func TestApplyRecreatesCanonicalTestYardAndRemovesLegacyController(t *testing.T)
 	write(t, filepath.Join(dataHome, "e2e", "controllers", LegacyYard, ".operator-enrollment-v1"),
 		"managed\n")
 	log := filepath.Join(root, "calls")
+	incusLog := filepath.Join(root, "incus-calls")
 	executable := fakeExecutable(t, root)
 
 	if err := Apply(context.Background(), Options{
-		Executable: executable, ConfigHome: configHome, DataHome: dataHome,
-		Environment: append(os.Environ(), "MIGRATION_CALLS="+log),
+		Executable: executable, Incus: fakeIncus(t, root),
+		ConfigHome: configHome, DataHome: dataHome,
+		Environment: append(os.Environ(),
+			"MIGRATION_CALLS="+log,
+			"MIGRATION_CONFIG_HOME="+configHome,
+			"MIGRATION_INCUS_CALLS="+incusLog,
+		),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +47,10 @@ func TestApplyRecreatesCanonicalTestYardAndRemovesLegacyController(t *testing.T)
 		if !strings.Contains(calls, expected+"\n") {
 			t.Fatalf("calls omitted %q:\n%s", expected, calls)
 		}
+	}
+	if !strings.Contains(read(t, incusLog),
+		"project create subyard-test-yard -c features.images=false\n") {
+		t.Fatal("migration did not preserve the shared image namespace")
 	}
 }
 
@@ -66,10 +76,13 @@ func TestApplyRollsBackRegistrationAndRecreatesLegacyYard(t *testing.T) {
 		".operator-enrollment-v1")
 	write(t, oldController, "managed\n")
 	log := filepath.Join(root, "calls")
+	incusLog := filepath.Join(root, "incus-calls")
 	err := Apply(context.Background(), Options{
-		Executable: fakeExecutable(t, root), ConfigHome: configHome, DataHome: dataHome,
+		Executable: fakeExecutable(t, root), Incus: fakeIncus(t, root),
+		ConfigHome: configHome, DataHome: dataHome,
 		Environment: append(os.Environ(),
 			"MIGRATION_CALLS="+log,
+			"MIGRATION_INCUS_CALLS="+incusLog,
 			"MIGRATION_FAIL=test-yard:init",
 		),
 	})
@@ -84,6 +97,10 @@ func TestApplyRollsBackRegistrationAndRecreatesLegacyYard(t *testing.T) {
 	}
 	if !strings.Contains(read(t, log), "-Y e2e-yard init --yes\n") {
 		t.Fatal("legacy yard was not recreated during recovery")
+	}
+	if !strings.Contains(read(t, incusLog),
+		"project create subyard-e2e-yard -c features.images=false\n") {
+		t.Fatal("recovery did not restore the shared image namespace")
 	}
 }
 
@@ -108,13 +125,97 @@ func TestApplyRejectsExistingCurrentYardBeforeLifecycle(t *testing.T) {
 	}
 }
 
+func TestApplyAdoptsExistingCanonicalProjectAfterSourceRecovery(t *testing.T) {
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	dataHome := filepath.Join(root, "data")
+	oldRegistration := filepath.Join(configHome, "yards", LegacyYard, "config.env")
+	newRegistration := filepath.Join(configHome, "yards", CurrentYard, "config.env")
+	write(t, oldRegistration, "YARD_TEMPLATE=test-vms\n")
+	write(t, filepath.Join(configHome, "yards", CurrentYard, "projects", ".lock"), "managed\n")
+	log := filepath.Join(root, "calls")
+	incusLog := filepath.Join(root, "incus-calls")
+
+	if err := Apply(context.Background(), Options{
+		Executable: fakeExecutable(t, root), Incus: fakeIncus(t, root),
+		ConfigHome: configHome, DataHome: dataHome,
+		Environment: append(os.Environ(),
+			"MIGRATION_CALLS="+log,
+			"MIGRATION_INCUS_CALLS="+incusLog,
+			"MIGRATION_ADOPT_CURRENT=1",
+		),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(newRegistration); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldRegistration); !os.IsNotExist(err) {
+		t.Fatalf("legacy registration remains: %v", err)
+	}
+	calls := read(t, log)
+	if calls != "-Y test-yard check\n" {
+		t.Fatalf("adoption unexpectedly changed lifecycle:\n%s", calls)
+	}
+	if _, err := os.Stat(filepath.Join(configHome, "yards", CurrentYard, "projects", ".lock")); err != nil {
+		t.Fatalf("current yard state was not preserved: %v", err)
+	}
+}
+
 func fakeExecutable(t *testing.T, root string) string {
 	t.Helper()
 	path := filepath.Join(root, "yard")
 	write(t, path, `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$MIGRATION_CALLS"
+if [ -n "${MIGRATION_CONFIG_HOME:-}" ]; then
+	case "$*" in
+		"-Y e2e-yard teardown --yes")
+			test -f "$MIGRATION_CONFIG_HOME/yards/test-yard/config.env"
+			;;
+		"-Y test-yard init --yes")
+			test ! -e "$MIGRATION_CONFIG_HOME/yards/e2e-yard/config.env"
+			;;
+	esac
+fi
 if [ "${MIGRATION_FAIL:-}" = "${2:-}:${3:-}" ]; then exit 1; fi
+`)
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func fakeIncus(t *testing.T, root string) string {
+	t.Helper()
+	path := filepath.Join(root, "incus")
+	write(t, path, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$MIGRATION_INCUS_CALLS"
+case "$*" in
+	"project get subyard-e2e-yard features.images")
+		printf 'false\n'
+		;;
+	"project get subyard-test-yard features.images")
+		[ "${MIGRATION_ADOPT_CURRENT:-}" = 1 ] || exit 1
+		printf 'false\n'
+		;;
+	"project show subyard-test-yard")
+		[ "${MIGRATION_ADOPT_CURRENT:-}" = 1 ]
+		;;
+	"project show subyard-e2e-yard")
+		[ "${MIGRATION_ADOPT_CURRENT:-}" != 1 ] && exit 1
+		exit 1
+		;;
+	"project show "*)
+		exit 1
+		;;
+	"project create "*)
+		;;
+	*)
+		exit 2
+		;;
+esac
 `)
 	if err := os.Chmod(path, 0o700); err != nil {
 		t.Fatal(err)

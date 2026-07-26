@@ -19,6 +19,7 @@ const (
 
 type Options struct {
 	Executable  string
+	Incus       string
 	ConfigHome  string
 	DataHome    string
 	Environment []string
@@ -31,6 +32,9 @@ type Options struct {
 func Apply(ctx context.Context, options Options) error {
 	if options.Executable == "" || !filepath.IsAbs(options.Executable) {
 		return errors.New("absolute migration executable is required")
+	}
+	if options.Incus == "" {
+		options.Incus = "incus"
 	}
 	if options.ConfigHome == "" || !filepath.IsAbs(options.ConfigHome) {
 		return errors.New("absolute configuration home is required")
@@ -77,13 +81,6 @@ func Apply(ctx context.Context, options Options) error {
 	} else if exists {
 		return errors.New("test-yard already exists; refusing to replace either yard")
 	}
-	if filepath.Base(newRegistration) == "config.env" {
-		if exists, err := pathExists(filepath.Dir(newRegistration)); err != nil {
-			return err
-		} else if exists {
-			return errors.New("test-yard directory already exists; refusing to replace it")
-		}
-	}
 	payload, err := os.ReadFile(oldRegistration)
 	if err != nil {
 		return err
@@ -100,38 +97,114 @@ func Apply(ctx context.Context, options Options) error {
 		command.Stdout, command.Stderr = options.Stdout, options.Stderr
 		return command.Run()
 	}
-	if err := run(LegacyYard, "check"); err != nil {
-		return fmt.Errorf("validate legacy test yard: %w", err)
+	runIncus := func(arguments ...string) ([]byte, error) {
+		command := exec.CommandContext(ctx, options.Incus, arguments...)
+		command.Env = options.Environment
+		command.Stdin = strings.NewReader("")
+		command.Stderr = options.Stderr
+		return command.Output()
 	}
-	if err := run(LegacyYard, "teardown", "--yes"); err != nil {
-		return fmt.Errorf("teardown legacy test yard: %w", err)
+	projectExists := func(project string) bool {
+		command := exec.CommandContext(ctx, options.Incus, "project", "show", project)
+		command.Env = options.Environment
+		command.Stdin = strings.NewReader("")
+		command.Stdout, command.Stderr = io.Discard, io.Discard
+		return command.Run() == nil
 	}
-
+	legacyProjectExists := projectExists("subyard-" + LegacyYard)
+	currentProjectExists := projectExists("subyard-" + CurrentYard)
+	if legacyProjectExists && currentProjectExists {
+		return errors.New("both legacy and current test-yard Incus projects exist; refusing migration")
+	}
+	adoptCurrent := currentProjectExists && !legacyProjectExists
+	if filepath.Base(newRegistration) == "config.env" {
+		if exists, err := pathExists(filepath.Dir(newRegistration)); err != nil {
+			return err
+		} else if exists {
+			if !adoptCurrent {
+				return errors.New("test-yard directory already exists; refusing to replace it")
+			}
+			if err := ownedDirectory(filepath.Dir(newRegistration)); err != nil {
+				return fmt.Errorf("existing test-yard state directory is unsafe: %w", err)
+			}
+		}
+	}
+	imageProject := "subyard-" + LegacyYard
+	if adoptCurrent {
+		imageProject = "subyard-" + CurrentYard
+	}
+	imageMode, err := runIncus("project", "get", imageProject, "features.images")
+	if err != nil {
+		return fmt.Errorf("inspect legacy test-yard image namespace: %w", err)
+	}
+	sharedImages := strings.TrimSpace(string(imageMode)) == "false"
+	prepareProject := func(yard string) error {
+		project := "subyard-" + yard
+		if projectExists(project) {
+			return nil
+		}
+		if !sharedImages {
+			return nil
+		}
+		if _, err := runIncus("project", "create", project, "-c", "features.images=false"); err != nil {
+			return fmt.Errorf("preserve shared image namespace for %s: %w", yard, err)
+		}
+		return nil
+	}
+	if !adoptCurrent {
+		if err := run(LegacyYard, "check"); err != nil {
+			return fmt.Errorf("validate legacy test yard: %w", err)
+		}
+	}
+	recover := func(cause error) error {
+		return recoverLegacy(run, prepareProject, oldRegistration, newRegistration,
+			true, adoptCurrent, cause)
+	}
 	if err := os.MkdirAll(filepath.Dir(newRegistration), 0o700); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, false, err)
+		return err
 	}
-	if err := os.Rename(oldRegistration, newRegistration); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, false, err)
+	newFile, err := os.OpenFile(newRegistration, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
 	}
-	registrationMoved := true
+	if _, err = newFile.Write(payload); err == nil {
+		err = newFile.Close()
+	} else {
+		_ = newFile.Close()
+	}
+	if err != nil {
+		_ = os.Remove(newRegistration)
+		_ = removeEmptyDirectory(filepath.Dir(newRegistration))
+		return err
+	}
+	if !adoptCurrent {
+		if err := prepareProject(CurrentYard); err != nil {
+			return recover(err)
+		}
+		if err := run(LegacyYard, "teardown", "--yes"); err != nil {
+			return recover(fmt.Errorf("teardown legacy test yard: %w", err))
+		}
+	}
+	if err := os.Remove(oldRegistration); err != nil {
+		return recover(err)
+	}
 	if filepath.Base(oldRegistration) == "config.env" {
 		err = removeEmptyDirectory(filepath.Dir(oldRegistration))
 	}
 	if err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved, err)
+		return recover(err)
 	}
-	if err := run(CurrentYard, "init", "--yes"); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved,
-			fmt.Errorf("initialize test-yard: %w", err))
+	if !adoptCurrent {
+		if err := run(CurrentYard, "init", "--yes"); err != nil {
+			return recover(fmt.Errorf("initialize test-yard: %w", err))
+		}
 	}
 	if err := run(CurrentYard, "check"); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved,
-			fmt.Errorf("validate test-yard: %w", err))
+		return recover(fmt.Errorf("validate test-yard: %w", err))
 	}
 	legacyController := filepath.Join(options.DataHome, "e2e", "controllers", LegacyYard)
 	if err := removeManagedLegacyController(legacyController); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved,
-			fmt.Errorf("remove legacy controller state: %w", err))
+		return recover(fmt.Errorf("remove legacy controller state: %w", err))
 	}
 	fmt.Fprintln(options.Stdout, "migrated test VM yard e2e-yard -> test-yard")
 	return nil
@@ -139,23 +212,42 @@ func Apply(ctx context.Context, options Options) error {
 
 func recoverLegacy(
 	run func(string, ...string) error,
+	prepareProject func(string) error,
 	oldRegistration, newRegistration string,
-	registrationMoved bool,
+	registrationCopied, preserveCurrent bool,
 	cause error,
 ) error {
 	var recovery []error
-	if registrationMoved {
-		if err := run(CurrentYard, "teardown", "--yes"); err != nil {
-			recovery = append(recovery, fmt.Errorf("teardown failed test-yard: %w", err))
-		}
-		if err := os.MkdirAll(filepath.Dir(oldRegistration), 0o700); err != nil {
+	if registrationCopied {
+		if exists, err := pathExists(oldRegistration); err != nil {
 			recovery = append(recovery, err)
-		} else if err := os.Rename(newRegistration, oldRegistration); err != nil {
+		} else if !exists {
+			payload, readErr := os.ReadFile(newRegistration)
+			if readErr != nil {
+				recovery = append(recovery, readErr)
+			} else if mkdirErr := os.MkdirAll(filepath.Dir(oldRegistration), 0o700); mkdirErr != nil {
+				recovery = append(recovery, mkdirErr)
+			} else if writeErr := os.WriteFile(oldRegistration, payload, 0o600); writeErr != nil {
+				recovery = append(recovery, writeErr)
+			}
+		}
+		if !preserveCurrent {
+			if err := run(CurrentYard, "teardown", "--yes"); err != nil {
+				recovery = append(recovery, fmt.Errorf("teardown failed test-yard: %w", err))
+			}
+		}
+		if err := os.Remove(newRegistration); err != nil && !errors.Is(err, os.ErrNotExist) {
 			recovery = append(recovery, err)
 		}
+		_ = removeEmptyDirectory(filepath.Dir(newRegistration))
 	}
-	if err := run(LegacyYard, "init", "--yes"); err != nil {
-		recovery = append(recovery, fmt.Errorf("recreate legacy test yard: %w", err))
+	if !preserveCurrent {
+		if err := prepareProject(LegacyYard); err != nil {
+			recovery = append(recovery, err)
+		}
+		if err := run(LegacyYard, "init", "--yes"); err != nil {
+			recovery = append(recovery, fmt.Errorf("recreate legacy test yard: %w", err))
+		}
 	}
 	if len(recovery) > 0 {
 		return errors.Join(cause, fmt.Errorf("test-yard migration recovery failed: %w", errors.Join(recovery...)))

@@ -609,6 +609,8 @@ peer_prepare_finish() {
 }
 
 peer_yard_start() {
+  local base_image=images:debian/13/cloud
+  exec </dev/null
   [ "$SUBYARD_E2E_VM" = 2 ] || die 'remote project target requires VM2'
   if [ -e "$PEER_REAL_YARD_MARKER" ]; then
     [ "$(cat "$PEER_REAL_YARD_MARKER" 2>/dev/null)" = "$MARKER" ] \
@@ -617,9 +619,16 @@ peer_yard_start() {
     cleanup_peer_snapshot_fixture
     printf '%s\n' "$MARKER" > "$PEER_REAL_YARD_MARKER"
   fi
-  printf 'SSH_PORT=3222\nDEV_UID=1001\nBASE_IMAGE=images:debian/13/cloud\nBASE_IMAGE_FALLBACK=images:debian/13/cloud\nE2E_VM_ENABLED=0\n' \
-    > "$PEER_DATA_ROOT/config.env"
-  "$PEER_YARD_ENTRY" init --yes
+  if ! incus project show subyard >/dev/null 2>&1; then
+    incus project create subyard -c features.images=false >/dev/null
+  fi
+  if incus image info "$OWNER_BASE_IMAGE" --project default >/dev/null 2>&1; then
+    base_image="$OWNER_BASE_IMAGE"
+  fi
+  install -d -m 0700 "$PEER_ROOT/config"
+  printf 'SSH_PORT=3222\nDEV_UID=1001\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n' \
+    "$base_image" "$base_image" > "$PEER_ROOT/config/config.env"
+  timeout --foreground "${P0_PEER_YARD_TIMEOUT:-300}" "$PEER_YARD_ENTRY" init --yes
   "$PEER_YARD_ENTRY" start --yes
   printf 'ok: VM2 release-installed remote yard is running\n'
 }

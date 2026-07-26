@@ -36,7 +36,7 @@ func main() {
 		}
 		if err == nil {
 			err = testyardmigration.Apply(ctx, testyardmigration.Options{
-				Executable: executable, ConfigHome: configHome, DataHome: dataHome,
+				Executable: executable, Incus: "incus", ConfigHome: configHome, DataHome: dataHome,
 				Environment: os.Environ(), Stdout: os.Stdout, Stderr: os.Stderr,
 			})
 		}

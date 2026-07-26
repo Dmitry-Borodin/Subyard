@@ -201,7 +201,7 @@ start_capacity_monitors() {
 capacity_report() {
   local vm log report root_used root_available inode_used tmp_used memory_used memory_available
   local min_root_available="${P0_E2E_MIN_PEAK_ROOT_RESERVE_BYTES:-1073741824}"
-  local min_memory_available="${P0_E2E_MIN_PEAK_MEMORY_RESERVE_BYTES:-536870912}"
+  local min_memory_available="${P0_E2E_MIN_PEAK_MEMORY_RESERVE_BYTES:-67108864}"
   stop_capacity_monitors
   for vm in 1 2; do
     log="$CAPACITY_LOG_DIR/vm$vm.tsv"

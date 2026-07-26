@@ -131,10 +131,12 @@ cleanup_fixture() {
       [ "$type" = custom ] || continue
       incus storage volume delete default "$volume" --project "$PROJECT" >/dev/null
     done < <(incus storage volume list default --project "$PROJECT" --format csv -c t,n)
-    while IFS= read -r fingerprint; do
-      [ -n "$fingerprint" ] || continue
-      incus image delete "$fingerprint" --project "$PROJECT" >/dev/null
-    done < <(incus image list --project "$PROJECT" --format csv -c f)
+    if [ "$(incus project get "$PROJECT" features.images 2>/dev/null)" != false ]; then
+      while IFS= read -r fingerprint; do
+        [ -n "$fingerprint" ] || continue
+        incus image delete "$fingerprint" --project "$PROJECT" >/dev/null
+      done < <(incus image list --project "$PROJECT" --format csv -c f)
+    fi
     incus project delete "$PROJECT" >/dev/null
     sudo -n find "/srv/$PROJECT" -depth -delete 2>/dev/null || true
   fi
@@ -584,6 +586,7 @@ prepare() {
 
   bootstrap_candidate "$RELEASE_ROOT/a" "$VERSION_A"
   select_current_test_yard
+  incus project set "$PROJECT" user.subyard.p0-source="$MARKER"
   verify_migration
   [ "$(operator_yard --version)" = "yard $VERSION_A" ] \
     || die 'first candidate runtime is not active'

@@ -241,6 +241,23 @@ validate_link_temporary() {
 validate_link_temporary "$yard_temp" "$yard_target"
 validate_link_temporary "$sy_temp" "$sy_target"
 
+canonical_test_yard_path() {
+  case "$1" in
+    "$config_home/yards/e2e-yard/config.env")
+      REPLY="$config_home/yards/test-yard/config.env"
+      ;;
+    "$config_home/yards/e2e-yard")
+      REPLY="$config_home/yards/test-yard"
+      ;;
+    "$config_home/yards/e2e-yard.env")
+      REPLY="$config_home/yards/test-yard.env"
+      ;;
+    *)
+      REPLY="$1"
+      ;;
+  esac
+}
+
 if [ -f "$RECOVERY_ROOT/created.tsv" ]; then
   while IFS=$'\t' read -r digest path; do
     [ -n "$path" ] || continue
@@ -249,6 +266,12 @@ if [ -f "$RECOVERY_ROOT/created.tsv" ]; then
     case "$path" in "$config_home"/*) ;; *)
       fail "created-file record escapes the configuration root" ;;
     esac
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+      canonical_test_yard_path "$path"
+      if [ "$REPLY" != "$path" ] && { [ -e "$REPLY" ] || [ -L "$REPLY" ]; }; then
+        path="$REPLY"
+      fi
+    fi
     if [ -e "$path" ] || [ -L "$path" ]; then
       owned_regular "$path" && [ "$(stat -c '%a' -- "$path")" = 600 ] \
         && [ "$(stat -c '%h' -- "$path")" = 1 ] && digest_matches "$path" "$digest" \
@@ -285,6 +308,12 @@ if [ -f "$RECOVERY_ROOT/created-directories.list" ]; then
         fail "created-directory record is outside the configuration topology" ;;
       esac ;;
     esac
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+      canonical_test_yard_path "$path"
+      if [ "$REPLY" != "$path" ] && { [ -e "$REPLY" ] || [ -L "$REPLY" ]; }; then
+        path="$REPLY"
+      fi
+    fi
     if [ -e "$path" ] || [ -L "$path" ]; then
       owned_directory "$path" || fail "created migration directory became unsafe: $path"
     fi
@@ -368,6 +397,12 @@ fi
 if [ -f "$RECOVERY_ROOT/created.tsv" ]; then
   while IFS=$'\t' read -r _ path; do
     if [ -n "$path" ]; then
+      if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        canonical_test_yard_path "$path"
+        if [ "$REPLY" != "$path" ] && { [ -e "$REPLY" ] || [ -L "$REPLY" ]; }; then
+          path="$REPLY"
+        fi
+      fi
       rm -f -- "$path"
     fi
   done < "$RECOVERY_ROOT/created.tsv"
@@ -382,6 +417,12 @@ fi
 if [ -f "$RECOVERY_ROOT/created-directories.list" ]; then
   while IFS= read -r path; do
     if [ -n "$path" ]; then
+      if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        canonical_test_yard_path "$path"
+        if [ "$REPLY" != "$path" ] && { [ -e "$REPLY" ] || [ -L "$REPLY" ]; }; then
+          path="$REPLY"
+        fi
+      fi
       rmdir -- "$path" 2>/dev/null || true
     fi
   done < <(tac "$RECOVERY_ROOT/created-directories.list")

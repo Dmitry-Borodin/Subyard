@@ -11,6 +11,7 @@ import (
 
 	"github.com/Subyard/Subyard/internal/adapters/reconcileruntime"
 	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 )
 
 func TestPowerYardContextsAreDiscoveredWithoutChangingSelection(t *testing.T) {
@@ -64,36 +65,39 @@ func TestRealInitPlatformCarriesPreauthorizedTypedContext(t *testing.T) {
 }
 
 type initPlatformFixture struct {
-	converged      map[string]bool
-	applied        []string
+	converged      map[ports.ReconcileStageID]bool
+	applied        []ports.ReconcileStageID
 	preflightFresh []bool
 	configs        int
 	teardowns      int
 }
 
 func newInitPlatformFixture() *initPlatformFixture {
-	converged := make(map[string]bool)
-	for _, id := range []string{
-		"incus", "project", "network", "power-import", "instance", "mounts", "provision",
-		"test-vms", "ssh", "git-identity", "extras", "power", "keys", "security",
+	converged := make(map[ports.ReconcileStageID]bool)
+	for _, id := range []ports.ReconcileStageID{
+		ports.ReconcileStageIncus, ports.ReconcileStageProject, ports.ReconcileStageNetwork,
+		ports.ReconcileStagePowerImport, ports.ReconcileStageInstance, ports.ReconcileStageMounts,
+		ports.ReconcileStageProvision, ports.ReconcileStageTestVMs, ports.ReconcileStageSSH,
+		ports.ReconcileStageGitIdentity, ports.ReconcileStageExtras, ports.ReconcileStagePower,
+		ports.ReconcileStageKeys, ports.ReconcileStageSecurity,
 	} {
 		converged[id] = true
 	}
-	converged["project"] = false
+	converged[ports.ReconcileStageProject] = false
 	return &initPlatformFixture{converged: converged}
 }
 
-func (fixture *initPlatformFixture) CheckStage(_ context.Context, stage string) (bool, error) {
+func (fixture *initPlatformFixture) CheckStage(_ context.Context, stage ports.ReconcileStageID) (bool, error) {
 	return fixture.converged[stage], nil
 }
 
-func (fixture *initPlatformFixture) ApplyStage(_ context.Context, stage string) error {
+func (fixture *initPlatformFixture) ApplyStage(_ context.Context, stage ports.ReconcileStageID) error {
 	fixture.applied = append(fixture.applied, stage)
 	fixture.converged[stage] = true
 	return nil
 }
 
-func (fixture *initPlatformFixture) VerifyStage(_ context.Context, stage string) (bool, error) {
+func (fixture *initPlatformFixture) VerifyStage(_ context.Context, stage ports.ReconcileStageID) (bool, error) {
 	return fixture.converged[stage], nil
 }
 
@@ -131,7 +135,9 @@ func TestNativeInitOwnsPlanResumeAndFinalization(t *testing.T) {
 		t.Fatalf("init failed: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	if !slices.Equal(platform.preflightFresh, []bool{false}) ||
-		!slices.Equal(platform.applied, []string{"project", "finalize"}) {
+		!slices.Equal(platform.applied, []ports.ReconcileStageID{
+			ports.ReconcileStageProject, ports.ReconcileStageFinalize,
+		}) {
 		t.Fatalf("native init bypassed live plan/apply/finalize: preflight=%v applied=%v",
 			platform.preflightFresh, platform.applied)
 	}

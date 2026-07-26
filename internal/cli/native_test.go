@@ -31,7 +31,7 @@ func (stub statusFactsStub) ReadStatusFacts(context.Context, domain.Context, boo
 	return stub.value, nil
 }
 
-func TestRPCSnapshotUsesTypedServicesAndRedactedCredentialMetadata(t *testing.T) {
+func TestRPCResyncReturnsFullSnapshotAndContinuesMonotonicSessionEvents(t *testing.T) {
 	root, environment, stateDirectory := nativeFixture(t)
 	store, err := state.NewFileStore(stateDirectory)
 	if err != nil {
@@ -61,7 +61,7 @@ func TestRPCSnapshotUsesTypedServicesAndRedactedCredentialMetadata(t *testing.T)
 		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
 		Incus: fakeIncus, Executor: fakeIncus,
 		StatusFacts: statusFactsStub{value: domain.StatusFacts{Security: "static-only", Space: "unknown"}},
-		Credentials: &testkit.CredentialStore{Metadata: []domain.CredentialMetadata{metadata}},
+		Credentials: &testkit.CredentialMetadataReader{Metadata: []domain.CredentialMetadata{metadata}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestRPCSnapshotUsesTypedServicesAndRedactedCredentialMetadata(t *testing.T)
 	handler := &rpcHandler{cli: program, loaded: loaded}
 	var snapshotEvent string
 	var snapshotEventRevision uint64
-	result, err := handler.Handle(context.Background(), rpc.Call{Method: "system.snapshot"}, func(event string, _ any) (uint64, error) {
+	result, err := handler.Handle(context.Background(), rpc.Call{Method: "system.resync"}, func(event string, _ any) (uint64, error) {
 		snapshotEvent, snapshotEventRevision = event, 7
 		return snapshotEventRevision, nil
 	})
@@ -98,6 +98,66 @@ func TestRPCSnapshotUsesTypedServicesAndRedactedCredentialMetadata(t *testing.T)
 			t.Fatalf("snapshot contains secret-bearing field %q: %s", forbidden, payload)
 		}
 	}
+
+	client, server := net.Pipe()
+	sessionDone := make(chan error, 1)
+	go func() {
+		sessionDone <- (rpc.Session{Handler: handler}).Serve(context.Background(), server, server)
+	}()
+	codec := rpc.NewCodec(client, client)
+	write := func(request rpc.Request) {
+		t.Helper()
+		if err := codec.Write(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() rpc.Response {
+		t.Helper()
+		response, err := codec.ReadResponse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	write(rpc.Request{Version: 1, Type: "request", ID: "negotiate", Method: "rpc.negotiate"})
+	if response := read(); response.Error != nil {
+		t.Fatalf("RPC negotiation failed: %#v", response)
+	}
+	write(rpc.Request{Version: 1, Type: "request", ID: "resync", Method: "system.resync"})
+	resyncEvent := read()
+	resyncResponse := read()
+	snapshotResult, ok := resyncResponse.Result.(map[string]any)
+	if resyncEvent.Type != "event" || resyncEvent.Event != "snapshot.ready" ||
+		resyncEvent.Sequence != 1 || resyncEvent.Revision != 1 || resyncResponse.Error != nil || !ok {
+		t.Fatalf("unexpected resync exchange: event=%#v response=%#v", resyncEvent, resyncResponse)
+	}
+	for _, field := range []string{
+		"revision", "context", "commands", "projects", "status", "credentials", "credentialStatus",
+	} {
+		if _, present := snapshotResult[field]; !present {
+			t.Fatalf("full resync snapshot omitted %q: %#v", field, snapshotResult)
+		}
+	}
+	if revision, ok := snapshotResult["revision"].(float64); !ok || revision != 1 {
+		t.Fatalf("snapshot revision is not bound to snapshot.ready: %#v", snapshotResult["revision"])
+	}
+	write(rpc.Request{Version: 1, Type: "request", ID: "ping", Method: "system.ping"})
+	started := read()
+	finished := read()
+	pingResponse := read()
+	if started.Event != "operation.started" || started.Sequence != 2 || started.Revision != 2 ||
+		finished.Event != "operation.finished" || finished.Sequence != 3 || finished.Revision != 3 ||
+		pingResponse.Error != nil {
+		t.Fatalf("session event stream did not continue monotonically: %#v %#v %#v",
+			started, finished, pingResponse)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-sessionDone; err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := handler.Handle(context.Background(), rpc.Call{
 		Method: "project.list", Params: json.RawMessage(`{"unknown":true}`),
 	}, func(string, any) (uint64, error) { return 1, nil }); err == nil {
@@ -639,7 +699,7 @@ exit 90
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(payload), "start\n") ||
-		power.Instances["subyard/yard"].LocalConfig["user.subyard.desired_power"] != "running" {
+		power.Instances["subyard/yard"].Config["user.subyard.desired_power"] != "running" {
 		t.Fatalf("guarded start did not commit metadata: log=%s state=%#v", payload, power.Instances)
 	}
 }
@@ -1291,7 +1351,7 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 
 func lifecycleIncus() *testkit.Incus {
 	return &testkit.Incus{Instances: map[string]ports.InstanceInfo{"subyard/yard": {
-		Name: "yard", Project: "subyard", Status: "Stopped", LocalConfig: map[string]string{
+		Name: "yard", Project: "subyard", Status: "Stopped", Config: map[string]string{
 			"user.subyard.managed": "true", "user.subyard.initialized": "true",
 			"user.subyard.desired_power": "stopped", "user.subyard.name": "default",
 			"user.subyard.bridge": "incusbr0", "boot.autostart": "false",

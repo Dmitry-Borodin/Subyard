@@ -28,6 +28,11 @@ type InstanceInfo struct {
 	LocalDevices map[string]map[string]string `json:"localDevices,omitempty"`
 }
 
+func (instance InstanceInfo) EffectiveConfig(name string) (string, bool) {
+	value, present := instance.Config[name]
+	return value, present
+}
+
 type ReconcileState struct {
 	ProjectConfig    map[string]string
 	ProfileDevices   map[string]map[string]string
@@ -126,18 +131,6 @@ type SecurityChecker interface {
 	CheckSecurity(context.Context, bool, bool) (string, error)
 }
 
-type FileSystem interface {
-	ReadFile(context.Context, string) ([]byte, error)
-	AtomicWrite(context.Context, string, []byte, uint32) error
-	Remove(context.Context, string) error
-}
-
-type CredentialStore interface {
-	ListMetadata(context.Context) ([]domain.CredentialMetadata, error)
-	Heads(context.Context, string) ([]domain.CredentialMetadata, error)
-	Publish(context.Context, domain.CredentialMetadata, io.Reader) error
-}
-
 type CredentialMetadataReader interface {
 	ListMetadata(context.Context) ([]domain.CredentialMetadata, error)
 }
@@ -149,14 +142,6 @@ type CredentialStatusReader interface {
 type CredentialCrypto interface {
 	Decrypt(context.Context, domain.CredentialMetadata, io.Writer) error
 	Verify(context.Context, domain.CredentialMetadata) error
-}
-
-type PeerTransport interface {
-	Exchange(context.Context, string, []domain.CredentialMetadata) ([]domain.CredentialMetadata, error)
-}
-
-type Materializer interface {
-	Materialize(context.Context, domain.CredentialMetadata, io.Reader) error
 }
 
 type Clock interface {
@@ -180,10 +165,30 @@ type AdapterRunner interface {
 	Run(context.Context, domain.AdapterRequest, io.Reader) (domain.AdapterResult, string, error)
 }
 
+type ReconcileStageID string
+
+const (
+	ReconcileStageIncus       ReconcileStageID = "incus"
+	ReconcileStageProject     ReconcileStageID = "project"
+	ReconcileStageNetwork     ReconcileStageID = "network"
+	ReconcileStagePowerImport ReconcileStageID = "power-import"
+	ReconcileStageInstance    ReconcileStageID = "instance"
+	ReconcileStageMounts      ReconcileStageID = "mounts"
+	ReconcileStageProvision   ReconcileStageID = "provision"
+	ReconcileStageTestVMs     ReconcileStageID = "test-vms"
+	ReconcileStageSSH         ReconcileStageID = "ssh"
+	ReconcileStageGitIdentity ReconcileStageID = "git-identity"
+	ReconcileStageExtras      ReconcileStageID = "extras"
+	ReconcileStagePower       ReconcileStageID = "power"
+	ReconcileStageKeys        ReconcileStageID = "keys"
+	ReconcileStageSecurity    ReconcileStageID = "security"
+	ReconcileStageFinalize    ReconcileStageID = "finalize"
+)
+
 type ReconcileStageRunner interface {
-	CheckStage(context.Context, string) (bool, error)
-	ApplyStage(context.Context, string) error
-	VerifyStage(context.Context, string) (bool, error)
+	CheckStage(context.Context, ReconcileStageID) (bool, error)
+	ApplyStage(context.Context, ReconcileStageID) error
+	VerifyStage(context.Context, ReconcileStageID) (bool, error)
 }
 
 type InitPlatform interface {

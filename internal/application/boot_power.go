@@ -42,7 +42,8 @@ func (reconciler BootPowerReconciler) Run(ctx context.Context) (BootPowerResult,
 	}
 	bridges := managedBridges(instances)
 	for _, instance := range instances {
-		if instanceConfig(instance, "user.subyard.desired_power") != PowerStopped {
+		desired, _ := instance.EffectiveConfig("user.subyard.desired_power")
+		if desired != PowerStopped {
 			continue
 		}
 		reference := instanceReference(instance)
@@ -68,7 +69,8 @@ func (reconciler BootPowerReconciler) Run(ctx context.Context) (BootPowerResult,
 		if err := validateManagedPower(instance); err != nil {
 			return result, err
 		}
-		if instanceConfig(instance, "user.subyard.desired_power") != PowerRunning {
+		desired, _ := instance.EffectiveConfig("user.subyard.desired_power")
+		if desired != PowerRunning {
 			continue
 		}
 		reference := instanceReference(instance)
@@ -151,7 +153,8 @@ func (bootWallClock) After(delay time.Duration) <-chan time.Time { return time.A
 func filterManagedInstances(instances []ports.InstanceInfo, validate bool) ([]ports.InstanceInfo, error) {
 	managed := make([]ports.InstanceInfo, 0, len(instances))
 	for _, instance := range instances {
-		switch instanceConfig(instance, "user.subyard.managed") {
+		managedValue, _ := instance.EffectiveConfig("user.subyard.managed")
+		switch managedValue {
 		case "", "false":
 			continue
 		case "true":
@@ -203,17 +206,20 @@ func validateManagedPower(instance ports.InstanceInfo) error {
 	if instance.Project == "" || instance.Name == "" {
 		return errors.New("managed instance has incomplete identity")
 	}
-	if instanceConfig(instance, "user.subyard.initialized") != "true" {
+	initialized, _ := instance.EffectiveConfig("user.subyard.initialized")
+	if initialized != "true" {
 		return fmt.Errorf("%s is not fully initialized", reference)
 	}
-	if instanceConfig(instance, "boot.autostart") != "false" {
+	autostart, _ := instance.EffectiveConfig("boot.autostart")
+	if autostart != "false" {
 		return fmt.Errorf("%s must set boot.autostart=false", reference)
 	}
-	desired := instanceConfig(instance, "user.subyard.desired_power")
+	desired, _ := instance.EffectiveConfig("user.subyard.desired_power")
 	if desired != PowerRunning && desired != PowerStopped {
 		return fmt.Errorf("%s has invalid desired power %q", reference, desired)
 	}
-	if instanceConfig(instance, "user.subyard.bridge") == "" {
+	bridge, _ := instance.EffectiveConfig("user.subyard.bridge")
+	if bridge == "" {
 		return fmt.Errorf("%s has no managed bridge", reference)
 	}
 	return nil
@@ -222,7 +228,8 @@ func validateManagedPower(instance ports.InstanceInfo) error {
 func managedBridges(instances []ports.InstanceInfo) []string {
 	seen := make(map[string]struct{}, len(instances))
 	for _, instance := range instances {
-		seen[instanceConfig(instance, "user.subyard.bridge")] = struct{}{}
+		bridge, _ := instance.EffectiveConfig("user.subyard.bridge")
+		seen[bridge] = struct{}{}
 	}
 	bridges := make([]string, 0, len(seen))
 	for bridge := range seen {

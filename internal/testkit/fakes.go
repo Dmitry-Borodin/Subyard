@@ -375,72 +375,13 @@ func (sink *Events) Publish(ctx context.Context, event domain.OperationEvent) er
 	return sink.WriteAudit(ctx, event)
 }
 
-type CredentialStore struct {
+type CredentialMetadataReader struct {
 	Metadata []domain.CredentialMetadata
-	Payloads map[string][]byte
 	Err      error
 }
 
-func (store *CredentialStore) ListMetadata(context.Context) ([]domain.CredentialMetadata, error) {
-	return slices.Clone(store.Metadata), store.Err
-}
-
-func (store *CredentialStore) Heads(_ context.Context, credentialID string) ([]domain.CredentialMetadata, error) {
-	if store.Err != nil {
-		return nil, store.Err
-	}
-	parents := make(map[string]struct{})
-	for _, metadata := range store.Metadata {
-		if metadata.CredentialID == credentialID {
-			for _, parent := range metadata.Parents {
-				parents[parent] = struct{}{}
-			}
-		}
-	}
-	result := make([]domain.CredentialMetadata, 0)
-	for _, metadata := range store.Metadata {
-		if metadata.CredentialID == credentialID {
-			if _, child := parents[metadata.RevisionID]; !child {
-				result = append(result, metadata)
-			}
-		}
-	}
-	return result, nil
-}
-
-func (store *CredentialStore) Publish(_ context.Context, metadata domain.CredentialMetadata, reader io.Reader) error {
-	if store.Err != nil {
-		return store.Err
-	}
-	payload, err := io.ReadAll(reader)
-	if err != nil {
-		return err
-	}
-	store.Metadata = append(store.Metadata, metadata)
-	if store.Payloads == nil {
-		store.Payloads = make(map[string][]byte)
-	}
-	store.Payloads[metadata.RevisionID] = bytes.Clone(payload)
-	return nil
-}
-
-type Materializer struct {
-	Metadata []domain.CredentialMetadata
-	Payloads [][]byte
-	Err      error
-}
-
-func (materializer *Materializer) Materialize(_ context.Context, metadata domain.CredentialMetadata, reader io.Reader) error {
-	if materializer.Err != nil {
-		return materializer.Err
-	}
-	payload, err := io.ReadAll(reader)
-	if err != nil {
-		return err
-	}
-	materializer.Metadata = append(materializer.Metadata, metadata)
-	materializer.Payloads = append(materializer.Payloads, payload)
-	return nil
+func (reader *CredentialMetadataReader) ListMetadata(context.Context) ([]domain.CredentialMetadata, error) {
+	return slices.Clone(reader.Metadata), reader.Err
 }
 
 type CredentialCrypto struct {
@@ -458,12 +399,6 @@ func (crypto *CredentialCrypto) Decrypt(_ context.Context, metadata domain.Crede
 
 func (crypto *CredentialCrypto) Verify(context.Context, domain.CredentialMetadata) error {
 	return crypto.Err
-}
-
-type Peer struct {
-	Received []domain.CredentialMetadata
-	Reply    []domain.CredentialMetadata
-	Err      error
 }
 
 type RemoteStep struct {
@@ -495,9 +430,4 @@ func (remote *ScriptedRemote) Call(ctx context.Context, target string, request [
 	step := remote.Steps[0]
 	remote.Steps = remote.Steps[1:]
 	return bytes.Clone(step.Response), step.Err
-}
-
-func (peer *Peer) Exchange(_ context.Context, _ string, metadata []domain.CredentialMetadata) ([]domain.CredentialMetadata, error) {
-	peer.Received = slices.Clone(metadata)
-	return slices.Clone(peer.Reply), peer.Err
 }

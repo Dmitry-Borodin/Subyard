@@ -6,6 +6,7 @@
 [ -n "${SUBYARD_LIBPOWER_SOURCED:-}" ] && return 0
 SUBYARD_LIBPOWER_SOURCED=1
 
+# shellcheck disable=SC2034 # exported to sourced callers
 POWER_KEY_MANAGED=user.subyard.managed
 # shellcheck disable=SC2034 # exported to sourced callers
 POWER_KEY_NAME=user.subyard.name
@@ -22,16 +23,8 @@ power_fail() {
   return 1
 }
 
-power_get() { # <project> <instance> <key>
-  incus config get "$2" "$3" --project "$1" 2>/dev/null || true
-}
-
 power_state() { # <project> <instance>
   incus list "$2" --project "$1" -f csv -c s 2>/dev/null
-}
-
-power_valid_desired() {
-  case "$1" in running|stopped) return 0 ;; *) return 1 ;; esac
 }
 
 # Validate the effective NetworkManager configuration, not merely our drop-in file: a later distro
@@ -186,23 +179,4 @@ power_stop_instance() { # <project> <instance>
     STOPPED) return 0 ;;
     *) power_fail "cannot stop $1/$2 from state '${current:-unknown}'"; return 1 ;;
   esac
-}
-
-power_all_instance_rows() {
-  incus list --all-projects -f csv -c pns 2>/dev/null
-}
-
-power_managed_rows() { # project,name,state; one per managed instance
-  local project instance state
-  while IFS=, read -r project instance state _; do
-    [ -n "$project" ] && [ -n "$instance" ] || continue
-    [ "$(power_get "$project" "$instance" "$POWER_KEY_MANAGED")" = true ] || continue
-    printf '%s,%s,%s\n' "$project" "$instance" "$state"
-  done < <(power_all_instance_rows)
-}
-
-power_any_managed_instance() {
-  local row
-  row="$(power_managed_rows | sed -n '1p')"
-  [ -n "$row" ]
 }

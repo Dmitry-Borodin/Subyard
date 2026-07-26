@@ -237,9 +237,7 @@ func (execution *initExecution) run(ctx context.Context, cli *CLI, output io.Wri
 		return err
 	}
 	finalizer := application.Reconciler{
-		Stages: []application.ReconcileStage{{
-			ID: "finalize", Label: "Restore and commit the configured desired yard power state",
-		}},
+		Stages: []application.ReconcileStage{application.FinalizeStage()},
 		Runner: execution.platform, Reporter: initReporter{output: output},
 	}
 	if err := finalizer.Apply(ctx); err != nil {

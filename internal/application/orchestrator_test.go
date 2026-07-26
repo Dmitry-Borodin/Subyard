@@ -100,22 +100,3 @@ func TestPrepareKeepsMutationUnconfirmedUntilExplicitConfirmation(t *testing.T) 
 		t.Fatal("unconfirmed plan reached the adapter")
 	}
 }
-
-func TestEventTrackerDetectsDuplicateGapAndRevisionRegression(t *testing.T) {
-	tracker := NewEventTracker(3)
-	if err := tracker.Accept(domain.OperationEvent{Sequence: 1, Revision: 4}); err != nil {
-		t.Fatal(err)
-	}
-	if err := tracker.Accept(domain.OperationEvent{Sequence: 1, Revision: 4}); !errors.Is(err, ErrEventReordered) {
-		t.Fatalf("duplicate not detected: %v", err)
-	}
-	if err := tracker.Accept(domain.OperationEvent{Sequence: 3, Revision: 5}); !errors.Is(err, ErrEventGap) {
-		t.Fatalf("gap not detected: %v", err)
-	}
-	if err := tracker.Accept(domain.OperationEvent{Sequence: 2, Revision: 2}); !errors.Is(err, ErrEventReordered) {
-		t.Fatalf("revision regression not detected: %v", err)
-	}
-	if err := NewEventTracker(3).Accept(domain.OperationEvent{Sequence: 2, Revision: 4}); !errors.Is(err, ErrEventGap) {
-		t.Fatalf("initial gap not detected: %v", err)
-	}
-}

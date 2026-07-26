@@ -4,13 +4,16 @@ package incusclient
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Subyard/Subyard/internal/adapters/projectruntime"
+	"github.com/Subyard/Subyard/internal/application"
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
 )
@@ -137,5 +140,172 @@ func TestRealIncusConformance(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("event stream did not close after cancellation")
 		}
+	}
+}
+
+func TestRealIncusEffectiveConfigAndPowerWriterContract(t *testing.T) {
+	const marker = "code-health-expanded-config-v1"
+	if os.Getenv("SUBYARD_REAL_INCUS_MUTATION") != marker {
+		t.Skip("set SUBYARD_REAL_INCUS_MUTATION=" + marker)
+	}
+	socket := os.Getenv("SUBYARD_REAL_INCUS_SOCKET")
+	project := os.Getenv("SUBYARD_REAL_INCUS_PROJECT")
+	instanceName := os.Getenv("SUBYARD_REAL_INCUS_INSTANCE")
+	profileName := os.Getenv("SUBYARD_REAL_INCUS_PROFILE")
+	if socket == "" || project == "" || instanceName == "" || profileName == "" {
+		t.Skip("set real Incus socket, project, instance and profile inputs")
+	}
+	if !filepath.IsAbs(socket) || !domain.SafeName(project) || !domain.SafeName(instanceName) ||
+		!domain.SafeName(profileName) {
+		t.Fatal("real Incus mutation inputs are invalid")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	client := New(socket, "projects")
+	server, err := client.connect(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectServer := server.UseProject(project)
+	instance, _, err := projectServer.GetInstance(instanceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Config["user.subyard.acceptance_fixture"] != marker {
+		t.Fatalf("%s/%s is not marker-owned", project, instanceName)
+	}
+	if !slices.Contains(instance.Profiles, profileName) {
+		t.Fatalf("%s/%s does not use acceptance profile %q", project, instanceName, profileName)
+	}
+	profile, _, err := projectServer.GetProfile(profileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalInstance := instance.Writable()
+	originalInstance.Config = maps.Clone(originalInstance.Config)
+	originalInstance.Profiles = slices.Clone(originalInstance.Profiles)
+	originalProfile := profile.Writable()
+	originalProfile.Config = maps.Clone(originalProfile.Config)
+	defer func() {
+		_, etag, readErr := projectServer.GetInstance(instanceName)
+		if readErr == nil {
+			operation, updateErr := projectServer.UpdateInstance(
+				instanceName, originalInstance, etag,
+			)
+			if updateErr == nil {
+				updateErr = operation.Wait()
+			}
+			if updateErr != nil {
+				t.Errorf("restore acceptance instance: %v", updateErr)
+			}
+		} else {
+			t.Errorf("read acceptance instance for restore: %v", readErr)
+		}
+		_, profileETag, readErr := projectServer.GetProfile(profileName)
+		if readErr == nil {
+			if updateErr := projectServer.UpdateProfile(profileName, originalProfile, profileETag); updateErr != nil {
+				t.Errorf("restore acceptance profile: %v", updateErr)
+			}
+		} else {
+			t.Errorf("read acceptance profile for restore: %v", readErr)
+		}
+	}()
+	updateInstance := func(edit func(map[string]string)) {
+		t.Helper()
+		current, etag, readErr := projectServer.GetInstance(instanceName)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if current.Config == nil {
+			current.Config = make(map[string]string)
+		}
+		edit(current.Config)
+		operation, updateErr := projectServer.UpdateInstance(instanceName, current.Writable(), etag)
+		if updateErr != nil {
+			t.Fatal(updateErr)
+		}
+		if updateErr := operation.Wait(); updateErr != nil {
+			t.Fatal(updateErr)
+		}
+	}
+	updateProfile := func(edit func(map[string]string)) {
+		t.Helper()
+		current, etag, readErr := projectServer.GetProfile(profileName)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if current.Config == nil {
+			current.Config = make(map[string]string)
+		}
+		edit(current.Config)
+		if updateErr := projectServer.UpdateProfile(profileName, current.Writable(), etag); updateErr != nil {
+			t.Fatal(updateErr)
+		}
+	}
+
+	const effectiveKey = "user.subyard.acceptance_effective"
+	updateInstance(func(config map[string]string) { delete(config, effectiveKey) })
+	updateProfile(func(config map[string]string) { config[effectiveKey] = "profile" })
+	info, err := client.Instance(ctx, project, instanceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, present := info.EffectiveConfig(effectiveKey); !present || value != "profile" {
+		t.Fatalf("inherited effective config=%q present=%v", value, present)
+	}
+	if _, present := info.LocalConfig[effectiveKey]; present {
+		t.Fatalf("inherited key leaked into LocalConfig: %#v", info.LocalConfig)
+	}
+	updateInstance(func(config map[string]string) { config[effectiveKey] = "local" })
+	info, err = client.Instance(ctx, project, instanceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, present := info.EffectiveConfig(effectiveKey); !present || value != "local" ||
+		info.LocalConfig[effectiveKey] != "local" {
+		t.Fatalf("local override did not become effective: %#v", info)
+	}
+	updateInstance(func(config map[string]string) { config[effectiveKey] = "" })
+	info, err = client.Instance(ctx, project, instanceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, present := info.EffectiveConfig(effectiveKey); !present || value != "profile" {
+		t.Fatalf("present empty local config did not retain profile fallback: %q present=%v",
+			value, present)
+	}
+	if value, present := info.LocalConfig[effectiveKey]; present {
+		t.Fatalf("Incus did not normalize empty local config away: %q", value)
+	}
+
+	const unownedKey = "user.subyard.acceptance_keep"
+	updateInstance(func(config map[string]string) {
+		config["boot.autostart"] = "false"
+		config["user.subyard.managed"] = "true"
+		config["user.subyard.name"] = "default"
+		config["user.subyard.bridge"] = "incusbr0"
+		config["user.subyard.desired_power"] = application.PowerStopped
+		config["user.subyard.initialized"] = "true"
+		config[unownedKey] = "keep"
+	})
+	yard := domain.Context{
+		YardName: "default", IncusProject: project, InstanceName: instanceName, IncusBridge: "incusbr0",
+	}
+	power := application.PowerService{Instances: client, Config: client}
+	if _, err := power.Ensure(ctx, yard); err != nil {
+		t.Fatal(err)
+	}
+	if err := power.Set(ctx, yard, application.PowerStopped, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := power.Commit(ctx, yard, application.PowerRunning); err != nil {
+		t.Fatal(err)
+	}
+	info, err = client.Instance(ctx, project, instanceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.LocalConfig[unownedKey] != "keep" || info.Config[unownedKey] != "keep" {
+		t.Fatalf("power writers removed unowned config: %#v", info)
 	}
 }

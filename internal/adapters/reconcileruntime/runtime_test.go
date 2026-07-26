@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -12,6 +13,32 @@ import (
 	"github.com/Subyard/Subyard/internal/testkit"
 )
 
+func TestProbeConvergedClassifiesExitStatus(t *testing.T) {
+	exit := func(code string) error {
+		return exec.Command("sh", "-c", "exit "+code).Run()
+	}
+	tests := []struct {
+		name    string
+		err     error
+		want    bool
+		wantErr bool
+	}{
+		{name: "success", want: true},
+		{name: "drift", err: exit("1")},
+		{name: "other exit", err: exit("17"), wantErr: true},
+		{name: "non-exit error", err: errors.New("probe unavailable"), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			converged, err := probeConverged(test.err)
+			if converged != test.want || (err != nil) != test.wantErr {
+				t.Fatalf("converged=%v error=%v, want converged=%v error=%v",
+					converged, err, test.want, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestPowerImportIsNativeAcrossRegisteredLocalYards(t *testing.T) {
 	incus := &testkit.Incus{
 		ServerInfo: ports.ServerInfo{Environment: "incus"},
@@ -19,7 +46,7 @@ func TestPowerImportIsNativeAcrossRegisteredLocalYards(t *testing.T) {
 			"subyard/yard": {Name: "yard", Project: "subyard", Status: "Running"},
 			"subyard-demo/yard-demo": {
 				Name: "yard-demo", Project: "subyard-demo", Status: "Stopped",
-				LocalConfig: map[string]string{
+				Config: map[string]string{
 					"user.subyard.managed": "true", "user.subyard.initialized": "false",
 					"user.subyard.desired_power": "stopped", "user.subyard.name": "old",
 					"user.subyard.bridge": "old", "boot.autostart": "true",
@@ -40,13 +67,13 @@ func TestPowerImportIsNativeAcrossRegisteredLocalYards(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(incus.ConfigUpdates) != 2 ||
-		incus.Instances["subyard/yard"].LocalConfig["user.subyard.desired_power"] != "running" ||
-		incus.Instances["subyard-demo/yard-demo"].LocalConfig["user.subyard.name"] != "demo" {
+		incus.Instances["subyard/yard"].Config["user.subyard.desired_power"] != "running" ||
+		incus.Instances["subyard-demo/yard-demo"].Config["user.subyard.name"] != "demo" {
 		t.Fatalf("registered power state was not imported atomically: %#v", incus.ConfigUpdates)
 	}
 	assertStage(t, runtime, "power-import", true, "completed native import")
 	broken := incus.Instances["subyard-demo/yard-demo"]
-	broken.LocalConfig["user.subyard.managed"] = "invalid"
+	broken.Config["user.subyard.managed"] = "invalid"
 	incus.Instances["subyard-demo/yard-demo"] = broken
 	if _, err := runtime.CheckStage(context.Background(), "power-import"); err == nil {
 		t.Fatal("invalid managed metadata was treated as convergence")
@@ -76,13 +103,48 @@ func TestGitIdentityProbeUsesTypedInstanceState(t *testing.T) {
 	}}
 	assertStage(t, runtime, "git-identity", false, "running yard without git config")
 
-	incus.Reconcile.Instance = ports.InstanceInfo{Status: "Stopped", LocalConfig: map[string]string{
+	incus.Reconcile.Instance = ports.InstanceInfo{Status: "Stopped", Config: map[string]string{
 		"user.subyard.managed": "true", "user.subyard.initialized": "true",
 		"user.subyard.desired_power": "stopped",
 	}}
 	assertStage(t, runtime, "git-identity", true, "intentionally stopped yard")
-	incus.Reconcile.Instance.LocalConfig["user.subyard.desired_power"] = "running"
+	incus.Reconcile.Instance.Config["user.subyard.desired_power"] = "running"
 	assertStage(t, runtime, "git-identity", false, "unexpected stopped yard")
+}
+
+func TestIntentionallyStoppedShortcutPhaseMatrix(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  string
+		managed string
+		init    string
+		desired string
+		want    bool
+	}{
+		{name: "exact stopped intent", status: "Stopped", managed: "true", init: "true", desired: "stopped", want: true},
+		{name: "running physical state", status: "Running", managed: "true", init: "true", desired: "stopped"},
+		{name: "managed absent", status: "Stopped", init: "true", desired: "stopped"},
+		{name: "managed empty", status: "Stopped", init: "true", desired: "stopped"},
+		{name: "initialized false", status: "Stopped", managed: "true", init: "false", desired: "stopped"},
+		{name: "desired running", status: "Stopped", managed: "true", init: "true", desired: "running"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := ports.InstanceInfo{Status: test.status, Config: map[string]string{
+				"user.subyard.managed":       test.managed,
+				"user.subyard.initialized":   test.init,
+				"user.subyard.desired_power": test.desired,
+				"user.subyard.bridge":        "",
+				"boot.autostart":             "true",
+			}}
+			if test.name == "managed absent" {
+				delete(instance.Config, "user.subyard.managed")
+			}
+			if got := instanceIntentionallyStopped(instance); got != test.want {
+				t.Fatalf("shortcut=%v, want %v", got, test.want)
+			}
+		})
+	}
 }
 
 func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
@@ -111,7 +173,7 @@ func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 	incus := &testkit.Incus{
 		ServerInfo: ports.ServerInfo{Environment: "incus"},
 		Reconcile: ports.ReconcileState{InstanceFound: true, Instance: ports.InstanceInfo{
-			LocalConfig: map[string]string{
+			Config: map[string]string{
 				"user.subyard.managed": "true", "user.subyard.initialized": "true",
 				"user.subyard.desired_power": "running", "user.subyard.bridge": "incusbr0",
 				"boot.autostart": "false",
@@ -123,12 +185,24 @@ func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 		"SUBYARD_POWER_ENGINE_SOURCE=" + reconcilerSource, "SUBYARD_POWER_UNIT_PATH=" + unit,
 	}}
 	assertStage(t, runtime, "power", true, "installed and finalized power state")
-	incus.Reconcile.Instance.LocalConfig["user.subyard.initialized"] = "false"
+	incus.Reconcile.Instance.Config["user.subyard.initialized"] = "false"
 	assertStage(t, runtime, "power", false, "unfinished desired-power transaction")
 	verified, err := runtime.VerifyStage(context.Background(), "power")
 	if err != nil || !verified {
 		t.Fatalf("fresh install did not verify before finalization: %v, %v", verified, err)
 	}
+	incus.Reconcile.Instance.Config["user.subyard.initialized"] = "true"
+	incus.Reconcile.Instance.Config["user.subyard.desired_power"] = "paused"
+	assertStage(t, runtime, "power", false, "malformed desired power")
+	incus.Reconcile.Instance.Config["user.subyard.desired_power"] = "running"
+	incus.Reconcile.Instance.Config["user.subyard.name"] = "ignored-by-init"
+	assertStage(t, runtime, "power", true, "init power check ignores yard name")
+	incus.Reconcile.Instance.Config["user.subyard.bridge"] = "incusbr1"
+	assertStage(t, runtime, "power", false, "wrong effective bridge")
+	incus.Reconcile.Instance.Config["user.subyard.bridge"] = "incusbr0"
+	incus.Reconcile.Instance.Config["boot.autostart"] = "true"
+	assertStage(t, runtime, "power", false, "autostart enabled")
+	incus.Reconcile.Instance.Config["boot.autostart"] = "false"
 	write(reconciler, "drift\n", 0o700)
 	verified, err = runtime.VerifyStage(context.Background(), "power")
 	if err != nil || verified {
@@ -157,7 +231,7 @@ func TestFinalizeMapsDesiredPowerToLifecycleAction(t *testing.T) {
 			incus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{
 				"subyard/yard": {
 					Name: "yard", Project: "subyard", Status: test.desired,
-					LocalConfig: map[string]string{
+					Config: map[string]string{
 						"user.subyard.managed": "true", "user.subyard.initialized": "false",
 						"user.subyard.desired_power": test.desired, "user.subyard.name": "default",
 						"user.subyard.bridge": "incusbr0", "boot.autostart": "false",
@@ -179,7 +253,7 @@ func TestFinalizeMapsDesiredPowerToLifecycleAction(t *testing.T) {
 			if string(got) != test.action+"\n" {
 				t.Fatalf("lifecycle arguments = %q, want %q", got, test.action)
 			}
-			if incus.Instances["subyard/yard"].LocalConfig["user.subyard.initialized"] != "true" {
+			if incus.Instances["subyard/yard"].Config["user.subyard.initialized"] != "true" {
 				t.Fatal("final power state was not committed")
 			}
 		})
@@ -212,7 +286,7 @@ func TestSSHProbeOwnsProxyAndClientConfig(t *testing.T) {
 	incus := &testkit.Incus{
 		ServerInfo: ports.ServerInfo{Environment: "incus"},
 		Reconcile: ports.ReconcileState{InstanceFound: true, Instance: ports.InstanceInfo{
-			Status: "Stopped", LocalConfig: map[string]string{
+			Status: "Stopped", Config: map[string]string{
 				"user.subyard.managed": "true", "user.subyard.initialized": "true",
 				"user.subyard.desired_power": "stopped",
 			}, LocalDevices: map[string]map[string]string{"ssh": {
@@ -265,7 +339,7 @@ func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
 	incus := &testkit.Incus{
 		ServerInfo: ports.ServerInfo{Environment: "incus"}, ExecSteps: steps("regular file|755|0:0"),
 		Reconcile: ports.ReconcileState{InstanceFound: true, Instance: ports.InstanceInfo{
-			Status: "Running", LocalConfig: map[string]string{"user.subyard.ccusage_version": "1.2.3"},
+			Status: "Running", Config: map[string]string{"user.subyard.ccusage_version": "1.2.3"},
 		}},
 	}
 	runtime := Runtime{
@@ -281,7 +355,7 @@ func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
 	incus.ExecSteps = steps("regular file|777|0:0")
 	assertStage(t, runtime, "provision", false, "wrong ccusage mode")
 
-	incus.Reconcile.Instance = ports.InstanceInfo{Status: "Stopped", LocalConfig: map[string]string{
+	incus.Reconcile.Instance = ports.InstanceInfo{Status: "Stopped", Config: map[string]string{
 		"user.subyard.managed": "true", "user.subyard.initialized": "true",
 		"user.subyard.desired_power": "stopped", "user.subyard.ccusage_version": "1.2.3",
 	}}
@@ -388,6 +462,7 @@ func TestInstanceProbeOwnsVolumeAndNestedBoundary(t *testing.T) {
 			InstanceFound: true, VolumeFound: true,
 			Instance: ports.InstanceInfo{
 				Status:      "Running",
+				Config:      map[string]string{},
 				LocalConfig: map[string]string{"security.nesting": "true"},
 				LocalDevices: map[string]map[string]string{
 					"srv": {"source": "yard-srv", "path": "/srv", "pool": "default"},
@@ -413,11 +488,11 @@ func TestInstanceProbeOwnsVolumeAndNestedBoundary(t *testing.T) {
 	incus.Reconcile.Instance.LocalDevices["subyard-e2e-routes"]["path"] =
 		"/var/lib/subyard/e2e-routes"
 	incus.Reconcile.Instance.Status = "Stopped"
-	incus.Reconcile.Instance.LocalConfig["user.subyard.managed"] = "true"
-	incus.Reconcile.Instance.LocalConfig["user.subyard.initialized"] = "true"
-	incus.Reconcile.Instance.LocalConfig["user.subyard.desired_power"] = "running"
+	incus.Reconcile.Instance.Config["user.subyard.managed"] = "true"
+	incus.Reconcile.Instance.Config["user.subyard.initialized"] = "true"
+	incus.Reconcile.Instance.Config["user.subyard.desired_power"] = "running"
 	assertStageConverged(t, runtime, false, "stopped desired-running power fence")
-	incus.Reconcile.Instance.LocalConfig["user.subyard.desired_power"] = "stopped"
+	incus.Reconcile.Instance.Config["user.subyard.desired_power"] = "stopped"
 	assertStageConverged(t, runtime, true, "intentionally stopped instance")
 	incus.Reconcile.Instance.Status = "Running"
 	incus.Reconcile.Instance.LocalDevices["srv"]["source"] = "wrong"
@@ -508,7 +583,7 @@ func assertStageConverged(t *testing.T, runtime Runtime, want bool, label string
 	assertStage(t, runtime, "instance", want, label)
 }
 
-func assertStage(t *testing.T, runtime Runtime, stage string, want bool, label string) {
+func assertStage(t *testing.T, runtime Runtime, stage ports.ReconcileStageID, want bool, label string) {
 	t.Helper()
 	got, err := runtime.CheckStage(context.Background(), stage)
 	if err != nil || got != want {

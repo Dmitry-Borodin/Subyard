@@ -38,11 +38,55 @@ func (function networkGuardFunc) Check(ctx context.Context, bridges []string) er
 func managedPowerInstance(project, name, status, desired string) ports.InstanceInfo {
 	return ports.InstanceInfo{
 		Project: project, Name: name, Status: status,
-		LocalConfig: map[string]string{
+		Config: map[string]string{
 			"user.subyard.managed": "true", "user.subyard.initialized": "true",
 			"user.subyard.desired_power": desired, "user.subyard.bridge": "incusbr0",
 			"boot.autostart": "false",
 		},
+	}
+}
+
+func TestBootPowerMetadataPhaseMatrix(t *testing.T) {
+	tests := []struct {
+		name      string
+		key       string
+		value     string
+		delete    bool
+		wantCount int
+		wantErr   bool
+	}{
+		{name: "valid", wantCount: 1},
+		{name: "managed absent", key: "user.subyard.managed", delete: true},
+		{name: "managed empty", key: "user.subyard.managed"},
+		{name: "managed false", key: "user.subyard.managed", value: "false"},
+		{name: "managed malformed", key: "user.subyard.managed", value: "yes", wantErr: true},
+		{name: "initialized absent", key: "user.subyard.initialized", delete: true, wantErr: true},
+		{name: "initialized empty", key: "user.subyard.initialized", wantErr: true},
+		{name: "initialized false", key: "user.subyard.initialized", value: "false", wantErr: true},
+		{name: "desired absent", key: "user.subyard.desired_power", delete: true, wantErr: true},
+		{name: "desired malformed", key: "user.subyard.desired_power", value: "paused", wantErr: true},
+		{name: "name absent is ignored", key: "user.subyard.name", delete: true, wantCount: 1},
+		{name: "bridge absent", key: "user.subyard.bridge", delete: true, wantErr: true},
+		{name: "bridge empty", key: "user.subyard.bridge", wantErr: true},
+		{name: "autostart absent", key: "boot.autostart", delete: true, wantErr: true},
+		{name: "autostart true", key: "boot.autostart", value: "true", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := managedPowerInstance("p", "yard", "Stopped", PowerStopped)
+			if test.key != "" {
+				if test.delete {
+					delete(instance.Config, test.key)
+				} else {
+					instance.Config[test.key] = test.value
+				}
+			}
+			managed, err := filterManagedInstances([]ports.InstanceInfo{instance}, true)
+			if len(managed) != test.wantCount || (err != nil) != test.wantErr {
+				t.Fatalf("managed=%#v error=%v, want count=%d error=%v",
+					managed, err, test.wantCount, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -83,7 +127,7 @@ func TestBootPowerReconcilerRestoresDesiredState(t *testing.T) {
 
 func TestBootPowerReconcilerRejectsInvalidMetadataBeforeMutation(t *testing.T) {
 	invalid := managedPowerInstance("p", "yard", "Stopped", PowerRunning)
-	invalid.LocalConfig["boot.autostart"] = "true"
+	invalid.Config["boot.autostart"] = "true"
 	fake := &testkit.Incus{Instances: map[string]ports.InstanceInfo{"p/yard": invalid}}
 	reconciler := BootPowerReconciler{
 		Inventory: fake, Instances: fake, Power: fake,
@@ -136,7 +180,7 @@ func TestBootPowerReconcilerReReadsIntentBeforeStart(t *testing.T) {
 		Inventory: fake, Instances: fake, Power: fake,
 		Network: networkGuardFunc(func(context.Context, []string) error {
 			instance := fake.Instances["p/yard"]
-			instance.LocalConfig["user.subyard.desired_power"] = PowerStopped
+			instance.Config["user.subyard.desired_power"] = PowerStopped
 			fake.Instances["p/yard"] = instance
 			return nil
 		}),

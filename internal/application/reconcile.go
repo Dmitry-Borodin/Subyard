@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
 )
 
 type ReconcileStage struct {
-	ID    string
+	ID    ports.ReconcileStageID
 	Label string
 }
 
@@ -114,20 +113,27 @@ func InitStages(yard domain.Context) []ReconcileStage {
 		testVMs = "Install/reconcile the trusted two-VM test backend inside the yard"
 	}
 	return []ReconcileStage{
-		{ID: "incus", Label: "Install or upgrade Incus and initialize storage"},
-		{ID: "project", Label: fmt.Sprintf("Create the Incus project %q", yard.IncusProject)},
-		{ID: "network", Label: "Open host DHCP/DNS for the yard bridge"},
-		{ID: "power-import", Label: "Import desired-power state for registered local yards"},
-		{ID: "instance", Label: instance},
-		{ID: "mounts", Label: fmt.Sprintf("Create host dirs under %s and mount them", yard.Paths.HostBase)},
-		{ID: "provision", Label: "Provision the yard"},
-		{ID: "test-vms", Label: testVMs},
-		{ID: "ssh", Label: "Set up SSH access into the yard"},
-		{ID: "git-identity", Label: "Reconcile in-yard git config and bind-worktree trust"},
-		{ID: "extras", Label: "Apply yard extras requested by projects"},
-		{ID: "power", Label: "Persist desired yard power and install host boot reconciliation"},
-		{ID: "keys", Label: "Initialize the encrypted credential ledger and sync timer"},
-		{ID: "security", Label: "Validate host-boundary security invariants"},
+		{ID: ports.ReconcileStageIncus, Label: "Install or upgrade Incus and initialize storage"},
+		{ID: ports.ReconcileStageProject, Label: fmt.Sprintf("Create the Incus project %q", yard.IncusProject)},
+		{ID: ports.ReconcileStageNetwork, Label: "Open host DHCP/DNS for the yard bridge"},
+		{ID: ports.ReconcileStagePowerImport, Label: "Import desired-power state for registered local yards"},
+		{ID: ports.ReconcileStageInstance, Label: instance},
+		{ID: ports.ReconcileStageMounts, Label: fmt.Sprintf("Create host dirs under %s and mount them", yard.Paths.HostBase)},
+		{ID: ports.ReconcileStageProvision, Label: "Provision the yard"},
+		{ID: ports.ReconcileStageTestVMs, Label: testVMs},
+		{ID: ports.ReconcileStageSSH, Label: "Set up SSH access into the yard"},
+		{ID: ports.ReconcileStageGitIdentity, Label: "Reconcile in-yard git config and bind-worktree trust"},
+		{ID: ports.ReconcileStageExtras, Label: "Apply yard extras requested by projects"},
+		{ID: ports.ReconcileStagePower, Label: "Persist desired yard power and install host boot reconciliation"},
+		{ID: ports.ReconcileStageKeys, Label: "Initialize the encrypted credential ledger and sync timer"},
+		{ID: ports.ReconcileStageSecurity, Label: "Validate host-boundary security invariants"},
+	}
+}
+
+func FinalizeStage() ReconcileStage {
+	return ReconcileStage{
+		ID:    ports.ReconcileStageFinalize,
+		Label: "Restore and commit the configured desired yard power state",
 	}
 }
 
@@ -135,15 +141,15 @@ func validateStages(stages []ReconcileStage) error {
 	if len(stages) == 0 {
 		return errors.New("reconcile stage registry is empty")
 	}
-	seen := make([]string, 0, len(stages))
+	seen := make(map[ports.ReconcileStageID]struct{}, len(stages))
 	for _, stage := range stages {
-		if !domain.SafeName(stage.ID) || stage.Label == "" {
+		if !domain.SafeName(string(stage.ID)) || stage.Label == "" {
 			return fmt.Errorf("invalid reconcile stage %q", stage.ID)
 		}
-		if slices.Contains(seen, stage.ID) {
+		if _, duplicate := seen[stage.ID]; duplicate {
 			return fmt.Errorf("duplicate reconcile stage %q", stage.ID)
 		}
-		seen = append(seen, stage.ID)
+		seen[stage.ID] = struct{}{}
 	}
 	return nil
 }

@@ -39,79 +39,72 @@ type Runtime struct {
 	HostDeviceRoot string
 }
 
-func (runtime Runtime) CheckStage(ctx context.Context, stage string) (bool, error) {
+func (runtime Runtime) CheckStage(ctx context.Context, stage ports.ReconcileStageID) (bool, error) {
 	var err error
 	switch stage {
-	case "project":
+	case ports.ReconcileStageProject:
 		return runtime.projectConverged(ctx)
-	case "instance":
+	case ports.ReconcileStageInstance:
 		return runtime.instanceConverged(ctx)
-	case "mounts":
+	case ports.ReconcileStageMounts:
 		return runtime.mountsConverged(ctx)
-	case "power-import":
+	case ports.ReconcileStagePowerImport:
 		return runtime.powerImportsConverged(ctx)
-	case "git-identity":
+	case ports.ReconcileStageGitIdentity:
 		return runtime.gitIdentityConverged(ctx)
-	case "network":
+	case ports.ReconcileStageNetwork:
 		err = runtime.runObservedPowerScript(ctx, nil, true, "06-network.sh", "--check")
-	case "power", "finalize":
+	case ports.ReconcileStagePower, ports.ReconcileStageFinalize:
 		return runtime.powerConverged(ctx, true)
-	case "test-vms":
+	case ports.ReconcileStageTestVMs:
 		return runtime.testVMsConverged(ctx)
-	case "keys":
+	case ports.ReconcileStageKeys:
 		return runtime.keysConverged(ctx)
-	case "ssh":
+	case ports.ReconcileStageSSH:
 		return runtime.sshConverged(ctx)
-	case "provision":
+	case ports.ReconcileStageProvision:
 		return runtime.provisionConverged(ctx)
-	case "incus":
+	case ports.ReconcileStageIncus:
 		return runtime.incusConverged(ctx)
-	case "extras":
+	case ports.ReconcileStageExtras:
 		desired, desiredErr := runtime.extrasContext()
 		if desiredErr != nil {
 			return false, desiredErr
 		}
 		err = runtime.runScriptEnvironment(ctx, nil, desired, "09-yard-extras.sh", "--check")
-	case "security":
+	case ports.ReconcileStageSecurity:
 		return runtime.securityConverged(ctx)
 	default:
 		return false, fmt.Errorf("unknown reconcile stage %q", stage)
 	}
-	if err == nil {
-		return true, nil
-	}
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
-		return false, nil
-	}
-	return false, err
+	return probeConverged(err)
 }
 
-func (runtime Runtime) ApplyStage(ctx context.Context, stage string) error {
+func (runtime Runtime) ApplyStage(ctx context.Context, stage ports.ReconcileStageID) error {
 	switch stage {
-	case "project":
+	case ports.ReconcileStageProject:
 		return runtime.runScript(ctx, runtime.Stderr, "02-create-project.sh", "--yes")
-	case "instance":
+	case ports.ReconcileStageInstance:
 		return runtime.applyInstanceStage(ctx)
-	case "mounts":
+	case ports.ReconcileStageMounts:
 		return runtime.runScript(ctx, runtime.Stderr, "05-mount-host-paths.sh", "--yes")
-	case "power-import":
+	case ports.ReconcileStagePowerImport:
 		return runtime.importPowerState(ctx)
-	case "git-identity":
+	case ports.ReconcileStageGitIdentity:
 		return runtime.applyGitIdentity(ctx)
-	case "network":
+	case ports.ReconcileStageNetwork:
 		return runtime.runScript(ctx, runtime.Stderr, "06-network.sh", "--yes")
-	case "power":
+	case ports.ReconcileStagePower:
 		return runtime.runScript(ctx, runtime.Stderr, "install-power-reconciler.sh", "--yes")
-	case "finalize":
+	case ports.ReconcileStageFinalize:
 		return runtime.finalizePowerState(ctx)
-	case "test-vms":
+	case ports.ReconcileStageTestVMs:
 		intent, err := runtime.powerService().Ensure(ctx, runtime.Yard)
 		if err != nil {
 			return err
 		}
 		return runtime.testVMBackend(intent.Desired).Apply(ctx)
-	case "keys":
+	case ports.ReconcileStageKeys:
 		if err := runtime.runScript(ctx, runtime.Stderr, "install-key-tools.sh", "--yes"); err != nil {
 			return err
 		}
@@ -123,23 +116,23 @@ func (runtime Runtime) ApplyStage(ctx context.Context, stage string) error {
 			return err
 		}
 		return runtime.runScript(ctx, runtime.Stderr, "install-keys-auto-sync.sh", "--yes")
-	case "ssh":
+	case ports.ReconcileStageSSH:
 		return runtime.runScript(ctx, runtime.Stderr, "07-ssh-access.sh", "--yes")
-	case "provision":
+	case ports.ReconcileStageProvision:
 		if err := runtime.runScript(ctx, runtime.Stderr, "04-provision-subyard.sh", "--yes"); err != nil {
 			return err
 		}
 		return runtime.RefreshConfigs(ctx)
-	case "incus":
+	case ports.ReconcileStageIncus:
 		return runtime.installIncus(ctx)
-	case "extras":
+	case ports.ReconcileStageExtras:
 		desired, err := runtime.extrasContext()
 		if err != nil {
 			return err
 		}
 		return runtime.runScriptEnvironment(ctx, runtime.Stderr, desired,
 			"09-yard-extras.sh", "--yes")
-	case "security":
+	case ports.ReconcileStageSecurity:
 		_, err := runtime.securityRuntime().CheckSecurity(ctx, true, false)
 		return err
 	default:
@@ -147,38 +140,32 @@ func (runtime Runtime) ApplyStage(ctx context.Context, stage string) error {
 	}
 }
 
-func (runtime Runtime) VerifyStage(ctx context.Context, stage string) (bool, error) {
-	if stage == "network" {
+func (runtime Runtime) VerifyStage(ctx context.Context, stage ports.ReconcileStageID) (bool, error) {
+	switch stage {
+	case ports.ReconcileStageNetwork:
 		return runtime.observedPowerScriptConverged(ctx, true, "06-network.sh", "--verify")
-	}
-	if stage == "test-vms" {
+	case ports.ReconcileStageTestVMs:
 		return runtime.testVMsConverged(ctx)
-	}
-	if stage == "keys" {
+	case ports.ReconcileStageKeys:
 		return runtime.keysConverged(ctx)
-	}
-	if stage == "ssh" {
+	case ports.ReconcileStageSSH:
 		return runtime.sshConverged(ctx)
-	}
-	if stage == "provision" {
+	case ports.ReconcileStageProvision:
 		return runtime.provisionConverged(ctx)
-	}
-	if stage == "power" {
+	case ports.ReconcileStagePower:
 		return runtime.powerConverged(ctx, false)
-	}
-	if stage == "finalize" {
+	case ports.ReconcileStageFinalize:
 		return runtime.powerConverged(ctx, true)
-	}
-	if stage == "project" || stage == "instance" || stage == "mounts" ||
-		stage == "power-import" || stage == "git-identity" ||
-		stage == "extras" || stage == "security" {
+	default:
 		return runtime.CheckStage(ctx, stage)
 	}
-	return runtime.CheckStage(ctx, stage)
 }
 
 func (runtime Runtime) scriptConverged(ctx context.Context, name string, arguments ...string) (bool, error) {
-	err := runtime.runScript(ctx, nil, name, arguments...)
+	return probeConverged(runtime.runScript(ctx, nil, name, arguments...))
+}
+
+func probeConverged(err error) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
@@ -733,15 +720,9 @@ func (runtime Runtime) observedPowerScriptConverged(
 	name string,
 	arguments ...string,
 ) (bool, error) {
-	err := runtime.runObservedPowerScript(ctx, nil, allowUnmanaged, name, arguments...)
-	if err == nil {
-		return true, nil
-	}
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
-		return false, nil
-	}
-	return false, err
+	return probeConverged(
+		runtime.runObservedPowerScript(ctx, nil, allowUnmanaged, name, arguments...),
+	)
 }
 
 func (runtime Runtime) finalizePowerState(ctx context.Context) error {
@@ -963,7 +944,7 @@ func (runtime Runtime) provisionConverged(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	instance := state.Instance
-	marker := instanceValue(instance, "user.subyard.ccusage_version")
+	marker, _ := instance.EffectiveConfig("user.subyard.ccusage_version")
 	if strings.EqualFold(instance.Status, "stopped") {
 		return instanceIntentionallyStopped(instance) && marker == version, nil
 	}
@@ -1164,10 +1145,11 @@ func safeCommand(command string) bool {
 }
 
 func instanceIntentionallyStopped(instance ports.InstanceInfo) bool {
+	managed, _ := instance.EffectiveConfig("user.subyard.managed")
+	initialized, _ := instance.EffectiveConfig("user.subyard.initialized")
+	desired, _ := instance.EffectiveConfig("user.subyard.desired_power")
 	return strings.EqualFold(instance.Status, "stopped") &&
-		instanceValue(instance, "user.subyard.managed") == "true" &&
-		instanceValue(instance, "user.subyard.initialized") == "true" &&
-		instanceValue(instance, "user.subyard.desired_power") == "stopped"
+		managed == "true" && initialized == "true" && desired == "stopped"
 }
 
 func (runtime Runtime) powerConverged(ctx context.Context, requireMetadata bool) (bool, error) {
@@ -1181,14 +1163,16 @@ func (runtime Runtime) powerConverged(ctx context.Context, requireMetadata bool)
 	}
 	if requireMetadata {
 		instance := state.Instance
-		desired := instanceValue(instance, "user.subyard.desired_power")
+		managed, _ := instance.EffectiveConfig("user.subyard.managed")
+		initialized, _ := instance.EffectiveConfig("user.subyard.initialized")
+		desired, _ := instance.EffectiveConfig("user.subyard.desired_power")
+		instanceBridge, _ := instance.EffectiveConfig("user.subyard.bridge")
+		autostart, _ := instance.EffectiveConfig("boot.autostart")
 		bridge := runtime.environmentDefault("INCUS_BRIDGE",
 			runtime.environmentDefault("INCUS_NETWORK", "incusbr0"))
-		if instanceValue(instance, "user.subyard.managed") != "true" ||
-			instanceValue(instance, "user.subyard.initialized") != "true" ||
+		if managed != "true" || initialized != "true" ||
 			(desired != "running" && desired != "stopped") ||
-			instanceValue(instance, "user.subyard.bridge") != bridge ||
-			instanceValue(instance, "boot.autostart") != "false" {
+			instanceBridge != bridge || autostart != "false" {
 			return false, nil
 		}
 	}
@@ -1255,13 +1239,6 @@ func hasDirective(contents, name, value string) bool {
 		}
 	}
 	return false
-}
-
-func instanceValue(instance ports.InstanceInfo, name string) string {
-	if value := instance.LocalConfig[name]; value != "" {
-		return value
-	}
-	return instance.Config[name]
 }
 
 func (runtime Runtime) environmentDefault(name, fallback string) string {

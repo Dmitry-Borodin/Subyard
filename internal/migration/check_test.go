@@ -22,7 +22,9 @@ func TestCheckValidatesExistingStoresWithoutCreatingMissingOnes(t *testing.T) {
 		t.Fatal(err)
 	}
 	missing := filepath.Join(root, "missing")
-	report, err := Check(context.Background(), []string{missing, existing}, &testkit.CredentialStore{})
+	report, err := Check(
+		context.Background(), []string{missing, existing}, &testkit.CredentialMetadataReader{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

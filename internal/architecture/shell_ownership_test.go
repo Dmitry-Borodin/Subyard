@@ -112,7 +112,7 @@ func TestProductionShellIsReachableAndLeafOnly(t *testing.T) {
 					"func (runtime Runtime) CheckStage",
 					"func (runtime Runtime) ApplyStage",
 					"func (runtime Runtime) VerifyStage",
-					`"` + leaf.name + `"`,
+					leaf.name,
 				} {
 					if !strings.Contains(string(owner), marker) {
 						t.Errorf("%s lacks host-free check/apply/verify ownership in %s through %q",
@@ -366,17 +366,17 @@ type leafContract struct {
 
 func productionLeafContracts() map[string]leafContract {
 	return map[string]leafContract{
-		"scripts/01-install-incus.sh":         {"reconcile", "incus"},
-		"scripts/02-create-project.sh":        {"reconcile", "project"},
-		"scripts/03-create-subyard.sh":        {"reconcile", "instance"},
-		"scripts/04-provision-subyard.sh":     {"reconcile", "provision"},
-		"scripts/05-mount-host-paths.sh":      {"reconcile", "mounts"},
-		"scripts/06-network.sh":               {"reconcile", "network"},
-		"scripts/07-ssh-access.sh":            {"reconcile", "ssh"},
-		"scripts/09-yard-extras.sh":           {"reconcile", "extras"},
-		"scripts/install-key-tools.sh":        {"reconcile", "keys"},
-		"scripts/install-keys-auto-sync.sh":   {"reconcile", "keys"},
-		"scripts/install-power-reconciler.sh": {"reconcile", "power"},
+		"scripts/01-install-incus.sh":         {"reconcile", "ports.ReconcileStageIncus"},
+		"scripts/02-create-project.sh":        {"reconcile", "ports.ReconcileStageProject"},
+		"scripts/03-create-subyard.sh":        {"reconcile", "ports.ReconcileStageInstance"},
+		"scripts/04-provision-subyard.sh":     {"reconcile", "ports.ReconcileStageProvision"},
+		"scripts/05-mount-host-paths.sh":      {"reconcile", "ports.ReconcileStageMounts"},
+		"scripts/06-network.sh":               {"reconcile", "ports.ReconcileStageNetwork"},
+		"scripts/07-ssh-access.sh":            {"reconcile", "ports.ReconcileStageSSH"},
+		"scripts/09-yard-extras.sh":           {"reconcile", "ports.ReconcileStageExtras"},
+		"scripts/install-key-tools.sh":        {"reconcile", "ports.ReconcileStageKeys"},
+		"scripts/install-keys-auto-sync.sh":   {"reconcile", "ports.ReconcileStageKeys"},
+		"scripts/install-power-reconciler.sh": {"reconcile", "ports.ReconcileStagePower"},
 		"scripts/e2e-lab/invoke.sh":           {"command", "test-vms"},
 		"scripts/lifecycle-guard.sh":          {"command", "lifecycle"},
 		"scripts/teardown-physical.sh":        {"command", "teardown"},

@@ -24,11 +24,6 @@ subyard_require_engine_context() {
   done
 }
 
-path_is_within() {
-  local path="$1" root="$2"
-  [ "$path" = "$root" ] || [[ "$path" == "$root"/* ]]
-}
-
 path_is_broad_host_root() {
   local path="$1" operator_home="${SUBYARD_OPERATOR_HOME:-}"
   case "$path" in

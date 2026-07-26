@@ -53,11 +53,6 @@ func IsRetiredYardTemplate(err error) bool {
 	return errors.As(err, &retired)
 }
 
-func LoadContext(options LoadOptions) (domain.Context, error) {
-	loaded, err := Load(options)
-	return loaded.Context, err
-}
-
 func Load(options LoadOptions) (Loaded, error) {
 	tracker := newSettingTracker()
 	ctx, values, err := load(options, tracker)

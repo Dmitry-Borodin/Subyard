@@ -196,6 +196,7 @@ EOF
 BASTION_ROUTE=fixture-e2e-yard
 BASTION_HOSTNAME=''; BASTION_PORT=''; BASTION_HOST_KEY_ALIAS=''; BASTION_KNOWN_HOSTS=''
 SUBYARD_E2E_ROUTE_CONFIG="$TMP/route-config"
+SUBYARD_E2E_ROUTE_REGISTRY="$TMP/empty-route-registry"
 resolve_bastion_route
 [ "$BASTION_HOSTNAME:$BASTION_PORT" = 127.0.0.1:2223 ] \
   || fail "bastion route was not resolved from the isolated user SSH config"

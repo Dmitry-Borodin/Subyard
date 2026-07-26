@@ -18,7 +18,7 @@ func (bootNetworkGuard) Check(context.Context, []string) error { return nil }
 func TestRunBootPowerAndHasManaged(t *testing.T) {
 	instance := ports.InstanceInfo{
 		Project: "p", Name: "yard", Status: "Stopped",
-		LocalConfig: map[string]string{
+		Config: map[string]string{
 			"user.subyard.managed": "true", "user.subyard.initialized": "true",
 			"user.subyard.desired_power": "running", "user.subyard.bridge": "incusbr0",
 			"boot.autostart": "false",

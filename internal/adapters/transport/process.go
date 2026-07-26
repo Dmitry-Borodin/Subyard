@@ -42,22 +42,34 @@ func Local(engine, repositoryRoot string) Process {
 }
 
 func SSH(program, target string, connectTimeout time.Duration) (Process, error) {
+	return SSHYard(program, target, "", connectTimeout)
+}
+
+func SSHYard(program, target, yard string, connectTimeout time.Duration) (Process, error) {
 	if program == "" {
 		program = "ssh"
 	}
 	if !domain.SafeSSHTarget(target) {
 		return Process{}, fmt.Errorf("invalid SSH target %q", target)
 	}
+	if yard != "" && !domain.SafeName(yard) {
+		return Process{}, fmt.Errorf("invalid remote yard %q", yard)
+	}
 	seconds := int(connectTimeout.Round(time.Second) / time.Second)
 	if seconds < 1 {
 		seconds = 2
 	}
+	remote := []string{"yard"}
+	if yard != "" && yard != "default" {
+		remote = append(remote, "-Y", yard)
+	}
+	remote = append(remote, "rpc", "--stdio")
 	return Process{
 		Program: program,
-		Arguments: []string{
+		Arguments: append([]string{
 			"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + strconv.Itoa(seconds),
-			target, "--", "yard", "rpc", "--stdio",
-		},
+			target, "--",
+		}, remote...),
 	}, nil
 }
 

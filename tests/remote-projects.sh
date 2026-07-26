@@ -11,7 +11,7 @@ assert_contains() { grep -Fq -- "$2" <<<"$1" || fail "output does not contain: $
 assert_not_contains() { ! grep -Fq -- "$2" <<<"$1" || fail "output unexpectedly contains: $2"; }
 assert_projects() {
   local output="$1" expected="$2" actual
-  actual="$(awk '$1 == "remote" { print $6; exit }' <<<"$output")"
+  actual="$(awk '$1 == "owner-a/default" { print $6; exit }' <<<"$output")"
   [ "$actual" = "$expected" ] || fail "remote PROJECTS is '$actual', expected '$expected'"
 }
 
@@ -50,6 +50,15 @@ joined="$*"
 if [ "${1:-}" = -G ]; then
   printf 'hostname 127.0.0.1\nhostkeyalias subyard-remote-remote\n'
   exit 0
+fi
+if [[ "$joined" == *"'yard' 'rpc' '--stdio'"* || "$joined" == *" yard rpc --stdio"* ]]; then
+  exec env \
+    SUBYARD_OPERATOR_HOME="$REMOTE_TEST_STATE/owner-home" \
+    SUBYARD_CONFIG_HOME="$REMOTE_TEST_STATE/owner-config" \
+    SUBYARD_HOME="$REMOTE_TEST_STATE/owner-data" \
+    SUBYARD_CONFIG_DIR="$REMOTE_TEST_SHIPPED" \
+    SUBYARD_NO_AUDIT=1 \
+    "$REMOTE_TEST_ROOT/bin/yard" rpc --stdio
 fi
 if [[ "$joined" == *_info* ]]; then
   case "$(cat "$REMOTE_TEST_STATE/info-mode" 2>/dev/null || printf fail)" in
@@ -93,6 +102,19 @@ export HOME="$TMP/home"
 export SUBYARD_CONFIG_DIR="$TMP/shipped"
 export SUBYARD_NO_AUDIT=1
 export REMOTE_TEST_STATE="$TMP/state"
+export REMOTE_TEST_ROOT="$ROOT"
+export REMOTE_TEST_SHIPPED="$TMP/shipped"
+
+install -d -m 0700 "$REMOTE_TEST_STATE/owner-home" "$REMOTE_TEST_STATE/owner-config/projects" \
+  "$REMOTE_TEST_STATE/owner-data"
+printf 'owner-a\n' > "$REMOTE_TEST_STATE/owner-config/host-id"
+chmod 0600 "$REMOTE_TEST_STATE/owner-config/host-id"
+jq -n '{
+  schema:1, projectId:"owner-demo-12345678", name:"owner-demo", hostPath:"/owner/demo",
+  yardPath:"/srv/workspaces/owner-demo-12345678/src", mode:"sync", sshHost:"yard",
+  importedAt:"test", target:"yard"
+}' > "$REMOTE_TEST_STATE/owner-config/projects/owner-demo-12345678.json"
+chmod 0600 "$REMOTE_TEST_STATE/owner-config/projects/owner-demo-12345678.json"
 
 cat > "$SUBYARD_CONFIG_HOME/yards/remote.env" <<'ENV'
 YARD_TYPE=remote
@@ -101,8 +123,7 @@ REMOTE_YARD=
 SSH_PORT=2222
 ENV
 
-# Remote overview uses live yard inventory, retains the last numeric count when a fresh metadata
-# observation is unavailable, and shows '-' when neither live nor cached inventory exists.
+# Remote overview uses the HostID-keyed owner snapshot and a fresh cache avoids another SSH call.
 printf 'one\n' > "$REMOTE_TEST_STATE/info-mode"
 output="$($ROOT/bin/yard yards)"
 assert_projects "$output" 1
@@ -112,9 +133,6 @@ assert_projects "$output" 1
 printf 'fail\n' > "$REMOTE_TEST_STATE/info-mode"
 output="$($ROOT/bin/yard yards)"
 assert_projects "$output" 1
-rm -f "$SUBYARD_HOME/remote-remote.cache"
-output="$($ROOT/bin/yard yards)"
-assert_projects "$output" '-'
 
 state_file="$SUBYARD_CONFIG_HOME/yards/remote/projects/demo-12345678.json"
 write_state() {
@@ -125,9 +143,16 @@ write_state() {
     importedAt:"test", target:$target
   }' > "$state_file"
   chmod 0600 "$state_file"
+  jq -n --arg target "$target" '{
+    schema:1, projectId:"demo-12345678", name:"demo", hostPath:"",
+    yardPath:"/srv/workspaces/demo-12345678/src", mode:"sync", sshHost:"yard",
+    importedAt:"test", target:$target, registrySource:"yard"
+  }' > "$REMOTE_TEST_STATE/owner-config/projects/demo-12345678.json"
+  chmod 0600 "$REMOTE_TEST_STATE/owner-config/projects/demo-12345678.json"
+  "$ROOT/bin/yard" list --live >/dev/null
 }
 run_remove() {
-  "$ROOT/bin/yard" -Y remote remove demo-12345678 "$@" --yes
+  "$ROOT/bin/yard" -Y owner-a/default remove demo-12345678 "$@" --yes
 }
 
 # L1 removal has no L2 promise, warning, or owner-host cleanup call.

@@ -1,0 +1,86 @@
+package domain
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+const OwnerInventorySchema = 1
+
+type OwnerProject struct {
+	ProjectID string `json:"projectId"`
+	Name      string `json:"name"`
+	Mode      string `json:"mode"`
+	Target    string `json:"target"`
+}
+
+type OwnerYard struct {
+	Name     string         `json:"name"`
+	Kind     string         `json:"kind"`
+	Instance string         `json:"instance"`
+	State    string         `json:"state"`
+	SSHPort  int            `json:"sshPort"`
+	DevUser  string         `json:"devUser"`
+	Projects []OwnerProject `json:"projects"`
+}
+
+type OwnerInventory struct {
+	Schema     int         `json:"schema"`
+	HostID     string      `json:"hostId"`
+	ObservedAt time.Time   `json:"observedAt"`
+	Yards      []OwnerYard `json:"yards"`
+}
+
+func (inventory OwnerInventory) Validate() error {
+	if inventory.Schema != OwnerInventorySchema {
+		return fmt.Errorf("unsupported owner inventory schema %d", inventory.Schema)
+	}
+	if !SafeID(inventory.HostID) || strings.ContainsAny(inventory.HostID, `/\`) {
+		return fmt.Errorf("invalid owner HostID %q", inventory.HostID)
+	}
+	if inventory.ObservedAt.IsZero() {
+		return errors.New("owner inventory observedAt is required")
+	}
+	if len(inventory.Yards) > 1024 {
+		return errors.New("owner inventory has too many yards")
+	}
+	yards := make(map[string]struct{}, len(inventory.Yards))
+	projects := make(map[string]struct{})
+	for _, yard := range inventory.Yards {
+		if !SafeName(yard.Name) {
+			return fmt.Errorf("invalid owner yard name %q", yard.Name)
+		}
+		if _, duplicate := yards[yard.Name]; duplicate {
+			return fmt.Errorf("duplicate owner yard %q", yard.Name)
+		}
+		yards[yard.Name] = struct{}{}
+		if yard.Kind != string(InstanceContainer) && yard.Kind != string(InstanceVM) {
+			return fmt.Errorf("invalid kind for owner yard %q", yard.Name)
+		}
+		if !SafeName(yard.Instance) || !SafeName(yard.DevUser) ||
+			yard.SSHPort < 1 || yard.SSHPort > 65535 {
+			return fmt.Errorf("invalid runtime facts for owner yard %q", yard.Name)
+		}
+		if len(yard.Projects) > 100000 {
+			return fmt.Errorf("owner yard %q has too many projects", yard.Name)
+		}
+		for _, project := range yard.Projects {
+			if !SafeID(project.ProjectID) || project.Name == "" || len(project.Name) > 255 ||
+				strings.ContainsAny(project.Name, "\x00\r\n\t") {
+				return fmt.Errorf("invalid project identity in owner yard %q", yard.Name)
+			}
+			key := yard.Name + "\x00" + project.ProjectID
+			if _, duplicate := projects[key]; duplicate {
+				return fmt.Errorf("duplicate project %q in owner yard %q", project.ProjectID, yard.Name)
+			}
+			projects[key] = struct{}{}
+			if project.Mode == "" || strings.ContainsAny(project.Mode, "\r\n\t") ||
+				strings.ContainsAny(project.Target, "\r\n\t") {
+				return fmt.Errorf("invalid project fields in owner yard %q", yard.Name)
+			}
+		}
+	}
+	return nil
+}

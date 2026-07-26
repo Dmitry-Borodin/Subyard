@@ -54,7 +54,8 @@ VM1 installs the candidate runtime, runs `init` twice, repairs a legacy fixture 
 network, systemd, Incus container/VM and rollback behavior. VM2 runs the full suite and transport
 contracts. Only these disposable VMs observe real KVM and kernel behavior.
 
-Exercise a synthetic project through `sync`, `list --live`, `shell`, `export`, and `remove`; test an
+Exercise a synthetic project through `sync`, ordinary TTL-refreshed `list`, forced `list --live`,
+`shell`, `export`, and `remove`; test an
 active profile resource through bring-up/status/shutdown. Android emulator process checks must stay
 user-scoped and argv-anchored.
 

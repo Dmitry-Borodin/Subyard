@@ -72,7 +72,7 @@ The outer event `sequence` and `revision` are one monotonic per-session stream; 
 revisions remain typed event data and cannot make the RPC revision move backwards after a snapshot.
 
 The switched surface exposes `command.list`, `context.get`, `operation.route`, `operation.plan`,
-`operation.execute`, `project.list`, `yard.status`, `credential.list`, `credential.status`,
+`operation.execute`, `project.list`, `owner.inventory`, `yard.status`, `credential.list`, `credential.status`,
 `incus.events`, `system.snapshot`, `system.resync` and `system.ping`. `operation.plan` accepts every
 non-interactive mutating command backed by the structured adapter allowlist. Interactive terminal and
 protected credential-payload commands keep their dedicated transport rather than treating human
@@ -82,6 +82,13 @@ snapshot contains one revision over context, public commands, project inventory,
 redacted credential metadata; `snapshot.ready` and Incus events use the same ordered event channel.
 Human CLI output is never parsed as a fallback API. Secret-like fields are rejected recursively from
 RPC parameters, Incus event metadata is allowlisted, and stdout contains frames only.
+
+`owner.inventory` is advertised as `owner-inventory-v1`. It returns one bounded schema containing
+the persisted owner `hostId`, observation time, every real local yard and each yard's authoritative
+project registry. It excludes controller aliases, absolute host paths and secrets. Controllers cache
+the complete response by HostID for 30 seconds; replacement is atomic, so removals cannot leave
+per-record ghosts. A failed refresh keeps the last good response only as explicitly stale data and
+makes an incomplete aggregate command fail.
 
 ### Config and context
 
@@ -219,8 +226,9 @@ their lifecycle. Do not run this lane on the operator host or in the privileged 
    and confirm desired power.
 2. Sync a synthetic repository, verify `list`, `shell`, `export`, `remove`, and an optional L2
    `up → info → down` cycle. Exercise each active profile resource's bring-up/status/shutdown path.
-3. From a second controller, run `list --live` and confirm synthetic discovery without importing the
-   first controller's host path.
+3. From a second controller, run ordinary `list`, wait past the 30-second inventory TTL after an
+   owner-local add/remove, and confirm automatic appearance/removal without importing the first
+   controller's host path. Verify `list --live` only forces the same typed refresh.
 4. Register a dedicated remote owner, verify owner lifecycle forwarding and direct
    `sync → list → export → remove`, rotate only a test host key, and confirm an unreachable owner
    produces the documented diagnostic/cache behavior.

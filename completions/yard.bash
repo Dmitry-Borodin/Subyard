@@ -25,7 +25,11 @@ _yard_profiles() {
 # prefix emitted before each name (e.g. '@' for the first-token sugar). Mirrors registry.sh's
 # Keep discovery aligned with the CLI yard registry.
 _yard_yards() {
-  local repo pfx="${2:-}" d f n home
+  local repo pfx="${2:-}" d f n home inventory
+  if inventory="$("${1:-yard}" list --complete-yards 2>/dev/null)" && [ -n "$inventory" ]; then
+    while IFS= read -r n; do printf '%s%s\n' "$pfx" "$n"; done <<<"$inventory"
+    return 0
+  fi
   printf '%s%s\n' "$pfx" default
   repo="$(_yard_repo "$1")" || return 0
   local dirs=( "$repo/private/yards" )
@@ -53,7 +57,12 @@ _yard_config_home() {
 # same names `yard list` shows and `yard code <name>` resolves. No jq: pull the "name"
 # field with sed so completion stays dependency-free.
 _yard_projects() {
-  local home; home="$(_yard_config_home "$1")" || return 0
+  local home inventory
+  if inventory="$("${1:-yard}" list --complete-projects 2>/dev/null)" && [ -n "$inventory" ]; then
+    printf '%s\n' "$inventory"
+    return 0
+  fi
+  home="$(_yard_config_home "$1")" || return 0
   local d="$home/projects" f name
   [ -n "$home" ] && [ -d "$d" ] || return 0
   for f in "$d"/*.json; do

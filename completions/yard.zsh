@@ -24,8 +24,13 @@ _yard_profiles() {
 # ~/.config/subyard/yards/ — read cheaply in the shell (NEVER invoke incus). Mirrors registry.sh's
 # Keep discovery aligned with the CLI yard registry.
 _yard_yards() {
-  local repo home d f
+  local repo home d f inventory
   local -a names dirs
+  inventory="$(yard list --complete-yards 2>/dev/null)"
+  if [[ -n $inventory ]]; then
+    print -r -- ${(f)inventory}
+    return 0
+  fi
   names=( default )
   repo="$(_yard_repo)" || repo=""
   [[ -n $repo ]] && dirs=( "$repo/private/yards" )
@@ -56,7 +61,12 @@ _yard_config_home() {
 # Project names from machine-local state ($SUBYARD_CONFIG_HOME/projects/*.json) — the
 # same names `yard list` shows and `yard code <name>` resolves. No jq: pull "name" via sed.
 _yard_projects() {
-  local home d f name
+  local home d f name inventory
+  inventory="$(yard list --complete-projects 2>/dev/null)"
+  if [[ -n $inventory ]]; then
+    print -r -- ${(f)inventory}
+    return 0
+  fi
   home="$(_yard_config_home)" || return 0
   d="$home/projects"
   [[ -n $home && -d $d ]] || return 0

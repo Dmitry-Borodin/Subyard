@@ -64,13 +64,13 @@ func (service RemoteService) prepareOwner(ctx context.Context, prepared domain.R
 		return prepared, fmt.Errorf("probe trusted owner host: %w", err)
 	}
 	if owner.SSHPort < 1 || owner.SSHPort > 65535 {
-		return prepared, errors.New("remote _info reported an invalid sshPort")
+		return prepared, errors.New("owner inventory reported an invalid sshPort")
 	}
 	if owner.DevUser == "" {
 		owner.DevUser = "dev"
 	}
 	if !safeRemoteUser(owner.DevUser) {
-		return prepared, errors.New("remote _info reported an invalid devUser")
+		return prepared, errors.New("owner inventory reported an invalid devUser")
 	}
 	if owner.State != "RUNNING" {
 		return prepared, fmt.Errorf("remote yard state is %s — start it on the owner host first", valueOr(owner.State, "UNKNOWN"))

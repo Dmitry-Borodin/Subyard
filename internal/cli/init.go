@@ -10,6 +10,7 @@ import (
 	"github.com/Subyard/Subyard/internal/adapters/reconcileruntime"
 	"github.com/Subyard/Subyard/internal/application"
 	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/configsync"
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
 )
@@ -23,10 +24,12 @@ const (
 )
 
 type initExecution struct {
-	loaded   config.Loaded
-	mode     initMode
-	plan     application.ReconcilePlan
-	platform ports.InitPlatform
+	loaded        config.Loaded
+	mode          initMode
+	plan          application.ReconcilePlan
+	platform      ports.InitPlatform
+	hostID        string
+	hostIDPending bool
 }
 
 type initReporter struct{ output io.Writer }
@@ -138,6 +141,12 @@ func (cli *CLI) prepareInitExecution(
 		platform = cli.initPlatform(loaded, powerYards)
 	}
 	execution := &initExecution{loaded: loaded, mode: mode, platform: platform}
+	execution.hostID, execution.hostIDPending, err = configsync.ResolveHostID(
+		loaded.Context.Paths.ConfigHome, loaded.Environment,
+	)
+	if err != nil {
+		return nil, err
+	}
 	if mode == initConfigs {
 		return execution, nil
 	}
@@ -162,15 +171,19 @@ func (cli *CLI) prepareInitExecution(
 }
 
 func (execution *initExecution) consequences() []string {
+	hostIDConsequences := []string{}
+	if execution.hostIDPending {
+		hostIDConsequences = append(hostIDConsequences, "record owner HostID "+execution.hostID)
+	}
 	switch execution.mode {
 	case initConfigs:
-		return []string{"refresh in-yard agent instructions and default configs"}
+		return append(hostIDConsequences, "refresh in-yard agent instructions and default configs")
 	case initReset:
 		result := []string{"delete the yard instance and its disk data"}
 		for _, step := range execution.plan.Steps {
 			result = append(result, step.Stage.Label)
 		}
-		return result
+		return append(hostIDConsequences, result...)
 	default:
 		result := make([]string, 0, execution.plan.Pending())
 		for _, step := range execution.plan.Steps {
@@ -178,7 +191,7 @@ func (execution *initExecution) consequences() []string {
 				result = append(result, step.Stage.Label)
 			}
 		}
-		return result
+		return append(hostIDConsequences, result...)
 	}
 }
 
@@ -198,6 +211,13 @@ func (cli *CLI) printInitPlan(execution *initExecution) {
 }
 
 func (execution *initExecution) run(ctx context.Context, cli *CLI, output io.Writer) error {
+	hostID, err := configsync.EnsureHostID(
+		execution.loaded.Context.Paths.ConfigHome, execution.loaded.Environment,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize owner HostID: %w", err)
+	}
+	fmt.Fprintf(output, "  [ ok ] owner HostID: %s\n", hostID)
 	if execution.mode == initConfigs {
 		return execution.platform.RefreshConfigs(ctx)
 	}

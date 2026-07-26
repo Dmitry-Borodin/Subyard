@@ -723,6 +723,31 @@ func TestVersionedConfigSyncRecoveryDoesNotOverwriteExternalChange(t *testing.T)
 	}
 }
 
+func TestEnsureHostIDRepairsLegacyConfigurationRootMode(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "config")
+	if err := os.MkdirAll(configHome, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(configHome, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	hostID, err := EnsureHostID(configHome, map[string]string{"SUBYARD_HOST_ID": "owner-a"})
+	if err != nil || hostID != "owner-a" {
+		t.Fatalf("HostID bootstrap failed: hostID=%q err=%v", hostID, err)
+	}
+	info, err := os.Stat(configHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("configuration root mode = %o, want 0700", info.Mode().Perm())
+	}
+	if resolved, pending, err := ResolveHostID(configHome, nil); err != nil || pending || resolved != "owner-a" {
+		t.Fatalf("persisted HostID did not resolve: hostID=%q pending=%v err=%v",
+			resolved, pending, err)
+	}
+}
+
 func TestVersionedConfigSyncRecoveryRollsBackUnpublishedHostID(t *testing.T) {
 	configHome := filepath.Join(t.TempDir(), "config")
 	if err := ensureConfigurationRoot(configHome); err != nil {

@@ -78,11 +78,12 @@ type Options struct {
 }
 
 type CLI struct {
-	options   Options
-	env       map[string]string
-	baseEnv   map[string]string
-	manifest  command.Manifest
-	resources resource.Registry
+	options         Options
+	env             map[string]string
+	baseEnv         map[string]string
+	manifest        command.Manifest
+	resources       resource.Registry
+	inventoryRoutes map[string]config.Loaded
 }
 
 func New(options Options) (*CLI, error) {
@@ -134,7 +135,7 @@ func New(options Options) (*CLI, error) {
 	}
 	return &CLI{
 		options: options, env: activeEnvironment, baseEnv: baseEnvironment,
-		manifest: manifest, resources: resources,
+		manifest: manifest, resources: resources, inventoryRoutes: make(map[string]config.Loaded),
 	}, nil
 }
 
@@ -225,6 +226,38 @@ func (cli *CLI) Run(ctx context.Context) int {
 		remotePlane = definition.Remote
 	}
 	loaded, err := cli.loadContext(yard)
+	if core && (definition.Handler == "@list" || definition.Handler == "@status" ||
+		definition.Handler == "@yards") && strings.Contains(yard, "/") {
+		cli.env["SUBYARD_INVENTORY_SELECTOR"] = yard
+		yard = "default"
+		cli.env["SUBYARD_YARD"] = yard
+		loaded, err = cli.loadContext(yard)
+	}
+	if strings.Contains(yard, "/") && !(core && (definition.Handler == "@list" ||
+		definition.Handler == "@status" || definition.Handler == "@yards")) {
+		canonical := yard
+		base, baseErr := cli.loadContext("default")
+		if baseErr != nil {
+			err = baseErr
+		} else {
+			results := cli.allOwnerInventories(ctx, base, false)
+			selected, _, selectErr := selectOwnerYards(results, canonical)
+			if selectErr != nil {
+				err = selectErr
+			} else {
+				hostID := selected[0].inventory.HostID
+				yardName := selected[0].inventory.Yards[0].Name
+				routeName, _, routeErr := cli.ownerYardRoute(ctx, base, hostID, yardName)
+				if routeErr != nil {
+					err = routeErr
+				} else if dynamic, ok := cli.inventoryRoutes[routeName]; ok {
+					loaded, err = dynamic, nil
+				} else {
+					loaded, err = cli.loadInventoryLoaded(routeName, base)
+				}
+			}
+		}
+	}
 	if err != nil && core && !explicit &&
 		(definition.Handler == "@list" || definition.Handler == "@yards") &&
 		config.IsRetiredYardTemplate(err) {
@@ -523,38 +556,68 @@ func (cli *CLI) runStatus(ctx context.Context, loaded config.Loaded, arguments [
 		}
 	}
 	if !all {
+		if selector := cli.env["SUBYARD_INVENTORY_SELECTOR"]; selector != "" {
+			results := cli.allOwnerInventories(ctx, loaded, false)
+			selected, _, err := selectOwnerYards(results, selector)
+			if err != nil {
+				cli.errorf("status: %v", err)
+				return 1
+			}
+			hostID := selected[0].inventory.HostID
+			yard := selected[0].inventory.Yards[0]
+			localHostID := results[0].inventory.HostID
+			if hostID == localHostID {
+				local, loadErr := cli.loadInventoryLoaded(yard.Name, loaded)
+				if loadErr != nil {
+					cli.errorf("status: %v", loadErr)
+					return 1
+				}
+				return cli.printYardStatus(ctx, local)
+			}
+			status, statusErr := cli.remoteOwnerYardStatus(ctx, loaded, hostID, yard.Name)
+			if statusErr != nil {
+				cli.errorf("remote status: %v", statusErr)
+				return 1
+			}
+			fmt.Fprintf(cli.options.Stdout, "%s/%s  %s\n", hostID, yard.Name, status.State)
+			fmt.Fprintf(cli.options.Stdout, "  projects %d\n", status.ProjectCount)
+			fmt.Fprintf(cli.options.Stdout, "  ssh      %s:%d\n",
+				status.Context.DevUser, status.Context.SSHPort)
+			return 0
+		}
+		if loaded.Context.YardType == domain.YardRemote {
+			status, err := cli.remoteYardStatus(ctx, loaded.Context)
+			if err != nil {
+				cli.errorf("remote status: %v", err)
+				return 1
+			}
+			fmt.Fprintf(cli.options.Stdout, "%s/%s  %s\n",
+				loaded.Context.RemoteDest, status.Context.YardName, status.State)
+			fmt.Fprintf(cli.options.Stdout, "  projects %d\n", status.ProjectCount)
+			fmt.Fprintf(cli.options.Stdout, "  ssh      %s:%d\n",
+				status.Context.DevUser, status.Context.SSHPort)
+			return 0
+		}
 		return cli.printYardStatus(ctx, loaded)
 	}
-	names, err := config.YardNames(config.RegistryDirectories(
-		loaded.Context.Paths.ConfigDir, loaded.Context.Paths.ConfigHome,
-	)...)
-	if err != nil {
-		cli.errorf("discover yards: %v", err)
-		return 1
-	}
+	results := cli.allOwnerInventories(ctx, loaded, false)
 	code := 0
-	for index, name := range names {
-		if index != 0 {
-			fmt.Fprintln(cli.options.Stdout)
+	first := true
+	for _, result := range results {
+		if result.err != nil {
+			code = 1
+			fmt.Fprintf(cli.options.Stderr, "Warning: owner inventory refresh: %v\n", result.err)
 		}
-		selected := loaded
-		if name != loaded.Context.YardName {
-			selected, err = cli.loadInventoryLoaded(name, loaded)
-			if err != nil {
-				cli.errorf("load yard %q: %v", name, err)
-				code = 1
-				continue
+		for _, yard := range result.inventory.Yards {
+			if !first {
+				fmt.Fprintln(cli.options.Stdout)
 			}
-		}
-		if selected.Context.YardType == domain.YardRemote {
-			if err := cli.printRemoteStatus(ctx, selected.Context); err != nil {
-				cli.errorf("remote status for %q: %v", name, err)
-				code = 1
-			}
-			continue
-		}
-		if current := cli.printYardStatus(ctx, selected); current != 0 {
-			code = current
+			first = false
+			fmt.Fprintf(cli.options.Stdout, "%s/%s  %s\n",
+				result.inventory.HostID, yard.Name, yard.State)
+			fmt.Fprintf(cli.options.Stdout, "  instance %s (%s)\n", yard.Instance, yard.Kind)
+			fmt.Fprintf(cli.options.Stdout, "  ssh      %s:%d\n", yard.DevUser, yard.SSHPort)
+			fmt.Fprintf(cli.options.Stdout, "  projects %d\n", len(yard.Projects))
 		}
 	}
 	return code
@@ -684,75 +747,47 @@ func (cli *CLI) runYards(ctx context.Context, loaded config.Loaded, arguments []
 			return 2
 		}
 	}
-	names, err := config.YardNames(config.RegistryDirectories(
-		loaded.Context.Paths.ConfigDir, loaded.Context.Paths.ConfigHome,
-	)...)
-	if err != nil {
-		cli.errorf("discover yards: %v", err)
-		return 1
-	}
+	results := cli.allOwnerInventories(ctx, loaded, false)
 	fmt.Fprintf(cli.options.Stdout, "%-14s %-6s %-16s %-9s %-7s %-8s %s\n",
 		"NAME", "TYPE", "INSTANCE", "STATE", "SSH", "PROJECTS", "SIZE")
-	for _, name := range names {
-		selected := loaded
-		if name != loaded.Context.YardName {
-			selected, err = cli.loadInventoryLoaded(name, loaded)
-			if err != nil {
-				if config.IsRetiredYardTemplate(err) {
-					fmt.Fprintf(cli.options.Stderr,
-						"Warning: yard %q requires registration migration:\n%s\n", name, err)
-				} else {
-					cli.errorf("load yard %q: %v", name, err)
-				}
-				continue
+	code := 0
+	localHostID := ""
+	if len(results) != 0 {
+		localHostID = results[0].inventory.HostID
+	}
+	for _, result := range results {
+		if result.err != nil {
+			code = 1
+			owner := result.inventory.HostID
+			if owner == "" {
+				owner = "unknown owner"
 			}
+			marker := "unavailable"
+			if result.stale {
+				marker = "stale, age " + ageHuman(time.Since(result.fetchedAt))
+			}
+			fmt.Fprintf(cli.options.Stderr, "Warning: %s inventory is %s: %v\n",
+				owner, marker, result.err)
 		}
-		yard := selected.Context
-		if yard.YardType == domain.YardRemote {
-			info, age, observeErr := cli.observeRemoteInfo(ctx, yard)
-			if observeErr != nil {
-				cli.errorf("remote yard %q: %v", yard.YardName, observeErr)
-				continue
+		for _, yard := range result.inventory.Yards {
+			yardType := "remote"
+			size := "-"
+			if result.inventory.HostID == localHostID {
+				yardType = "local"
+				if local, loadErr := cli.loadInventoryContext(yard.Name, loaded); loadErr == nil {
+					size = cachedYardSize(local)
+				}
 			}
-			stateValue := info.State
+			stateValue := yard.State
 			if stateValue == "" {
 				stateValue = "?"
 			}
-			projects := "-"
-			if info.Projects != nil {
-				projects = strconv.Itoa(*info.Projects)
-			}
-			marker := ""
-			if age != "" {
-				marker = "  (seen " + age + " ago)"
-			}
-			fmt.Fprintf(cli.options.Stdout, "%-14s %-6s %-16s %-9s %-7s %-8s %s%s\n",
-				yard.YardName, "remote", yard.InstanceName, stateValue,
-				"yard-"+yard.YardName, projects, "-", marker)
-			continue
+			fmt.Fprintf(cli.options.Stdout, "%-14s %-6s %-16s %-9s %-7d %-8d %s\n",
+				result.inventory.HostID+"/"+yard.Name, yardType, yard.Instance, stateValue,
+				yard.SSHPort, len(yard.Projects), size)
 		}
-		stateValue := "-"
-		incusPort, _ := cli.statusPorts()
-		if instance, instanceErr := incusPort.Instance(ctx, yard.IncusProject, yard.InstanceName); instanceErr == nil {
-			if value := strings.ToUpper(strings.TrimSpace(instance.Status)); value != "" {
-				stateValue = value
-			}
-		}
-		projects := "-"
-		if store, storeErr := openProjectStore(ctx, yard.Paths.StateDir); storeErr == nil {
-			if records, listErr := store.List(ctx); listErr == nil {
-				projects = strconv.Itoa(len(records))
-			}
-		}
-		sshPort := "-"
-		if yard.SSHPort > 0 {
-			sshPort = strconv.Itoa(yard.SSHPort)
-		}
-		fmt.Fprintf(cli.options.Stdout, "%-14s %-6s %-16s %-9s %-7s %-8s %s\n",
-			yard.YardName, "local", yard.InstanceName, stateValue, sshPort, projects,
-			cachedYardSize(yard))
 	}
-	return 0
+	return code
 }
 
 func cachedYardSize(yard domain.Context) string {
@@ -1131,10 +1166,15 @@ func (cli *CLI) runProjectList(
 	arguments []string,
 ) int {
 	live := false
+	completion := ""
 	for _, argument := range arguments {
 		switch argument {
 		case "--live":
 			live = true
+		case "--complete-yards":
+			completion = "yards"
+		case "--complete-projects":
+			completion = "projects"
 		case "-h", "--help":
 			fmt.Fprintf(cli.options.Stdout, "Usage: %s list [--live]\n", cli.options.Program)
 			return 0
@@ -1144,154 +1184,85 @@ func (cli *CLI) runProjectList(
 			return 2
 		}
 	}
-	names, err := config.YardNames(config.RegistryDirectories(
-		loaded.Context.Paths.ConfigDir, loaded.Context.Paths.ConfigHome,
-	)...)
-	if err != nil {
-		cli.errorf("discover yards: %v", err)
-		return 1
+	results := cli.allOwnerInventories(ctx, loaded, live)
+	if completion != "" {
+		printOwnerCompletions(cli.options.Stdout, results, completion)
+		return 0
 	}
+	selector := cli.env["SUBYARD_INVENTORY_SELECTOR"]
 	explicit = explicit || cli.env["SUBYARD_YARD_EXPLICIT"] != "" || loaded.Context.YardName != "default"
-	if explicit || len(names) == 1 {
-		if explicit {
-			fmt.Fprintf(cli.options.Stdout, "Yard: %s\n", loaded.Context.YardName)
+	if selector == "" && explicit {
+		selector = loaded.Context.YardName
+		if loaded.Context.YardType == domain.YardRemote && loaded.Context.RemoteYard != "" {
+			selector = loaded.Context.RemoteYard
 		}
-		return cli.printSingleProjectList(ctx, loaded.Context, live)
 	}
-	return cli.printAllProjectLists(ctx, names, loaded, live)
-}
-
-func (cli *CLI) printSingleProjectList(ctx context.Context, yard domain.Context, live bool) int {
-	store, err := openProjectStore(ctx, yard.Paths.StateDir)
-	if err != nil {
-		cli.errorf("open project state: %v", err)
-		return 1
-	}
-	inventory := application.ProjectInventory{Store: store, Observer: cli.projectObserver()}
-	records, observation, err := inventory.Read(ctx, yard, live)
+	selected, _, err := selectOwnerYards(results, selector)
 	if err != nil {
 		cli.errorf("list projects: %v", err)
 		return 1
 	}
-	for _, warning := range observation.Warnings {
-		fmt.Fprintf(cli.options.Stderr, "Warning: %s\n", warning)
+	type row struct {
+		owner, yard string
+		project     domain.OwnerProject
 	}
-	if len(records) == 0 {
-		fmt.Fprintf(cli.options.Stdout,
-			"No projects in the yard yet — add one with: %s sync <path> (or: bind <path>)\n",
-			cli.options.Program)
+	var rows []row
+	incomplete := false
+	for _, result := range selected {
+		if result.err != nil {
+			incomplete = true
+			owner := result.inventory.HostID
+			if owner == "" {
+				owner = "unknown owner"
+			}
+			if result.stale {
+				fmt.Fprintf(cli.options.Stderr,
+					"Warning: %s inventory is stale (age %s): %v\n",
+					owner, ageHuman(time.Since(result.fetchedAt)), result.err)
+			} else {
+				fmt.Fprintf(cli.options.Stderr, "Warning: %s inventory is unavailable: %v\n",
+					owner, result.err)
+			}
+		}
+		for _, yard := range result.inventory.Yards {
+			for _, project := range yard.Projects {
+				rows = append(rows, row{
+					owner: result.inventory.HostID, yard: yard.Name, project: project,
+				})
+			}
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].owner != rows[j].owner {
+			return rows[i].owner < rows[j].owner
+		}
+		if rows[i].yard != rows[j].yard {
+			return rows[i].yard < rows[j].yard
+		}
+		if rows[i].project.Name != rows[j].project.Name {
+			return rows[i].project.Name < rows[j].project.Name
+		}
+		return rows[i].project.ProjectID < rows[j].project.ProjectID
+	})
+	if len(rows) == 0 {
+		fmt.Fprintln(cli.options.Stdout, "No projects in the selected owner inventory.")
+		if incomplete {
+			return 1
+		}
 		return 0
 	}
-	fmt.Fprintf(cli.options.Stdout, "%-22s %-6s %-10s %-8s %-5s %s\n", "NAME", "MODE", "TARGET", "YARD", "BOX", "HOST PATH")
-	for _, record := range records {
-		target := record.Target
+	fmt.Fprintf(cli.options.Stdout, "%-24s %-6s %-10s %-20s %s\n",
+		"NAME", "MODE", "TARGET", "OWNER", "YARD")
+	for _, row := range rows {
+		target := row.project.Target
 		if target == "" {
 			target = "yard"
 		}
-		hostPath := record.HostPath
-		if hostPath == "" {
-			hostPath = "(yard)"
-		}
-		presence := observation.Presence[record.ProjectID]
-		if presence == "" {
-			presence = domain.ProjectPresenceUnknown
-		}
-		box := observation.Boxes[record.ProjectID]
-		if target == "yard" {
-			box = "-"
-		} else if box == "" {
-			box = domain.ProjectBoxUnknown
-		}
-		fmt.Fprintf(cli.options.Stdout, "%-22s %-6s %-10s %-8s %-5s %s\n",
-			record.Name, record.Mode, target, presence, box, hostPath)
+		fmt.Fprintf(cli.options.Stdout, "%-24s %-6s %-10s %-20s %s\n",
+			row.project.Name, row.project.Mode, target, row.owner, row.yard)
 	}
-	return 0
-}
-
-type yardInventory struct {
-	name    string
-	records []domain.ProjectRecord
-}
-
-func (cli *CLI) printAllProjectLists(
-	ctx context.Context,
-	names []string,
-	loaded config.Loaded,
-	live bool,
-) int {
-	all := make([]yardInventory, 0, len(names))
-	counts := make(map[string]map[string]struct{})
-	skippedRetired := false
-	for _, name := range names {
-		yard, err := cli.loadInventoryContext(name, loaded)
-		if err != nil {
-			if config.IsRetiredYardTemplate(err) {
-				skippedRetired = true
-				fmt.Fprintf(cli.options.Stderr,
-					"Warning: skipping yard %q until its registration is migrated:\n%s\n", name, err)
-				continue
-			}
-			cli.errorf("load yard %q: %v", name, err)
-			return 1
-		}
-		store, err := openProjectStore(ctx, yard.Paths.StateDir)
-		if err != nil {
-			cli.errorf("open project state for %q: %v", name, err)
-			return 1
-		}
-		inventory := application.ProjectInventory{Store: store}
-		if live {
-			inventory.Observer = cli.projectObserver()
-		}
-		records, observation, err := inventory.Read(ctx, yard, live)
-		if err != nil {
-			cli.errorf("list projects in %q: %v", name, err)
-			return 1
-		}
-		for _, warning := range observation.Warnings {
-			fmt.Fprintf(cli.options.Stderr, "Warning: %s: %s\n", name, warning)
-		}
-		all = append(all, yardInventory{name: name, records: records})
-		for _, record := range records {
-			key := strings.ToLower(record.Name)
-			if counts[key] == nil {
-				counts[key] = make(map[string]struct{})
-			}
-			counts[key][name] = struct{}{}
-		}
-	}
-	total := 0
-	for _, inventory := range all {
-		total += len(inventory.records)
-	}
-	if total == 0 {
-		scope := "any yard"
-		if skippedRetired {
-			scope = "loadable yards"
-		}
-		fmt.Fprintf(cli.options.Stdout,
-			"No projects in %s yet — add one with: %s sync <path> (or: bind <path>)\n",
-			scope, cli.options.Program)
-		return 0
-	}
-	fmt.Fprintf(cli.options.Stdout, "%-12s %-24s %-6s %-10s %s\n", "YARD", "NAME", "MODE", "TARGET", "HOST PATH")
-	for _, inventory := range all {
-		for _, record := range inventory.records {
-			name := record.Name
-			if len(counts[strings.ToLower(name)]) > 1 {
-				name = inventory.name + "/" + name
-			}
-			target := record.Target
-			if target == "" {
-				target = "yard"
-			}
-			hostPath := record.HostPath
-			if hostPath == "" {
-				hostPath = "(yard)"
-			}
-			fmt.Fprintf(cli.options.Stdout, "%-12s %-24s %-6s %-10s %s\n",
-				inventory.name, name, record.Mode, target, hostPath)
-		}
+	if incomplete {
+		return 1
 	}
 	return 0
 }
@@ -2778,7 +2749,7 @@ func (cli *CLI) serveRPC(ctx context.Context, yard string, arguments []string) i
 	session := rpc.Session{Handler: handler, EngineVersion: Version, Capabilities: []string{
 		"snapshot", "ordered-events", "cancellation", "deadlines", "commands", "context",
 		"projects", "yard-status", "credential-metadata", "credential-status",
-		"operation-plan", "operation-execute", "resync",
+		"operation-plan", "operation-execute", "resync", "owner-inventory-v1",
 	}, DrainOnEOF: true}
 	if err := session.Serve(ctx, cli.options.Stdin, cli.options.Stdout); err != nil {
 		if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
@@ -3032,6 +3003,15 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			return nil, err
 		}
 		return handler.projects(ctx, params.Live)
+	case "owner.inventory":
+		if err := decodeRPCParams(call.Params, &struct{}{}); err != nil {
+			return nil, err
+		}
+		inventory, err := handler.cli.ownerInventory(ctx, handler.loaded)
+		if err != nil {
+			return nil, &rpc.Error{Code: "owner_inventory_failed", Message: err.Error()}
+		}
+		return inventory, nil
 	case "yard.status":
 		if err := decodeRPCParams(call.Params, &struct{}{}); err != nil {
 			return nil, err
@@ -3155,9 +3135,6 @@ func (handler *rpcHandler) projects(ctx context.Context, live bool) (rpcProjectL
 		return rpcProjectList{}, err
 	}
 	inventory := application.ProjectInventory{Store: store}
-	if live {
-		inventory.Observer = handler.cli.projectObserver()
-	}
 	records, observation, err := inventory.Read(ctx, handler.loaded.Context, live)
 	return rpcProjectList{Projects: records, Observation: observation}, err
 }

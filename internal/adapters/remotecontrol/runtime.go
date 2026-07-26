@@ -17,6 +17,7 @@ import (
 	"github.com/Subyard/Subyard/internal/adapters/transport"
 	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ownerinventory"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -77,15 +78,33 @@ func (runtime Runtime) List(ctx context.Context) ([]domain.RemoteRecord, error) 
 }
 
 func (runtime Runtime) ProbeOwner(ctx context.Context, spec domain.RemoteSpec) (domain.RemoteInfo, error) {
-	payload, err := runtime.ownerCall(ctx, spec, nil, "_info")
+	process, err := transport.SSHYard(runtime.SSH, spec.Destination, "", runtime.timeout())
 	if err != nil {
 		return domain.RemoteInfo{}, err
 	}
-	var info domain.RemoteInfo
-	if err := json.Unmarshal(payload, &info); err != nil {
-		return info, errors.New("owner did not return yard _info JSON")
+	process.Env = runtime.Environment
+	inventory, err := (ownerinventory.Client{Transport: process}).Fetch(ctx, "")
+	if err != nil {
+		return domain.RemoteInfo{}, err
 	}
-	return info, nil
+	yardName := spec.OwnerYard
+	if yardName == "" {
+		yardName = "default"
+	}
+	for _, yard := range inventory.Yards {
+		if yard.Name != yardName {
+			continue
+		}
+		count := len(yard.Projects)
+		return domain.RemoteInfo{
+			Name: yard.Name, Type: string(domain.YardLocal), Version: "",
+			Instance: yard.Instance, State: yard.State, SSHPort: yard.SSHPort,
+			DevUser: yard.DevUser, Projects: &count,
+		}, nil
+	}
+	return domain.RemoteInfo{}, fmt.Errorf(
+		"owner HostID %q has no yard %q", inventory.HostID, yardName,
+	)
 }
 
 func (runtime Runtime) ObserveOwner(ctx context.Context, spec domain.RemoteSpec) (domain.RemoteInfo, time.Time, error) {

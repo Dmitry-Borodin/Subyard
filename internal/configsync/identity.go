@@ -24,11 +24,11 @@ func TransactionPath(configHome string) string {
 
 func ResolveHostID(configHome string, environment map[string]string) (string, bool, error) {
 	path := HostIDPath(configHome)
-	if err := validateConfigurationAncestors(configHome, path); err != nil {
-		return "", false, err
-	}
 	info, err := os.Lstat(path)
 	if err == nil {
+		if err := validateConfigurationAncestors(configHome, path); err != nil {
+			return "", false, err
+		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return "", false, errors.New("owner host ID must be a regular non-symlink file")
 		}
@@ -63,6 +63,49 @@ func ResolveHostID(configHome string, environment map[string]string) (string, bo
 		)
 	}
 	return hostID, true, nil
+}
+
+func EnsureHostID(configHome string, environment map[string]string) (string, error) {
+	hostID, pending, err := ResolveHostID(configHome, environment)
+	if err != nil || !pending {
+		return hostID, err
+	}
+	if err := os.MkdirAll(configHome, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(configHome, 0o700); err != nil {
+		return "", err
+	}
+	path := HostIDPath(configHome)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		resolved, stillPending, resolveErr := ResolveHostID(configHome, environment)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		if stillPending {
+			return "", errors.New("owner HostID initialization did not converge")
+		}
+		return resolved, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err := file.WriteString(hostID + "\n"); err != nil {
+		file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return hostID, nil
 }
 
 func ReadStatus(configHome string, environment map[string]string) (Status, error) {

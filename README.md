@@ -69,20 +69,20 @@ yard config <command>              Inspect or sync settings and refresh file con
 
 ## Multiple and remote yards
 
-Use `-Y` or `@name` to select a named yard. A yard can also point to a host
-reached over SSH:
+Use `-Y` or `@name` to select a named local yard. A registered owner host is reached over SSH;
+inventory selectors use the stable `<HostID>/<yard>` identity:
 
 ```bash
 yard -Y openclaw init
 yard @openclaw status
 
 yard remote add srv1 me@srv1
-yard -Y srv1 sync .
-yard -Y srv1 code .
+yard list
+yard -Y owner-host/default list
 ```
 
-Remote yards support `sync` and `clone`; `bind` is local-only. Installed yard definitions live at
-`~/.config/subyard/yards/<name>/config.env`. See
+Use a full selector when a short name is ambiguous. Remote yards support `sync` and `clone`;
+`bind` is local-only. See
 [Subyard configuration](docs/configuration.md), [named yards](config/yards/README.md), and the
 [credential ledger](docs/keys.md).
 

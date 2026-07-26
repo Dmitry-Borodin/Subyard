@@ -77,6 +77,29 @@ if [[ "$joined" == *ssh-keyscan* ]]; then
   printf '[127.0.0.1]:2222 %s\n' "$key"
   exit 0
 fi
+if [[ "$joined" == *"yard rpc --stdio"* ]]; then
+  [ "$(cat "$REMOTE_TEST_ROOT/owner-mode/$dest" 2>/dev/null || true)" != unreachable ] || exit 255
+  cat >/dev/null
+  emit_frame() {
+    local body="$1"
+    printf '%08x' "${#body}" | xxd -r -p
+    printf '%s' "$body"
+  }
+  state="$(jq -r .state "$REMOTE_TEST_ROOT/info/$dest")"
+  emit_frame '{"version":1,"type":"response","id":"negotiate","result":{"capabilities":["owner-inventory-v1"]}}'
+  body="$(jq -cn --arg host "$dest" --arg state "$state" '{
+    version:1,type:"response",id:"inventory",operationId:"inventory",
+    result:{schema:1,hostId:$host,observedAt:"2026-07-25T00:00:00Z",
+      yards:[
+        {name:"default",kind:"container",instance:"yard",state:$state,
+          sshPort:2222,devUser:"dev",projects:[]},
+        {name:"inner",kind:"container",instance:"yard-inner",state:$state,
+          sshPort:2222,devUser:"dev",projects:[]}
+      ]}
+  }')"
+  emit_frame "$body"
+  exit 0
+fi
 if [[ "$joined" == *_info* ]]; then
   require_owner_login
   [ "$(cat "$REMOTE_TEST_ROOT/owner-mode/$dest" 2>/dev/null || true)" != unreachable ] || exit 255

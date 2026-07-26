@@ -856,7 +856,7 @@ func TestNativeStatusUsesTypedPortsAndRendersParityFields(t *testing.T) {
 	}
 }
 
-func TestNativeLiveListConvergesValidatedMetadata(t *testing.T) {
+func TestNativeLiveListDoesNotImportL1Metadata(t *testing.T) {
 	root, environment, stateDirectory := nativeFixture(t)
 	observation := domain.ProjectObservation{
 		Reached: true,
@@ -879,17 +879,15 @@ func TestNativeLiveListConvergesValidatedMetadata(t *testing.T) {
 	if code := program.Run(context.Background()); code != 0 {
 		t.Fatalf("list failed: code=%d stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Live") || !strings.Contains(stdout.String(), "present") ||
-		!strings.Contains(stdout.String(), "(yard)") {
+	if !strings.Contains(stdout.String(), "No projects in the selected owner inventory.") {
 		t.Fatalf("unexpected list output:\n%s", stdout.String())
 	}
 	store, err := state.NewFileStore(stateDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := store.Get(context.Background(), "live-12345678")
-	if err != nil || record.RegistrySource != "yard" || record.HostPath != "" {
-		t.Fatalf("live metadata was not converged safely: record=%#v err=%v", record, err)
+	if _, err := store.Get(context.Background(), "live-12345678"); err == nil {
+		t.Fatalf("controller imported L1 metadata into owner registry: err=%v", err)
 	}
 }
 

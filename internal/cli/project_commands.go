@@ -241,7 +241,8 @@ func (cli *CLI) prepareExistingProject(
 	if !present {
 		return nil, nil
 	}
-	match, err := cli.resolveProjectForCommand(ctx, loaded, selector, explicit)
+	revalidate := name != "shell" && name != "info"
+	match, err := cli.resolveProjectForCommand(ctx, loaded, selector, explicit, revalidate)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +355,11 @@ func (cli *CLI) resolveProjectForCommand(
 	loaded config.Loaded,
 	selector string,
 	explicit bool,
+	force bool,
 ) (state.Match, error) {
+	if !isExplicitProjectPath(selector) {
+		return cli.resolveOwnerProject(ctx, loaded, selector, explicit, force)
+	}
 	if explicit {
 		selector = stripCurrentYardQualifier(selector, loaded.Context.YardName)
 		store, err := openProjectStore(ctx, loaded.Context.Paths.StateDir)
@@ -365,25 +370,21 @@ func (cli *CLI) resolveProjectForCommand(
 		if resolveErr == nil {
 			return match, nil
 		}
-		_, observation, observeErr := (application.ProjectInventory{
-			Store: store, Observer: cli.projectObserver(),
-		}).Read(ctx, loaded.Context, true)
-		if observeErr == nil {
-			for _, warning := range observation.Warnings {
-				fmt.Fprintf(cli.options.Stderr, "warning: %s\n", warning)
-			}
-			if match, retryErr := cli.resolveLocalProject(ctx, loaded.Context, store, selector); retryErr == nil {
-				fmt.Fprintf(cli.options.Stderr,
-					"warning: registered project %q from live yard metadata; host path is unavailable\n", selector)
-				return match, nil
-			}
-		}
 		return state.Match{}, resolveErr
 	}
 	return cli.resolveGlobalProject(ctx, loaded.Context, selector)
 }
 
 func (cli *CLI) activateProjectContext(name string, loaded config.Loaded) (config.Loaded, error) {
+	if selected, ok := cli.inventoryRoutes[name]; ok {
+		for key, value := range selected.Environment {
+			cli.env[key] = value
+		}
+		cli.env["SUBYARD_YARD"] = name
+		cli.env["SUBYARD_CONFIG_LOADED"] = "1"
+		cli.env["SUBYARD_ENGINE_CONTEXT"] = "1"
+		return selected, nil
+	}
 	if name == loaded.Context.YardName {
 		return loaded, nil
 	}
@@ -420,6 +421,19 @@ func (cli *CLI) commitProjectExecution(ctx context.Context, execution *projectEx
 			}); code != 0 {
 				return errors.New("physical operation completed, but owner project state was not updated; re-run the command")
 			}
+			if err := cli.invalidateOwnerInventory(execution.Loaded); err != nil {
+				return fmt.Errorf("owner state updated, but inventory invalidation failed: %w", err)
+			}
+			if err := execution.Store.Delete(ctx, execution.Record.ProjectID); err != nil &&
+				!errors.Is(err, state.ErrNotFound) {
+				return fmt.Errorf("owner state updated, but obsolete controller state cleanup failed: %w", err)
+			}
+			if err := cli.cleanupObsoleteRemoteProjectState(
+				ctx, execution.Loaded, execution.Record.ProjectID,
+			); err != nil {
+				return fmt.Errorf("owner state updated, but obsolete controller state cleanup failed: %w", err)
+			}
+			return nil
 		}
 		return execution.Store.Put(ctx, execution.Record)
 	case projectCommitDelete:
@@ -428,6 +442,19 @@ func (cli *CLI) commitProjectExecution(ctx context.Context, execution *projectEx
 				[]string{"unregister", execution.Record.ProjectID}); code != 0 {
 				return errors.New("physical removal completed, but owner project state was not updated; re-run the command")
 			}
+			if err := cli.invalidateOwnerInventory(execution.Loaded); err != nil {
+				return fmt.Errorf("owner state updated, but inventory invalidation failed: %w", err)
+			}
+			if err := execution.Store.Delete(ctx, execution.Record.ProjectID); err != nil &&
+				!errors.Is(err, state.ErrNotFound) {
+				return fmt.Errorf("owner state updated, but obsolete controller state cleanup failed: %w", err)
+			}
+			if err := cli.cleanupObsoleteRemoteProjectState(
+				ctx, execution.Loaded, execution.Record.ProjectID,
+			); err != nil {
+				return fmt.Errorf("owner state updated, but obsolete controller state cleanup failed: %w", err)
+			}
+			return nil
 		}
 		return execution.Store.Delete(ctx, execution.Record.ProjectID)
 	default:

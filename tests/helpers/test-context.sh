@@ -3,6 +3,7 @@
 
 setup_test_context() { # <temp-root> [incus-project] [instance-name]
   local root="${1:?setup_test_context needs a temp root}"
+  install -d -m 0700 "$root/home" "$root/config" "$root/subyard"
   export SUBYARD_OPERATOR_HOME="$root/home"
   export SUBYARD_CONFIG_DIR="$root/public-config"
   export SUBYARD_CONFIG_HOME="$root/config"

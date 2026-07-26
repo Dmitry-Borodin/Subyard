@@ -30,6 +30,8 @@ grep -Fq 'AuthorizedKeysCommand /usr/local/libexec/subyard/test-vms-authorized-k
   || fail "controller AuthorizedKeysCommand helper is deleted during reconciliation"
 grep -Fq 'subyard-e2e-slot-' "$PROVISION" \
   || fail "physical provisioner does not isolate slot data accounts"
+grep -Fq 'printf '\''test-vms-v1\n'\'' > "$home/.subyard-managed"' "$PROVISION" \
+  || fail "slot data-account homes have no exact managed marker"
 grep -Fq 'apt-get install -y -qq --no-install-recommends' "$PROVISION" \
   || fail "inner VM backend installs optional QEMU desktop packages"
 grep -Fq 'apt-get clean' "$PROVISION" \
@@ -44,6 +46,11 @@ grep -Fq 'chown root:"$primary" "$home/.ssh/authorized_keys"' "$PROVISION" \
 grep -Fq '_test-vms-worker gc' "$PROVISION" \
   && grep -Fq '_test-vms-worker reconcile-pool --yes' "$PROVISION" \
   || fail "physical provisioner does not invoke the installed Go worker"
+grep -Fq 'config_candidate="$(mktemp /etc/subyard/.test-vms.env.XXXXXX)"' "$PROVISION" \
+  && grep -Fq 'SUBYARD_TEST_VMS_CONFIG="$config_candidate"' "$PROVISION" \
+  && grep -Fq 'mv -f -- "$config_candidate" /etc/subyard/test-vms.env' "$PROVISION" \
+  && ! grep -Fq '} > /etc/subyard/test-vms.env' "$PROVISION" \
+  || fail "test-vms config is published before pool reconcile succeeds"
 grep -Fq 'subyard-test-vms-lease-reaper.timer' "$PROVISION" \
   && grep -Fq '_test-vms-worker drain-all' "$PROVISION" \
   && ! grep -Fq 'Remove expired Subyard disposable test VMs' "$PROVISION" \

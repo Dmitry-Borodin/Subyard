@@ -56,9 +56,13 @@ func TestBackendApplyInstallsCurrentEngineAndPublishesRoute(t *testing.T) {
 		case joined == "list yard-test --project subyard-test -f csv -c s":
 			return []byte("STOPPED\n"), nil, nil
 		case strings.HasPrefix(joined, "file push "):
-			if !strings.Contains(joined, backend.Dispatcher+" yard-test"+DefaultInstalledPath) {
+			if !strings.Contains(joined,
+				backend.Dispatcher+" yard-test"+DefaultInstalledPath+".new") {
 				return nil, nil, fmt.Errorf("wrong engine push: %s", joined)
 			}
+			return nil, nil, nil
+		case joined == "exec yard-test --project subyard-test -- mv -f -- "+
+			DefaultInstalledPath+".new "+DefaultInstalledPath:
 			return nil, nil, nil
 		case strings.HasSuffix(joined, "-- bash -euo pipefail -s"):
 			payload, err := io.ReadAll(stdin)
@@ -194,6 +198,9 @@ func TestDisabledBackendRemovesPublishedRoute(t *testing.T) {
 		case joined == "list yard-test --project subyard-test -f csv -c s":
 			return []byte("RUNNING\n"), nil, nil
 		case strings.HasPrefix(joined, "file push "):
+			return nil, nil, nil
+		case joined == "exec yard-test --project subyard-test -- mv -f -- "+
+			DefaultInstalledPath+".new "+DefaultInstalledPath:
 			return nil, nil, nil
 		case strings.HasSuffix(joined, "-- bash -euo pipefail -s"):
 			_, _ = io.Copy(io.Discard, stdin)

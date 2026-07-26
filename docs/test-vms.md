@@ -98,14 +98,21 @@ open forwarding through that slot's dedicated data account and publish `held`.
 Release, heartbeat expiry, operator drain or outer stop:
 
 1. removes the data-account forwarding key and kills that account's sessions;
-2. removes the ephemeral key from both guest root accounts;
+2. removes the ephemeral key from both guest root accounts when their agents are reachable;
 3. stops both VMs;
 4. publishes `available` only after stop is verified.
+
+If a guest is rebooting and its agent is temporarily unavailable, the already-fenced data route
+still permits a verified stop. The next acquire replaces every guest lease key before it publishes
+forwarding, so the previous credential cannot become reachable again.
 
 Provisioning, fencing or stop failure makes only that slot `quarantined`. Its disks remain for
 diagnosis and it is never handed to another caller. Lease identity is fenced by slot generation,
 lease epoch, lease ID and a server-side capability verifier; old credentials cannot revive after
 release or reuse.
+
+`test-vms recover --slot N` fences the slot and retains healthy disks. Only marker-owned VMs in
+`ERROR` or with a recorded failed first boot may be recreated.
 
 ## Isolation boundary
 

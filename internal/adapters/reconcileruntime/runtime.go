@@ -249,6 +249,14 @@ func (runtime Runtime) instanceConverged(ctx context.Context) (bool, error) {
 	if !exists || srv["source"] != volume || srv["path"] != "/srv" || srv["pool"] != pool {
 		return false, nil
 	}
+	routeSource := filepath.Join(runtime.Yard.Paths.DataHome, "e2e", "routes")
+	routeMount := devices["subyard-e2e-routes"]
+	if routeMount["type"] != "disk" ||
+		routeMount["source"] != routeSource ||
+		routeMount["path"] != "/var/lib/subyard/e2e-routes" ||
+		routeMount["readonly"] != "true" {
+		return false, nil
+	}
 	if runtime.Yard.InstanceType != domain.InstanceContainer {
 		return true, nil
 	}

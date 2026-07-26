@@ -8,6 +8,12 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 export SUBYARD_E2E_STATE_DIR="$TMP/client"
 
+grep -Fq 'SUBYARD_E2E_ROUTE_REGISTRY:-/var/lib/subyard/e2e-routes' \
+  "$ROOT/dev/agent-e2e.sh" \
+  || fail 'runner does not use the boot-stable product route registry'
+grep -Fq 'target=/var/lib/subyard/e2e-routes' "$ROOT/scripts/03-create-subyard.sh" \
+  || fail 'yard route mount and runner registry path diverged'
+
 # shellcheck source=dev/agent-e2e.sh
 . "$ROOT/dev/agent-e2e.sh"
 

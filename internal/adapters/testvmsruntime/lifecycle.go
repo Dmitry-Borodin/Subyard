@@ -222,12 +222,29 @@ func (runtime *Runtime) cleanupRetiringSlot(ctx context.Context, slot int) error
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if _, err := user.Lookup(child.Config.AgentUser); err == nil {
+	if _, err := os.Stat(child.Config.AgentHome); err == nil {
+		marker, markerErr := os.ReadFile(filepath.Join(child.Config.AgentHome,
+			".subyard-managed"))
+		if markerErr != nil || strings.TrimSpace(string(marker)) != managedMarker {
+			return fmt.Errorf("slot account home %q is not exactly Subyard-managed",
+				child.Config.AgentHome)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if account, err := user.Lookup(child.Config.AgentUser); err == nil {
+		if account.HomeDir != child.Config.AgentHome {
+			return fmt.Errorf("slot account %q has unexpected home %q",
+				child.Config.AgentUser, account.HomeDir)
+		}
 		child.killAgentSessions(ctx)
 		if _, _, err := child.Runner.Run(ctx, "userdel",
-			[]string{"--remove", child.Config.AgentUser}, nil, nil); err != nil {
+			[]string{child.Config.AgentUser}, nil, nil); err != nil {
 			return err
 		}
+	}
+	if err := os.RemoveAll(child.Config.AgentHome); err != nil {
+		return err
 	}
 	return nil
 }
@@ -242,6 +259,7 @@ func (runtime *Runtime) recoverErrored(ctx context.Context) error {
 	if err := runtime.requireProjectMarker(ctx); err != nil {
 		return err
 	}
+	failedFirstBoot := recordedFirstBootFailure(runtime.Config.failureLog())
 	for selector := 1; selector <= 2; selector++ {
 		vm := runtime.Config.vm(selector)
 		if !runtime.vmExists(ctx, vm) {
@@ -255,7 +273,10 @@ func (runtime *Runtime) recoverErrored(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(state) == "ERROR" {
+		// A cloud-init error is persisted on disk and cannot be repaired by
+		// stop/start. An explicit operator recovery may recreate only the exact
+		// marker-owned disposable pair; ordinary release always retains disks.
+		if strings.TrimSpace(state) == "ERROR" || failedFirstBoot {
 			if _, err := runtime.incus(ctx, "delete", "--force", vm,
 				"--project", runtime.Config.Project); err != nil {
 				return err
@@ -265,6 +286,11 @@ func (runtime *Runtime) recoverErrored(ctx context.Context) error {
 	// Recovery is complete only after the same fencing and stop sequence used by release. A
 	// transient guest-agent or stop failure therefore keeps the slot quarantined and retryable.
 	return runtime.stopRetained(ctx)
+}
+
+func recordedFirstBootFailure(path string) bool {
+	diagnostics, err := os.ReadFile(path)
+	return err == nil && strings.Contains(string(diagnostics), "cloud-init status")
 }
 
 func (runtime *Runtime) prepareDefaults() {
@@ -397,11 +423,18 @@ func (runtime *Runtime) stopRetained(ctx context.Context) error {
 			return err
 		}
 		if strings.TrimSpace(state) == "RUNNING" {
-			if err := runtime.installManagedGuestKeys(ctx, vm); err != nil {
-				return err
+			keyCleanupErr := runtime.installManagedGuestKeys(ctx, vm)
+			stopErr := runtime.stopRunningVM(ctx, vm)
+			if stopErr != nil {
+				return errors.Join(keyCleanupErr, stopErr)
 			}
-			if err := runtime.stopRunningVM(ctx, vm); err != nil {
-				return err
+			if keyCleanupErr != nil {
+				// A rebooting guest can temporarily lose its Incus agent. The data-account
+				// forwarding key was already fenced above, so a verified stop closes access.
+				// The next acquire replaces guest lease keys before publishing forwarding.
+				fmt.Fprintf(runtime.Stderr,
+					"test-vms: %s guest key cleanup deferred until the next acquire; VM stopped\n",
+					vm)
 			}
 		} else if strings.TrimSpace(state) != "STOPPED" {
 			return fmt.Errorf("%s cannot be fenced from state %q", vm, strings.TrimSpace(state))

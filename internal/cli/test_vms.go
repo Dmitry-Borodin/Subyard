@@ -91,7 +91,7 @@ func (execution *testVMExecution) policy(
 	case "recover":
 		consequences = []string{
 			fmt.Sprintf("recover quarantined lease slot %d", execution.slot),
-			"delete only marker-owned VM instances stuck in ERROR state",
+			"delete only marker-owned VM instances stuck in ERROR or failed first-boot state",
 			"repeat lease fencing and stop before publishing the slot as available",
 		}
 	}

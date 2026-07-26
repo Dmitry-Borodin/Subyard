@@ -194,6 +194,9 @@ reconcile_slot_accounts() {
     touch "$home/.ssh/authorized_keys"
     chmod 0640 "$home/.ssh/authorized_keys"
     chown root:"$primary" "$home/.ssh/authorized_keys"
+    printf 'test-vms-v1\n' > "$home/.subyard-managed"
+    chmod 0644 "$home/.subyard-managed"
+    chown root:root "$home/.subyard-managed"
   done
 }
 
@@ -357,6 +360,8 @@ if [ -n "$E2E_AGENT_PUBLIC_KEY" ]; then
 fi
 
 install -d -m 0755 /etc/subyard
+config_candidate="$(mktemp /etc/subyard/.test-vms.env.XXXXXX)"
+trap 'rm -f -- "$config_candidate"' EXIT
 {
   printf 'NESTED_E2E_VMS=%q\n' "$NESTED_E2E_VMS"
   printf 'DEV_USER=%q\n' "$DEV_USER"
@@ -370,8 +375,8 @@ install -d -m 0755 /etc/subyard
   printf 'E2E_AGENT_USER=%q\n' "$E2E_AGENT_USER"
   printf 'E2E_AGENT_HOME=%q\n' "$E2E_AGENT_HOME"
   printf 'E2E_AGENT_PUBLIC_KEY=%q\n' "$E2E_AGENT_PUBLIC_KEY"
-} > /etc/subyard/test-vms.env
-chmod 0644 /etc/subyard/test-vms.env
+} > "$config_candidate"
+chmod 0644 "$config_candidate"
 
 if [ "$NESTED_E2E_VMS" = 0 ]; then
   systemctl disable --now subyard-test-vms-gc.timer >/dev/null 2>&1 || true
@@ -381,6 +386,8 @@ if [ "$NESTED_E2E_VMS" = 0 ]; then
   disable_agent_account
   disable_agent_sshd_policy
   restore_inner_apparmor_default
+  mv -f -- "$config_candidate" /etc/subyard/test-vms.env
+  trap - EXIT
   exit 0
 fi
 
@@ -478,7 +485,11 @@ TimeoutStopSec=10min
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
+
+SUBYARD_TEST_VMS_CONFIG="$config_candidate" \
+  /usr/local/libexec/subyard/test-vms-inner _test-vms-worker reconcile-pool --yes
+mv -f -- "$config_candidate" /etc/subyard/test-vms.env
+trap - EXIT
+
 systemctl enable --now subyard-test-vms-lease-reaper.timer
 systemctl enable --now subyard-test-vms-broker.service
-
-/usr/local/libexec/subyard/test-vms-inner _test-vms-worker reconcile-pool --yes

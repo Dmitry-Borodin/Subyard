@@ -391,6 +391,10 @@ func TestInstanceProbeOwnsVolumeAndNestedBoundary(t *testing.T) {
 				LocalConfig: map[string]string{"security.nesting": "true"},
 				LocalDevices: map[string]map[string]string{
 					"srv": {"source": "yard-srv", "path": "/srv", "pool": "default"},
+					"subyard-e2e-routes": {
+						"type": "disk", "source": "/data/e2e/routes",
+						"path": "/var/lib/subyard/e2e-routes", "readonly": "true",
+					},
 				},
 			},
 		},
@@ -399,10 +403,15 @@ func TestInstanceProbeOwnsVolumeAndNestedBoundary(t *testing.T) {
 		Incus: incus,
 		Yard: domain.Context{
 			IncusProject: "subyard", InstanceName: "yard", InstanceType: domain.InstanceContainer,
+			Paths: domain.RuntimePaths{DataHome: "/data"},
 		},
 		HostDeviceRoot: deviceRoot,
 	}
 	assertStageConverged(t, runtime, true, "matching instance")
+	incus.Reconcile.Instance.LocalDevices["subyard-e2e-routes"]["path"] = "/run/subyard/e2e-routes"
+	assertStageConverged(t, runtime, false, "boot-hidden route mount")
+	incus.Reconcile.Instance.LocalDevices["subyard-e2e-routes"]["path"] =
+		"/var/lib/subyard/e2e-routes"
 	incus.Reconcile.Instance.Status = "Stopped"
 	incus.Reconcile.Instance.LocalConfig["user.subyard.managed"] = "true"
 	incus.Reconcile.Instance.LocalConfig["user.subyard.initialized"] = "true"
@@ -435,6 +444,10 @@ func TestInstanceProbeOwnsVolumeAndNestedBoundary(t *testing.T) {
 	incus.Reconcile.Instance.LocalConfig = nil
 	incus.Reconcile.Instance.LocalDevices = map[string]map[string]string{
 		"srv": {"source": "yard-srv", "path": "/srv", "pool": "default"},
+		"subyard-e2e-routes": {
+			"type": "disk", "source": "/data/e2e/routes",
+			"path": "/var/lib/subyard/e2e-routes", "readonly": "true",
+		},
 	}
 	assertStageConverged(t, runtime, true, "VM volume")
 }

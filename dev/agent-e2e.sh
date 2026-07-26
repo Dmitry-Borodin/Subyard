@@ -131,7 +131,7 @@ known_host_lookup_name() {
 resolve_bastion_route() {
   local rendered key value rest lookup candidate route_config="${SUBYARD_E2E_ROUTE_CONFIG:-${HOME:?}/.ssh/config}"
   local explicit_known="${SUBYARD_E2E_BASTION_KNOWN_HOSTS:-}"
-  local registry="${SUBYARD_E2E_ROUTE_REGISTRY:-/run/subyard/e2e-routes}"
+  local registry="${SUBYARD_E2E_ROUTE_REGISTRY:-/var/lib/subyard/e2e-routes}"
   local route_file="$registry/$E2E_YARD/current/route.tsv"
   local known_file="$registry/$E2E_YARD/current/known_hosts"
   local header route_key route_value route_extra hostname_seen=0 port_seen=0 alias_seen=0

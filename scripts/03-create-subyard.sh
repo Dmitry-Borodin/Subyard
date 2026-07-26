@@ -35,7 +35,9 @@ device_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2
 instance_get() { incus config get "$INSTANCE_NAME" "$1" "${PROJ[@]}" 2>/dev/null || true; }
 
 reconcile_e2e_route_mount() {
-  local source="$SUBYARD_HOME/e2e/routes" target=/run/subyard/e2e-routes
+  # Do not mount below /run: systemd mounts its tmpfs there during container
+  # boot and would hide an Incus disk device attached before startup.
+  local source="$SUBYARD_HOME/e2e/routes" target=/var/lib/subyard/e2e-routes
   install -d -m 0755 "$source"
   if device_exists subyard-e2e-routes; then
     if [ "$(device_get subyard-e2e-routes type)" = disk ] \

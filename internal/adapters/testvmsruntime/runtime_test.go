@@ -123,6 +123,80 @@ func TestStopRunningVMAcceptsConcurrentSuccessfulStop(t *testing.T) {
 	}
 }
 
+func TestReleaseStopsRebootingGuestWhenKeyCleanupIsTemporarilyUnavailable(t *testing.T) {
+	cfg := fixtureConfig(t)
+	cfg.Project += "-slot-1"
+	cfg.AgentPublicKey = ""
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.keyPath()+".pub",
+		[]byte(fixturePublicKey(t)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stopped := false
+	runner := &fakeRunner{handler: func(
+		_ string, arguments, _ []string, _ io.Reader,
+	) ([]byte, []byte, error) {
+		joined := strings.Join(arguments, " ")
+		switch joined {
+		case "project show " + cfg.Project:
+			return nil, nil, nil
+		case "project get " + cfg.Project + " user.subyard.managed":
+			return []byte(managedMarker + "\n"), nil, nil
+		case "info e2e-vm-1 --project " + cfg.Project:
+			return nil, nil, nil
+		case "info e2e-vm-2 --project " + cfg.Project:
+			return nil, nil, errors.New("not found")
+		case "list e2e-vm-1 --project " + cfg.Project + " -f csv -c s":
+			if stopped {
+				return []byte("STOPPED\n"), nil, nil
+			}
+			return []byte("RUNNING\n"), nil, nil
+		case "stop e2e-vm-1 --project " + cfg.Project + " --timeout 60":
+			stopped = true
+			return nil, nil, nil
+		}
+		if len(arguments) > 0 && arguments[0] == "exec" {
+			return nil, nil, errors.New("VM agent isn't currently running")
+		}
+		return nil, nil, fmt.Errorf("unexpected call: %s", joined)
+	}}
+	var warnings bytes.Buffer
+	runtime := &Runtime{Config: cfg, Runner: runner, Stderr: &warnings}
+	if err := runtime.stopRetained(context.Background()); err != nil {
+		t.Fatalf("rebooting guest was not stopped: %v", err)
+	}
+	if !strings.Contains(callsText(runner.calls),
+		"incus stop e2e-vm-1 --project "+cfg.Project+" --timeout 60") {
+		t.Fatal("release did not stop the rebooting guest after key cleanup failed")
+	}
+	if !strings.Contains(warnings.String(), "guest key cleanup deferred") {
+		t.Fatalf("deferred cleanup warning = %q", warnings.String())
+	}
+}
+
+func TestRecordedFirstBootFailureIsNarrow(t *testing.T) {
+	cfg := fixtureConfig(t)
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.failureLog(),
+		[]byte("incus stop e2e-vm-1: synthetic failure\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if recordedFirstBootFailure(cfg.failureLog()) {
+		t.Fatal("ordinary stop failure was treated as failed first boot")
+	}
+	if err := os.WriteFile(cfg.failureLog(),
+		[]byte("timeout 600 cloud-init status --wait: status: error\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !recordedFirstBootFailure(cfg.failureLog()) {
+		t.Fatal("recorded cloud-init failure was not recoverable by recreation")
+	}
+}
+
 func TestReconcilePoolRetriesPhysicalShrinkAndRejectsForeignNetwork(t *testing.T) {
 	for _, test := range []struct {
 		name          string

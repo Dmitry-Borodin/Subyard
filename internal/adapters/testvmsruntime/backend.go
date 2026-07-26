@@ -114,9 +114,17 @@ func (backend *Backend) Apply(ctx context.Context) (err error) {
 		}
 	}()
 
+	// Replacing an executing binary through SFTP fails with ETXTBSY. Publish a
+	// sibling candidate and rename it into place so active lease workers keep
+	// their old inode while the next invocation sees the new engine.
+	installCandidate := DefaultInstalledPath + ".new"
 	if _, err := backend.incus(ctx, "file", "push", backend.Dispatcher,
-		backend.Instance+DefaultInstalledPath, "--project", backend.Project,
+		backend.Instance+installCandidate, "--project", backend.Project,
 		"--create-dirs", "--uid", "0", "--gid", "0", "--mode", "0755"); err != nil {
+		return err
+	}
+	if _, err := backend.incus(ctx, "exec", backend.Instance, "--project", backend.Project,
+		"--", "mv", "-f", "--", installCandidate, DefaultInstalledPath); err != nil {
 		return err
 	}
 	provision, err := os.Open(state.provision)

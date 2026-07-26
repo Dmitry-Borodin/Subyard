@@ -2,6 +2,7 @@ package migration
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,16 +22,18 @@ type Registry struct {
 	Migrations    []Definition `json:"migrations"`
 }
 
-// Definition describes one ordered layout transition. A transition may move
-// several explicitly named files, but never executes arbitrary release code.
+// Definition describes one ordered layout transition. Legacy definitions move
+// explicitly named files. New definitions select versioned engine-owned
+// operations; neither form can name arbitrary release code.
 type Definition struct {
-	ID             string   `json:"id"`
-	FromLayout     int      `json:"fromLayout"`
-	ToLayout       int      `json:"toLayout"`
-	Resources      []string `json:"resources"`
-	FinalizePolicy string   `json:"finalizePolicy"`
-	RollbackPolicy string   `json:"rollbackPolicy"`
-	Moves          []Move   `json:"moves"`
+	ID             string      `json:"id"`
+	FromLayout     int         `json:"fromLayout"`
+	ToLayout       int         `json:"toLayout"`
+	Resources      []string    `json:"resources"`
+	FinalizePolicy string      `json:"finalizePolicy"`
+	RollbackPolicy string      `json:"rollbackPolicy"`
+	Moves          []Move      `json:"moves,omitempty"`
+	Operations     []Operation `json:"operations,omitempty"`
 }
 
 // Move describes one file relocation beneath an allowlisted operator root.
@@ -40,6 +43,23 @@ type Move struct {
 	Destination string `json:"destination"`
 	Consumer    string `json:"consumer"`
 }
+
+// Operation selects a versioned handler compiled into the candidate engine.
+// It intentionally has no executable, arguments, paths or arbitrary payload.
+type Operation struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+}
+
+const (
+	OperationKindTestYardOwnerV1          = "test-yard-owner-v1"
+	OperationKindTestYardRouteConsumersV1 = "test-yard-route-consumers-v1"
+
+	fileFinalizePolicy    = "remove-source-after-active-verify"
+	fileRollbackPolicy    = "restore-recovery-before-runtime-swap"
+	orderedFinalizePolicy = "ordered-after-active-verify"
+	orderedRollbackPolicy = "reverse-before-runtime-swap"
+)
 
 // LoadRegistry reads and validates a release-owned migration registry.
 func LoadRegistry(path string) (Registry, error) {
@@ -105,19 +125,8 @@ func (registry Registry) Validate() error {
 				return fmt.Errorf("migration %q has invalid logical resource %q", definition.ID, resource)
 			}
 		}
-		if definition.FinalizePolicy != "remove-source-after-active-verify" {
-			return fmt.Errorf("migration %q has unsupported finalize policy %q", definition.ID, definition.FinalizePolicy)
-		}
-		if definition.RollbackPolicy != "restore-recovery-before-runtime-swap" {
-			return fmt.Errorf("migration %q has unsupported rollback policy %q", definition.ID, definition.RollbackPolicy)
-		}
-		if len(definition.Moves) == 0 {
-			return fmt.Errorf("migration %q has no moves", definition.ID)
-		}
-		for moveIndex, move := range definition.Moves {
-			if err := validateMove(move); err != nil {
-				return fmt.Errorf("migration %q move %d: %w", definition.ID, moveIndex, err)
-			}
+		if err := validateDefinitionOperations(definition); err != nil {
+			return fmt.Errorf("migration %q: %w", definition.ID, err)
 		}
 		expectedFrom = definition.ToLayout
 	}
@@ -127,6 +136,51 @@ func (registry Registry) Validate() error {
 			expectedFrom,
 			registry.CurrentLayout,
 		)
+	}
+	return nil
+}
+
+func validateDefinitionOperations(definition Definition) error {
+	if len(definition.Moves) == 0 && len(definition.Operations) == 0 {
+		return errors.New("has no moves or typed operations")
+	}
+	if len(definition.Operations) == 0 {
+		if definition.FinalizePolicy != fileFinalizePolicy {
+			return fmt.Errorf("unsupported finalize policy %q", definition.FinalizePolicy)
+		}
+		if definition.RollbackPolicy != fileRollbackPolicy {
+			return fmt.Errorf("unsupported rollback policy %q", definition.RollbackPolicy)
+		}
+	} else {
+		if definition.FinalizePolicy != orderedFinalizePolicy {
+			return fmt.Errorf("unsupported finalize policy %q", definition.FinalizePolicy)
+		}
+		if definition.RollbackPolicy != orderedRollbackPolicy {
+			return fmt.Errorf("unsupported rollback policy %q", definition.RollbackPolicy)
+		}
+	}
+	for moveIndex, move := range definition.Moves {
+		if err := validateMove(move); err != nil {
+			return fmt.Errorf("move %d: %w", moveIndex, err)
+		}
+	}
+	if len(definition.Operations) == 0 {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(definition.Operations))
+	for index, operation := range definition.Operations {
+		if !migrationIDPattern.MatchString(operation.ID) {
+			return fmt.Errorf("operation %d has invalid id %q", index, operation.ID)
+		}
+		if _, exists := ids[operation.ID]; exists {
+			return fmt.Errorf("duplicate operation id %q", operation.ID)
+		}
+		ids[operation.ID] = struct{}{}
+		switch operation.Kind {
+		case OperationKindTestYardOwnerV1, OperationKindTestYardRouteConsumersV1:
+		default:
+			return fmt.Errorf("operation %q has unsupported kind %q", operation.ID, operation.Kind)
+		}
 	}
 	return nil
 }

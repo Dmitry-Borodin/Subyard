@@ -173,16 +173,6 @@ else
     || { printf 'bootstrap-runtime: source migration failed; existing entrypoints were preserved\n' >&2; exit "$migration_status"; }
 fi
 
-if [ "$migrated_source" = 1 ] && ! SUBYARD_REPOSITORY_ROOT="$RUNTIME_ROOT/current" \
-  "$RUNTIME_ROOT/current/bin/yard-engine" _migrate-test-yard; then
-  if "$DATA_HOME/recovery/pre-go-source/restore.sh" >/dev/null; then
-    printf 'bootstrap-runtime: test-yard migration failed; source installation was restored\n' >&2
-  else
-    printf 'bootstrap-runtime: test-yard migration and source recovery both failed\n' >&2
-  fi
-  exit 1
-fi
-
 if [ "$migrated_source" = 0 ]; then
   install -d "$BIN_DIR"
   ln -sfn "$RUNTIME_ROOT/current/bin/yard" "$BIN_DIR/yard"

@@ -150,8 +150,8 @@ func (cli *CLI) Run(ctx context.Context) int {
 		cli.usage()
 		return 0
 	}
-	if remaining[0] != "_migrate" {
-		if err := cli.finalizeActiveMigration(); err != nil {
+	if remaining[0] != "_migrate" && cli.env["SUBYARD_INTERNAL_MIGRATION_CHILD"] != "1" {
+		if err := cli.finalizeActiveMigration(ctx); err != nil {
 			cli.errorf("finish interrupted runtime migration: %v", err)
 			return 1
 		}
@@ -1515,13 +1515,26 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		cli.errorf("internal: invalid _migrate action")
 		return 2
 	}
-	loaded, err := cli.loadContext(yard)
+	migrationEnvironment := freshMigrationEnvironment(
+		cli.baseEnv,
+		cli.options.RepositoryRoot,
+	)
+	operatorHome := migrationEnvironment["SUBYARD_OPERATOR_HOME"]
+	if operatorHome == "" {
+		operatorHome = migrationEnvironment["HOME"]
+	}
+	loaded, err := config.Load(config.LoadOptions{
+		RepositoryRoot: cli.options.RepositoryRoot,
+		OperatorHome:   operatorHome,
+		YardName:       yard,
+		Environment:    migrationEnvironment,
+	})
 	if err != nil {
 		cli.errorf("state migration context: %v", err)
 		return 1
 	}
 	environment := loaded.Environment
-	operatorHome := environment["SUBYARD_OPERATOR_HOME"]
+	operatorHome = environment["SUBYARD_OPERATOR_HOME"]
 	if operatorHome == "" {
 		operatorHome = environment["HOME"]
 	}
@@ -1581,6 +1594,11 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		Version:            Version,
 		ProjectDirectories: projectDirectories,
 		Credentials:        credentialmeta.Reader{Root: keysRoot},
+		Executable:         cli.options.DispatcherPath,
+		Incus:              "incus",
+		Environment:        environmentList(migrationEnvironment, nil),
+		Diagnostics:        cli.options.Stderr,
+		Stderr:             cli.options.Stderr,
 	}
 	var report migration.Report
 	switch arguments[0] {
@@ -1588,13 +1606,13 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		report, err = migration.ApplyRelease(ctx, releaseOptions)
 	case "finalize":
 		var changed bool
-		changed, err = migration.FinalizeActive(releaseOptions)
+		changed, err = migration.FinalizeActive(ctx, releaseOptions)
 		if err == nil {
 			report, err = migration.CheckRelease(ctx, releaseOptions)
 			report.Changed = changed
 		}
 	case "rollback":
-		report, err = migration.RollbackRelease(releaseOptions)
+		report, err = migration.RollbackRelease(ctx, releaseOptions)
 	case "cleanup":
 		var removed int
 		removed, err = migration.CleanupRelease(releaseOptions)
@@ -1616,7 +1634,41 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 	return 0
 }
 
-func (cli *CLI) finalizeActiveMigration() error {
+// A release migration is evaluated by the target runtime. The updater that
+// launches it may have exported a fully resolved context from the previous
+// runtime, including the previous immutable config directory and settings that
+// no longer exist. Keep process/bootstrap inputs, but make every migration
+// child load the target runtime's shipped config and the operator's persisted
+// configuration from scratch.
+func freshMigrationEnvironment(
+	inherited map[string]string,
+	repositoryRoot string,
+) map[string]string {
+	environment := make(map[string]string, len(inherited)+1)
+	for name, value := range inherited {
+		if _, setting := config.LookupSetting(name); setting {
+			continue
+		}
+		switch name {
+		case "E2E_VM_TTL_MINUTES",
+			"SUBYARD_CONFIG_DIR",
+			"SUBYARD_CONFIG_LOADED",
+			"SUBYARD_DISPATCH_ARG0",
+			"SUBYARD_DISPATCH_COMMAND",
+			"SUBYARD_DISPATCH_PATH",
+			"SUBYARD_ENGINE_CONTEXT",
+			"SUBYARD_ENGINE_CONTEXT_SCHEMA",
+			"SUBYARD_ENGINE_CONTEXT_SOURCED",
+			"SUBYARD_YARD":
+			continue
+		}
+		environment[name] = value
+	}
+	environment["SUBYARD_REPOSITORY_ROOT"] = repositoryRoot
+	return environment
+}
+
+func (cli *CLI) finalizeActiveMigration(ctx context.Context) error {
 	operatorHome := cli.env["SUBYARD_OPERATOR_HOME"]
 	if operatorHome == "" {
 		operatorHome = cli.env["HOME"]
@@ -1637,13 +1689,18 @@ func (cli *CLI) finalizeActiveMigration() error {
 		runtimeRoot = filepath.Join(dataHome, "runtime")
 	}
 	runtimeRoot = runtimeRootForRepository(cli.options.RepositoryRoot, runtimeRoot)
-	_, err := migration.FinalizeActive(migration.ReleaseOptions{
+	_, err := migration.FinalizeActive(ctx, migration.ReleaseOptions{
 		RegistryPath:   filepath.Join(cli.options.RepositoryRoot, "config", "migrations.json"),
 		RepositoryRoot: cli.options.RepositoryRoot,
 		RuntimeRoot:    runtimeRoot,
 		ConfigHome:     filepath.Clean(configHome),
 		DataHome:       filepath.Clean(dataHome),
 		Version:        Version,
+		Executable:     cli.options.DispatcherPath,
+		Incus:          "incus",
+		Environment:    environmentList(cli.env, nil),
+		Diagnostics:    cli.options.Stderr,
+		Stderr:         cli.options.Stderr,
 	})
 	return err
 }

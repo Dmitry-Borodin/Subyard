@@ -85,10 +85,21 @@ func (runtime *Runtime) Prepare(ctx context.Context, arguments []string) (Prepar
 	if !safeVersion(options.version) {
 		return Prepared{}, fmt.Errorf("unsafe version %q", options.version)
 	}
-	return Prepared{Effect: domain.CommandMutate, Consequences: []string{
+	consequences := []string{
 		fmt.Sprintf("download and verify runtime %s for %s/%s", options.version, goruntime.GOOS, goruntime.GOARCH),
 		map[bool]string{true: "verify compatibility without activation", false: "atomically activate it and retain the previous runtime"}[options.check],
-	}, run: func(ctx context.Context) error { return runtime.execute(ctx, options) }}, nil
+	}
+	if !options.check {
+		consequences = append(
+			consequences,
+			"apply every required ordered config and lifecycle migration",
+		)
+	}
+	return Prepared{
+		Effect:       domain.CommandMutate,
+		Consequences: consequences,
+		run:          func(ctx context.Context) error { return runtime.execute(ctx, options) },
+	}, nil
 }
 
 func (runtime *Runtime) parse(arguments []string) (options, bool, error) {

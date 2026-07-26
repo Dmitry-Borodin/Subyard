@@ -199,7 +199,6 @@ owner_profile_migration_contract() {
 
   # Source migration normalizes the retired profile before runtime activation.
   write_owner_registration e2e-yard test-vms 2224
-  prepare_owner_image_cache_project subyard-test-yard
   install_owner_runtime
   [ "$("$runtime_root/current/bin/yard" --version)" = 'yard p0-owner' ] \
     || die 'current runtime was not installed over the pre-rename runtime'

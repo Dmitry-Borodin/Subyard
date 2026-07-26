@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "minimumLayout": 1,
-  "currentLayout": 2,
+  "currentLayout": 3,
   "migrations": [
     {
       "id": "migrate-test-yard-owner",
@@ -18,6 +18,22 @@
         {
           "id": "test-yard-route-consumers",
           "kind": "test-yard-route-consumers-v1"
+        }
+      ]
+    },
+    {
+      "id": "move-legacy-assignments",
+      "fromLayout": 2,
+      "toLayout": 3,
+      "resources": ["migration-fixture-assignments"],
+      "finalizePolicy": "remove-source-after-active-verify",
+      "rollbackPolicy": "restore-recovery-before-runtime-swap",
+      "moves": [
+        {
+          "scope": "config-home",
+          "source": "migration-fixture/legacy/config.env",
+          "destination": "migration-fixture/current/config.env",
+          "consumer": "assignments"
         }
       ]
     }

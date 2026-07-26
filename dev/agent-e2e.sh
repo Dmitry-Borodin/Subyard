@@ -397,10 +397,12 @@ valid_ipv4() {
 verify_boundary() {
   local before after output vm pty_log transfer_log probe expected_hash actual_hash rc
   local -a requested=()
-  before="$(facade_request status | jq -c '
-    [.pool.slots[] |
+  before="$(facade_request status | jq -c --arg slot "$LEASE_SLOT" '
+    [.pool.slots[] | select(.slot_id == $slot) |
       {slot_id, resource_generation, lease_epoch, state, display_label, purpose}]
   ')" || die "cannot read lease pool status"
+  [ "$(jq 'length' <<<"$before")" = 1 ] \
+    || die "current lease slot is absent from pool status"
 
   for probe in id 'sudo -n id' 'incus list' \
     'cat /var/lib/subyard/test-vms/worker-key' \
@@ -474,8 +476,8 @@ verify_boundary() {
     fi
   done
 
-  after="$(facade_request status | jq -c '
-    [.pool.slots[] |
+  after="$(facade_request status | jq -c --arg slot "$LEASE_SLOT" '
+    [.pool.slots[] | select(.slot_id == $slot) |
       {slot_id, resource_generation, lease_epoch, state, display_label, purpose}]
   ')" || die "post-probe lease pool status failed"
   [ "$after" = "$before" ] \

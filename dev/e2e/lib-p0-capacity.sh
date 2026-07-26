@@ -178,8 +178,18 @@ p0_capacity_cache_bytes() {
 
 p0_capacity_require_persistent_path() {
   local path="${1:?capacity path is required}" label="${2:-$1}" fstype source target
-  [ -e "$path" ] || p0_capacity_die "$label does not exist: $path" || return
-  read -r fstype source target < <(findmnt -n -o FSTYPE,SOURCE,TARGET -T "$path") \
+  local -a findmnt_command=(findmnt)
+  if [ ! -e "$path" ]; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n test -e "$path" 2>/dev/null; then
+      findmnt_command=(sudo -n findmnt)
+    else
+      p0_capacity_die "$label does not exist: $path"
+      return
+    fi
+  fi
+  read -r fstype source target < <(
+    "${findmnt_command[@]}" -n -o FSTYPE,SOURCE,TARGET -T "$path"
+  ) \
     || p0_capacity_die "cannot resolve filesystem for $label: $path" || return
   case "$fstype" in
     tmpfs | ramfs)

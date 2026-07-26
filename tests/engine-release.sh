@@ -63,7 +63,7 @@ rpc_negotiate() { # <engine> <engine-version> <protocol-version> <compatible|inc
 
 staging_canary="$(mktemp --suffix=.env "$ROOT/config/staging/.package-canary.XXXXXX")"
 qa_canary="$(mktemp "$ROOT/config/qa-pool/.package-canary.XXXXXX")"
-untracked_canary="$ROOT/config/staging/.package-untracked-canary.txt"
+untracked_canary="$(mktemp --suffix=.txt "$ROOT/config/staging/.package-untracked-canary.XXXXXX")"
 printf 'ignored staging secret\n' > "$staging_canary"
 printf 'ignored qa secret\n' > "$qa_canary"
 printf 'untracked local input\n' > "$untracked_canary"
@@ -73,8 +73,13 @@ legacy_installer="$ROOT/tests/fixtures/migrations/v0.1.0-install-runtime-release
 [ "$(sha256sum "$legacy_installer" | cut -d' ' -f1)" = \
   168dbaa00dfe3d86471358993e63d6b50c02d5af4bb136a6da3c4e39229780dd ] \
   || fail 'the pinned v0.1.0 runtime installer fixture changed'
+legacy_031_installer="$ROOT/tests/fixtures/migrations/v0.3.1-install-runtime-release.sh"
+[ "$(sha256sum "$legacy_031_installer" | cut -d' ' -f1)" = \
+  04673421c42ac8a1bfed1e8fa547fd6aabd05011bc82bad951856df1e9c87193 ] \
+  || fail 'the pinned v0.3.1 runtime installer fixture changed'
 artifact_one="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.0.0-test \
-  --runtime-installer "$legacy_installer")"
+  --runtime-installer "$legacy_installer" \
+  --migration-registry "$ROOT/tests/fixtures/migrations/layout-1.json")"
 bundle_one="$release/subyard-1.0.0-test-linux-amd64.tar.gz"
 [ -x "$release/subyard-install.sh" ] \
   && [ -x "$release/subyard-install-runtime-release.sh" ] \
@@ -248,6 +253,98 @@ if YARD_RELEASE_CACHE="$TMP/cache" yard_update \
 fi
 [ "$("$runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-test ] \
   || fail 'failed offline check changed the current runtime'
+
+# A historical updater knows only the generic candidate-owned _migrate
+# contract. It must still apply the production typed transition without any
+# migration-specific installer hook.
+typed_base_artifact="$("$ROOT/dev/package-engine.sh" --output-dir "$release" \
+  --version 1.0.0-typed-base --runtime-installer "$legacy_031_installer" \
+  --migration-registry "$ROOT/tests/fixtures/migrations/layout-1.json")"
+typed_artifact="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.0.1-test)"
+jq -e '.version == "1.0.1-test" and .migrationSchema == 1 and
+  .minimumConfigLayout == 1 and .configLayout == 2' \
+  "$typed_artifact.manifest.json" >/dev/null \
+  || fail 'typed migration candidate changed the v0.3.1-compatible manifest contract'
+typed_runtime_root="$TMP/typed-update-runtime"
+typed_config_home="$TMP/typed-config"
+typed_data_home="$TMP/typed-data"
+SUBYARD_CONFIG_HOME="$typed_config_home" SUBYARD_HOME="$typed_data_home" \
+  YARD_ENGINE_PATH="$typed_base_artifact" YARD_RELEASE_BASE_URL="file://$release" \
+  YARD_RELEASE_CACHE="$TMP/typed-cache" \
+  "$ROOT/bin/yard" update --yes --runtime-root "$typed_runtime_root" \
+  --version 1.0.0-typed-base >/dev/null
+SUBYARD_CONFIG_HOME="$typed_config_home" SUBYARD_HOME="$typed_data_home" \
+  YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/typed-cache" \
+  "$typed_runtime_root/current/bin/yard" update --yes \
+  --runtime-root "$typed_runtime_root" --version 1.0.1-test >/dev/null
+[ "$("$typed_runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.1-test ] \
+  && jq -e '.layout == 2 and .applied == ["migrate-test-yard-owner"]' \
+    "$typed_config_home/migrations/state.json" >/dev/null \
+  || fail 'historical updater did not commit the candidate-owned typed migration'
+SUBYARD_CONFIG_HOME="$typed_config_home" SUBYARD_HOME="$typed_data_home" \
+  "$typed_runtime_root/current/bin/yard" update --yes \
+  --runtime-root "$typed_runtime_root" --rollback >/dev/null
+[ "$("$typed_runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.0-typed-base ] \
+  && jq -e '.layout == 1 and (.applied // []) == []' \
+    "$typed_config_home/migrations/state.json" >/dev/null \
+  || fail 'typed migration rollback did not restore the historical layout'
+SUBYARD_CONFIG_HOME="$typed_config_home" SUBYARD_HOME="$typed_data_home" \
+  YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/typed-cache" \
+  "$typed_runtime_root/current/bin/yard" update --yes \
+  --runtime-root "$typed_runtime_root" --version 1.0.1-test >/dev/null
+[ "$("$typed_runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.1-test ] \
+  && jq -e '.layout == 2 and .applied == ["migrate-test-yard-owner"]' \
+    "$typed_config_home/migrations/state.json" >/dev/null \
+  || fail 'historical updater did not roll the typed migration forward again'
+SUBYARD_CONFIG_HOME="$typed_config_home" SUBYARD_HOME="$typed_data_home" \
+  "$typed_runtime_root/current/bin/yard-engine" _migrate-test-yard >/dev/null \
+  || fail 'typed migration candidate dropped the v0.4.0 installer compatibility shim'
+
+# A later candidate must preserve every already-applied registry definition as
+# an exact prefix before appending a new transition.
+typed_history_artifact="$("$ROOT/dev/package-engine.sh" --output-dir "$release" \
+  --version 1.0.2-typed-history \
+  --migration-registry "$ROOT/tests/fixtures/migrations/layout-3-production-prefix.json")"
+jq -e '.version == "1.0.2-typed-history" and .configLayout == 3' \
+  "$typed_history_artifact.manifest.json" >/dev/null \
+  || fail 'production-prefix fixture did not publish layout 3'
+typed_history_source="$typed_config_home/migration-fixture/legacy/config.env"
+typed_history_destination="$typed_config_home/migration-fixture/current/config.env"
+install -d -m 0700 "$(dirname "$typed_history_source")"
+printf 'TOKEN=production-prefix\n' > "$typed_history_source"
+chmod 0600 "$typed_history_source"
+typed_state_before="$(sha256sum "$typed_config_home/migrations/state.json")"
+if SUBYARD_CONFIG_HOME="$typed_config_home" SUBYARD_HOME="$typed_data_home" \
+  YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/typed-cache" \
+  "$typed_runtime_root/current/bin/yard" update --yes --check \
+  --runtime-root "$typed_runtime_root" --version 1.1.0-test >/dev/null 2>&1; then
+  fail 'candidate accepted rewritten applied migration history'
+fi
+[ "$typed_state_before" = "$(sha256sum "$typed_config_home/migrations/state.json")" ] \
+  && [ -f "$typed_history_source" ] && [ ! -e "$typed_history_destination" ] \
+  || fail 'rejected registry history changed typed migration state'
+SUBYARD_CONFIG_HOME="$typed_config_home" SUBYARD_HOME="$typed_data_home" \
+  YARD_RELEASE_BASE_URL="file://$release" YARD_RELEASE_CACHE="$TMP/typed-cache" \
+  "$typed_runtime_root/current/bin/yard" update --yes \
+  --runtime-root "$typed_runtime_root" --version 1.0.2-typed-history >/dev/null
+[ "$("$typed_runtime_root/current/bin/yard" --version | awk '{print $2}')" = \
+    1.0.2-typed-history ] \
+  && [ ! -e "$typed_history_source" ] \
+  && grep -Fxq 'TOKEN=production-prefix' "$typed_history_destination" \
+  && jq -e '
+    .layout == 3 and
+    .applied == ["migrate-test-yard-owner", "move-legacy-assignments"]
+  ' "$typed_config_home/migrations/state.json" >/dev/null \
+  || fail 'extended registry did not preserve and append migration history'
+SUBYARD_CONFIG_HOME="$typed_config_home" SUBYARD_HOME="$typed_data_home" \
+  "$typed_runtime_root/current/bin/yard" update --yes \
+  --runtime-root "$typed_runtime_root" --rollback >/dev/null
+[ "$("$typed_runtime_root/current/bin/yard" --version | awk '{print $2}')" = 1.0.1-test ] \
+  && [ -f "$typed_history_source" ] && [ ! -e "$typed_history_destination" ] \
+  && jq -e '
+    .layout == 2 and .applied == ["migrate-test-yard-owner"]
+  ' "$typed_config_home/migrations/state.json" >/dev/null \
+  || fail 'extended registry rollback did not restore the applied prefix'
 
 migration_source="$SUBYARD_CONFIG_HOME/migration-fixture/legacy/config.env"
 migration_destination="$SUBYARD_CONFIG_HOME/migration-fixture/current/config.env"

@@ -33,6 +33,11 @@ type ReleaseOptions struct {
 	Version            string
 	ProjectDirectories []string
 	Credentials        ports.CredentialMetadataReader
+	Executable         string
+	Incus              string
+	Environment        []string
+	Diagnostics        io.Writer
+	Stderr             io.Writer
 }
 
 type appliedState struct {
@@ -43,15 +48,16 @@ type appliedState struct {
 }
 
 type transaction struct {
-	SchemaVersion int                `json:"schemaVersion"`
-	FromLayout    int                `json:"fromLayout"`
-	ToLayout      int                `json:"toLayout"`
-	FromRuntime   string             `json:"fromRuntime,omitempty"`
-	ToRelease     string             `json:"toRelease"`
-	ToRuntime     string             `json:"toRuntime,omitempty"`
-	Phase         string             `json:"phase"`
-	Migrations    []string           `json:"migrations"`
-	Entries       []transactionEntry `json:"entries"`
+	SchemaVersion int                    `json:"schemaVersion"`
+	FromLayout    int                    `json:"fromLayout"`
+	ToLayout      int                    `json:"toLayout"`
+	FromRuntime   string                 `json:"fromRuntime,omitempty"`
+	ToRelease     string                 `json:"toRelease"`
+	ToRuntime     string                 `json:"toRuntime,omitempty"`
+	Phase         string                 `json:"phase"`
+	Migrations    []string               `json:"migrations"`
+	Entries       []transactionEntry     `json:"entries,omitempty"`
+	Operations    []transactionOperation `json:"operations,omitempty"`
 }
 
 type transactionEntry struct {
@@ -65,6 +71,14 @@ type transactionEntry struct {
 	Mode        uint32 `json:"mode,omitempty"`
 }
 
+type transactionOperation struct {
+	MigrationID string `json:"migrationId"`
+	OperationID string `json:"operationId"`
+	Kind        string `json:"kind"`
+	Before      string `json:"before,omitempty"`
+	Phase       string `json:"phase,omitempty"`
+}
+
 // CheckRelease validates the migration path and all existing consumers without
 // creating migration metadata or changing operator data.
 func CheckRelease(ctx context.Context, options ReleaseOptions) (Report, error) {
@@ -72,7 +86,7 @@ func CheckRelease(ctx context.Context, options ReleaseOptions) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	if err := validatePathInputs(options, path, tx); err != nil {
+	if err := validatePathInputs(ctx, options, path, tx); err != nil {
 		return Report{}, err
 	}
 	report, err := Check(ctx, options.ProjectDirectories, options.Credentials)
@@ -86,11 +100,15 @@ func CheckRelease(ctx context.Context, options ReleaseOptions) (Report, error) {
 // ApplyRelease performs legacy repairs and durably prepares every registered
 // relocation. Sources are retained until the candidate is the active runtime.
 func ApplyRelease(ctx context.Context, options ReleaseOptions) (Report, error) {
-	registry, state, path, _, err := inspectRelease(options)
+	registry, state, path, tx, err := inspectRelease(options)
 	if err != nil {
 		return Report{}, err
 	}
-	if err := validatePathInputs(options, path, nil); err != nil {
+	var preparedCatchUp *transaction
+	if tx != nil && state.Layout == tx.ToLayout {
+		preparedCatchUp = tx
+	}
+	if err := validatePathInputs(ctx, options, path, preparedCatchUp); err != nil {
 		return Report{}, err
 	}
 	legacyReport, err := Apply(ctx, options.ProjectDirectories, options.Credentials)
@@ -117,6 +135,42 @@ func ApplyRelease(ctx context.Context, options ReleaseOptions) (Report, error) {
 		return Report{}, err
 	}
 	if len(path) == 0 {
+		tx, exists, err := readTransaction(options.ConfigHome, options.Version)
+		if err != nil {
+			return Report{}, err
+		}
+		if exists {
+			if err := validateTransaction(options, registry, tx); err != nil {
+				return Report{}, err
+			}
+			switch tx.Phase {
+			case "prepared", "committing":
+				if state.Layout == tx.ToLayout {
+					transactionPath, err := transactionDefinitions(registry, tx)
+					if err != nil {
+						return Report{}, err
+					}
+					enrichReport(&legacyReport, registry, state, transactionPath, &tx)
+					return legacyReport, nil
+				}
+			case "committed":
+				reopened, transactionPath, err := reopenCommittedOperations(
+					ctx,
+					options,
+					registry,
+					state,
+					&tx,
+				)
+				if err != nil {
+					return Report{}, err
+				}
+				if reopened {
+					legacyReport.Changed = true
+					enrichReport(&legacyReport, registry, state, transactionPath, &tx)
+					return legacyReport, nil
+				}
+			}
+		}
 		if state.CurrentRelease == "" {
 			state.CurrentRelease = options.Version
 			if err := writeAppliedState(options.ConfigHome, state); err != nil {
@@ -128,18 +182,90 @@ func ApplyRelease(ctx context.Context, options ReleaseOptions) (Report, error) {
 		return legacyReport, nil
 	}
 
-	tx, err := prepareTransaction(options, state, path)
+	prepared, err := prepareTransaction(ctx, options, state, path)
 	if err != nil {
 		return Report{}, err
 	}
 	legacyReport.Changed = true
-	enrichReport(&legacyReport, registry, state, path, &tx)
+	enrichReport(&legacyReport, registry, state, path, &prepared)
 	return legacyReport, nil
+}
+
+func reopenCommittedOperations(
+	ctx context.Context,
+	options ReleaseOptions,
+	registry Registry,
+	state appliedState,
+	tx *transaction,
+) (bool, []Definition, error) {
+	if tx.Phase != "committed" || state.Layout != tx.ToLayout {
+		return false, nil, nil
+	}
+	active, err := candidateIsActive(options)
+	if err != nil {
+		return false, nil, err
+	}
+	if !active || tx.ToRuntime != currentRuntimeTarget(options.RuntimeRoot) {
+		return false, nil, nil
+	}
+	path, err := transactionDefinitions(registry, *tx)
+	if err != nil {
+		return false, nil, err
+	}
+	reopened := false
+	for _, definition := range path {
+		for _, expected := range definition.Operations {
+			index := transactionOperationIndex(*tx, definition.ID, expected.ID)
+			if index < 0 {
+				return false, nil, fmt.Errorf(
+					"migration %q operation %q is missing from transaction",
+					definition.ID,
+					expected.ID,
+				)
+			}
+			operation := &tx.Operations[index]
+			if operation.Phase != operationCommitted {
+				return false, nil, fmt.Errorf(
+					"committed migration %q operation %q is in phase %q",
+					definition.ID,
+					expected.ID,
+					operation.Phase,
+				)
+			}
+			before, changed, err := reprepareTypedOperation(
+				ctx,
+				options,
+				expected,
+				operation.Before,
+			)
+			if err != nil {
+				return false, nil, fmt.Errorf(
+					"reconcile migration %q operation %q: %w",
+					definition.ID,
+					expected.ID,
+					err,
+				)
+			}
+			if changed {
+				operation.Before = before
+				operation.Phase = operationPrepared
+				reopened = true
+			}
+		}
+	}
+	if !reopened {
+		return false, path, nil
+	}
+	tx.Phase = "prepared"
+	if err := writeTransaction(options.ConfigHome, *tx); err != nil {
+		return false, nil, err
+	}
+	return true, path, nil
 }
 
 // FinalizeActive commits a prepared transition only after the candidate
 // repository is the target of the stable runtime current link.
-func FinalizeActive(options ReleaseOptions) (bool, error) {
+func FinalizeActive(ctx context.Context, options ReleaseOptions) (bool, error) {
 	tx, exists, err := readTransaction(options.ConfigHome, options.Version)
 	if err != nil || !exists {
 		return false, err
@@ -186,22 +312,13 @@ func FinalizeActive(options ReleaseOptions) (bool, error) {
 	if err := writeTransaction(options.ConfigHome, tx); err != nil {
 		return false, err
 	}
-	for _, entry := range tx.Entries {
-		destination := movePath(options, entry.Scope, entry.Destination)
-		if err := validateMoveParent(options, entry.Scope, entry.Destination); err != nil {
-			return false, err
-		}
-		if err := validateConsumer(destination, entry.Consumer, entry.Digest); err != nil {
-			return false, fmt.Errorf("verify migration %q destination: %w", entry.MigrationID, err)
-		}
+	path, err := transactionDefinitions(registry, tx)
+	if err != nil {
+		return false, err
 	}
-	for _, entry := range tx.Entries {
-		source := movePath(options, entry.Scope, entry.Source)
-		if err := validateMoveParent(options, entry.Scope, entry.Source); err != nil {
+	for _, definition := range path {
+		if err := finalizeDefinition(ctx, options, definition, &tx); err != nil {
 			return false, err
-		}
-		if err := removeMatchingFile(source, entry.Digest); err != nil {
-			return false, fmt.Errorf("retire migration %q source: %w", entry.MigrationID, err)
 		}
 	}
 	state, err := readAppliedState(options.ConfigHome, registry.MinimumLayout)
@@ -230,7 +347,7 @@ func FinalizeActive(options ReleaseOptions) (bool, error) {
 
 // RollbackRelease restores the previous layout before the runtime current link
 // is switched back. It is idempotent across interrupted rollback attempts.
-func RollbackRelease(options ReleaseOptions) (Report, error) {
+func RollbackRelease(ctx context.Context, options ReleaseOptions) (Report, error) {
 	registry, err := LoadRegistry(options.RegistryPath)
 	if err != nil {
 		return Report{}, err
@@ -251,7 +368,7 @@ func RollbackRelease(options ReleaseOptions) (Report, error) {
 		enrichReport(&report, registry, state, nil, nil)
 		return report, nil
 	}
-	if tx.Phase != "prepared" && tx.Phase != "committing" &&
+	if tx.Phase != "preparing" && tx.Phase != "prepared" && tx.Phase != "committing" &&
 		tx.Phase != "committed" && tx.Phase != "rolling-back" {
 		return Report{}, fmt.Errorf("cannot roll back migration transaction in phase %q", tx.Phase)
 	}
@@ -284,23 +401,13 @@ func RollbackRelease(options ReleaseOptions) (Report, error) {
 	if err := writeTransaction(options.ConfigHome, tx); err != nil {
 		return Report{}, err
 	}
-	for index := len(tx.Entries) - 1; index >= 0; index-- {
-		entry := tx.Entries[index]
-		recovery := filepath.Join(transactionDirectory(options.ConfigHome, options.Version), entry.Recovery)
-		source := movePath(options, entry.Scope, entry.Source)
-		root := moveRoot(options, entry.Scope)
-		if err := validateMoveParent(options, entry.Scope, entry.Source); err != nil {
+	path, err := transactionDefinitions(registry, tx)
+	if err != nil {
+		return Report{}, err
+	}
+	for index := len(path) - 1; index >= 0; index-- {
+		if err := rollbackDefinition(ctx, options, path[index], &tx); err != nil {
 			return Report{}, err
-		}
-		if err := publishMatchingFile(root, recovery, source, os.FileMode(entry.Mode), entry.Digest); err != nil {
-			return Report{}, fmt.Errorf("restore migration %q source: %w", entry.MigrationID, err)
-		}
-		destination := movePath(options, entry.Scope, entry.Destination)
-		if err := validateMoveParent(options, entry.Scope, entry.Destination); err != nil {
-			return Report{}, err
-		}
-		if err := removeMatchingFile(destination, entry.Digest); err != nil {
-			return Report{}, fmt.Errorf("remove migration %q destination: %w", entry.MigrationID, err)
 		}
 	}
 	state.Layout = tx.FromLayout
@@ -320,20 +427,221 @@ func RollbackRelease(options ReleaseOptions) (Report, error) {
 	return report, nil
 }
 
-func preflightRollback(options ReleaseOptions, tx transaction) error {
+func finalizeDefinition(
+	ctx context.Context,
+	options ReleaseOptions,
+	definition Definition,
+	tx *transaction,
+) error {
 	for _, entry := range tx.Entries {
+		if entry.MigrationID != definition.ID {
+			continue
+		}
+		destination := movePath(options, entry.Scope, entry.Destination)
+		if err := validateMoveParent(options, entry.Scope, entry.Destination); err != nil {
+			return err
+		}
+		if err := validateConsumer(destination, entry.Consumer, entry.Digest); err != nil {
+			return fmt.Errorf("verify migration %q destination: %w", entry.MigrationID, err)
+		}
+	}
+	for _, entry := range tx.Entries {
+		if entry.MigrationID != definition.ID {
+			continue
+		}
+		source := movePath(options, entry.Scope, entry.Source)
+		if err := validateMoveParent(options, entry.Scope, entry.Source); err != nil {
+			return err
+		}
+		if err := removeMatchingFile(source, entry.Digest); err != nil {
+			return fmt.Errorf("retire migration %q source: %w", entry.MigrationID, err)
+		}
+	}
+	for _, expected := range definition.Operations {
+		index := transactionOperationIndex(*tx, definition.ID, expected.ID)
+		if index < 0 {
+			return fmt.Errorf(
+				"migration %q operation %q is missing from transaction",
+				definition.ID,
+				expected.ID,
+			)
+		}
+		operation := &tx.Operations[index]
+		if operation.Phase == operationCommitted {
+			if err := verifyTypedOperation(ctx, options, expected, operation.Before); err != nil {
+				return fmt.Errorf(
+					"verify migration %q operation %q: %w",
+					definition.ID,
+					expected.ID,
+					err,
+				)
+			}
+			continue
+		}
+		if operation.Phase != operationPrepared && operation.Phase != operationCommitting {
+			return fmt.Errorf(
+				"migration %q operation %q cannot commit from phase %q",
+				definition.ID,
+				expected.ID,
+				operation.Phase,
+			)
+		}
+		if operation.Phase == operationPrepared {
+			before, err := prepareTypedOperation(ctx, options, expected)
+			if err != nil {
+				return fmt.Errorf(
+					"recheck migration %q operation %q: %w",
+					definition.ID,
+					expected.ID,
+					err,
+				)
+			}
+			if before != operation.Before {
+				return fmt.Errorf(
+					"migration %q operation %q changed from %q to %q before commit",
+					definition.ID,
+					expected.ID,
+					operation.Before,
+					before,
+				)
+			}
+			operation.Phase = operationCommitting
+			if err := writeTransaction(options.ConfigHome, *tx); err != nil {
+				return err
+			}
+		}
+		if err := commitTypedOperation(ctx, options, expected, operation.Before); err != nil {
+			return fmt.Errorf(
+				"commit migration %q operation %q: %w",
+				definition.ID,
+				expected.ID,
+				err,
+			)
+		}
+		operation.Phase = operationCommitted
+		if err := writeTransaction(options.ConfigHome, *tx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rollbackDefinition(
+	ctx context.Context,
+	options ReleaseOptions,
+	definition Definition,
+	tx *transaction,
+) error {
+	for operationIndex := len(definition.Operations) - 1; operationIndex >= 0; operationIndex-- {
+		expected := definition.Operations[operationIndex]
+		index := transactionOperationIndex(*tx, definition.ID, expected.ID)
+		if index < 0 {
+			return fmt.Errorf(
+				"migration %q operation %q is missing from transaction",
+				definition.ID,
+				expected.ID,
+			)
+		}
+		operation := &tx.Operations[index]
+		if operation.Phase == operationRolledBack {
+			continue
+		}
+		if operation.Before == "" {
+			operation.Phase = operationRolledBack
+			if err := writeTransaction(options.ConfigHome, *tx); err != nil {
+				return err
+			}
+			continue
+		}
+		if operation.Phase == operationPrepared {
+			operation.Phase = operationRolledBack
+			if err := writeTransaction(options.ConfigHome, *tx); err != nil {
+				return err
+			}
+			continue
+		}
+		if operation.Phase != operationCommitting &&
+			operation.Phase != operationCommitted &&
+			operation.Phase != operationRollingBack {
+			return fmt.Errorf(
+				"migration %q operation %q cannot roll back from phase %q",
+				definition.ID,
+				expected.ID,
+				operation.Phase,
+			)
+		}
+		operation.Phase = operationRollingBack
+		if err := writeTransaction(options.ConfigHome, *tx); err != nil {
+			return err
+		}
+		if err := rollbackTypedOperation(ctx, options, expected, operation.Before); err != nil {
+			return fmt.Errorf(
+				"roll back migration %q operation %q: %w",
+				definition.ID,
+				expected.ID,
+				err,
+			)
+		}
+		operation.Phase = operationRolledBack
+		if err := writeTransaction(options.ConfigHome, *tx); err != nil {
+			return err
+		}
+	}
+	for entryIndex := len(tx.Entries) - 1; entryIndex >= 0; entryIndex-- {
+		entry := tx.Entries[entryIndex]
+		if entry.MigrationID != definition.ID {
+			continue
+		}
+		if entry.Digest == "" {
+			continue
+		}
 		recovery := filepath.Join(
 			transactionDirectory(options.ConfigHome, options.Version),
 			entry.Recovery,
 		)
-		recoveryInfo, recoveryExists, err := inspectMigratedFile(recovery)
-		if err != nil || !recoveryExists || recoveryInfo.Digest != entry.Digest ||
-			recoveryInfo.Mode.Perm() != os.FileMode(entry.Mode).Perm() {
-			return errors.Join(
-				fmt.Errorf("migration %q recovery is unavailable or changed", entry.MigrationID),
-				err,
-			)
+		source := movePath(options, entry.Scope, entry.Source)
+		root := moveRoot(options, entry.Scope)
+		if err := validateMoveParent(options, entry.Scope, entry.Source); err != nil {
+			return err
 		}
+		if err := publishMatchingFile(
+			root,
+			recovery,
+			source,
+			os.FileMode(entry.Mode),
+			entry.Digest,
+		); err != nil {
+			return fmt.Errorf("restore migration %q source: %w", entry.MigrationID, err)
+		}
+		destination := movePath(options, entry.Scope, entry.Destination)
+		if err := validateMoveParent(options, entry.Scope, entry.Destination); err != nil {
+			return err
+		}
+		if err := removeMatchingFile(destination, entry.Digest); err != nil {
+			return fmt.Errorf("remove migration %q destination: %w", entry.MigrationID, err)
+		}
+	}
+	return nil
+}
+
+func transactionOperationIndex(tx transaction, migrationID, operationID string) int {
+	for index, operation := range tx.Operations {
+		if operation.MigrationID == migrationID && operation.OperationID == operationID {
+			return index
+		}
+	}
+	return -1
+}
+
+func preflightRollback(options ReleaseOptions, tx transaction) error {
+	for _, entry := range tx.Entries {
+		if entry.Digest == "" {
+			continue
+		}
+		recovery := filepath.Join(
+			transactionDirectory(options.ConfigHome, options.Version),
+			entry.Recovery,
+		)
 		sourceInfo, sourceExists, err := inspectMoveFile(options, entry.Scope, entry.Source)
 		if err != nil {
 			return err
@@ -354,6 +662,28 @@ func preflightRollback(options ReleaseOptions, tx transaction) error {
 		}
 		if !sourceExists && !destinationExists {
 			return fmt.Errorf("migration %q rollback has no authoritative copy", entry.MigrationID)
+		}
+		recoveryInfo, recoveryExists, err := inspectMigratedFile(recovery)
+		if err != nil {
+			return err
+		}
+		if !recoveryExists {
+			input := movePath(options, entry.Scope, entry.Source)
+			if !sourceExists {
+				input = movePath(options, entry.Scope, entry.Destination)
+			}
+			if err := publishMatchingFile(
+				options.ConfigHome,
+				input,
+				recovery,
+				os.FileMode(entry.Mode),
+				entry.Digest,
+			); err != nil {
+				return fmt.Errorf("rebuild migration %q recovery: %w", entry.MigrationID, err)
+			}
+		} else if recoveryInfo.Digest != entry.Digest ||
+			recoveryInfo.Mode.Perm() != os.FileMode(entry.Mode).Perm() {
+			return fmt.Errorf("migration %q recovery changed", entry.MigrationID)
 		}
 	}
 	return nil
@@ -457,6 +787,13 @@ func inspectRelease(
 		if tx.Phase == "rolled-back" {
 			return registry, state, path, nil, nil
 		}
+		if state.Layout == tx.ToLayout &&
+			(tx.Phase == "prepared" || tx.Phase == "committing") {
+			path, err = transactionDefinitions(registry, tx)
+			if err != nil {
+				return Registry{}, appliedState{}, nil, nil, err
+			}
+		}
 		return registry, state, path, &tx, nil
 	}
 	return registry, state, path, nil, nil
@@ -502,7 +839,12 @@ func enrichReport(
 	}
 }
 
-func validatePathInputs(options ReleaseOptions, path []Definition, tx *transaction) error {
+func validatePathInputs(
+	ctx context.Context,
+	options ReleaseOptions,
+	path []Definition,
+	tx *transaction,
+) error {
 	for _, definition := range path {
 		for _, move := range definition.Moves {
 			source := movePath(options, move.Scope, move.Source)
@@ -531,6 +873,58 @@ func validatePathInputs(options ReleaseOptions, path []Definition, tx *transacti
 				return fmt.Errorf("migration %q consumer: %w", definition.ID, err)
 			}
 		}
+		for _, operation := range definition.Operations {
+			if tx == nil {
+				if _, err := prepareTypedOperation(ctx, options, operation); err != nil {
+					return fmt.Errorf(
+						"migration %q operation %q: %w",
+						definition.ID,
+						operation.ID,
+						err,
+					)
+				}
+				continue
+			}
+			index := transactionOperationIndex(*tx, definition.ID, operation.ID)
+			if index < 0 {
+				return fmt.Errorf(
+					"prepared migration %q operation %q is missing",
+					definition.ID,
+					operation.ID,
+				)
+			}
+			prepared := tx.Operations[index]
+			switch prepared.Phase {
+			case operationPrepared:
+				before, err := prepareTypedOperation(ctx, options, operation)
+				if err != nil {
+					return fmt.Errorf(
+						"prepared migration %q operation %q: %w",
+						definition.ID,
+						operation.ID,
+						err,
+					)
+				}
+				if before != prepared.Before {
+					return fmt.Errorf(
+						"prepared migration %q operation %q changed from %q to %q",
+						definition.ID,
+						operation.ID,
+						prepared.Before,
+						before,
+					)
+				}
+			case operationCommitted:
+				if err := verifyTypedOperation(ctx, options, operation, prepared.Before); err != nil {
+					return fmt.Errorf(
+						"committed migration %q operation %q: %w",
+						definition.ID,
+						operation.ID,
+						err,
+					)
+				}
+			}
+		}
 	}
 	if tx != nil {
 		for _, entry := range tx.Entries {
@@ -547,6 +941,7 @@ func validatePathInputs(options ReleaseOptions, path []Definition, tx *transacti
 }
 
 func prepareTransaction(
+	ctx context.Context,
 	options ReleaseOptions,
 	state appliedState,
 	path []Definition,
@@ -556,6 +951,7 @@ func prepareTransaction(
 		return transaction{}, err
 	}
 	expectedEntries := flattenEntries(path)
+	expectedOperations := flattenOperations(path)
 	expectedIDs := make([]string, 0, len(path))
 	for _, definition := range path {
 		expectedIDs = append(expectedIDs, definition.ID)
@@ -565,7 +961,7 @@ func prepareTransaction(
 			!slices.Equal(tx.Migrations, expectedIDs) {
 			return transaction{}, errors.New("existing migration transaction does not match release registry")
 		}
-		if tx.Phase == "prepared" || tx.Phase == "committing" || tx.Phase == "committed" {
+		if tx.Phase == "committing" || tx.Phase == "committed" {
 			return tx, nil
 		}
 	} else {
@@ -578,6 +974,7 @@ func prepareTransaction(
 			Phase:         "preparing",
 			Migrations:    expectedIDs,
 			Entries:       expectedEntries,
+			Operations:    expectedOperations,
 		}
 		if err := writeTransaction(options.ConfigHome, tx); err != nil {
 			return transaction{}, err
@@ -585,6 +982,9 @@ func prepareTransaction(
 	}
 	if len(tx.Entries) != len(expectedEntries) {
 		return transaction{}, errors.New("existing migration transaction entry count does not match registry")
+	}
+	if len(tx.Operations) != len(expectedOperations) {
+		return transaction{}, errors.New("existing migration transaction operation count does not match registry")
 	}
 	for index := range tx.Entries {
 		entry := &tx.Entries[index]
@@ -642,6 +1042,44 @@ func prepareTransaction(
 			return transaction{}, fmt.Errorf("verify migration %q destination: %w", entry.MigrationID, err)
 		}
 	}
+	for index := range tx.Operations {
+		operation := &tx.Operations[index]
+		expected := expectedOperations[index]
+		if operation.MigrationID != expected.MigrationID ||
+			operation.OperationID != expected.OperationID ||
+			operation.Kind != expected.Kind {
+			return transaction{}, errors.New(
+				"existing migration transaction operations do not match registry",
+			)
+		}
+		if operation.Before == "" {
+			definition, exists := registryOperation(path, operation.MigrationID, operation.OperationID)
+			if !exists {
+				return transaction{}, errors.New("typed migration operation is absent from registry path")
+			}
+			before, err := prepareTypedOperation(ctx, options, definition)
+			if err != nil {
+				return transaction{}, fmt.Errorf(
+					"prepare migration %q operation %q: %w",
+					operation.MigrationID,
+					operation.OperationID,
+					err,
+				)
+			}
+			operation.Before = before
+			operation.Phase = operationPrepared
+			if err := writeTransaction(options.ConfigHome, tx); err != nil {
+				return transaction{}, err
+			}
+		} else if operation.Phase != operationPrepared {
+			return transaction{}, fmt.Errorf(
+				"migration %q operation %q is in phase %q during preparation",
+				operation.MigrationID,
+				operation.OperationID,
+				operation.Phase,
+			)
+		}
+	}
 	tx.Phase = "prepared"
 	if err := writeTransaction(options.ConfigHome, tx); err != nil {
 		return transaction{}, err
@@ -666,6 +1104,34 @@ func flattenEntries(path []Definition) []transactionEntry {
 	return entries
 }
 
+func flattenOperations(path []Definition) []transactionOperation {
+	var operations []transactionOperation
+	for _, definition := range path {
+		for _, operation := range definition.Operations {
+			operations = append(operations, transactionOperation{
+				MigrationID: definition.ID,
+				OperationID: operation.ID,
+				Kind:        operation.Kind,
+			})
+		}
+	}
+	return operations
+}
+
+func registryOperation(path []Definition, migrationID, operationID string) (Operation, bool) {
+	for _, definition := range path {
+		if definition.ID != migrationID {
+			continue
+		}
+		for _, operation := range definition.Operations {
+			if operation.ID == operationID {
+				return operation, true
+			}
+		}
+	}
+	return Operation{}, false
+}
+
 func validateTransaction(options ReleaseOptions, registry Registry, tx transaction) error {
 	if tx.SchemaVersion != migrationStateSchema || tx.ToRelease != options.Version {
 		return errors.New("migration transaction identity does not match active release")
@@ -679,18 +1145,9 @@ func validateTransaction(options ReleaseOptions, registry Registry, tx transacti
 		(tx.ToRuntime != "" && !safeReleaseIdentity(tx.ToRuntime)) {
 		return errors.New("migration transaction contains an unsafe runtime identity")
 	}
-	path, err := registry.Path(tx.FromLayout)
+	path, err := transactionDefinitions(registry, tx)
 	if err != nil {
 		return err
-	}
-	for index, definition := range path {
-		if definition.ToLayout == tx.ToLayout {
-			path = path[:index+1]
-			break
-		}
-	}
-	if len(path) == 0 || path[len(path)-1].ToLayout != tx.ToLayout {
-		return errors.New("migration transaction layout does not match release registry")
 	}
 	expected := flattenEntries(path)
 	if len(expected) != len(tx.Entries) {
@@ -703,12 +1160,49 @@ func validateTransaction(options ReleaseOptions, registry Registry, tx transacti
 			entry.Destination != expected[index].Destination ||
 			entry.Consumer != expected[index].Consumer ||
 			entry.Recovery != expected[index].Recovery ||
-			(tx.Phase != "preparing" && entry.Digest == "") ||
+			(tx.Phase != "preparing" && tx.Phase != "rolled-back" && entry.Digest == "") ||
 			entry.Mode&0o022 != 0 {
 			return errors.New("migration transaction entry does not match release registry")
 		}
 	}
+	expectedOperations := flattenOperations(path)
+	if len(expectedOperations) != len(tx.Operations) {
+		return errors.New("migration transaction operation count does not match release registry")
+	}
+	for index, operation := range tx.Operations {
+		expected := expectedOperations[index]
+		if operation.MigrationID != expected.MigrationID ||
+			operation.OperationID != expected.OperationID ||
+			operation.Kind != expected.Kind {
+			return errors.New("migration transaction operation does not match release registry")
+		}
+		if operation.Before == "" && tx.Phase != "preparing" && tx.Phase != "rolled-back" {
+			return errors.New("migration transaction operation has no prepared state")
+		}
+		if operation.Before != "" {
+			if err := validateOperationState(operation); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+func transactionDefinitions(registry Registry, tx transaction) ([]Definition, error) {
+	path, err := registry.Path(tx.FromLayout)
+	if err != nil {
+		return nil, err
+	}
+	for index, definition := range path {
+		if definition.ToLayout == tx.ToLayout {
+			path = path[:index+1]
+			break
+		}
+	}
+	if len(path) == 0 || path[len(path)-1].ToLayout != tx.ToLayout {
+		return nil, errors.New("migration transaction layout does not match release registry")
+	}
+	return path, nil
 }
 
 func validateAppliedState(registry Registry, state appliedState) error {

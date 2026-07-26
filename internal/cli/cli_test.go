@@ -278,6 +278,50 @@ func TestMigrationPathsLoadExplicitMachineContext(t *testing.T) {
 	}
 }
 
+func TestMigrationEnvironmentDropsPreviousRuntimeContext(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "candidate")
+	environment := freshMigrationEnvironment(map[string]string{
+		"HOME":                           "/operator",
+		"PATH":                           "/usr/bin",
+		"SUBYARD_CONFIG_HOME":            "/operator/.config/subyard",
+		"SUBYARD_HOME":                   "/operator/.subyard",
+		"SUBYARD_STATE_DIR":              "/operator/custom-projects",
+		"SUBYARD_CONFIG_DIR":             "/operator/.subyard/runtime/releases/old/config",
+		"SUBYARD_CONFIG_LOADED":          "1",
+		"SUBYARD_ENGINE_CONTEXT":         "1",
+		"SUBYARD_ENGINE_CONTEXT_SCHEMA":  "1",
+		"SUBYARD_DISPATCH_PATH":          "/operator/.subyard/runtime/releases/old/bin/yard-engine",
+		"SUBYARD_YARD":                   "old-yard",
+		"E2E_VM_DISK":                    "10GiB",
+		"E2E_VM_TTL_MINUTES":             "1200",
+		"SUBYARD_SUDO_PREAUTHORIZED":     "1",
+		"SUBYARD_INTERNAL_TEST_SENTINEL": "preserved",
+	}, target)
+
+	for _, name := range []string{
+		"SUBYARD_CONFIG_DIR",
+		"SUBYARD_CONFIG_LOADED",
+		"SUBYARD_ENGINE_CONTEXT",
+		"SUBYARD_ENGINE_CONTEXT_SCHEMA",
+		"SUBYARD_DISPATCH_PATH",
+		"SUBYARD_YARD",
+		"E2E_VM_DISK",
+		"E2E_VM_TTL_MINUTES",
+	} {
+		if _, exists := environment[name]; exists {
+			t.Fatalf("migration inherited stale runtime field %s", name)
+		}
+	}
+	if environment["SUBYARD_REPOSITORY_ROOT"] != target ||
+		environment["SUBYARD_CONFIG_HOME"] != "/operator/.config/subyard" ||
+		environment["SUBYARD_HOME"] != "/operator/.subyard" ||
+		environment["SUBYARD_STATE_DIR"] != "/operator/custom-projects" ||
+		environment["SUBYARD_SUDO_PREAUTHORIZED"] != "1" ||
+		environment["SUBYARD_INTERNAL_TEST_SENTINEL"] != "preserved" {
+		t.Fatalf("migration lost bootstrap process inputs: %#v", environment)
+	}
+}
+
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
 	_, source, _, ok := runtime.Caller(0)

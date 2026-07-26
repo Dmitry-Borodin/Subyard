@@ -98,6 +98,12 @@ if [ -e "$recovery_root" ] || [ -L "$recovery_root" ]; then
     read_transaction "$recovery_root/transaction"
     case "$transaction_phase" in
       prepared|applying)
+        case "$transaction_step" in
+          state-migration|shell-integration|entrypoint-switch)
+            "$RUNTIME_ROOT/current/bin/yard" _migrate rollback >/dev/null \
+              || fail "incomplete source migration could not roll back release migrations"
+            ;;
+        esac
         owned_regular "$recovery_root/restore.sh" && [ -x "$recovery_root/restore.sh" ] \
           || fail "incomplete source recovery has no trusted restore entrypoint"
         "$recovery_root/restore.sh" --recovery-root "$recovery_root" --incomplete \
@@ -189,12 +195,20 @@ done
 install -d -m 0700 "$DATA_HOME" "$recovery_parent"
 work="$(mktemp -d "$recovery_parent/.pre-go-source.XXXXXX")"
 published=0
+release_migration_started=0
 cleanup() {
-  local status=$?
+  local status=$? migration_recovered=1
   trap - EXIT
   if [ "$status" -ne 0 ]; then
     if [ "$published" = 1 ]; then
-      if ! "$recovery_root/restore.sh" --recovery-root "$recovery_root" --incomplete; then
+      if [ "$release_migration_started" = 1 ] &&
+         ! "$candidate_yard" _migrate rollback >/dev/null; then
+        printf 'migrate-source-install: release migration rollback failed; journal retained at %s\n' \
+          "$recovery_root" >&2
+        migration_recovered=0
+      fi
+      if [ "$migration_recovered" = 1 ] &&
+         ! "$recovery_root/restore.sh" --recovery-root "$recovery_root" --incomplete; then
         printf 'migrate-source-install: automatic recovery failed; journal retained at %s\n' \
           "$recovery_root" >&2
       fi
@@ -546,6 +560,7 @@ for directory in "${project_directories[@]}"; do
 done
 
 write_transaction applying state-migration
+release_migration_started=1
 "$candidate_yard" _migrate apply >/dev/null \
   || fail "candidate could not migrate default and registered state"
 for name in "${yard_names[@]}"; do
@@ -554,6 +569,8 @@ for name in "${yard_names[@]}"; do
   "$candidate_yard" -Y "$name" _migrate check >/dev/null \
     || fail "candidate rejected migrated yard $name"
 done
+"$candidate_yard" _migrate finalize >/dev/null \
+  || fail "candidate could not finalize versioned host migrations"
 persist "$config_home"
 for directory in "${project_directories[@]}"; do
   [ ! -d "$directory" ] || persist "$directory"
@@ -598,6 +615,8 @@ fault_after entrypoint-switch
 
 write_transaction complete complete
 trap - EXIT
+"$candidate_yard" _migrate cleanup >/dev/null \
+  || printf 'migrate-source-install: source migration completed, but stale release recovery cleanup failed\n' >&2
 
 printf 'migrated source installation from %s\n' "$source_root"
 printf 'one-time source recovery: %s/restore.sh\n' "$recovery_root"

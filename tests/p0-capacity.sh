@@ -23,6 +23,11 @@ printf '%s\n' \
   '  *) exit 2 ;;' \
   'esac' > "$TMP/bin/go"
 chmod 0700 "$TMP/bin/go"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '# Keep this host-free unit isolated from any retained real-host Incus daemon.' \
+  'exit 1' > "$TMP/bin/incus"
+chmod 0700 "$TMP/bin/incus"
 
 # shellcheck source=dev/e2e/lib-p0-capacity.sh
 . "$ROOT/dev/e2e/lib-p0-capacity.sh"

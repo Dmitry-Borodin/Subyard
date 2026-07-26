@@ -149,11 +149,10 @@ grep -Fq 'P0_E2E_MIN_PEAK_MEMORY_RESERVE_BYTES:-67108864' \
 grep -Fq '> "$PEER_ROOT/config/config.env"' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'P0_PEER_YARD_TIMEOUT:-300' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer yard does not use its active config root with a bounded init"
-grep -Fq '"$RUNTIME_ROOT/current/bin/yard-engine" _migrate-test-yard' \
-  "$ROOT/dev/bootstrap-runtime.sh" \
-  && grep -Fq '"$DATA_HOME/recovery/pre-go-source/restore.sh"' \
-    "$ROOT/dev/bootstrap-runtime.sh" \
-  || fail "source bootstrap does not migrate test-yard after config import with recovery"
+grep -Fq '"$candidate_yard" _migrate finalize' \
+  "$ROOT/scripts/migrate-source-install.sh" \
+  && ! grep -Fq '_migrate-test-yard' "$ROOT/dev/bootstrap-runtime.sh" \
+  || fail "source bootstrap does not use the generic ordered migration lifecycle"
 
  ensure_identity
 lease_blob="$(awk '{print $2}' "$IDENTITY.pub")"
@@ -319,9 +318,10 @@ grep -Fq 'incus "$@" </dev/null; }' "$ROOT/dev/e2e/p0-real-incus.sh" \
   || fail "P0 real-Incus lane leaves YAML-reading control-plane stdin open"
 grep -Fq 'wait_ready p0-container container' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'wait_ready p0-vm virtual-machine' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq -- '-c security.secureboot=false' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'stopped during first boot; replacing it once' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'relaunching real Incus VM after first-boot stop' "$ROOT/dev/e2e/p0-real-incus.sh" \
-  || fail "P0 real-Incus lane does not bound first-boot VM recovery"
+  || fail "P0 real-Incus lane does not bound first-boot VM recovery with deterministic boot policy"
 grep -Fq 'cleanup delete of %s failed; retrying (%s/3)' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'refusing to delete unmarked instance' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'could not delete marked instance $name after 3 attempts' "$ROOT/dev/e2e/p0-real-incus.sh" \
@@ -340,6 +340,29 @@ grep -Fq '. "$ROOT/tests/helpers/test-context.sh"' "$ROOT/dev/e2e/p0-source-upgr
 grep -Fq 's/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/' \
   "$ROOT/dev/e2e/p0-source-upgrade.sh" \
   || fail "P0 source-upgrade lane does not verify the retired template migration"
+grep -Fq 'OLD_VERSION=0.3.1' "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'MISSED_VERSION=0.4.0' "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'host_incus config device get "$CONSUMER_INSTANCE"' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'running standard broker acquire from the pre-existing consumer' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'consumer restarted during route reconciliation' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  || fail "release catch-up lanes do not cover both published histories and live consumer routing"
+grep -Fq 'cleanup_owned_host_incus' "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq '[ "$source" = "$PLATFORM_STORAGE" ]' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'host_incus storage delete default --project default' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  || fail "release catch-up cleanup can leave its fixture-owned default Incus pool behind"
+grep -Fq 'dev/agent-e2e.sh --wait 20m --vm both' \
+  "$ROOT/dev/e2e/release-migration-consumer.sh" \
+  && grep -Fq 'dev/agent-e2e.sh --verify-boundary' \
+    "$ROOT/dev/e2e/release-migration-consumer.sh" \
+  || fail "release catch-up consumer bypasses the standard broker facade"
+grep -Fq 'select(.slot_id == $slot)' "$ROOT/dev/agent-e2e.sh" \
+  && grep -Fq 'current lease slot is absent from pool status' "$ROOT/dev/agent-e2e.sh" \
+  || fail "agent E2E boundary verification is coupled to unrelated concurrent slots"
 ! grep -Fq 'test-vms-inner' "$ROOT/dev/agent-e2e.sh" \
   || fail "agent E2E transport still invokes the privileged lifecycle worker"
 

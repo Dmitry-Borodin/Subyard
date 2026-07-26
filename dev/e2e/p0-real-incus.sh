@@ -108,7 +108,8 @@ fi
 launch_real_vm() {
   real_incus_quiet launch "$VM_IMAGE" p0-vm --vm --project "$PROJECT" \
     --storage default \
-    -c limits.cpu=1 -c limits.memory=1GiB -c user.subyard.p0="$MARKER" \
+    -c limits.cpu=1 -c limits.memory=1GiB -c security.secureboot=false \
+    -c user.subyard.p0="$MARKER" \
     -d root,size=5GiB
 }
 run_with_progress "launching real Incus VM (a clean allocation may download an image)" \

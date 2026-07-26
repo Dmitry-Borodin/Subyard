@@ -203,7 +203,8 @@ if [ "$(id -u)" -eq 0 ]; then
   if env -u CCUSAGE_TEST_ALLOW_NON_ROOT \
     CCUSAGE_VERSION=1.2.3 CCUSAGE_SHA256_AMD64="$sha_123_amd64" \
     CCUSAGE_SHA256_ARM64="$sha_123_arm64" \
-    setpriv --reuid=65534 --regid=65534 --clear-groups bash "$HOOK" >/dev/null 2>"$nonroot_err"; then
+    setpriv --reuid=65534 --regid=65534 --clear-groups bash -s < "$HOOK" \
+      >/dev/null 2>"$nonroot_err"; then
     fail "non-root provision unexpectedly succeeded"
   fi
 else

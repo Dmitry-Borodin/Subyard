@@ -142,11 +142,9 @@ read -r version target_layout < <(jq -er --arg arch "$host_arch" '
   [(.version | select(type == "string" and length > 0)), (.configLayout // 1)] | @tsv
   ' "$MANIFEST") \
   || { printf 'install-runtime-release: incompatible release manifest\n' >&2; exit 1; }
-# The first condition is the v0.1 wire identity; canonicalRepository records the current home.
 jq -e --arg artifact "$(basename "$BUNDLE")" --arg sha "${actual,,}" --arg version "$version" '
   .schemaVersion == 1 and .artifact == $artifact and (.sha256 | ascii_downcase) == $sha and
   .version == $version and .sourceRepository == "github.com/Dmitry-Borodin/Subyard" and
-  (.canonicalRepository // "github.com/Subyard/Subyard") == "github.com/Subyard/Subyard" and
   (.sourceRevision | type == "string" and length > 0)' "$PROVENANCE" >/dev/null \
   || { printf 'install-runtime-release: provenance does not match the bundle\n' >&2; exit 1; }
 

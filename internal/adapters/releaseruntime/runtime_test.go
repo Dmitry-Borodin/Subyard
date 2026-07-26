@@ -31,6 +31,13 @@ func TestPrepareValidatesOptionsAndKeepsChecksMutating(t *testing.T) {
 	if err != nil || check.Effect != domain.CommandMutate {
 		t.Fatalf("update check can write its cache and must stay mutating: %#v, %v", check, err)
 	}
+	update, err := release.Prepare(context.Background(), []string{"--version", "1.2.3"})
+	if err != nil ||
+		!strings.Contains(strings.Join(update.Consequences, " "), "lifecycle migration") ||
+		strings.Contains(strings.Join(check.Consequences, " "), "lifecycle migration") {
+		t.Fatalf("release migration consequences are incomplete: update=%#v check=%#v err=%v",
+			update.Consequences, check.Consequences, err)
+	}
 	for _, arguments := range [][]string{
 		{"--offline"},
 		{"--runtime-root", "relative", "--version", "1"},

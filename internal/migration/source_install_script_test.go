@@ -574,7 +574,7 @@ func newSourceInstallFixture(t *testing.T, marker string) sourceInstallFixture {
 	writeTestFile(t, candidate, 0o700, `#!/bin/sh
 case "$*" in
   --version) printf 'yard fixture\n' ;;
-  '_migrate check'|'_migrate apply'|'-Y named _migrate check'|'-Y named _migrate apply') ;;
+  '_migrate check'|'_migrate apply'|'_migrate finalize'|'_migrate rollback'|'_migrate cleanup'|'-Y named _migrate check'|'-Y named _migrate apply') ;;
 	  '_migrate paths') printf '{"dataHome":"%s","configHome":"%s"}\n' "$TEST_DATA_HOME" "$TEST_CONFIG_HOME" ;;
 	  _migrate\ overlay-manifest\ *)
 	    printf '%s\n' '{"schemaVersion":2,"sourceRoot":"'"$TEST_SOURCE_ROOT"'","dataHome":"'"$TEST_DATA_HOME"'","configHome":"'"$TEST_CONFIG_HOME"'","entries":['\

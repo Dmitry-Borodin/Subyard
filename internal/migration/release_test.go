@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -46,12 +48,12 @@ func TestReleaseMigrationPrepareCommitRollbackAndRollForward(t *testing.T) {
 	if state.Layout != 1 {
 		t.Fatalf("prepared state layout = %d, want 1", state.Layout)
 	}
-	if changed, err := FinalizeActive(options); err != nil || changed {
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || changed {
 		t.Fatalf("inactive candidate finalized: changed=%v err=%v", changed, err)
 	}
 
 	activateFixtureRelease(t, options)
-	if changed, err := FinalizeActive(options); err != nil || !changed {
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
 		t.Fatalf("active candidate did not finalize: changed=%v err=%v", changed, err)
 	}
 	if _, err := os.Lstat(source); !os.IsNotExist(err) {
@@ -67,7 +69,7 @@ func TestReleaseMigrationPrepareCommitRollbackAndRollForward(t *testing.T) {
 		t.Fatalf("committed state = %#v", state)
 	}
 
-	report, err = RollbackRelease(options)
+	report, err = RollbackRelease(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +86,7 @@ func TestReleaseMigrationPrepareCommitRollbackAndRollForward(t *testing.T) {
 		t.Fatal(err)
 	}
 	activateFixtureRelease(t, options)
-	if changed, err := FinalizeActive(options); err != nil || !changed {
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
 		t.Fatalf("roll-forward did not finalize: changed=%v err=%v", changed, err)
 	}
 	if _, err := os.Lstat(source); !os.IsNotExist(err) {
@@ -126,6 +128,79 @@ func TestReleaseMigrationResumesInterruptedPrepare(t *testing.T) {
 	assertFileContents(t, destination, "TOKEN=legacy\n")
 }
 
+func TestReleaseMigrationRollsBackInterruptedPrepare(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		name := "before-entry"
+		if partial {
+			name = "after-destination"
+		}
+		t.Run(name, func(t *testing.T) {
+			options, source, destination := releaseMigrationFixture(t)
+			registry, err := LoadRegistry(options.RegistryPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, err := registry.Path(1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx := transaction{
+				SchemaVersion: migrationStateSchema,
+				FromLayout:    1,
+				ToLayout:      2,
+				ToRelease:     options.Version,
+				Phase:         "preparing",
+				Migrations:    []string{path[0].ID},
+				Entries:       flattenEntries(path),
+			}
+			if partial {
+				info, exists, err := inspectMoveFile(
+					options,
+					tx.Entries[0].Scope,
+					tx.Entries[0].Source,
+				)
+				if err != nil || !exists {
+					t.Fatalf("inspect interrupted source: exists=%v err=%v", exists, err)
+				}
+				tx.Entries[0].Digest = info.Digest
+				tx.Entries[0].Mode = uint32(info.Mode.Perm())
+				if err := publishMatchingFile(
+					options.ConfigHome,
+					source,
+					destination,
+					info.Mode,
+					info.Digest,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writeTransaction(options.ConfigHome, tx); err != nil {
+				t.Fatal(err)
+			}
+			report, err := RollbackRelease(context.Background(), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !report.Changed || report.Layout != 1 {
+				t.Fatalf("interrupted prepare rollback report: %#v", report)
+			}
+			assertFileContents(t, source, "TOKEN=legacy\n")
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatalf("interrupted prepare rollback retained destination: %v", err)
+			}
+			rolledBack, exists, err := readTransaction(options.ConfigHome, options.Version)
+			if err != nil || !exists || rolledBack.Phase != "rolled-back" {
+				t.Fatalf(
+					"interrupted prepare transaction = %#v exists=%v err=%v",
+					rolledBack,
+					exists,
+					err,
+				)
+			}
+		})
+	}
+}
+
 func TestReleaseMigrationResumesInterruptedFinalize(t *testing.T) {
 	options, source, destination := releaseMigrationFixture(t)
 	if _, err := ApplyRelease(context.Background(), options); err != nil {
@@ -144,7 +219,7 @@ func TestReleaseMigrationResumesInterruptedFinalize(t *testing.T) {
 	if err := removeMatchingFile(source, tx.Entries[0].Digest); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := FinalizeActive(options); err != nil || !changed {
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
 		t.Fatalf("interrupted finalize did not resume: changed=%v err=%v", changed, err)
 	}
 	if _, err := os.Lstat(source); !os.IsNotExist(err) {
@@ -180,7 +255,7 @@ func TestReleaseMigrationResumesAfterStateCommitAndDuringRollback(t *testing.T) 
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if changed, err := FinalizeActive(options); err != nil || !changed {
+		if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
 			t.Fatalf("state-committed finalize did not resume: changed=%v err=%v", changed, err)
 		}
 	})
@@ -191,7 +266,7 @@ func TestReleaseMigrationResumesAfterStateCommitAndDuringRollback(t *testing.T) 
 			t.Fatal(err)
 		}
 		activateFixtureRelease(t, options)
-		if _, err := FinalizeActive(options); err != nil {
+		if _, err := FinalizeActive(context.Background(), options); err != nil {
 			t.Fatal(err)
 		}
 		tx, exists, err := readTransaction(options.ConfigHome, options.Version)
@@ -215,7 +290,7 @@ func TestReleaseMigrationResumesAfterStateCommitAndDuringRollback(t *testing.T) 
 		if err := removeMatchingFile(destination, tx.Entries[0].Digest); err != nil {
 			t.Fatal(err)
 		}
-		report, err := RollbackRelease(options)
+		report, err := RollbackRelease(context.Background(), options)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -232,11 +307,11 @@ func TestReleaseMigrationFailedRollbackDoesNotCreateMixedLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	activateFixtureRelease(t, options)
-	if _, err := FinalizeActive(options); err != nil {
+	if _, err := FinalizeActive(context.Background(), options); err != nil {
 		t.Fatal(err)
 	}
 	writeMigrationFixture(t, destination, "TOKEN=changed\n")
-	if _, err := RollbackRelease(options); err == nil {
+	if _, err := RollbackRelease(context.Background(), options); err == nil {
 		t.Fatal("rollback accepted a changed destination")
 	}
 	if _, err := os.Lstat(source); !os.IsNotExist(err) {
@@ -314,6 +389,45 @@ func TestRegistryRejectsNonContiguousAndUnsafeDefinitions(t *testing.T) {
 	if err := registry.Validate(); err == nil {
 		t.Fatal("registry accepted a skipped layout")
 	}
+
+	registry.Migrations[0] = Definition{
+		ID:             "typed",
+		FromLayout:     1,
+		ToLayout:       2,
+		Resources:      []string{"typed-resource"},
+		FinalizePolicy: orderedFinalizePolicy,
+		RollbackPolicy: orderedRollbackPolicy,
+		Operations: []Operation{{
+			ID: "arbitrary", Kind: "shell-command",
+		}},
+	}
+	if err := registry.Validate(); err == nil {
+		t.Fatal("registry accepted an arbitrary operation kind")
+	}
+	registry.Migrations[0].Operations[0].Kind = OperationKindTestYardOwnerV1
+	registry.Migrations[0].Moves = []Move{{
+		Scope: "config-home", Source: "legacy/config.env",
+		Destination: "current/config.env", Consumer: "assignments",
+	}}
+	if err := registry.Validate(); err != nil {
+		t.Fatalf("registry rejected ordered moves plus typed operations: %v", err)
+	}
+}
+
+func TestShippedRegistryOrdersOwnerBeforeRouteConsumers(t *testing.T) {
+	registry, err := LoadRegistry(filepath.Join("..", "..", "config", "migrations.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.Migrations) != 1 {
+		t.Fatalf("shipped migration count = %d, want 1", len(registry.Migrations))
+	}
+	operations := registry.Migrations[0].Operations
+	if len(operations) != 2 ||
+		operations[0].Kind != OperationKindTestYardOwnerV1 ||
+		operations[1].Kind != OperationKindTestYardRouteConsumersV1 {
+		t.Fatalf("shipped operation order = %#v", operations)
+	}
 }
 
 func TestReleaseMigrationRejectsCorruptDurableState(t *testing.T) {
@@ -356,6 +470,419 @@ func TestReleaseMigrationRejectsCorruptDurableState(t *testing.T) {
 			t.Fatal("check accepted an unknown transaction phase")
 		}
 	})
+}
+
+func TestReleaseMigrationRequiresAppliedRegistryPrefix(t *testing.T) {
+	options, _, destination := releaseMigrationFixture(t)
+	registry, err := LoadRegistry(options.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.CurrentLayout = 3
+	registry.Migrations = append(registry.Migrations, Definition{
+		ID:             "rotate-current-assignments",
+		FromLayout:     2,
+		ToLayout:       3,
+		Resources:      []string{"fixture-assignments"},
+		FinalizePolicy: fileFinalizePolicy,
+		RollbackPolicy: fileRollbackPolicy,
+		Moves: []Move{{
+			Scope: "config-home", Source: "current/config.env",
+			Destination: "final/config.env", Consumer: "assignments",
+		}},
+	})
+	writeRegistryFixture(t, options.RegistryPath, registry)
+	writeMigrationFixture(t, destination, "TOKEN=legacy\n")
+	if err := writeAppliedState(options.ConfigHome, appliedState{
+		SchemaVersion: migrationStateSchema,
+		Layout:        2,
+		Applied:       []string{"move-legacy-assignments"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := CheckRelease(context.Background(), options)
+	if err != nil {
+		t.Fatalf("extended registry rejected its applied prefix: %v", err)
+	}
+	if report.Layout != 2 || report.TargetLayout != 3 ||
+		!slices.Equal(report.RequiredMigrations, []string{"rotate-current-assignments"}) {
+		t.Fatalf("extended registry report = %#v", report)
+	}
+
+	registry.Migrations[0].ID = "rewritten-layout-two"
+	writeRegistryFixture(t, options.RegistryPath, registry)
+	if _, err := CheckRelease(context.Background(), options); err == nil ||
+		err.Error() != "migration applied-state IDs do not match its layout" {
+		t.Fatalf("rewritten registry history error = %v", err)
+	}
+}
+
+func TestReleaseMigrationRunsTypedOperationThroughGenericLifecycle(t *testing.T) {
+	options, legacyRegistration, currentRegistration, calls := typedReleaseMigrationFixture(t, "0")
+
+	report, err := CheckRelease(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Layout != 1 || report.TargetLayout != 2 ||
+		!slices.Equal(report.RequiredMigrations, []string{"migrate-test-yard-owner"}) {
+		t.Fatalf("unexpected typed migration check report: %#v", report)
+	}
+	if _, err := os.Lstat(migrationRoot(options.ConfigHome)); !os.IsNotExist(err) {
+		t.Fatal("typed migration check changed durable state")
+	}
+
+	report, err = ApplyRelease(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Phase != "prepared" || !report.Pending {
+		t.Fatalf("typed migration did not prepare: %#v", report)
+	}
+	tx, exists, err := readTransaction(options.ConfigHome, options.Version)
+	if err != nil || !exists || len(tx.Operations) != 1 ||
+		tx.Operations[0].Before != "legacy-directory" ||
+		tx.Operations[0].Phase != operationPrepared {
+		t.Fatalf("typed operation checkpoint = %#v, exists=%v err=%v", tx.Operations, exists, err)
+	}
+	if _, err := os.Stat(legacyRegistration); err != nil {
+		t.Fatal("prepare changed the legacy registration")
+	}
+
+	activateFixtureRelease(t, options)
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
+		t.Fatalf("typed migration finalize: changed=%v err=%v", changed, err)
+	}
+	if _, err := os.Stat(currentRegistration); err != nil {
+		t.Fatalf("typed migration did not publish current registration: %v", err)
+	}
+	if _, err := os.Lstat(legacyRegistration); !os.IsNotExist(err) {
+		t.Fatal("typed migration retained the legacy registration")
+	}
+	state, err := readAppliedState(options.ConfigHome, 1)
+	if err != nil || state.Layout != 2 ||
+		!slices.Equal(state.Applied, []string{"migrate-test-yard-owner"}) {
+		t.Fatalf("typed migration state = %#v, %v", state, err)
+	}
+
+	if _, err := RollbackRelease(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacyRegistration); err != nil {
+		t.Fatalf("typed rollback did not restore legacy registration: %v", err)
+	}
+	if _, err := os.Lstat(currentRegistration); !os.IsNotExist(err) {
+		t.Fatal("typed rollback retained current registration")
+	}
+	log, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"-Y e2e-yard test-vms status",
+		"-Y e2e-yard teardown --yes",
+		"-Y test-yard init --yes",
+		"-Y test-yard teardown --yes",
+		"-Y e2e-yard init --yes",
+	} {
+		if !strings.Contains(string(log), expected+"\n") {
+			t.Fatalf("typed migration calls omitted %q:\n%s", expected, log)
+		}
+	}
+}
+
+func TestReleaseMigrationReopensCommittedNoopAfterSourceIngress(t *testing.T) {
+	options, legacyRegistration, currentRegistration, _ := typedReleaseMigrationFixture(t, "0")
+	if err := os.Remove(legacyRegistration); err != nil {
+		t.Fatal(err)
+	}
+	legacyProjectLock := filepath.Join(filepath.Dir(legacyRegistration), "projects", ".lock")
+	writeMigrationFixture(t, legacyProjectLock, "")
+
+	if _, err := ApplyRelease(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	activateFixtureRelease(t, options)
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
+		t.Fatalf("initial absent migration finalize: changed=%v err=%v", changed, err)
+	}
+	tx, exists, err := readTransaction(options.ConfigHome, options.Version)
+	if err != nil || !exists || tx.Operations[0].Before != "absent" ||
+		tx.Operations[0].Phase != operationCommitted {
+		t.Fatalf("initial no-op transaction = %#v, exists=%v err=%v", tx.Operations, exists, err)
+	}
+
+	writeMigrationFixture(t, legacyRegistration, "YARD_TEMPLATE=test-vms\n")
+	report, err := ApplyRelease(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Changed || !report.Pending || report.Phase != "prepared" ||
+		!slices.Equal(report.RequiredMigrations, []string{"migrate-test-yard-owner"}) {
+		t.Fatalf("late source ingress did not reopen the registry transition: %#v", report)
+	}
+	tx, exists, err = readTransaction(options.ConfigHome, options.Version)
+	if err != nil || !exists || tx.Operations[0].Before != "legacy-directory+projects" ||
+		tx.Operations[0].Phase != operationPrepared {
+		t.Fatalf("reopened operation = %#v, exists=%v err=%v", tx.Operations, exists, err)
+	}
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
+		t.Fatalf("late source ingress finalize: changed=%v err=%v", changed, err)
+	}
+	if _, err := os.Stat(currentRegistration); err != nil {
+		t.Fatalf("late source ingress did not converge to test-yard: %v", err)
+	}
+	if _, err := os.Lstat(legacyRegistration); !os.IsNotExist(err) {
+		t.Fatal("late source ingress retained e2e-yard")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(currentRegistration), "projects", ".lock")); err != nil {
+		t.Fatalf("late source ingress did not recreate canonical project state: %v", err)
+	}
+}
+
+func TestReleaseMigrationTypedOperationBlocksActiveLeaseBeforeState(t *testing.T) {
+	options, legacyRegistration, _, calls := typedReleaseMigrationFixture(t, "90")
+	if _, err := CheckRelease(context.Background(), options); err == nil ||
+		!strings.Contains(err.Error(), "active lease") {
+		t.Fatalf("typed migration accepted an active lease: %v", err)
+	}
+	if _, err := ApplyRelease(context.Background(), options); err == nil ||
+		!strings.Contains(err.Error(), "active lease") {
+		t.Fatalf("typed migration apply accepted an active lease: %v", err)
+	}
+	if _, err := os.Stat(legacyRegistration); err != nil {
+		t.Fatal("active-lease rejection changed legacy registration")
+	}
+	if _, err := os.Lstat(migrationRoot(options.ConfigHome)); !os.IsNotExist(err) {
+		t.Fatal("active-lease rejection created migration state")
+	}
+	log, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(log), "teardown") {
+		t.Fatal("active-lease rejection reached lifecycle mutation")
+	}
+}
+
+func TestReleaseMigrationTypedOperationRechecksLeaseBeforeCommit(t *testing.T) {
+	options, legacyRegistration, _, calls := typedReleaseMigrationFixture(t, "0")
+	if _, err := ApplyRelease(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	options.Environment = replaceTestEnvironment(options.Environment, "MIGRATION_TTL", "90")
+	activateFixtureRelease(t, options)
+	if _, err := FinalizeActive(context.Background(), options); err == nil ||
+		!strings.Contains(err.Error(), "active lease") {
+		t.Fatalf("typed finalize accepted a newly active lease: %v", err)
+	}
+	if _, err := os.Stat(legacyRegistration); err != nil {
+		t.Fatal("failed pre-commit lease check changed the legacy registration")
+	}
+	tx, exists, err := readTransaction(options.ConfigHome, options.Version)
+	if err != nil || !exists || tx.Operations[0].Phase != operationPrepared {
+		t.Fatalf("failed pre-commit checkpoint = %#v, exists=%v err=%v", tx.Operations, exists, err)
+	}
+	if _, err := RollbackRelease(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(log), "teardown") {
+		t.Fatal("new active lease reached lifecycle mutation")
+	}
+}
+
+func replaceTestEnvironment(environment []string, name, value string) []string {
+	result := make([]string, 0, len(environment)+1)
+	prefix := name + "="
+	for _, assignment := range environment {
+		if strings.HasPrefix(assignment, prefix) {
+			continue
+		}
+		result = append(result, assignment)
+	}
+	return append(result, prefix+value)
+}
+
+func typedReleaseMigrationFixture(
+	t *testing.T,
+	ttl string,
+) (ReleaseOptions, string, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config-home")
+	dataHome := filepath.Join(root, "data-home")
+	runtimeRoot := filepath.Join(root, "runtime")
+	repositoryRoot := filepath.Join(runtimeRoot, "releases", "2.0.0-test-release")
+	for _, directory := range []string{
+		configHome,
+		dataHome,
+		filepath.Join(repositoryRoot, "config"),
+		filepath.Join(runtimeRoot, "releases", "1.0.0-test-release"),
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry := Registry{
+		SchemaVersion: 1,
+		MinimumLayout: 1,
+		CurrentLayout: 2,
+		Migrations: []Definition{{
+			ID:             "migrate-test-yard-owner",
+			FromLayout:     1,
+			ToLayout:       2,
+			Resources:      []string{"test-yard-owner"},
+			FinalizePolicy: orderedFinalizePolicy,
+			RollbackPolicy: orderedRollbackPolicy,
+			Operations: []Operation{{
+				ID: "test-yard-owner", Kind: OperationKindTestYardOwnerV1,
+			}},
+		}},
+	}
+	payload, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryPath := filepath.Join(repositoryRoot, "config", "migrations.json")
+	if err := os.WriteFile(registryPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("releases", "1.0.0-test-release"),
+		filepath.Join(runtimeRoot, "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	legacyRegistration := filepath.Join(configHome, "yards", "e2e-yard", "config.env")
+	currentRegistration := filepath.Join(configHome, "yards", "test-yard", "config.env")
+	writeMigrationFixture(t, legacyRegistration, "YARD_TEMPLATE=test-vms\n")
+	writeMigrationFixture(
+		t,
+		filepath.Join(dataHome, "e2e", "controllers", "e2e-yard", ".operator-enrollment-v1"),
+		"managed\n",
+	)
+	calls := filepath.Join(root, "calls")
+	projectState := filepath.Join(root, "incus-state")
+	writeMigrationFixture(t, projectState, "legacy\n")
+	executable := filepath.Join(root, "yard")
+	writeMigrationFixture(t, executable, `#!/bin/sh
+set -eu
+[ "$SUBYARD_INTERNAL_MIGRATION_CHILD" = 1 ]
+printf '%s\n' "$*" >> "$MIGRATION_CALLS"
+update_projects() {
+  current="$(cat "$MIGRATION_INCUS_STATE")"
+  case "$1:$current" in
+    remove-legacy:legacy) printf 'none\n' > "$MIGRATION_INCUS_STATE" ;;
+    remove-legacy:both) printf 'current\n' > "$MIGRATION_INCUS_STATE" ;;
+    remove-current:current) printf 'none\n' > "$MIGRATION_INCUS_STATE" ;;
+    remove-current:both) printf 'legacy\n' > "$MIGRATION_INCUS_STATE" ;;
+    add-legacy:none) printf 'legacy\n' > "$MIGRATION_INCUS_STATE" ;;
+    add-legacy:current) printf 'both\n' > "$MIGRATION_INCUS_STATE" ;;
+    add-current:none) printf 'current\n' > "$MIGRATION_INCUS_STATE" ;;
+    add-current:legacy) printf 'both\n' > "$MIGRATION_INCUS_STATE" ;;
+  esac
+}
+case "$*" in
+  "-Y e2e-yard teardown --yes")
+    update_projects remove-legacy
+    find "$MIGRATION_CONFIG_HOME/yards/e2e-yard/projects" -depth -delete 2>/dev/null || :
+    ;;
+  "-Y test-yard teardown --yes") update_projects remove-current ;;
+  "-Y e2e-yard init --yes")
+    update_projects add-legacy
+    install -d -m 0700 "$MIGRATION_CONFIG_HOME/yards/e2e-yard/projects"
+    : > "$MIGRATION_CONFIG_HOME/yards/e2e-yard/projects/.lock"
+    chmod 0600 "$MIGRATION_CONFIG_HOME/yards/e2e-yard/projects/.lock"
+    ;;
+  "-Y test-yard init --yes")
+    update_projects add-current
+    install -d -m 0700 "$MIGRATION_CONFIG_HOME/yards/test-yard/projects"
+    : > "$MIGRATION_CONFIG_HOME/yards/test-yard/projects/.lock"
+    chmod 0600 "$MIGRATION_CONFIG_HOME/yards/test-yard/projects/.lock"
+    ;;
+esac
+if [ "${3:-}" = test-vms ] && [ "${4:-}" = status ]; then
+  printf 'ttl_remaining_seconds\t%s\n' "$MIGRATION_TTL"
+fi
+`)
+	if err := os.Chmod(executable, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	incus := filepath.Join(root, "incus")
+	writeMigrationFixture(t, incus, `#!/bin/sh
+set -eu
+state="$(cat "$MIGRATION_INCUS_STATE")"
+case "$*" in
+  "list yard-e2e-yard --project subyard-e2e-yard --format=json")
+    printf '[{"name":"yard-e2e-yard","status":"RUNNING"}]\n'
+    ;;
+  "project list --format=json")
+    case "$state" in
+      legacy) printf '[{"name":"subyard-e2e-yard"}]\n' ;;
+      current) printf '[{"name":"subyard-test-yard"}]\n' ;;
+      both) printf '[{"name":"subyard-e2e-yard"},{"name":"subyard-test-yard"}]\n' ;;
+      none) printf '[]\n' ;;
+    esac
+    ;;
+  "project get subyard-e2e-yard features.images")
+    [ "$state" = legacy ] || [ "$state" = both ]
+    printf 'false\n'
+    ;;
+  "project get subyard-test-yard features.images")
+    [ "$state" = current ] || [ "$state" = both ]
+    printf 'false\n'
+    ;;
+  "project create subyard-e2e-yard -c features.images=false")
+    case "$state" in
+      none) printf 'legacy\n' > "$MIGRATION_INCUS_STATE" ;;
+      current) printf 'both\n' > "$MIGRATION_INCUS_STATE" ;;
+    esac
+    ;;
+  "project create subyard-test-yard -c features.images=false")
+    case "$state" in
+      none) printf 'current\n' > "$MIGRATION_INCUS_STATE" ;;
+      legacy) printf 'both\n' > "$MIGRATION_INCUS_STATE" ;;
+    esac
+    ;;
+  *) exit 2 ;;
+esac
+`)
+	if err := os.Chmod(incus, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return ReleaseOptions{
+		RegistryPath:   registryPath,
+		RepositoryRoot: repositoryRoot,
+		RuntimeRoot:    runtimeRoot,
+		ConfigHome:     configHome,
+		DataHome:       dataHome,
+		Version:        "2.0.0-test",
+		Executable:     executable,
+		Incus:          incus,
+		Environment: append(
+			os.Environ(),
+			"MIGRATION_CALLS="+calls,
+			"MIGRATION_CONFIG_HOME="+configHome,
+			"MIGRATION_TTL="+ttl,
+			"MIGRATION_INCUS_STATE="+projectState,
+		),
+	}, legacyRegistration, currentRegistration, calls
+}
+
+func writeRegistryFixture(t *testing.T, path string, registry Registry) {
+	t.Helper()
+	payload, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func releaseMigrationFixture(t *testing.T) (ReleaseOptions, string, string) {

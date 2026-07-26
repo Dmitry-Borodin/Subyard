@@ -134,7 +134,9 @@ Release-owned transitions are declared in
 state/recovery; `_migrate check` is read-only. The
 [runtime installer](../scripts/install-runtime-release.sh) prepares data before activation,
 finalizes it only after the candidate is active, and restores the previous layout on rollback.
-Migrations cannot execute release scripts or leave compatibility symlinks at old paths.
+Every required transition from the persisted layout is applied in registry order, including typed
+lifecycle transitions. Migrations cannot execute registry-supplied commands or leave compatibility
+symlinks at old paths.
 
 Before a project adapter starts, Go resolves paths/names/qualified selectors across yards, loads the
 owning context, validates the typed record and supplies a `SUBYARD_PROJECT_*` snapshot. Physical

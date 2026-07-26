@@ -179,13 +179,64 @@ reconcile_agent_account() {
   chown root:"$primary" "$home/.ssh/authorized_keys"
 }
 
+slot_home_has_managed_marker() {
+  local home="$1" marker="$1/.subyard-managed"
+  [ -f "$marker" ] \
+    && [ ! -L "$marker" ] \
+    && [ "$(stat -c '%u:%g:%a' "$marker")" = 0:0:644 ] \
+    && [ "$(cat "$marker" 2>/dev/null || true)" = test-vms-v1 ]
+}
+
+legacy_slot_home_is_recognizable() {
+  local home="$1" ssh_dir="$1/.ssh" keys="$1/.ssh/authorized_keys"
+  local ssh_gid keys_gid
+  [ -d "$home" ] && [ ! -L "$home" ] \
+    && [ "$(stat -c '%u:%g:%a' "$home")" = 0:0:755 ] \
+    && [ -d "$ssh_dir" ] && [ ! -L "$ssh_dir" ] \
+    && [ "$(stat -c '%u:%a' "$ssh_dir")" = 0:750 ] \
+    && [ -f "$keys" ] && [ ! -L "$keys" ] && [ ! -s "$keys" ] \
+    && [ "$(stat -c '%u:%a' "$keys")" = 0:640 ] \
+    || return 1
+  ssh_gid="$(stat -c '%g' "$ssh_dir")"
+  keys_gid="$(stat -c '%g' "$keys")"
+  [ "$ssh_gid" = "$keys_gid" ] && [ "$ssh_gid" -ne 0 ]
+}
+
 reconcile_slot_accounts() {
-  local slot user home primary
+  local slot user home primary entry actual_home actual_shell created
   for slot in $(seq 1 "$E2E_VM_SLOT_COUNT"); do
     user="subyard-e2e-slot-$slot"
     home="/var/lib/subyard/e2e-slots/$slot"
-    if ! id -u "$user" >/dev/null 2>&1; then
+    created=0
+    if id -u "$user" >/dev/null 2>&1; then
+      entry="$(getent passwd "$user")" \
+        || { printf 'cannot inspect existing slot account %s\n' "$user" >&2; return 1; }
+      IFS=: read -r _ _ _ _ _ actual_home actual_shell <<<"$entry"
+      [ "$actual_home" = "$home" ] && [ "$actual_shell" = /bin/sh ] \
+        || { printf 'existing slot account %s is not Subyard-shaped\n' "$user" >&2; return 1; }
+      [ -e "$home" ] \
+        || { printf 'existing slot account %s has no managed home\n' "$user" >&2; return 1; }
+    else
+      if [ -e "$home" ]; then
+        if [ -e "$home/.subyard-managed" ] || [ -L "$home/.subyard-managed" ]; then
+          slot_home_has_managed_marker "$home" \
+            || { printf 'existing slot home %s is not Subyard-managed\n' "$home" >&2; return 1; }
+        else
+          legacy_slot_home_is_recognizable "$home" \
+            || { printf 'existing slot home %s is not Subyard-managed\n' "$home" >&2; return 1; }
+        fi
+      fi
       useradd --system --create-home --home-dir "$home" --shell /bin/sh "$user"
+      created=1
+    fi
+    if [ -e "$home/.subyard-managed" ] || [ -L "$home/.subyard-managed" ]; then
+      slot_home_has_managed_marker "$home" \
+        || { printf 'slot home %s has an unexpected managed marker\n' "$home" >&2; return 1; }
+    elif [ "$created" = 0 ] && [ -e "$home" ]; then
+      # Upgrade only the exact pre-marker layout created by older test-vms
+      # releases. A merely colliding account or directory is never adopted.
+      legacy_slot_home_is_recognizable "$home" \
+        || { printf 'legacy slot home %s is not safely recognizable\n' "$home" >&2; return 1; }
     fi
     usermod --home "$home" --shell /bin/sh --password x "$user"
     primary="$(id -gn "$user")"

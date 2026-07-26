@@ -32,6 +32,16 @@ grep -Fq 'subyard-e2e-slot-' "$PROVISION" \
   || fail "physical provisioner does not isolate slot data accounts"
 grep -Fq 'printf '\''test-vms-v1\n'\'' > "$home/.subyard-managed"' "$PROVISION" \
   || fail "slot data-account homes have no exact managed marker"
+grep -Fq 'existing slot account %s is not Subyard-shaped' "$PROVISION" \
+  && grep -Fq 'existing slot home %s is not Subyard-managed' "$PROVISION" \
+  && grep -Fq 'legacy slot home %s is not safely recognizable' "$PROVISION" \
+  || fail "slot data-account reconciliation may adopt a foreign account or home"
+grep -Fq 'slot_home_has_managed_marker' "$PROVISION" \
+  && grep -Fq 'legacy_slot_home_is_recognizable' "$PROVISION" \
+  && grep -Fq '[ -e "$home/.subyard-managed" ] || [ -L "$home/.subyard-managed" ]' "$PROVISION" \
+  && grep -Fq '[ ! -s "$keys" ]' "$PROVISION" \
+  && grep -Fq '[ "$ssh_gid" = "$keys_gid" ] && [ "$ssh_gid" -ne 0 ]' "$PROVISION" \
+  || fail "slot data-account ownership markers are not validated fail-closed"
 grep -Fq 'apt-get install -y -qq --no-install-recommends' "$PROVISION" \
   || fail "inner VM backend installs optional QEMU desktop packages"
 grep -Fq 'apt-get clean' "$PROVISION" \

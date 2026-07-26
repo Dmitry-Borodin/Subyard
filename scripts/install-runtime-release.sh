@@ -251,6 +251,24 @@ if ! activate_link "$current" "releases/$release_id"; then
   exit 1
 fi
 if ! SUBYARD_REPOSITORY_ROOT="$destination" \
+  "$destination/bin/yard-engine" _migrate-test-yard; then
+  SUBYARD_REPOSITORY_ROOT="$destination" \
+    "$destination/bin/yard-engine" _migrate rollback >/dev/null \
+    || { printf 'install-runtime-release: test-yard migration and state recovery both failed\n' >&2; exit 1; }
+  if [ -n "$old_target" ]; then
+    activate_link "$current" "$old_target"
+  else
+    rm -f -- "$current"
+  fi
+  if [ -n "$old_previous_target" ]; then
+    activate_link "$previous" "$old_previous_target"
+  elif [ -n "$old_target" ]; then
+    rm -f -- "$previous"
+  fi
+  printf 'install-runtime-release: test-yard migration failed\n' >&2
+  exit 1
+fi
+if ! SUBYARD_REPOSITORY_ROOT="$destination" \
   "$destination/bin/yard-engine" _migrate finalize >/dev/null; then
   SUBYARD_REPOSITORY_ROOT="$destination" \
     "$destination/bin/yard-engine" _migrate rollback >/dev/null \

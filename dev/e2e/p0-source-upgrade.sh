@@ -20,6 +20,7 @@ RELEASE_ROOT="$SOURCE_STATE_ROOT/releases"
 PREPARED_CANDIDATE="$SOURCE_STATE_ROOT/prepared-candidate-b"
 OPERATOR_PARENT_MODE="$SOURCE_STATE_ROOT/operator-parent-mode"
 SUDOERS="/etc/sudoers.d/subyard-p0-source-$TOKEN"
+YARD_NAME="e2e-yard"
 PROJECT="subyard-e2e-yard"
 INSTANCE="yard-e2e-yard"
 BASE_IMAGE="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
@@ -35,6 +36,12 @@ die() { printf 'p0-source-upgrade: %s\n' "$*" >&2; exit 2; }
 [[ "$TOKEN" =~ ^[0-9]+$ ]] || die 'allocation token must be numeric'
 [ -n "${SUBYARD_E2E_VM:-}" ] && [ "$SUBYARD_E2E_VM" = 1 ] \
   || die 'run on allocated VM1 through dev/agent-e2e.sh'
+
+select_current_test_yard() {
+  YARD_NAME=test-yard
+  PROJECT=subyard-test-yard
+  INSTANCE=yard-test-yard
+}
 
 operator_uid() { id -u "$OPERATOR"; }
 operator_env() {
@@ -100,11 +107,14 @@ restore_operator_parent_access() {
 
 cleanup_fixture() {
   local fingerprint instance_marker='' type volume
+  if incus project show subyard-test-yard >/dev/null 2>&1; then
+    select_current_test_yard
+  fi
   if incus project show "$PROJECT" >/dev/null 2>&1; then
     assert_fixture_project
     if id "$OPERATOR" >/dev/null 2>&1 \
       && sudo -n test -x "$OPERATOR_HOME/.local/bin/yard"; then
-      operator_yard -Y e2e-yard teardown --yes >/dev/null 2>&1 \
+      operator_yard -Y "$YARD_NAME" teardown --yes >/dev/null 2>&1 \
         || printf '  [warn] fixture yard teardown failed; using marker-guarded cleanup\n' >&2
     fi
   fi
@@ -126,7 +136,7 @@ cleanup_fixture() {
       incus image delete "$fingerprint" --project "$PROJECT" >/dev/null
     done < <(incus image list --project "$PROJECT" --format csv -c f)
     incus project delete "$PROJECT" >/dev/null
-    sudo -n find /srv/subyard-e2e-yard -depth -delete 2>/dev/null || true
+    sudo -n find "/srv/$PROJECT" -depth -delete 2>/dev/null || true
   fi
   if id "$OPERATOR" >/dev/null 2>&1; then
     sudo -n loginctl disable-linger "$OPERATOR" >/dev/null 2>&1 || true
@@ -286,8 +296,8 @@ verify_migration() {
   operator_env bash -c \
     'sed "s/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/" "$1" | cmp - "$2"' _ \
     "$SOURCE_ROOT/private/yards/e2e-yard.env" \
-    "$OPERATOR_HOME/.config/subyard/yards/e2e-yard/config.env" \
-    || die 'named yard was not migrated to the canonical template'
+    "$OPERATOR_HOME/.config/subyard/yards/test-yard/config.env" \
+    || die 'named test yard was normalized and renamed'
   operator_env cmp "$SOURCE_ROOT/private/agents/codex/repo.rules" \
     "$OPERATOR_HOME/.config/subyard/overrides/host/agents/codex/repo.rules" \
     || die 'private agent asset was not migrated'
@@ -439,7 +449,7 @@ verify_config_workflow() {
   grep -Fq 'effective: 1' <<<"$default_show" \
     && grep -Fq "$OPERATOR_HOME/.config/subyard/config.env" <<<"$default_show" \
     || die 'default-yard config did not consume migrated host settings'
-  paths="$(operator_yard -Y e2e-yard config paths)"
+  paths="$(operator_yard -Y "$YARD_NAME" config paths)"
   grep -Fq "configuration-root: $OPERATOR_HOME/.config/subyard" <<<"$paths" \
     || die 'config paths did not report the persistent configuration root'
   grep -Fq \
@@ -447,29 +457,29 @@ verify_config_workflow() {
     <<<"$paths" || die 'config paths did not resolve the migrated Codex asset'
   ! grep -Fq 'source-staging-fixture' <<<"$paths" \
     || die 'config paths printed a secret value'
-  show_output="$(operator_yard -Y e2e-yard config show SSH_PORT)"
+  show_output="$(operator_yard -Y "$YARD_NAME" config show SSH_PORT)"
   grep -Fq 'effective: 2223' <<<"$show_output" \
-    && grep -Fq "$OPERATOR_HOME/.config/subyard/yards/e2e-yard/config.env" <<<"$show_output" \
+    && grep -Fq "$OPERATOR_HOME/.config/subyard/yards/test-yard/config.env" <<<"$show_output" \
     && grep -Fq 'effective' <<<"$show_output" \
     || die 'config show did not explain the effective yard setting'
   ! grep -Eq 'source-(staging|qa|profile)-fixture' <<<"$show_output" \
     || die 'config show printed a secret value'
   set +e
-  status_output="$(operator_yard -Y e2e-yard config status --all-local 2>&1)"
+  status_output="$(operator_yard -Y "$YARD_NAME" config status --all-local 2>&1)"
   status_rc=$?
   set -e
   printf '%s\n' "$status_output"
   if [ "$status_rc" -ne 0 ]; then
     [ "$status_rc" -eq 1 ] \
-      && grep -Fq 'yard e2e-yard materialized-config: drift' <<<"$status_output" \
-      && grep -Fq 'config status: materialized agent config drift in yards: e2e-yard' \
+      && grep -Fq 'yard test-yard materialized-config: drift' <<<"$status_output" \
+      && grep -Fq 'config status: materialized agent config drift in yards: test-yard' \
         <<<"$status_output" \
       || die 'config status failed for a reason other than expected agent drift'
   fi
   ! grep -Eq 'source-(staging|qa|profile)-fixture' <<<"$status_output" \
     || die 'config status printed a secret value'
-  operator_yard -Y e2e-yard config apply --all-local --yes
-  operator_yard -Y e2e-yard config status --all-local
+  operator_yard -Y "$YARD_NAME" config apply --all-local --yes
+  operator_yard -Y "$YARD_NAME" config status --all-local
   host_hash="$(sudo -n sha256sum \
     "$OPERATOR_HOME/.config/subyard/overrides/host/agents/codex/repo.rules" | awk '{print $1}')"
   guest_hash="$(incus exec "$INSTANCE" --project "$PROJECT" --user 1001 --group 1001 -- \
@@ -480,9 +490,9 @@ verify_config_workflow() {
 verify_without_source_checkout() {
   local unavailable="$OPERATOR_HOME/src.unavailable"
   operator_env mv "$SOURCE_ROOT" "$unavailable"
-  if ! operator_yard -Y e2e-yard config paths >/dev/null \
-    || ! operator_yard -Y e2e-yard config status --all-local \
-    || ! operator_yard -Y e2e-yard check; then
+  if ! operator_yard -Y "$YARD_NAME" config paths >/dev/null \
+    || ! operator_yard -Y "$YARD_NAME" config status --all-local \
+    || ! operator_yard -Y "$YARD_NAME" check; then
     operator_env mv "$unavailable" "$SOURCE_ROOT"
     die 'installed runtime still depends on the source checkout'
   fi
@@ -562,9 +572,9 @@ prepare() {
 
   [ "$(operator_no_go "$SOURCE_ROOT/bin/yard" --version)" = "yard source-$SOURCE_REVISION" ] \
     || die 'exact source-linked CLI is not operational without Go'
-  operator_yard -Y e2e-yard init --yes
-  operator_yard -Y e2e-yard start --yes
-  operator_yard -Y e2e-yard check
+  operator_yard -Y "$YARD_NAME" init --yes
+  operator_yard -Y "$YARD_NAME" start --yes
+  operator_yard -Y "$YARD_NAME" check
   seed_previous_migration_inputs
   [ "$(incus config get "$INSTANCE" user.subyard.desired_power --project "$PROJECT")" = running ] \
     || die 'legacy yard did not persist desired=running before the stopped-upgrade fixture'
@@ -573,21 +583,19 @@ prepare() {
     || die 'legacy yard did not enter the stopped desired-running upgrade fixture'
 
   bootstrap_candidate "$RELEASE_ROOT/a" "$VERSION_A"
+  select_current_test_yard
   verify_migration
   [ "$(operator_yard --version)" = "yard $VERSION_A" ] \
     || die 'first candidate runtime is not active'
   bootstrap_candidate "$RELEASE_ROOT/a" "$VERSION_A"
   [ "$(operator_env grep -Fc '# Subyard CLI completion' "$OPERATOR_HOME/.bashrc")" = 1 ] \
     || die 'repeated bootstrap duplicated shell integration'
-  [ "$(incus list "$INSTANCE" --project "$PROJECT" -f csv -c s)" = STOPPED ] \
-    || die 'runtime bootstrap changed the physical state before confirmed init reconciliation'
-  operator_yard -Y e2e-yard init --yes
   [ "$(incus list "$INSTANCE" --project "$PROJECT" -f csv -c s)" = RUNNING ] \
-    || die 'init did not restore desired=running after stopped source upgrade'
+    || die 'runtime upgrade did not recreate test-yard as running'
   [ "$(incus config get "$INSTANCE" user.subyard.desired_power --project "$PROJECT")" = running ] \
-    || die 'init changed desired power after stopped source upgrade'
-  operator_yard -Y e2e-yard check
-  operator_yard -Y e2e-yard init --yes
+    || die 'test-yard migration did not establish desired=running'
+  operator_yard -Y "$YARD_NAME" check
+  operator_yard -Y "$YARD_NAME" init --yes
   verify_config_workflow
   verify_without_source_checkout
 
@@ -603,6 +611,7 @@ prepare() {
 }
 
 load_rebooted_fixture() {
+  select_current_test_yard
   SOURCE_REVISION="$(cat "$RELEASE_ROOT/source-revision" 2>/dev/null)" \
     || die 'source revision metadata disappeared after reboot'
   [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] \
@@ -622,7 +631,7 @@ resume() {
     "$OPERATOR_HOME/.local/bin/yard" update --version "$VERSION_B" --yes
   verify_committed_versioned_migration
   verify_config_workflow
-  operator_yard -Y e2e-yard start --yes
+  operator_yard -Y "$YARD_NAME" start --yes
   [ "$(incus config get "$INSTANCE" user.subyard.desired_power --project "$PROJECT")" = running ] \
     || die 'yard desired power is not persisted before committed-state reboot'
   operator_env test ! -e "$OPERATOR_HOME/go-invoked" \
@@ -638,9 +647,9 @@ finish() {
   wait_for_running_yard || die 'boot reconciler did not restore the running yard'
   [ "$(incus config get "$INSTANCE" user.subyard.desired_power --project "$PROJECT")" = running ] \
     || die 'desired power changed across reboot'
-  operator_yard -Y e2e-yard status >/dev/null
-  operator_yard -Y e2e-yard check
-  operator_yard -Y e2e-yard init --yes
+  operator_yard -Y "$YARD_NAME" status >/dev/null
+  operator_yard -Y "$YARD_NAME" check
+  operator_yard -Y "$YARD_NAME" init --yes
   verify_committed_versioned_migration
   finalize_report="$(candidate_migrate finalize)"
   jq -e '.changed == false and .layout == 2 and .phase == "committed"' \
@@ -665,10 +674,10 @@ finish() {
   [ "$(operator_yard --version)" = "yard $VERSION_B" ] \
     || die 'standalone installer could not re-enter the runtime after recovery'
   verify_migration
-  operator_yard -Y e2e-yard init --yes
-  operator_yard -Y e2e-yard check
+  operator_yard -Y "$YARD_NAME" init --yes
+  operator_yard -Y "$YARD_NAME" check
   verify_config_workflow
-  operator_yard -Y e2e-yard teardown --yes
+  operator_yard -Y "$YARD_NAME" teardown --yes
   ! incus project show "$PROJECT" >/dev/null 2>&1 \
     || die 'upgraded yard remains after teardown'
   operator_env test ! -e "$OPERATOR_HOME/go-invoked" \

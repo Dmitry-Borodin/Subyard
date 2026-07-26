@@ -21,7 +21,6 @@ BASTION_HOSTNAME=""
 BASTION_PORT=""
 BASTION_HOST_KEY_ALIAS=""
 BASTION_KNOWN_HOSTS=""
-ALLOCATION_MANIFEST=""
 LOCAL_TEMP=""
 PREPARED_DIRECTORY=""
 GUEST_IDENTITY=""
@@ -402,61 +401,6 @@ valid_ipv4() {
   for octet in "${octets[@]}"; do
     [[ "$octet" =~ ^[0-9]+$ ]] && [ "$octet" -le 255 ] || return 1
   done
-}
-
-parse_allocation_manifest() {
-  local manifest="$1" header kind first second third fourth fifth extra
-  local state='' reason='' expires=0 seen=0 temp
-  IFS= read -r header <<<"$manifest"
-  [ "$header" = subyard-e2e-allocation-v1 ] || die "bastion returned an unknown status format"
-  while IFS=$'\t' read -r kind first second third fourth fifth extra; do
-    case "$kind" in
-      subyard-e2e-allocation-v1 | '') ;;
-      state) [ -z "$second$third$fourth$fifth$extra" ] || die "invalid state record"; state="$first" ;;
-      reason) reason="$first" ;;
-      allocation_id) [[ "$first" =~ ^[0-9]+$ ]] || die "invalid allocation id" ;;
-      expires_at_epoch) [[ "$first" =~ ^[0-9]+$ ]] || die "invalid allocation expiry"; expires="$first" ;;
-      vm)
-        [ "$first" = 1 ] || [ "$first" = 2 ] || die "invalid VM selector in allocation status"
-        [ "$second" = "e2e-vm-$first" ] || die "unexpected VM name in allocation status"
-        valid_ipv4 "$third" || die "invalid VM address in allocation status"
-        [ "$fourth" = ssh-ed25519 ] && [[ "$fifth" =~ ^[A-Za-z0-9+/=]+$ ]] && [ -z "$extra" ] \
-          || die "invalid VM host key in allocation status"
-        [ -z "${VM_IP[$first]:-}" ] || die "duplicate VM selector in allocation status"
-        VM_IP[$first]="$third"
-        VM_HOST_KEY[$first]="$fourth $fifth"
-        seen=$((seen + 1))
-        ;;
-      *) die "unexpected allocation status record '$kind'" ;;
-    esac
-  done <<<"$manifest"
-  [ "$state" = ready ] || die "VM lab is not ready (${reason:-state=${state:-missing}})"
-  [ "$seen" -eq 2 ] || die "expected exactly two ready VM records"
-  [ "$expires" -gt "$(date +%s)" ] || die "VM allocation has expired"
-  temp="$(mktemp "$STATE_ROOT/.guest-known-hosts.XXXXXX")"
-  printf 'e2e-vm-1 %s\ne2e-vm-2 %s\n' "${VM_HOST_KEY[1]}" "${VM_HOST_KEY[2]}" > "$temp"
-  chmod 0600 "$temp"
-  mv -f "$temp" "$GUEST_KNOWN_HOSTS"
-}
-
-prepare_client() {
-  local manifest bootstrap_config
-  command -v ssh >/dev/null 2>&1 || die "ssh is required"
-  command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required"
-  ensure_identity
-  resolve_bastion_route
-  VM_IP=(); VM_HOST_KEY=()
-  bootstrap_config="$(mktemp "$STATE_ROOT/.bootstrap-config.XXXXXX")"
-  render_client_config > "$bootstrap_config"
-  chmod 0600 "$bootstrap_config"
-  if ! manifest="$(ssh -F "$bootstrap_config" -T subyard-e2e-bastion </dev/null)"; then
-    rm -f "$bootstrap_config"
-    die "cannot read allocation status with the enrolled agent identity; run 'dev/agent-e2e.sh --yard $E2E_YARD --prepare', then ask the L0 operator to run 'yard -Y $E2E_YARD test-vms enroll --project PROJECT'"
-  fi
-  rm -f "$bootstrap_config"
-  parse_allocation_manifest "$manifest"
-  ALLOCATION_MANIFEST="$manifest"
-  write_client_config
 }
 
 verify_boundary() {

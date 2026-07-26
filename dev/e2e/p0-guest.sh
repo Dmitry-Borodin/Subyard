@@ -183,7 +183,7 @@ install_owner_runtime() {
 }
 
 owner_profile_migration_contract() {
-  local old_yard runtime_root="${SUBYARD_HOME:-$HOME/.subyard}/runtime" diagnostic yard_info
+  local old_yard runtime_root="${SUBYARD_HOME:-$HOME/.subyard}/runtime" yard_info
   install_rename_base_runtime
   old_yard="$runtime_root/current/bin/yard"
   [ "$("$old_yard" --version)" = 'yard p0-rename-base' ] \
@@ -195,52 +195,30 @@ owner_profile_migration_contract() {
   "$old_yard" -Y e2e-yard start --yes
   "$old_yard" -Y e2e-yard status >/dev/null
 
+  # Source migration normalizes the retired profile before runtime activation.
+  write_owner_registration e2e-yard test-vms 2224
+  prepare_owner_image_cache_project subyard-test-yard
   install_owner_runtime
   [ "$("$runtime_root/current/bin/yard" --version)" = 'yard p0-owner' ] \
     || die 'current runtime was not installed over the pre-rename runtime'
-  if diagnostic="$(./bin/yard -Y e2e-yard status 2>&1)"; then
-    die 'current runtime accepted the retired e2e-vms registration'
-  fi
-  for expected in \
-    "$OWNER_YARD_DIR/e2e-yard.env" \
-    'YARD_TEMPLATE=test-vms' \
-    'yard -Y e2e-yard check' \
-    'yard -Y e2e-yard test-vms down' \
-    'yard -Y e2e-yard teardown'; do
-    grep -Fq "$expected" <<<"$diagnostic" \
-      || die "live retired-template diagnostic omitted: $expected"
-  done
-
-  write_owner_registration e2e-yard test-vms 2224
-  ./bin/yard -Y e2e-yard check
-  ./bin/yard -Y e2e-yard status >/dev/null
-
-  write_owner_registration test-yard test-vms 2223
+  [ ! -e "$OWNER_YARD_DIR/e2e-yard.env" ] \
+    || die 'runtime activation retained the old e2e-yard registration'
+  [ -f "$OWNER_YARD_DIR/test-yard.env" ] \
+    || die 'runtime activation did not create the test-yard registration'
   yard_info="$(./bin/yard -Y test-yard _info)"
   jq -e '.name == "test-yard" and .instance == "yard-test-yard" and
-    .project == "subyard-test-yard" and .sshHost == "yard-test-yard" and .sshPort == 2223' \
+    .project == "subyard-test-yard" and .sshHost == "yard-test-yard"' \
     <<<"$yard_info" >/dev/null \
-    || die "test-yard coexistence context is wrong: $yard_info"
-  yard_info="$(./bin/yard -Y e2e-yard _info)"
-  jq -e '.name == "e2e-yard" and .instance == "yard-e2e-yard" and
-    .project == "subyard-e2e-yard" and .sshHost == "yard-e2e-yard" and .sshPort == 2224' \
-    <<<"$yard_info" >/dev/null \
-    || die "e2e-yard rollback context is wrong: $yard_info"
-
-  ./bin/yard -Y e2e-yard test-vms status --yes
-  ./bin/yard -Y e2e-yard test-vms down --yes
-  ./bin/yard -Y e2e-yard teardown --yes
+    || die "migrated test-yard context is wrong: $yard_info"
   ! incus project show subyard-e2e-yard >/dev/null 2>&1 \
     || die 'old e2e-yard project remains after migrated teardown'
   [ ! -e "${SUBYARD_CONFIG_HOME:-$HOME/.config/subyard}/yards/e2e-yard/projects" ] \
     || die 'old e2e-yard state remains after teardown'
   [ ! -e "$HOME/.ssh/subyard-e2e-yard.config" ] \
     || die 'old e2e-yard route remains after teardown'
-  find "$OWNER_YARD_DIR/e2e-yard.env" -delete
-  prepare_owner_image_cache_project subyard-test-yard
-  ./bin/yard -Y test-yard init --yes
+  ./bin/yard -Y test-yard check
   ./bin/yard -Y test-yard status >/dev/null
-  printf 'ok: pre-rename runtime upgraded, coexisted and retired e2e-yard explicitly\n'
+  printf 'ok: runtime upgrade recreated e2e-yard as test-yard automatically\n'
 }
 
 prepare_owner_image_cache_project() {

@@ -115,7 +115,7 @@ direct_ssh="$(
   PATH="$TMP/direct-bin:$PATH" ROOT="$ROOT" bash -c '
     set -euo pipefail
     . "$ROOT/dev/agent-e2e.sh"
-    prepare_client() { CLIENT_CONFIG=/tmp/direct-ssh-config; }
+    CLIENT_CONFIG=/tmp/direct-ssh-config
     printf "must-not-reach-ssh\n" | run_direct_ssh 2 0 printf "%s" "argument with spaces"
   '
 )"
@@ -125,7 +125,7 @@ direct_ssh_stdin="$(
   PATH="$TMP/direct-bin:$PATH" ROOT="$ROOT" bash -c '
     set -euo pipefail
     . "$ROOT/dev/agent-e2e.sh"
-    prepare_client() { CLIENT_CONFIG=/tmp/direct-ssh-config; }
+    CLIENT_CONFIG=/tmp/direct-ssh-config
     printf "explicit-stdin\n" | run_direct_ssh 1 1 sh -c "read -r value"
   '
 )"
@@ -137,18 +137,6 @@ grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity-verify-cleanup' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity_report' "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 acceptance does not enforce capacity preflight, peak reporting and exact cleanup"
-
-# Accept only two ready, unexpired VMs with pinned host keys.
-ensure_state_root
-manifest="$(printf 'subyard-e2e-allocation-v1\nstate\tready\nreason\tready\nallocation_id\t123\nexpires_at_epoch\t%s\nvm\t1\te2e-vm-1\t10.42.0.11\tssh-ed25519\tAAAA1111\nvm\t2\te2e-vm-2\t10.42.0.12\tssh-ed25519\tAAAA2222\n' "$(( $(date +%s) + 600 ))")"
-parse_allocation_manifest "$manifest"
-[ "${VM_IP[1]}" = 10.42.0.11 ] && [ "${VM_IP[2]}" = 10.42.0.12 ] \
-  || fail "allocation manifest lost the exact VM targets"
-grep -Fxq 'e2e-vm-1 ssh-ed25519 AAAA1111' "$GUEST_KNOWN_HOSTS" \
-  || fail "VM1 host-key pin was not materialized"
-if (parse_allocation_manifest $'subyard-e2e-allocation-v1\nstate\tdown\nreason\toperator-down\n') >/dev/null 2>&1; then
-  fail "down allocation was accepted"
-fi
 
 ensure_identity
 [ -f "$SHARED_ROUTE_DIR/agent-access.pub" ] \
@@ -222,24 +210,6 @@ resolve_bastion_route
 [ "$BASTION_KNOWN_HOSTS" = "$SHARED_ROUTE_DIR/known_hosts" ] \
   || fail "shared bastion route lost its pinned host key"
 
-# Refresh through a private bootstrap config. The shared config must keep both VM aliases while the
-# manifest probe is in flight, otherwise concurrent cleanup can fall back to DNS for e2e-vm-*.
-write_client_config
-mkdir -p "$TMP/fake-bin"
-cat > "$TMP/fake-bin/ssh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-grep -Fxq 'Host e2e-vm-1' "$EXPECTED_CLIENT_CONFIG"
-grep -Fxq 'Host e2e-vm-2' "$EXPECTED_CLIENT_CONFIG"
-cat "$FAKE_ALLOCATION_MANIFEST"
-SH
-chmod 0700 "$TMP/fake-bin/ssh"
-printf '%s\n' "$manifest" > "$TMP/allocation.tsv"
-EXPECTED_CLIENT_CONFIG="$CLIENT_CONFIG" FAKE_ALLOCATION_MANIFEST="$TMP/allocation.tsv" \
-PATH="$TMP/fake-bin:$PATH" prepare_client
-[ "$(grep -c '^Host e2e-vm-' "$CLIENT_CONFIG")" -eq 2 ] \
-  || fail "manifest refresh did not publish a complete VM client config"
-
 # Model direct guest SSH and cleanup locally.
 guest() {
   shift
@@ -291,8 +261,9 @@ grep -Fq 'RENAME_BASE_REVISION=' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not install the real pre-rename runtime"
 grep -Fq 'write_owner_registration e2e-yard e2e-vms' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not exercise the retired registration"
-grep -Fq './bin/yard -Y e2e-yard teardown --yes' "$ROOT/dev/e2e/p0-guest.sh" \
-  || fail "P0 owner lane does not teardown the migrated old yard"
+grep -Fq 'runtime activation retained the old e2e-yard registration' \
+  "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not verify automatic retirement of the old yard"
 grep -Fq 'features.images=false -c user.subyard.p0-image-cache="$MARKER"' \
   "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not attach its test-owned image cache before fresh reconciliation"

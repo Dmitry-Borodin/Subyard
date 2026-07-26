@@ -13,11 +13,39 @@ import (
 	"github.com/Subyard/Subyard/internal/adapters/testvmsruntime"
 	"github.com/Subyard/Subyard/internal/application"
 	"github.com/Subyard/Subyard/internal/cli"
+	"github.com/Subyard/Subyard/internal/config"
+	"github.com/Subyard/Subyard/internal/testyardmigration"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if len(os.Args) > 1 && os.Args[1] == "_migrate-test-yard" {
+		executable, err := os.Executable()
+		operatorHome := os.Getenv("SUBYARD_OPERATOR_HOME")
+		if operatorHome == "" {
+			operatorHome = os.Getenv("HOME")
+		}
+		configHome := ""
+		if err == nil {
+			configHome, err = config.ResolveConfigHome(operatorHome, processEnvironment())
+		}
+		dataHome := os.Getenv("SUBYARD_HOME")
+		if dataHome == "" {
+			dataHome = filepath.Join(operatorHome, ".subyard")
+		}
+		if err == nil {
+			err = testyardmigration.Apply(ctx, testyardmigration.Options{
+				Executable: executable, ConfigHome: configHome, DataHome: dataHome,
+				Environment: os.Environ(), Stdout: os.Stdout, Stderr: os.Stderr,
+			})
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "test-yard migration: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "_test-vms-status" {
 		manifest := os.Getenv("SUBYARD_E2E_ALLOCATION_MANIFEST")
 		if err := testvmsruntime.WritePublicStatus(os.Stdout, manifest); err != nil {

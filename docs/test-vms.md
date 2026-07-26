@@ -126,12 +126,3 @@ dev/agent-e2e.sh --verify-boundary
 The operator owns outer `start`, `stop` and teardown. Agents use only leases allocated by the
 broker. An unavailable outer yard produces the stable `test environment unavailable` error instead
 of attempting recovery.
-
-## Legacy migration
-
-The old single-pair allocation manifest, static guest forwarding and VM-age TTL are not
-normal paths. Upgrade validation accepts an existing pair only after its ownership marker and exact
-inventory are checked; foreign resources are never adopted. Existing enrollment state remains the
-controller admission gate. Retired `e2e-vms` profile configuration must first be migrated to
-`YARD_TEMPLATE=test-vms`; an old `e2e-yard` identity may coexist temporarily and is removed only by
-an explicit operator teardown.

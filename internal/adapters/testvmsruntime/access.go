@@ -32,12 +32,13 @@ func (runtime *Runtime) writeAgentAuthorizedKeys(ip1, ip2 string) error {
 	if _, err := user.Lookup(cfg.AgentUser); err != nil {
 		return errors.New("agent bastion account is missing; re-run yard init")
 	}
-	if cfg.AgentPublicKey == "" {
-		return nil
-	}
-	key, err := normalizedPublicKey(cfg.AgentPublicKey)
-	if err != nil {
-		return err
+	key := ""
+	if cfg.AgentPublicKey != "" {
+		var err error
+		key, err = normalizedPublicKey(cfg.AgentPublicKey)
+		if err != nil {
+			return err
+		}
 	}
 	directory := filepath.Dir(cfg.AgentAuthorizedKeys)
 	mode := os.FileMode(0o600)
@@ -67,7 +68,10 @@ func (runtime *Runtime) writeAgentAuthorizedKeys(ip1, ip2 string) error {
 		options = `restrict,port-forwarding,permitopen="` + ip1 +
 			`:22",permitopen="` + ip2 + `:22",command="` + cfg.StatusCommand + `"`
 	}
-	payload := []byte(options + " " + key + " " + agentKeyMarker + "\n")
+	payload := []byte(nil)
+	if key != "" {
+		payload = []byte(options + " " + key + " " + agentKeyMarker + "\n")
+	}
 	if err := writeAtomic(cfg.AgentAuthorizedKeys, payload, mode); err != nil {
 		return err
 	}
@@ -78,66 +82,9 @@ func (runtime *Runtime) writeAgentAuthorizedKeys(ip1, ip2 string) error {
 	return nil
 }
 
-func (runtime *Runtime) writeManifest(
-	state, reason, ip1, host1, ip2, host2 string,
-) error {
-	cfg := runtime.Config
-	if err := os.MkdirAll(cfg.PublicDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.Chmod(cfg.PublicDir, 0o755); err != nil {
-		return err
-	}
-	created := int64(0)
-	expires := int64(0)
-	if timestamp, ok := readEpoch(cfg.createdAt()); ok {
-		created = timestamp.Unix()
-		expires = timestamp.Add(cfg.TTL).Unix()
-	}
-	var payload strings.Builder
-	fmt.Fprintln(&payload, "subyard-e2e-allocation-v1")
-	fmt.Fprintf(&payload, "state\t%s\nreason\t%s\n", state, reason)
-	fmt.Fprintf(&payload, "allocation_id\t%d\nexpires_at_epoch\t%d\n", created, expires)
-	if state == "ready" {
-		if !safeIPv4(ip1) || !safeIPv4(ip2) {
-			return errors.New("cannot publish non-IPv4 VM targets")
-		}
-		key1, err := validatePublicKey("VM1 host identity", host1)
-		if err != nil {
-			return err
-		}
-		key2, err := validatePublicKey("VM2 host identity", host2)
-		if err != nil {
-			return err
-		}
-		key1Type, key1Blob, found := strings.Cut(key1, " ")
-		if !found {
-			return errors.New("VM1 host identity has an invalid normalized form")
-		}
-		key2Type, key2Blob, found := strings.Cut(key2, " ")
-		if !found {
-			return errors.New("VM2 host identity has an invalid normalized form")
-		}
-		fmt.Fprintf(&payload, "vm\t1\t%s\t%s\t%s\t%s\n",
-			cfg.vm(1), ip1, key1Type, key1Blob)
-		fmt.Fprintf(&payload, "vm\t2\t%s\t%s\t%s\t%s\n",
-			cfg.vm(2), ip2, key2Type, key2Blob)
-	}
-	if err := writeAtomic(cfg.manifest(), []byte(payload.String()), 0o644); err != nil {
-		return err
-	}
-	if os.Geteuid() == 0 {
-		return os.Chown(cfg.manifest(), 0, 0)
-	}
-	return nil
-}
-
-func (runtime *Runtime) restrictAgentAccess(reason string) error {
+func (runtime *Runtime) restrictAgentAccess(_ string) error {
 	runtime.killAgentSessions(context.Background())
-	if err := runtime.writeAgentAuthorizedKeys("", ""); err != nil {
-		return err
-	}
-	return runtime.writeManifest("down", reason, "", "", "", "")
+	return runtime.writeAgentAuthorizedKeys("", "")
 }
 
 func (runtime *Runtime) enableAgentAccess(ctx context.Context) error {
@@ -150,108 +97,8 @@ func (runtime *Runtime) enableAgentAccess(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	host1, err := runtime.guestHostKey(ctx, cfg.vm(1))
-	if err != nil {
-		return err
-	}
-	host2, err := runtime.guestHostKey(ctx, cfg.vm(2))
-	if err != nil {
-		return err
-	}
 	runtime.killAgentSessions(ctx)
-	if err := runtime.writeAgentAuthorizedKeys(ip1, ip2); err != nil {
-		return err
-	}
-	return runtime.writeManifest("ready", "ready", ip1, host1, ip2, host2)
-}
-
-func (runtime *Runtime) reconcileExistingAgentAccess(ctx context.Context) error {
-	cfg := runtime.Config
-	if err := runtime.restrictAgentAccess("reconciling"); err != nil {
-		return err
-	}
-	if !runtime.projectExists(ctx) {
-		return nil
-	}
-	if err := runtime.requireProjectMarker(ctx); err != nil {
-		return fmt.Errorf("%w; agent access remains disabled", err)
-	}
-	names, err := runtime.projectInstances(ctx)
-	if err != nil {
-		return err
-	}
-	if err := cfg.validateManagedNames(names); err != nil {
-		return fmt.Errorf("%w; agent access remains disabled", err)
-	}
-	for index := 1; index <= 2; index++ {
-		vm := cfg.vm(index)
-		if !runtime.vmExists(ctx, vm) {
-			return runtime.writeManifest("down", "incomplete-allocation", "", "", "", "")
-		}
-		if err := runtime.requireVMMarker(ctx, vm); err != nil {
-			return fmt.Errorf("%w; agent access remains disabled", err)
-		}
-		state, err := runtime.incus(ctx, "list", vm, "--project", cfg.Project,
-			"-f", "csv", "-c", "s")
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(state) != "RUNNING" {
-			return runtime.writeManifest("down", "not-running", "", "", "", "")
-		}
-	}
-	if err := runtime.ensureKey(ctx); err != nil {
-		return err
-	}
-	if err := writePrivateFile(cfg.knownHosts(), nil); err != nil {
-		return err
-	}
-	for index := 1; index <= 2; index++ {
-		vm := cfg.vm(index)
-		if err := runtime.waitAgent(ctx, vm); err != nil {
-			return err
-		}
-		if err := runtime.ensureGuestTools(ctx, vm); err != nil {
-			return err
-		}
-		if err := runtime.installManagedGuestKeys(ctx, vm); err != nil {
-			return err
-		}
-		if err := runtime.recordHostKey(ctx, vm); err != nil {
-			return err
-		}
-	}
-	if err := os.Chmod(cfg.knownHosts(), 0o600); err != nil {
-		return err
-	}
-	for index := 1; index <= 2; index++ {
-		if err := runtime.sshSmoke(ctx, cfg.vm(index)); err != nil {
-			return err
-		}
-	}
-	if err := runtime.enableAgentAccess(ctx); err != nil {
-		return err
-	}
-	_ = os.Remove(cfg.revokedKey())
-	return nil
-}
-
-func WritePublicStatus(output io.Writer, manifest string) error {
-	if manifest == "" {
-		manifest = "/var/lib/subyard/test-vms-public/allocation.tsv"
-	}
-	payload, err := os.ReadFile(manifest)
-	if err == nil {
-		_, err = output.Write(payload)
-		return err
-	}
-	if !os.IsNotExist(err) {
-		return err
-	}
-	_, err = fmt.Fprint(output, "subyard-e2e-allocation-v1\n"+
-		"state\tdown\nreason\tmanifest-missing\n"+
-		"allocation_id\t0\nexpires_at_epoch\t0\n")
-	return err
+	return runtime.writeAgentAuthorizedKeys(ip1, ip2)
 }
 
 func (runtime *Runtime) collectFailureDiagnostics(ctx context.Context, cause error) error {
@@ -316,10 +163,6 @@ func (runtime *Runtime) doctor(ctx context.Context, want map[string]string) erro
 	}
 	if hash != want["WANT_ENGINE_HASH"] {
 		return errors.New("installed test-vms engine hash differs")
-	}
-	keyHash := sha256.Sum256([]byte(cfg.AgentPublicKey))
-	if hex.EncodeToString(keyHash[:]) != want["WANT_AGENT_KEY_HASH"] {
-		return errors.New("installed agent key differs")
 	}
 	if !cfg.Enabled {
 		if runtime.commandOK(ctx, "systemctl", "is-active", "--quiet",
@@ -400,12 +243,6 @@ func (runtime *Runtime) doctor(ctx context.Context, want map[string]string) erro
 			return errors.New("yard developer has inner privileges")
 		}
 	}
-	if want["WANT_AGENT_CONFIGURED"] == "0" {
-		if _, err := user.Lookup(cfg.AgentUser); err == nil {
-			return errors.New("agent account remains without enrollment")
-		}
-		return nil
-	}
 	if _, err := user.Lookup(cfg.AgentUser); err != nil {
 		return errors.New("agent account is missing")
 	}
@@ -430,11 +267,24 @@ func (runtime *Runtime) doctor(ctx context.Context, want map[string]string) erro
 		return err
 	}
 	authorized, err := os.ReadFile(cfg.AgentAuthorizedKeys)
-	if err != nil || !strings.HasPrefix(string(authorized), "restrict,") {
-		return errors.New("enrolled controller restrictions are missing")
+	if err != nil {
+		return errors.New("cannot inspect controller authorized_keys")
 	}
-	if !strings.Contains(string(authorized), `command="`+cfg.StatusCommand+`"`) {
-		return errors.New("controller forced facade differs")
+	if len(authorized) != 0 {
+		return errors.New("static controller key remains active")
+	}
+	const command = "/usr/local/libexec/subyard/test-vms-authorized-key"
+	if err := requireRootMode(command, 0o755); err != nil {
+		return err
+	}
+	commandPayload, err := os.ReadFile(command)
+	if err != nil || !strings.Contains(string(commandPayload),
+		`restrict,command="sudo -n /usr/local/libexec/subyard/test-vms-inner _test-vms-facade"`) {
+		return errors.New("default-open forced facade differs")
+	}
+	if !fileContains("/etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf",
+		"AuthorizedKeysCommand "+command+" %u %t %k") {
+		return errors.New("controller AuthorizedKeysCommand differs")
 	}
 	if !fileContains("/etc/sudoers.d/subyard-test-vms-facade",
 		`subyard-e2e-agent ALL=(root) NOPASSWD: /usr/local/libexec/subyard/test-vms-inner _test-vms-facade`) {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,10 @@ func TestSSHTransportUsesFixedArgumentsAndPreservesFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(arguments), "BatchMode=yes\n") ||
-		!strings.HasSuffix(string(arguments), "yard\nrpc\n--stdio\n") {
+		!strings.Contains(string(arguments), "bash\n-lc\n") ||
+		!strings.Contains(string(arguments), "yard") ||
+		!strings.Contains(string(arguments), "rpc") ||
+		!strings.Contains(string(arguments), "--stdio") {
 		t.Fatalf("unsafe or incomplete SSH arguments: %q", arguments)
 	}
 }
@@ -161,4 +165,19 @@ func TestRemoteTransportConformance(t *testing.T) {
 	t.Run("scripted", func(t *testing.T) {
 		contracttest.RemoteTransport(t, &testkit.ScriptedRemote{Steps: []testkit.RemoteStep{{Response: []byte("framed request")}}}, "owner")
 	})
+}
+
+func TestSSHYardUsesLoginShellForUserInstalledCLI(t *testing.T) {
+	process, err := SSHYard("ssh", "dev@owner.example", "test-yard", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+		"dev@owner.example", "--", "bash", "-lc",
+		"'exec '\"'\"'yard'\"'\"' '\"'\"'-Y'\"'\"' '\"'\"'test-yard'\"'\"' '\"'\"'rpc'\"'\"' '\"'\"'--stdio'\"'\"''",
+	}
+	if !reflect.DeepEqual(process.Arguments, want) {
+		t.Fatalf("unexpected SSH arguments:\n got: %#v\nwant: %#v", process.Arguments, want)
+	}
 }

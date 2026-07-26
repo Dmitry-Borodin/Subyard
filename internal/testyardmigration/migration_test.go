@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestApplyRecreatesCanonicalTestYardAndMovesEnrollment(t *testing.T) {
+func TestApplyRecreatesCanonicalTestYardAndRemovesLegacyController(t *testing.T) {
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")
 	dataHome := filepath.Join(root, "data")
@@ -28,14 +28,12 @@ func TestApplyRecreatesCanonicalTestYardAndMovesEnrollment(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(configHome, "yards", CurrentYard, "config.env")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dataHome, "e2e", "controllers", CurrentYard,
-		".operator-enrollment-v1")); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(dataHome, "e2e", "controllers", LegacyYard)); !os.IsNotExist(err) {
+		t.Fatalf("legacy controller state remains: %v", err)
 	}
 	calls := read(t, log)
 	for _, expected := range []string{
 		"-Y e2e-yard check",
-		"-Y e2e-yard test-vms down --yes",
 		"-Y e2e-yard teardown --yes",
 		"-Y test-yard init --yes",
 		"-Y test-yard check",
@@ -58,15 +56,15 @@ func TestApplyIsNoopWithoutLegacyRegistration(t *testing.T) {
 	}
 }
 
-func TestApplyRollsBackIdentityAndRecreatesLegacyYard(t *testing.T) {
+func TestApplyRollsBackRegistrationAndRecreatesLegacyYard(t *testing.T) {
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")
 	dataHome := filepath.Join(root, "data")
 	oldRegistration := filepath.Join(configHome, "yards", LegacyYard, "config.env")
 	write(t, oldRegistration, "YARD_TEMPLATE=test-vms\n")
-	oldEnrollment := filepath.Join(dataHome, "e2e", "controllers", LegacyYard,
+	oldController := filepath.Join(dataHome, "e2e", "controllers", LegacyYard,
 		".operator-enrollment-v1")
-	write(t, oldEnrollment, "managed\n")
+	write(t, oldController, "managed\n")
 	log := filepath.Join(root, "calls")
 	err := Apply(context.Background(), Options{
 		Executable: fakeExecutable(t, root), ConfigHome: configHome, DataHome: dataHome,
@@ -81,8 +79,8 @@ func TestApplyRollsBackIdentityAndRecreatesLegacyYard(t *testing.T) {
 	if _, err := os.Stat(oldRegistration); err != nil {
 		t.Fatalf("legacy registration was not restored: %v", err)
 	}
-	if _, err := os.Stat(oldEnrollment); err != nil {
-		t.Fatalf("legacy enrollment was not restored: %v", err)
+	if _, err := os.Stat(oldController); err != nil {
+		t.Fatalf("legacy controller state changed before successful migration: %v", err)
 	}
 	if !strings.Contains(read(t, log), "-Y e2e-yard init --yes\n") {
 		t.Fatal("legacy yard was not recreated during recovery")

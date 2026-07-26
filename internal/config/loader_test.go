@@ -97,7 +97,6 @@ func TestRetiredE2EVMTemplateReportsMigrationAndTeardown(t *testing.T) {
 		"yard -Y e2e-yard check",
 		"yard -Y e2e-yard status",
 		"yard -Y e2e-yard test-vms status",
-		"yard -Y e2e-yard test-vms down",
 		"yard -Y e2e-yard teardown",
 	} {
 		if !strings.Contains(diagnostic, expected) {

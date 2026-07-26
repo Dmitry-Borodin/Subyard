@@ -51,7 +51,7 @@ if [ "${1:-}" = -G ]; then
   printf 'hostname 127.0.0.1\nhostkeyalias subyard-remote-remote\n'
   exit 0
 fi
-if [[ "$joined" == *"'yard' 'rpc' '--stdio'"* || "$joined" == *" yard rpc --stdio"* ]]; then
+if [[ "$joined" == *yard* && "$joined" == *rpc* && "$joined" == *--stdio* ]]; then
   exec env \
     SUBYARD_OPERATOR_HOME="$REMOTE_TEST_STATE/owner-home" \
     SUBYARD_CONFIG_HOME="$REMOTE_TEST_STATE/owner-config" \

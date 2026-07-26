@@ -7,7 +7,6 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 export SUBYARD_E2E_STATE_DIR="$TMP/client"
-export SUBYARD_E2E_SHARED_ROUTE_DIR="$TMP/shared-route"
 
 # shellcheck source=dev/agent-e2e.sh
 . "$ROOT/dev/agent-e2e.sh"
@@ -19,23 +18,23 @@ export SUBYARD_E2E_SHARED_ROUTE_DIR="$TMP/shared-route"
   || fail "controller identity is not shared outside yard-scoped state"
 
 scope_snapshot="$(
-  env -u SUBYARD_E2E_BASTION_ROUTE -u SUBYARD_E2E_SHARED_ROUTE_DIR \
+  env -u SUBYARD_E2E_BASTION_ROUTE \
     -u SUBYARD_E2E_STATE_DIR -u SUBYARD_E2E_YARD_STATE_DIR -u SUBYARD_E2E_IDENTITY \
     -u SUBYARD_E2E_YARD SUBYARD_HOME="$TMP/default-client" \
     bash -c '
       set -euo pipefail
       . "$1/dev/agent-e2e.sh"
-      printf "%s|%s|%s|%s|%s\n" \
-        "$E2E_YARD" "$BASTION_ROUTE" "$SHARED_ROUTE_DIR" "$STATE_ROOT" "$IDENTITY"
+      printf "%s|%s|%s|%s\n" \
+        "$E2E_YARD" "$BASTION_ROUTE" "$STATE_ROOT" "$IDENTITY"
       E2E_YARD=e2e-yard
       configure_yard_scope
-      printf "%s|%s|%s|%s|%s\n" \
-        "$E2E_YARD" "$BASTION_ROUTE" "$SHARED_ROUTE_DIR" "$STATE_ROOT" "$IDENTITY"
+      printf "%s|%s|%s|%s\n" \
+        "$E2E_YARD" "$BASTION_ROUTE" "$STATE_ROOT" "$IDENTITY"
     ' _ "$ROOT"
 )"
 expected_scope_snapshot="$(printf '%s\n%s\n' \
-  "test-yard|yard-test-yard|$ROOT/temp/agent-e2e/test-yard|$TMP/default-client/e2e/yards/test-yard|$TMP/default-client/e2e/id_ed25519" \
-  "e2e-yard|yard-e2e-yard|$ROOT/temp/agent-e2e/e2e-yard|$TMP/default-client/e2e/yards/e2e-yard|$TMP/default-client/e2e/id_ed25519")"
+  "test-yard|yard-test-yard|$TMP/default-client/e2e/yards/test-yard|$TMP/default-client/e2e/id_ed25519" \
+  "e2e-yard|yard-e2e-yard|$TMP/default-client/e2e/yards/e2e-yard|$TMP/default-client/e2e/id_ed25519")"
 [ "$scope_snapshot" = "$expected_scope_snapshot" ] \
   || fail "test-yard and explicit e2e-yard route/state scopes collide: $scope_snapshot"
 if "$ROOT/dev/agent-e2e.sh" --yard '../unsafe' --prepare >/dev/null 2>&1; then
@@ -131,22 +130,15 @@ direct_ssh_stdin="$(
 )"
 printf '%s\n' "$direct_ssh_stdin" | grep -Fq -- '-T e2e-vm-1 --' \
   || fail "explicit direct SSH stdin did not use the pinned non-TTY VM route"
-grep -Fq '"$AGENT" --ssh-stdin 1 --' "$ROOT/dev/e2e/p0-acceptance.sh" \
-  || fail "P0 source archive does not opt in to direct SSH stdin"
+grep -Fq 'guest 1 \' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && grep -Fq 'dd of="$1" status=none' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail "P0 source archive does not use the lease-local stdin transport"
 grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity-verify-cleanup' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity_report' "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 acceptance does not enforce capacity preflight, peak reporting and exact cleanup"
 
-ensure_identity
-[ -f "$SHARED_ROUTE_DIR/agent-access.pub" ] \
-  || fail "controller identity did not publish an enrollment request"
-[ "$(normalized_public_key_file "$IDENTITY.pub")" = "$(cat "$SHARED_ROUTE_DIR/agent-access.pub")" ] \
-  || fail "published enrollment key does not match the controller identity"
-[ "$(stat -c '%a' "$SHARED_ROUTE_DIR/agent-access.pub")" = 644 ] \
-  || fail "published enrollment request is not public-key readable"
-[ ! -e "$SHARED_ROUTE_DIR/id_ed25519" ] \
-  || fail "controller private key entered the shared worktree directory"
+ ensure_identity
 lease_blob="$(awk '{print $2}' "$IDENTITY.pub")"
 lease_response="$(printf '{"schema_version":1,"status":"ok","grant":{"slot_id":"slot-001","lease_id":"aabb","capability":"ccdd","lease_epoch":3,"data_user":"subyard-e2e-slot-1","targets":[{"selector":1,"name":"e2e-vm-1","address":"10.42.1.11","host_key_type":"ssh-ed25519","host_key_blob":"%s"},{"selector":2,"name":"e2e-vm-2","address":"10.42.1.12","host_key_type":"ssh-ed25519","host_key_blob":"%s"}]}}' "$lease_blob" "$lease_blob")"
 parse_lease_grant "$lease_response" \
@@ -193,22 +185,25 @@ resolve_bastion_route
 [ "$BASTION_KNOWN_HOSTS" = "$TMP/bastion-known-hosts" ] \
   || fail "bastion route did not reuse its pre-pinned host key"
 
-mkdir -p "$SHARED_ROUTE_DIR"
-cat > "$SHARED_ROUTE_DIR/route.tsv" <<'EOF'
+route_registry="$TMP/route-registry"
+mkdir -p "$route_registry/test-yard/.route-fixture"
+ln -s .route-fixture "$route_registry/test-yard/current"
+cat > "$route_registry/test-yard/current/route.tsv" <<'EOF'
 subyard-e2e-route-v1
 hostname	10.24.0.8
 port	22
 host_key_alias	subyard-e2e-bastion
 EOF
 printf 'subyard-e2e-bastion %s\n' "$(normalized_public_key_file "$IDENTITY.pub")" \
-  > "$SHARED_ROUTE_DIR/known_hosts"
+  > "$route_registry/test-yard/current/known_hosts"
 BASTION_HOSTNAME=''; BASTION_PORT=''; BASTION_HOST_KEY_ALIAS=''; BASTION_KNOWN_HOSTS=''
+SUBYARD_E2E_ROUTE_REGISTRY="$route_registry"
 resolve_bastion_route
 [ "$BASTION_HOSTNAME:$BASTION_PORT:$BASTION_HOST_KEY_ALIAS" = \
     10.24.0.8:22:subyard-e2e-bastion ] \
   || fail "root-published shared bastion route was not selected"
-[ "$BASTION_KNOWN_HOSTS" = "$SHARED_ROUTE_DIR/known_hosts" ] \
-  || fail "shared bastion route lost its pinned host key"
+[ "$BASTION_KNOWN_HOSTS" = "$route_registry/test-yard/current/known_hosts" ] \
+  || fail "product-owned bastion route lost its pinned host key"
 
 # Model direct guest SSH and cleanup locally.
 guest() {
@@ -313,7 +308,7 @@ grep -Fq 'cleanup delete of %s failed; retrying (%s/3)' "$ROOT/dev/e2e/p0-real-i
   && grep -Fq 'refusing to delete unmarked instance' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'could not delete marked instance $name after 3 attempts' "$ROOT/dev/e2e/p0-real-incus.sh" \
   || fail "P0 real-Incus cleanup retry is not bounded to marked test instances"
-grep -Fq '"$AGENT" --ssh "$vm" --' "$ROOT/dev/e2e/p0-acceptance.sh" \
+grep -Fq 'guest "$vm" \' "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 peer cleanup assertion bypasses direct-command argv quoting"
 grep -Fq 'cleanup_peer_incus' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer lane does not clean its Incus fixture"

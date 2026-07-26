@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-AGENT="$ROOT/dev/agent-e2e.sh"
 CONFIG=''
 TOKEN=''
+P0_BUNDLE=''
+P0_BUNDLE_HASH=''
 PEERS_READY=0
 PROBE_PID=''
 PROBE_MARKER=''
@@ -21,11 +22,17 @@ SOURCE_COMMIT=''
 SOURCE_HOST_STARTED=0
 CANDIDATE_HASH=''
 CAPACITY_LOG_DIR=''
+PEERS_ONLY="${SUBYARD_P0_PEERS_ONLY:-0}"
 declare -A CAPACITY_PID=()
 declare -A CAPACITY_FLAG=()
 declare -A DEFAULT_BUILD_CACHE_BEFORE=()
 declare -A MODULE_CACHE_BEFORE=()
 declare -A HOME_STATE_BEFORE=()
+
+# Reuse one ordinary broker lease for the full matrix. This avoids the retired raw SSH-config
+# export and ensures every direct and bundled command addresses the same retained pair.
+# shellcheck source=dev/agent-e2e.sh
+. "$ROOT/dev/agent-e2e.sh"
 
 die() { printf 'p0-acceptance: %s\n' "$*" >&2; exit 2; }
 public_tree_hash() {
@@ -45,20 +52,44 @@ public_tree_hash() {
     printf '%s\0%s\0%s\0%s\0' "$path" "$kind" "$mode" "$digest"
   done < <(git -C "$ROOT" ls-files --cached --others --exclude-standard -z | sort -z)
 }
+p0_guest() {
+  local vm="$1"; shift
+  guest "$vm" runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev \
+    sh -c 'cd "$HOME"; exec "$@"' _ "$@"
+}
+p0_run_guest() {
+  local vm="$1" bundle="$2" bundle_hash="$3"; shift 3
+  run_guest "$vm" "$bundle" "$bundle_hash" bash -c '
+    parent="$(dirname "$PWD")"
+    chown -R dev:dev "$parent"
+    exec runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev "$@"
+  ' _ "$@"
+}
 run_vm() {
-  local vm="$1" mode="$2"; shift 2
-  "$AGENT" --vm "$vm" -- bash dev/e2e/p0-guest.sh "$mode" "$TOKEN" "$@"
+  local vm="$1" mode="$2" rc=0; shift 2
+  p0_run_guest "$vm" "$P0_BUNDLE" "$P0_BUNDLE_HASH" \
+    bash dev/e2e/p0-guest.sh "$mode" "$TOKEN" "$@" || rc=$?
+  cleanup_guest "$vm" || return 3
+  return "$rc"
 }
 direct_vm() {
   local vm="$1" mode="$2"; shift 2
-  "$AGENT" --ssh "$vm" -- env SUBYARD_E2E_VM="$vm" \
+  p0_guest "$vm" env SUBYARD_E2E_VM="$vm" \
     bash "/tmp/subyard-p0-peer-$TOKEN/src/dev/e2e/p0-guest.sh" "$mode" "$TOKEN" "$@"
 }
 run_source_vm() {
-  local mode="$1"; shift
-  "$AGENT" --vm 1 -- bash dev/e2e/p0-source-upgrade.sh "$mode" "$TOKEN" "$@"
+  local mode="$1" rc=0; shift
+  p0_run_guest 1 "$P0_BUNDLE" "$P0_BUNDLE_HASH" \
+    bash dev/e2e/p0-source-upgrade.sh "$mode" "$TOKEN" "$@" || rc=$?
+  cleanup_guest 1 || return 3
+  return "$rc"
 }
-clean_peers() { "$AGENT" --vm both -- bash dev/e2e/p0-guest.sh peer-clean "$TOKEN"; }
+clean_peers() {
+  local rc=0
+  run_vm 1 peer-clean || rc=$?
+  run_vm 2 peer-clean || rc=$?
+  return "$rc"
+}
 clean_source_host() {
   run_source_vm clean
 }
@@ -83,15 +114,15 @@ cleanup() {
     wait "$PROBE_PID" >/dev/null 2>&1
   fi
   if [ -n "$PROBE_NAME" ]; then
-    "$AGENT" --ssh 1 -- pkill -f "^$PROBE_NAME 300$" >/dev/null 2>&1 || true
+    p0_guest 1 pkill -f "^$PROBE_NAME 300$" >/dev/null 2>&1 || true
   fi
   if [ -n "$PROBE_MARKER" ]; then
-    "$AGENT" --ssh 1 -- find "$PROBE_MARKER" -delete >/dev/null 2>&1 || cleanup_failed=1
+    p0_guest 1 find "$PROBE_MARKER" -delete >/dev/null 2>&1 || cleanup_failed=1
   fi
   [ "$PEERS_READY" = 0 ] || clean_peers >/dev/null 2>&1 || cleanup_failed=1
   [ "$SOURCE_HOST_STARTED" = 0 ] || clean_source_host >/dev/null 2>&1 || cleanup_failed=1
   if [ -n "$SOURCE_ARCHIVE_REMOTE" ]; then
-    "$AGENT" --ssh 1 -- \
+    p0_guest 1 \
       sh -c '[ ! -e "$1" ] || find "$1" -delete' _ "$SOURCE_ARCHIVE_REMOTE" \
       >/dev/null 2>&1 || cleanup_failed=1
   fi
@@ -101,13 +132,25 @@ cleanup() {
   [ -z "$PROBE_LOG" ] || find "$PROBE_LOG" -delete >/dev/null 2>&1 || cleanup_failed=1
   [ -z "$CAPACITY_LOG_DIR" ] || find "$CAPACITY_LOG_DIR" -depth -delete \
     >/dev/null 2>&1 || cleanup_failed=1
+  if [ -n "$LEASE_KEEPER_PID" ]; then
+    kill "$LEASE_KEEPER_PID" >/dev/null 2>&1 || true
+    wait "$LEASE_KEEPER_PID" >/dev/null 2>&1 || true
+    LEASE_KEEPER_PID=''
+  fi
+  release_lease >/dev/null 2>&1 || cleanup_failed=1
+  if [ -n "$LOCAL_TEMP" ]; then
+    case "$LOCAL_TEMP" in /tmp/subyard-agent-e2e.*|"${TMPDIR:-/tmp}"/subyard-agent-e2e.*)
+      find "$LOCAL_TEMP" -depth -delete >/dev/null 2>&1 || cleanup_failed=1
+      ;;
+    esac
+  fi
   [ "$cleanup_failed" = 0 ] || rc=3
   exit "$rc"
 }
 
 capacity_cache_snapshot() {
   local vm="$1"
-  "$AGENT" --ssh "$vm" -- bash -c '
+  p0_guest "$vm" bash -c '
     bytes() {
       if [ -e "$1" ]; then du -sx -B1 "$1" | awk "{print \$1}"; else printf "0\n"; fi
     }
@@ -211,7 +254,7 @@ prepare_source_archive() {
   git -C "$ROOT" archive --format=tar "$commit" | gzip -n > "$SOURCE_ARCHIVE"
   hash="$(sha256sum "$SOURCE_ARCHIVE" | cut -d' ' -f1)"
   SOURCE_ARCHIVE_REMOTE="/tmp/subyard-p0-source-$TOKEN.tar.gz"
-  "$AGENT" --ssh-stdin 1 -- \
+  p0_guest 1 \
     sh -c 'umask 077; dd of="$1" status=none' _ "$SOURCE_ARCHIVE_REMOTE" \
     < "$SOURCE_ARCHIVE"
   remote_hash="$(ssh -F "$CONFIG" -T e2e-vm-1 -- \
@@ -272,7 +315,7 @@ assert_no_worktrees() {
 
 yard_entry_state() {
   local vm="$1"
-  "$AGENT" --ssh "$vm" -- sh -c '
+  p0_guest "$vm" sh -c '
     path="$HOME/.local/bin/yard"
     if [ -L "$path" ]; then
       printf "link\t%s\n" "$(readlink "$path")"
@@ -289,7 +332,7 @@ yard_entry_state() {
 
 ssh_state() {
   local vm="$1"
-  "$AGENT" --ssh "$vm" -- sh -c '
+  p0_guest "$vm" sh -c '
     for path in "$HOME/.ssh/authorized_keys" "$HOME/.ssh/config"; do
       if [ -L "$path" ]; then
         printf "link\t%s\t%s\n" "$path" "$(readlink "$path")"
@@ -307,28 +350,31 @@ ssh_state() {
 
 home_state() {
   local vm="$1"
-  "$AGENT" --ssh "$vm" -- sh -c \
+  p0_guest "$vm" sh -c \
     'stat -c "%a:%u:%g" "$HOME"'
 }
 
 transport_probes() {
-  local rc=0 ready=0 stopped=0
+  local rc=0 ready=0 stopped=0 disconnect_command
   set +e
-  "$AGENT" --vm 1 -- bash -c \
+  p0_run_guest 1 "$P0_BUNDLE" "$P0_BUNDLE_HASH" bash -c \
     'test "$1" = "argument with spaces" && test "$2" = "$SUBYARD_E2E_VM"; exit 23' \
     _ 'argument with spaces' 1
   rc=$?
   set -e
-  [ "$rc" = 1 ] || die "failed guest command returned $rc instead of 1"
+  cleanup_guest 1 || die 'failed transport probe left its worktree behind'
+  [ "$rc" = 23 ] || die "failed guest command returned $rc instead of 23"
   assert_no_worktrees
 
   command -v setsid >/dev/null 2>&1 || die 'setsid is required'
   PROBE_MARKER="/tmp/subyard-p0-disconnect-$TOKEN.ready"
   PROBE_NAME="subyard-p0-disconnect-$TOKEN"
   PROBE_LOG="$(mktemp /tmp/subyard-p0-disconnect.XXXXXX)"
-  setsid "$AGENT" --vm 1 -- bash -c \
+  disconnect_command="$(quote_ssh_command runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev \
+    bash -c \
     'printf "ready\n" > "$1"; exec -a "$2" sleep 300' \
-    _ "$PROBE_MARKER" "$PROBE_NAME" >"$PROBE_LOG" 2>&1 &
+    _ "$PROBE_MARKER" "$PROBE_NAME")"
+  setsid ssh -F "$CONFIG" -T e2e-vm-1 -- "$disconnect_command" >"$PROBE_LOG" 2>&1 &
   PROBE_PID=$!
   for _ in $(seq 1 60); do
     if ssh -F "$CONFIG" -T e2e-vm-1 -- test -f "$PROBE_MARKER"; then ready=1; break; fi
@@ -371,44 +417,49 @@ run_lanes() {
   [ "$owner_rc" = 0 ] && [ "$controller_rc" = 0 ] || return 1
 }
 
-CONFIG="$($AGENT --ssh-config)"
-[ -r "$CONFIG" ] || die 'SSH config is unavailable'
+LOCAL_TEMP="$(mktemp -d "${TMPDIR:-/tmp}/subyard-agent-e2e.XXXXXX")"
+acquire_lease
+start_lease_keeper
+CONFIG="$CLIENT_CONFIG"
+[ -r "$CONFIG" ] || die 'lease-local SSH config is unavailable'
+P0_BUNDLE="$LOCAL_TEMP/worktree.tar.gz"
+build_bundle "$ROOT" "$P0_BUNDLE"
+P0_BUNDLE_HASH="$(sha256sum "$P0_BUNDLE" | awk '{print $1}')"
 CANDIDATE_HASH="$(public_tree_hash | sha256sum | awk '{print $1}')"
 [[ "$CANDIDATE_HASH" =~ ^[0-9a-f]{64}$ ]] || die 'candidate tree hash is invalid'
 printf '  [ .. ] exact public candidate sha256=%s\n' "$CANDIDATE_HASH"
-before="$(ssh -F "$CONFIG" -T subyard-e2e-bastion </dev/null)" || die 'allocation is unavailable'
-TOKEN="$(awk -F '\t' '$1=="allocation_id" {print $2}' <<<"$before")"
-[[ "$TOKEN" =~ ^[0-9]+$ ]] || die 'allocation ID is invalid'
-expires="$(awk -F '\t' '$1=="expires_at_epoch" {print $2}' <<<"$before")"
-[[ "$expires" =~ ^[0-9]+$ ]] || die 'allocation expiry is invalid'
-[ $((expires - $(date +%s))) -ge 1800 ] \
-  || die 'allocation needs at least 30 minutes; ask the operator to refresh it'
+# P0 fixtures use the token in local Unix account names and therefore retain their bounded
+# numeric-token contract. Derive it from the lease identity instead of the retired allocation ID.
+TOKEN="$((16#${LEASE_ID:0:8}))${LEASE_EPOCH}"
+[[ "$TOKEN" =~ ^[0-9]+$ ]] || die 'lease token is invalid'
 vm1_ip="$(ssh -F "$CONFIG" -G e2e-vm-1 | awk '$1=="hostname" {print $2; exit}')"
 vm2_ip="$(ssh -F "$CONFIG" -G e2e-vm-2 | awk '$1=="hostname" {print $2; exit}')"
 
-for vm in 1 2; do
-  snapshot="$(capacity_cache_snapshot "$vm")"
-  IFS=$'\t' read -r DEFAULT_BUILD_CACHE_BEFORE[$vm] MODULE_CACHE_BEFORE[$vm] <<<"$snapshot"
-  HOME_STATE_BEFORE[$vm]="$(home_state "$vm")"
-  run_vm "$vm" capacity-preflight
-done
-start_capacity_monitors
-"$AGENT" --verify-boundary
-transport_probes
-run_lanes
-prepare_source_archive
-SOURCE_HOST_STARTED=1
-run_source_vm prepare "$SOURCE_ARCHIVE_REMOTE" "$SOURCE_HASH" "$SOURCE_COMMIT"
-"$AGENT" --ssh 1 -- \
-  sh -c '[ ! -e "$1" ] || find "$1" -delete' _ "$SOURCE_ARCHIVE_REMOTE"
-SOURCE_ARCHIVE_REMOTE=''
-find "$SOURCE_ARCHIVE" -delete
-SOURCE_ARCHIVE=''
-reboot_vm1
-run_source_vm resume
-reboot_vm1
-run_source_vm finish
-SOURCE_HOST_STARTED=0
+if [ "$PEERS_ONLY" = 0 ]; then
+  for vm in 1 2; do
+    snapshot="$(capacity_cache_snapshot "$vm")"
+    IFS=$'\t' read -r DEFAULT_BUILD_CACHE_BEFORE[$vm] MODULE_CACHE_BEFORE[$vm] <<<"$snapshot"
+    HOME_STATE_BEFORE[$vm]="$(home_state "$vm")"
+    run_vm "$vm" capacity-preflight
+  done
+  start_capacity_monitors
+  verify_boundary
+  transport_probes
+  run_lanes
+  prepare_source_archive
+  SOURCE_HOST_STARTED=1
+  run_source_vm prepare "$SOURCE_ARCHIVE_REMOTE" "$SOURCE_HASH" "$SOURCE_COMMIT"
+  p0_guest 1 \
+    sh -c '[ ! -e "$1" ] || find "$1" -delete' _ "$SOURCE_ARCHIVE_REMOTE"
+  SOURCE_ARCHIVE_REMOTE=''
+  find "$SOURCE_ARCHIVE" -delete
+  SOURCE_ARCHIVE=''
+  reboot_vm1
+  run_source_vm resume
+  reboot_vm1
+  run_source_vm finish
+  SOURCE_HOST_STARTED=0
+fi
 VM1_YARD_ENTRY="$(yard_entry_state 1)"
 VM2_YARD_ENTRY="$(yard_entry_state 2)"
 VM1_SSH_STATE="$(ssh_state 1)"
@@ -432,6 +483,10 @@ direct_vm 1 peer-probe "$vm2_ip"
 direct_vm 2 peer-probe "$vm1_ip"
 direct_vm 2 peer-yard-start
 direct_vm 1 peer-projects "$vm2_ip"
+direct_vm 2 peer-deny
+direct_vm 1 peer-projects-offline "$vm2_ip"
+direct_vm 2 peer-allow
+direct_vm 1 peer-projects-finish "$vm2_ip"
 direct_vm 1 peer-rpc "$vm2_ip"
 direct_vm 2 peer-rpc "$vm1_ip"
 direct_vm 1 peer-credentials "$vm2_ip"
@@ -441,7 +496,7 @@ PEERS_READY=0
 for vm in 1 2; do
   ssh -F "$CONFIG" -T "e2e-vm-$vm" -- test ! -e "/tmp/subyard-p0-peer-$TOKEN" \
     || die "VM$vm retained its peer fixture"
-  "$AGENT" --ssh "$vm" -- \
+  p0_guest "$vm" \
     sh -c '! grep -Fq "$1" "$HOME/.ssh/authorized_keys" 2>/dev/null' _ "subyard-p0-$TOKEN" \
     || die "VM$vm retained a synthetic peer authorization"
 done
@@ -456,20 +511,22 @@ done
 [ "$(public_tree_hash | sha256sum | awk '{print $1}')" = "$CANDIDATE_HASH" ] \
   || die 'public candidate changed during acceptance'
 assert_no_worktrees
-run_vm 1 capacity-verify-cleanup
-run_vm 2 capacity-verify-cleanup
-for vm in 1 2; do
-  [ "$(home_state "$vm")" = "${HOME_STATE_BEFORE[$vm]}" ] \
-    || die "VM$vm operator home permissions or ownership changed"
-done
-assert_no_worktrees
-verify_cache_lifecycle
-capacity_report
-"$AGENT" --verify-boundary
-after="$(ssh -F "$CONFIG" -T subyard-e2e-bastion </dev/null)" || die 'final allocation status failed'
-[ "$after" = "$before" ] || die 'acceptance changed allocation or TTL'
-
-find "$CAPACITY_LOG_DIR" -depth -delete
-CAPACITY_LOG_DIR=''
-trap - EXIT INT TERM
-printf 'ok: P0 two-VM acceptance passed without changing allocation\n'
+if [ "$PEERS_ONLY" = 0 ]; then
+  run_vm 1 capacity-verify-cleanup
+  run_vm 2 capacity-verify-cleanup
+  for vm in 1 2; do
+    [ "$(home_state "$vm")" = "${HOME_STATE_BEFORE[$vm]}" ] \
+      || die "VM$vm operator home permissions or ownership changed"
+  done
+  assert_no_worktrees
+  verify_cache_lifecycle
+  capacity_report
+  verify_boundary
+  find "$CAPACITY_LOG_DIR" -depth -delete
+  CAPACITY_LOG_DIR=''
+fi
+if [ "$PEERS_ONLY" = 1 ]; then
+  printf 'ok: P0 two-owner inventory acceptance passed within one broker lease\n'
+else
+  printf 'ok: P0 two-VM acceptance passed within one broker lease\n'
+fi

@@ -11,10 +11,8 @@ E2E_YARD="${SUBYARD_E2E_YARD:-test-yard}"
 BASTION_USER="${SUBYARD_E2E_BASTION_USER:-subyard-e2e-agent}"
 STATE_BASE="${SUBYARD_E2E_STATE_DIR:-${SUBYARD_HOME:-$(subyard_operator_home)/.subyard}/e2e}"
 BASTION_ROUTE=""
-SHARED_ROUTE_DIR=""
 STATE_ROOT=""
 IDENTITY=""
-ENROLLMENT_PUBLIC_KEY=""
 CLIENT_CONFIG=""
 GUEST_KNOWN_HOSTS=""
 BASTION_HOSTNAME=""
@@ -45,10 +43,8 @@ configure_yard_scope() {
     '' | *[!a-z0-9_-]* | _* | -*) die "unsafe yard selector '$E2E_YARD'" ;;
   esac
   BASTION_ROUTE="${SUBYARD_E2E_BASTION_ROUTE:-yard-$E2E_YARD}"
-  SHARED_ROUTE_DIR="${SUBYARD_E2E_SHARED_ROUTE_DIR:-$REPO_ROOT/temp/agent-e2e/$E2E_YARD}"
   STATE_ROOT="${SUBYARD_E2E_YARD_STATE_DIR:-$STATE_BASE/yards/$E2E_YARD}"
   IDENTITY="${SUBYARD_E2E_IDENTITY:-$STATE_BASE/id_ed25519}"
-  ENROLLMENT_PUBLIC_KEY="$SHARED_ROUTE_DIR/agent-access.pub"
   CLIENT_CONFIG="$STATE_ROOT/ssh_config"
   GUEST_KNOWN_HOSTS="$STATE_ROOT/guest_known_hosts"
 }
@@ -64,7 +60,6 @@ Usage:
   dev/agent-e2e.sh [--yard NAME] [--vm 1|2|both] -- COMMAND [ARG...]
   dev/agent-e2e.sh [--yard NAME] --ssh 1|2 [-- COMMAND [ARG...]]
   dev/agent-e2e.sh [--yard NAME] --ssh-stdin 1|2 -- COMMAND [ARG...]
-  dev/agent-e2e.sh [--yard NAME] --ssh-config
   dev/agent-e2e.sh [--yard NAME] --verify-boundary
 
 The normal form copies the current tracked, dirty and non-ignored public worktree to each selected
@@ -74,10 +69,9 @@ terminal or runs a command with stdin closed. --ssh-stdin explicitly forwards st
 NAME defaults to test-yard. During a temporary migration, select the old yard explicitly with
 `--yard e2e-yard`; route and generated client state remain isolated per yard.
 
---prepare creates or verifies the shared controller identity at ~/.subyard/e2e/id_ed25519 and
-publishes only its public half to the selected yard's ignored
-temp/agent-e2e/NAME/agent-access.pub enrollment request. The enrolled controller reaches only the
-bounded facade. Every run creates a separate ephemeral guest key.
+--prepare creates or verifies the shared controller identity at ~/.subyard/e2e/id_ed25519. P1
+accepts standard controller keys through the bounded forced-command facade. Every run creates a
+separate ephemeral guest key.
 
 The operator owns the outer test yard. Acquire creates or starts only the selected inner slot pair;
 release fences access and stops that pair without deleting its disks.
@@ -114,28 +108,12 @@ ensure_identity() {
   read -r type blob _rest <<<"$derived"
   derived="$type $blob"
   [ "$derived" = "$recorded" ] || die "agent identity public and private halves do not match"
-  publish_enrollment_public_key "$recorded"
 }
 
-publish_enrollment_public_key() {
-  local public_key="$1" temp
-  [ ! -L "$SHARED_ROUTE_DIR" ] || die "shared E2E route directory must not be a symlink"
-  install -d -m 0755 "$SHARED_ROUTE_DIR"
-  [ ! -e "$ENROLLMENT_PUBLIC_KEY" ] || [ -f "$ENROLLMENT_PUBLIC_KEY" ] \
-    || die "agent enrollment path is not a regular file: $ENROLLMENT_PUBLIC_KEY"
-  [ ! -L "$ENROLLMENT_PUBLIC_KEY" ] \
-    || die "agent enrollment path must not be a symlink: $ENROLLMENT_PUBLIC_KEY"
-  temp="$(mktemp "$SHARED_ROUTE_DIR/.agent-access.XXXXXX")"
-  printf '%s\n' "$public_key" > "$temp"
-  chmod 0644 "$temp"
-  mv -f -- "$temp" "$ENROLLMENT_PUBLIC_KEY"
-}
-
-prepare_enrollment() {
+prepare_identity() {
   ensure_identity
   ok "private controller identity ready at $IDENTITY"
-  ok "public enrollment request written to $ENROLLMENT_PUBLIC_KEY"
-  info "ask the L0 operator to run: yard -Y $E2E_YARD test-vms enroll --project PROJECT"
+  info "the operator-owned outer test yard and its yard-to-yard route must already be available"
 }
 
 valid_route_word() { [[ "$1" =~ ^[A-Za-z0-9._:%-]+$ ]]; }
@@ -153,6 +131,9 @@ known_host_lookup_name() {
 resolve_bastion_route() {
   local rendered key value rest lookup candidate route_config="${SUBYARD_E2E_ROUTE_CONFIG:-${HOME:?}/.ssh/config}"
   local explicit_known="${SUBYARD_E2E_BASTION_KNOWN_HOSTS:-}"
+  local registry="${SUBYARD_E2E_ROUTE_REGISTRY:-/run/subyard/e2e-routes}"
+  local route_file="$registry/$E2E_YARD/current/route.tsv"
+  local known_file="$registry/$E2E_YARD/current/known_hosts"
   local header route_key route_value route_extra hostname_seen=0 port_seen=0 alias_seen=0
   local -a known_candidates=()
   local -a extra_known_candidates=()
@@ -161,21 +142,27 @@ resolve_bastion_route() {
     BASTION_HOSTNAME="$SUBYARD_E2E_BASTION_HOSTNAME"
     BASTION_PORT="${SUBYARD_E2E_BASTION_PORT:-22}"
     BASTION_HOST_KEY_ALIAS="${SUBYARD_E2E_BASTION_HOST_KEY_ALIAS:-}"
-  elif [ -r "$SHARED_ROUTE_DIR/route.tsv" ] && [ -r "$SHARED_ROUTE_DIR/known_hosts" ]; then
-    IFS= read -r header < "$SHARED_ROUTE_DIR/route.tsv"
-    [ "$header" = subyard-e2e-route-v1 ] || die "shared bastion route has an unknown format"
+  elif [ -r "$route_file" ] && [ -r "$known_file" ]; then
+    IFS= read -r header < "$route_file"
+    [ "$header" = subyard-e2e-route-v1 ] || die "test environment route has an unknown format"
     while IFS=$'\t' read -r route_key route_value route_extra; do
-      [ -z "$route_extra" ] || die "shared bastion route contains an invalid record"
+      [ -z "$route_extra" ] || die "test environment route contains an invalid record"
       case "$route_key" in
         subyard-e2e-route-v1 | '') ;;
-        hostname) [ "$hostname_seen" = 0 ] || die "duplicate shared bastion hostname"; BASTION_HOSTNAME="$route_value"; hostname_seen=1 ;;
-        port) [ "$port_seen" = 0 ] || die "duplicate shared bastion port"; BASTION_PORT="$route_value"; port_seen=1 ;;
-        host_key_alias) [ "$alias_seen" = 0 ] || die "duplicate shared bastion host-key alias"; BASTION_HOST_KEY_ALIAS="$route_value"; alias_seen=1 ;;
-        *) die "shared bastion route contains an unexpected record '$route_key'" ;;
+        hostname)
+          [ "$hostname_seen" = 0 ] || die "duplicate test environment hostname"
+          BASTION_HOSTNAME="$route_value"; hostname_seen=1 ;;
+        port)
+          [ "$port_seen" = 0 ] || die "duplicate test environment port"
+          BASTION_PORT="$route_value"; port_seen=1 ;;
+        host_key_alias)
+          [ "$alias_seen" = 0 ] || die "duplicate test environment host-key alias"
+          BASTION_HOST_KEY_ALIAS="$route_value"; alias_seen=1 ;;
+        *) die "test environment route contains an unexpected record '$route_key'" ;;
       esac
-    done < "$SHARED_ROUTE_DIR/route.tsv"
-    [ "$hostname_seen$port_seen$alias_seen" = 111 ] || die "shared bastion route is incomplete"
-    known_candidates=("$SHARED_ROUTE_DIR/known_hosts")
+    done < "$route_file"
+    [ "$hostname_seen$port_seen$alias_seen" = 111 ] || die "test environment route is incomplete"
+    known_candidates=("$known_file")
   else
     [ -r "$route_config" ] || route_config=/dev/null
     rendered="$(ssh -G -F "$route_config" "$BASTION_ROUTE" 2>/dev/null)" \
@@ -209,8 +196,7 @@ resolve_bastion_route() {
       break
     fi
   done
-  [ -n "$BASTION_KNOWN_HOSTS" ] || die \
-    "no pinned host key for $lookup; for a developer-yard worktree the L0 operator must run 'yard -Y $E2E_YARD test-vms enroll --project PROJECT'"
+  [ -n "$BASTION_KNOWN_HOSTS" ] || die "test environment unavailable: no pinned host key for $lookup"
 }
 
 ssh_config_value() {
@@ -273,6 +259,7 @@ render_client_config() {
 
 ensure_client_id() {
   local path="$STATE_ROOT/client-id" temp value
+  ensure_state_root
   if [ -r "$path" ]; then
     read -r value < "$path"
   else
@@ -338,6 +325,10 @@ parse_lease_grant() {
 acquire_lease() {
   local client fingerprint label=checkout purpose=agent-e2e type blob response code started
   command -v jq >/dev/null 2>&1 || die "jq is required"
+  [ -n "$LOCAL_TEMP" ] || die "lease temporary directory is not initialized"
+  CLIENT_CONFIG="$LOCAL_TEMP/ssh_config"
+  GUEST_KNOWN_HOSTS="$LOCAL_TEMP/guest_known_hosts"
+  resolve_bastion_route
   GUEST_IDENTITY="$LOCAL_TEMP/lease_id_ed25519"
   ssh-keygen -q -t ed25519 -N '' -C subyard-e2e-lease -f "$GUEST_IDENTITY"
   read -r type blob _ < "$GUEST_IDENTITY.pub"
@@ -406,11 +397,14 @@ valid_ipv4() {
 verify_boundary() {
   local before after output vm pty_log transfer_log probe expected_hash actual_hash rc
   local -a requested=()
-  before="$(facade_request status)" || die "cannot read lease pool status"
+  before="$(facade_request status | jq -c '
+    [.pool.slots[] |
+      {slot_id, resource_generation, lease_epoch, state, display_label, purpose}]
+  ')" || die "cannot read lease pool status"
 
   for probe in id 'sudo -n id' 'incus list' \
     'cat /var/lib/subyard/test-vms/worker-key' \
-    '/usr/local/libexec/subyard/test-vms-worker up'; do
+    '/usr/local/libexec/subyard/test-vms-worker arbitrary-command'; do
     read -r -a requested <<<"$probe"
     output="$(ssh -F "$CLIENT_CONFIG" -T subyard-e2e-bastion -- "${requested[@]}" </dev/null)" \
       || die "forced facade probe failed"
@@ -480,7 +474,10 @@ verify_boundary() {
     fi
   done
 
-  after="$(facade_request status)" || die "post-probe lease pool status failed"
+  after="$(facade_request status | jq -c '
+    [.pool.slots[] |
+      {slot_id, resource_generation, lease_epoch, state, display_label, purpose}]
+  ')" || die "post-probe lease pool status failed"
   [ "$after" = "$before" ] \
     || { printf 'agent-e2e: boundary probes changed allocation state\n' >&2; return 1; }
   ok "VM SSH works; L1 commands, PTY, transfers, dev login, forwarding and guest return paths are blocked"
@@ -656,7 +653,6 @@ main() {
         ssh_stdin=1
         shift 2
         ;;
-      --ssh-config) mode=config; shift ;;
       --status) mode=status; shift ;;
       --wait)
         [ "$#" -ge 2 ] || die "--wait needs a duration"
@@ -678,13 +674,12 @@ main() {
   done
   configure_yard_scope
   case "$mode" in
-    prepare) [ "${#command[@]}" -eq 0 ] || die "--prepare takes no command"; prepare_enrollment; return ;;
+    prepare) [ "${#command[@]}" -eq 0 ] || die "--prepare takes no command"; prepare_identity; return ;;
     status)
       [ "${#command[@]}" -eq 0 ] || die "--status takes no command"
       facade_request status || die "test environment unavailable"
       return
       ;;
-    config) [ "${#command[@]}" -eq 0 ] || die "--ssh-config takes no command"; prepare_client; printf '%s\n' "$CLIENT_CONFIG"; return ;;
     verify)
       [ "${#command[@]}" -eq 0 ] || die "--verify-boundary takes no command"
       trap cleanup_on_exit EXIT INT TERM

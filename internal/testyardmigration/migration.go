@@ -103,53 +103,35 @@ func Apply(ctx context.Context, options Options) error {
 	if err := run(LegacyYard, "check"); err != nil {
 		return fmt.Errorf("validate legacy test yard: %w", err)
 	}
-	if err := run(LegacyYard, "test-vms", "down", "--yes"); err != nil {
-		return fmt.Errorf("stop legacy test VM pool: %w", err)
-	}
 	if err := run(LegacyYard, "teardown", "--yes"); err != nil {
 		return fmt.Errorf("teardown legacy test yard: %w", err)
 	}
 
-	oldEnrollment := filepath.Join(options.DataHome, "e2e", "controllers", LegacyYard)
-	newEnrollment := filepath.Join(options.DataHome, "e2e", "controllers", CurrentYard)
-	enrollmentMoved := false
-	if exists, inspectErr := pathExists(oldEnrollment); inspectErr != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, false, oldEnrollment, newEnrollment, false, inspectErr)
-	} else if exists {
-		if exists, inspectErr = pathExists(newEnrollment); inspectErr != nil || exists {
-			if inspectErr == nil {
-				inspectErr = errors.New("test-yard enrollment already exists")
-			}
-			return recoverLegacy(run, oldRegistration, newRegistration, false, oldEnrollment, newEnrollment, false, inspectErr)
-		}
-		if err := os.MkdirAll(filepath.Dir(newEnrollment), 0o700); err != nil {
-			return recoverLegacy(run, oldRegistration, newRegistration, false, oldEnrollment, newEnrollment, false, err)
-		}
-		if err := os.Rename(oldEnrollment, newEnrollment); err != nil {
-			return recoverLegacy(run, oldRegistration, newRegistration, false, oldEnrollment, newEnrollment, false, err)
-		}
-		enrollmentMoved = true
-	}
 	if err := os.MkdirAll(filepath.Dir(newRegistration), 0o700); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, false, oldEnrollment, newEnrollment, enrollmentMoved, err)
+		return recoverLegacy(run, oldRegistration, newRegistration, false, err)
 	}
 	if err := os.Rename(oldRegistration, newRegistration); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, false, oldEnrollment, newEnrollment, enrollmentMoved, err)
+		return recoverLegacy(run, oldRegistration, newRegistration, false, err)
 	}
 	registrationMoved := true
 	if filepath.Base(oldRegistration) == "config.env" {
 		err = removeEmptyDirectory(filepath.Dir(oldRegistration))
 	}
 	if err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved, oldEnrollment, newEnrollment, enrollmentMoved, err)
+		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved, err)
 	}
 	if err := run(CurrentYard, "init", "--yes"); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved, oldEnrollment, newEnrollment, enrollmentMoved,
+		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved,
 			fmt.Errorf("initialize test-yard: %w", err))
 	}
 	if err := run(CurrentYard, "check"); err != nil {
-		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved, oldEnrollment, newEnrollment, enrollmentMoved,
+		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved,
 			fmt.Errorf("validate test-yard: %w", err))
+	}
+	legacyController := filepath.Join(options.DataHome, "e2e", "controllers", LegacyYard)
+	if err := removeManagedLegacyController(legacyController); err != nil {
+		return recoverLegacy(run, oldRegistration, newRegistration, registrationMoved,
+			fmt.Errorf("remove legacy controller state: %w", err))
 	}
 	fmt.Fprintln(options.Stdout, "migrated test VM yard e2e-yard -> test-yard")
 	return nil
@@ -159,8 +141,6 @@ func recoverLegacy(
 	run func(string, ...string) error,
 	oldRegistration, newRegistration string,
 	registrationMoved bool,
-	oldEnrollment, newEnrollment string,
-	enrollmentMoved bool,
 	cause error,
 ) error {
 	var recovery []error
@@ -174,11 +154,6 @@ func recoverLegacy(
 			recovery = append(recovery, err)
 		}
 	}
-	if enrollmentMoved {
-		if err := os.Rename(newEnrollment, oldEnrollment); err != nil {
-			recovery = append(recovery, err)
-		}
-	}
 	if err := run(LegacyYard, "init", "--yes"); err != nil {
 		recovery = append(recovery, fmt.Errorf("recreate legacy test yard: %w", err))
 	}
@@ -186,6 +161,65 @@ func recoverLegacy(
 		return errors.Join(cause, fmt.Errorf("test-yard migration recovery failed: %w", errors.Join(recovery...)))
 	}
 	return cause
+}
+
+func removeManagedLegacyController(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() ||
+		info.Mode().Perm()&0o077 != 0 || stat.Uid != uint32(os.Geteuid()) {
+		return errors.New("legacy controller path is not an owned private directory")
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	allowed := map[string]bool{
+		".operator-enrollment-v1": true,
+		"agent-access.pub":        true,
+		"route.tsv":               true,
+		"known_hosts":             true,
+	}
+	markerFound := false
+	for _, entry := range entries {
+		if !allowed[entry.Name()] {
+			return fmt.Errorf("unexpected legacy controller artifact %q", entry.Name())
+		}
+		artifact := filepath.Join(path, entry.Name())
+		artifactInfo, err := os.Lstat(artifact)
+		if err != nil {
+			return err
+		}
+		artifactStat, ok := artifactInfo.Sys().(*syscall.Stat_t)
+		if !ok || artifactInfo.Mode()&os.ModeSymlink != 0 ||
+			!artifactInfo.Mode().IsRegular() || artifactStat.Nlink != 1 ||
+			artifactStat.Uid != uint32(os.Geteuid()) {
+			return fmt.Errorf("legacy controller artifact %q is unsafe", entry.Name())
+		}
+		if entry.Name() == ".operator-enrollment-v1" {
+			payload, err := os.ReadFile(artifact)
+			if err != nil || string(payload) != "managed\n" ||
+				artifactInfo.Mode().Perm() != 0o600 {
+				return errors.New("legacy controller marker is invalid")
+			}
+			markerFound = true
+		}
+	}
+	if !markerFound {
+		return errors.New("legacy controller marker is missing")
+	}
+	for _, entry := range entries {
+		if err := os.Remove(filepath.Join(path, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return os.Remove(path)
 }
 
 func ownedRegular(path string) (bool, error) {

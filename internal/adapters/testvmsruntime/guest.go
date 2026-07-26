@@ -49,6 +49,10 @@ func (runtime *Runtime) waitAgent(ctx context.Context, vm string) error {
 	}); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (runtime *Runtime) configureGuestSSH(ctx context.Context, vm string) error {
 	if _, err := runtime.guest(ctx, vm, nil, "usermod", "--password", "x", "dev"); err != nil {
 		return err
 	}
@@ -59,15 +63,49 @@ func (runtime *Runtime) waitAgent(ctx context.Context, vm string) error {
 	if !strings.HasPrefix(account, "dev P ") {
 		return fmt.Errorf("%s dev account did not become key-login capable", vm)
 	}
+	const sudoPolicy = `target=/etc/sudoers.d/90-subyard-e2e-dev
+temp="$(mktemp /etc/sudoers.d/.subyard-e2e-dev.XXXXXX)"
+printf "dev ALL=(ALL) NOPASSWD:ALL\n" > "$temp"
+chmod 0440 "$temp"
+visudo -cf "$temp"
+mv -f "$temp" "$target"`
+	if _, err := runtime.guest(ctx, vm, nil, "sh", "-eu", "-c", sudoPolicy); err != nil {
+		return err
+	}
+	if _, err := runtime.guest(ctx, vm, nil,
+		"runuser", "-u", "dev", "--", "sudo", "-n", "true"); err != nil {
+		return fmt.Errorf("%s passwordless sudo is not available: %w", vm, err)
+	}
 	const sshPolicy = `directory=/etc/ssh/sshd_config.d
 target="$directory/00-subyard-e2e.conf"
+main=/etc/ssh/sshd_config
 install -d -m 0755 "$directory"
+test -f "$main"
+test ! -L "$main"
 temp="$(mktemp "$directory/.subyard-e2e.XXXXXX")"
-trap 'rm -f "$temp"' EXIT
+body="$(mktemp /etc/ssh/.sshd-config-body.XXXXXX)"
+main_temp="$(mktemp /etc/ssh/.sshd-config.XXXXXX)"
+trap 'rm -f "$temp" "$body" "$main_temp"' EXIT
 printf "PasswordAuthentication no\nKbdInteractiveAuthentication no\n" > "$temp"
 chmod 0644 "$temp"
 mv -f "$temp" "$target"
+awk '
+  /^# subyard-e2e-begin$/ { managed=1; next }
+  /^# subyard-e2e-end$/ { managed=0; next }
+  !managed { print }
+' "$main" > "$body"
+{
+  printf "# subyard-e2e-begin\n"
+  printf "PasswordAuthentication no\nKbdInteractiveAuthentication no\n"
+  printf "# subyard-e2e-end\n"
+  cat "$body"
+} > "$main_temp"
+chmod 0600 "$main_temp"
+mv -f "$main_temp" "$main"
+rm -f "$body"
 trap - EXIT
+ssh-keygen -A
+install -d -m 0755 /run/sshd
 sshd -t
 systemctl reload ssh`
 	if _, err := runtime.guest(ctx, vm, nil, "sh", "-eu", "-c", sshPolicy); err != nil {
@@ -93,21 +131,22 @@ command -v curl >/dev/null &&
 command -v jq >/dev/null &&
 command -v rg >/dev/null &&
 command -v go >/dev/null &&
-command -v shellcheck >/dev/null`
-	if _, err := runtime.guest(ctx, vm, nil, "sh", "-c", check); err == nil {
-		return nil
-	}
-	if err := runtime.progress(ctx, "installing test toolchain in "+vm, func() error {
-		const install = `export DEBIAN_FRONTEND=noninteractive
+command -v shellcheck >/dev/null &&
+command -v sshd >/dev/null &&
+command -v sudo >/dev/null`
+	if _, err := runtime.guest(ctx, vm, nil, "sh", "-c", check); err != nil {
+		if err := runtime.progress(ctx, "installing test toolchain in "+vm, func() error {
+			const install = `export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq git curl jq ripgrep golang-go shellcheck`
-		_, err := runtime.guest(ctx, vm, nil, "sh", "-eu", "-c", install)
-		return err
-	}); err != nil {
-		return err
+apt-get install -y -qq git curl jq ripgrep golang-go shellcheck openssh-server sudo`
+			_, err := runtime.guest(ctx, vm, nil, "sh", "-eu", "-c", install)
+			return err
+		}); err != nil {
+			return err
+		}
+		fmt.Fprintf(runtime.Stdout, "  [ ok ] %s test toolchain is ready\n", vm)
 	}
-	fmt.Fprintf(runtime.Stdout, "  [ ok ] %s test toolchain is ready\n", vm)
-	return nil
+	return runtime.configureGuestSSH(ctx, vm)
 }
 
 func (runtime *Runtime) installManagedGuestKeys(ctx context.Context, vm string) error {

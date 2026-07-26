@@ -77,7 +77,7 @@ if [[ "$joined" == *ssh-keyscan* ]]; then
   printf '[127.0.0.1]:2222 %s\n' "$key"
   exit 0
 fi
-if [[ "$joined" == *"yard rpc --stdio"* ]]; then
+if [[ "$joined" == *yard* && "$joined" == *rpc* && "$joined" == *--stdio* ]]; then
   [ "$(cat "$REMOTE_TEST_ROOT/owner-mode/$dest" 2>/dev/null || true)" != unreachable ] || exit 255
   cat >/dev/null
   emit_frame() {
@@ -177,7 +177,7 @@ run_add named owner-two --yard inner >/dev/null
 run_add named owner-two --yard inner >/dev/null
 assert_file_contains "$HOME/.ssh/subyard-one.config" 'HostKeyAlias subyard-remote-one'
 assert_file_contains "$HOME/.ssh/subyard-one.config" 'ControlPath '
-assert_file_contains "$HOME/.ssh/subyard-one.config" 'cm-remote-one-'
+assert_file_contains "$HOME/.ssh/subyard-one.config" 'ControlPath ~/.ssh/subyard-cm-%C'
 assert_file_contains "$HOME/.ssh/subyard-two.config" 'HostKeyAlias subyard-remote-two'
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" '[127.0.0.1]:2222 '
 assert_file_contains "$SUBYARD_HOME/ssh/known_hosts" 'subyard-remote-one '

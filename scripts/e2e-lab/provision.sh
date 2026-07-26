@@ -113,6 +113,7 @@ disable_agent_account() {
     userdel --remove "$account" >/dev/null 2>&1 || usermod --lock "$account" >/dev/null 2>&1 || true
   done
   rm -rf "$home" /var/lib/subyard/e2e-slots
+  rm -f /usr/local/libexec/subyard/test-vms-authorized-key
 }
 
 disable_agent_sshd_policy() {
@@ -125,7 +126,19 @@ disable_agent_sshd_policy() {
 }
 
 reconcile_agent_sshd_policy() {
-  rm -f /usr/local/libexec/subyard/test-vms-authorized-key
+  cat > /usr/local/libexec/subyard/test-vms-authorized-key <<'EOF'
+#!/bin/sh
+set -eu
+user="${1:-}"
+key_type="${2:-}"
+key_blob="${3:-}"
+[ "$user" = "${E2E_AGENT_USER:-subyard-e2e-agent}" ] || exit 0
+[ "$key_type" = ssh-ed25519 ] || exit 0
+case "$key_blob" in '' | *[!A-Za-z0-9+/=]*) exit 0 ;; esac
+printf 'restrict,command="sudo -n /usr/local/libexec/subyard/test-vms-inner _test-vms-facade" %s %s\n' \
+  "$key_type" "$key_blob"
+EOF
+  chmod 0755 /usr/local/libexec/subyard/test-vms-authorized-key
   cat > /etc/sudoers.d/subyard-test-vms-facade <<'EOF'
 Defaults:subyard-e2e-agent env_keep += "SSH_ORIGINAL_COMMAND"
 subyard-e2e-agent ALL=(root) NOPASSWD: /usr/local/libexec/subyard/test-vms-inner _test-vms-facade
@@ -138,7 +151,9 @@ EOF
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 Match User subyard-e2e-agent
-    AuthorizedKeysFile /var/lib/subyard/e2e-agent/.ssh/authorized_keys
+    AuthorizedKeysFile none
+    AuthorizedKeysCommand /usr/local/libexec/subyard/test-vms-authorized-key %u %t %k
+    AuthorizedKeysCommandUser nobody
 EOF
   chmod 0644 /etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf
   sshd -t
@@ -180,14 +195,6 @@ reconcile_slot_accounts() {
     chmod 0640 "$home/.ssh/authorized_keys"
     chown root:"$primary" "$home/.ssh/authorized_keys"
   done
-  while IFS=: read -r user _; do
-    slot="${user#subyard-e2e-slot-}"
-    [[ "$slot" =~ ^[0-9]+$ ]] || continue
-    [ "$slot" -le "$E2E_VM_SLOT_COUNT" ] || {
-      pkill -KILL -u "$user" >/dev/null 2>&1 || true
-      userdel --remove "$user"
-    }
-  done < <(getent passwd | grep '^subyard-e2e-slot-' || true)
 }
 
 reconcile_test_vm_state_directory() {
@@ -309,7 +316,6 @@ reconcile_inner_incus() {
 : "${E2E_VM_SLOT_COUNT:=2}"
 : "${E2E_VM_BOOT_TIMEOUT:=300}"
 : "${E2E_VM_STATE_DIR:=/var/lib/subyard/test-vms}"
-: "${E2E_VM_PUBLIC_DIR:=/var/lib/subyard/test-vms-public}"
 : "${E2E_AGENT_USER:=subyard-e2e-agent}"
 : "${E2E_AGENT_HOME:=/var/lib/subyard/e2e-agent}"
 : "${E2E_AGENT_PUBLIC_KEY:=}"
@@ -332,7 +338,6 @@ case "$E2E_VM_IMAGE" in '' | -* | *[!A-Za-z0-9._:/@+-]*) printf 'invalid E2E_VM_
   && [ "$E2E_VM_BOOT_TIMEOUT" -ge 30 ] && [ "$E2E_VM_BOOT_TIMEOUT" -le 1800 ] \
   || { printf 'invalid E2E_VM_BOOT_TIMEOUT\n' >&2; exit 1; }
 case "$E2E_VM_STATE_DIR" in /var/lib/subyard/*) ;; *) printf 'unsafe E2E_VM_STATE_DIR\n' >&2; exit 1 ;; esac
-case "$E2E_VM_PUBLIC_DIR" in /var/lib/subyard/*) ;; *) printf 'unsafe E2E_VM_PUBLIC_DIR\n' >&2; exit 1 ;; esac
 case "$E2E_AGENT_USER" in '' | -* | *[!a-z0-9_-]*) printf 'invalid E2E_AGENT_USER\n' >&2; exit 1 ;; esac
 case "$E2E_AGENT_HOME" in /var/lib/subyard/*) ;; *) printf 'unsafe E2E_AGENT_HOME\n' >&2; exit 1 ;; esac
 if [ -n "$E2E_AGENT_PUBLIC_KEY" ]; then
@@ -362,7 +367,6 @@ install -d -m 0755 /etc/subyard
   printf 'E2E_VM_SLOT_COUNT=%q\n' "$E2E_VM_SLOT_COUNT"
   printf 'E2E_VM_BOOT_TIMEOUT=%q\n' "$E2E_VM_BOOT_TIMEOUT"
   printf 'E2E_VM_STATE_DIR=%q\n' "$E2E_VM_STATE_DIR"
-  printf 'E2E_VM_PUBLIC_DIR=%q\n' "$E2E_VM_PUBLIC_DIR"
   printf 'E2E_AGENT_USER=%q\n' "$E2E_AGENT_USER"
   printf 'E2E_AGENT_HOME=%q\n' "$E2E_AGENT_HOME"
   printf 'E2E_AGENT_PUBLIC_KEY=%q\n' "$E2E_AGENT_PUBLIC_KEY"
@@ -425,7 +429,6 @@ getent group yard >/dev/null 2>&1 || groupadd --system yard
 remove_group_member "$DEV_USER" incus-admin
 remove_group_member "$DEV_USER" yard
 reconcile_test_vm_state_directory
-install -d -m 0755 -o root -g root "$E2E_VM_PUBLIC_DIR"
 reconcile_agent_account
 reconcile_slot_accounts
 reconcile_agent_sshd_policy
@@ -478,5 +481,4 @@ systemctl daemon-reload
 systemctl enable --now subyard-test-vms-lease-reaper.timer
 systemctl enable --now subyard-test-vms-broker.service
 
-# Re-enroll without changing allocation state.
-/usr/local/libexec/subyard/test-vms-inner _test-vms-worker reconcile-access
+/usr/local/libexec/subyard/test-vms-inner _test-vms-worker reconcile-pool --yes

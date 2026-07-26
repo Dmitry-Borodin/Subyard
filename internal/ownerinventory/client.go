@@ -17,6 +17,8 @@ import (
 
 const Capability = "owner-inventory-v1"
 
+var ErrIntegrity = errors.New("owner inventory integrity violation")
+
 type Client struct {
 	Transport ports.RemoteTransport
 	Target    string
@@ -29,14 +31,14 @@ func (client Client) Fetch(ctx context.Context, expectedHostID string) (domain.O
 	}
 	var inventory domain.OwnerInventory
 	if err := json.Unmarshal(raw, &inventory); err != nil {
-		return inventory, errors.New("owner returned invalid inventory JSON")
+		return inventory, fmt.Errorf("%w: invalid inventory JSON", ErrIntegrity)
 	}
 	if err := inventory.Validate(); err != nil {
-		return inventory, err
+		return inventory, fmt.Errorf("%w: %v", ErrIntegrity, err)
 	}
 	if expectedHostID != "" && inventory.HostID != expectedHostID {
 		return inventory, fmt.Errorf(
-			"owner HostID mismatch: connection is %q, response is %q",
+			"%w: owner HostID mismatch: connection is %q, response is %q", ErrIntegrity,
 			expectedHostID, inventory.HostID,
 		)
 	}

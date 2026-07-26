@@ -3,7 +3,6 @@ package testvmsruntime
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -38,11 +37,9 @@ type Config struct {
 	Memory              string
 	Disk                string
 	SlotCount           int
-	TTL                 time.Duration // Legacy single-allocation compatibility; not used for pair deletion.
 	BootTimeout         time.Duration
 	DevUser             string
 	StateDir            string
-	PublicDir           string
 	AgentUser           string
 	AgentPublicKey      string
 	AgentHome           string
@@ -91,9 +88,8 @@ func ConfigFromValues(values map[string]string) (Config, error) {
 		Network: value("E2E_VM_NETWORK", "incusbr0"),
 		Prefix:  value("E2E_VM_PREFIX", "e2e-vm"), Image: value("E2E_VM_IMAGE", "images:debian/13/cloud"),
 		CPU: cpu, Memory: value("E2E_VM_MEMORY", "4GiB"), Disk: value("E2E_VM_DISK", "20GiB"),
-		SlotCount: slots, TTL: LeaseTTL, BootTimeout: boot, DevUser: value("DEV_USER", "dev"),
+		SlotCount: slots, BootTimeout: boot, DevUser: value("DEV_USER", "dev"),
 		StateDir:       value("E2E_VM_STATE_DIR", "/var/lib/subyard/test-vms"),
-		PublicDir:      value("E2E_VM_PUBLIC_DIR", "/var/lib/subyard/test-vms-public"),
 		AgentUser:      value("E2E_AGENT_USER", "subyard-e2e-agent"),
 		AgentPublicKey: values["E2E_AGENT_PUBLIC_KEY"],
 		AgentHome:      value("E2E_AGENT_HOME", "/var/lib/subyard/e2e-agent"),
@@ -139,10 +135,9 @@ func (cfg Config) Validate() error {
 		return fmt.Errorf("unsafe E2E_AGENT_USER %q", cfg.AgentUser)
 	}
 	for name, path := range map[string]string{
-		"E2E_VM_STATE_DIR": cfg.StateDir, "E2E_VM_PUBLIC_DIR": cfg.PublicDir,
-		"E2E_AGENT_HOME": cfg.AgentHome,
+		"E2E_VM_STATE_DIR": cfg.StateDir, "E2E_AGENT_HOME": cfg.AgentHome,
 	} {
-		if !within(path, "/var/lib/subyard") && !(name == "E2E_VM_PUBLIC_DIR" && within(path, os.TempDir())) {
+		if !within(path, "/var/lib/subyard") {
 			return fmt.Errorf("unsafe %s %q", name, path)
 		}
 	}
@@ -170,11 +165,10 @@ func (cfg Config) slotVM(slot, index int) string {
 }
 func (cfg Config) keyPath() string        { return filepath.Join(cfg.StateDir, "id_ed25519") }
 func (cfg Config) knownHosts() string     { return filepath.Join(cfg.StateDir, "known_hosts") }
-func (cfg Config) createdAt() string      { return filepath.Join(cfg.StateDir, "created-at") }
 func (cfg Config) failureLog() string     { return filepath.Join(cfg.StateDir, "last-failure.log") }
+func (cfg Config) stateMarker() string    { return filepath.Join(cfg.StateDir, ".subyard-managed") }
 func (cfg Config) keyRevision() string    { return filepath.Join(cfg.StateDir, "worker-key-v2") }
 func (cfg Config) revokedKey() string     { return filepath.Join(cfg.StateDir, "revoked-worker.pub") }
-func (cfg Config) manifest() string       { return filepath.Join(cfg.PublicDir, "allocation.tsv") }
 func (cfg Config) leaseState() string     { return filepath.Join(cfg.StateDir, "leases.json") }
 func (cfg Config) LeaseStatePath() string { return cfg.leaseState() }
 

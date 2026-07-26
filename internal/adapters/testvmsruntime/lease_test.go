@@ -2,11 +2,45 @@ package testvmsruntime
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestLeaseStoreConfiguredCapacityMatrix(t *testing.T) {
+	for _, count := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("N=%d", count), func(t *testing.T) {
+			store := LeaseStore{
+				Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: count,
+			}
+			var grants []LeaseGrant
+			for index := 0; index < count; index++ {
+				grant, err := store.Acquire(
+					fmt.Sprintf("client-%d", index), "SHA256:key", "", "",
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				grants = append(grants, grant)
+			}
+			if _, err := store.Acquire("overflow", "SHA256:key", "", ""); err == nil ||
+				err.Error() != "busy" {
+				t.Fatalf("N+1 acquire error = %v", err)
+			}
+			seen := map[string]bool{}
+			for _, grant := range grants {
+				seen[grant.SlotID] = true
+			}
+			if len(seen) != count {
+				t.Fatalf("distinct winners = %d, want %d", len(seen), count)
+			}
+		})
+	}
+}
 
 func TestLeaseStoreConcurrentCapacityAndFencing(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
@@ -57,6 +91,9 @@ func TestLeaseStoreConcurrentCapacityAndFencing(t *testing.T) {
 	if err := store.FinishDrain(grants[0].SlotID, nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.FinishDrain(grants[0].SlotID, nil); err != nil {
+		t.Fatalf("replayed successful fencing was not idempotent: %v", err)
+	}
 	next, err := store.Acquire("next", "SHA256:controller", "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -86,10 +123,14 @@ func TestLeaseStoreExpiryShrinkAndQuarantine(t *testing.T) {
 		t.Fatalf("expired state=%s", pool.Slots[0].State)
 	}
 	shrunk := LeaseStore{Path: path, SlotCount: 1, Now: store.Now}
-	if _, err := shrunk.Status(); err != nil {
-		t.Fatalf("available higher slots should shrink: %v", err)
+	retiring, err := shrunk.PrepareResize()
+	if err != nil || len(retiring) != 2 {
+		t.Fatalf("prepare available higher slots: retiring=%v err=%v", retiring, err)
 	}
-	if err := store.FinishDrain(grant.SlotID, errors.New("stop failed")); err != nil {
+	if err := shrunk.CommitResize(); err != nil {
+		t.Fatalf("commit available higher slots: %v", err)
+	}
+	if err := shrunk.FinishDrain(grant.SlotID, errors.New("stop failed")); err != nil {
 		t.Fatal(err)
 	}
 	pool, err = shrunk.Status()
@@ -98,6 +139,34 @@ func TestLeaseStoreExpiryShrinkAndQuarantine(t *testing.T) {
 	}
 	if pool.Slots[0].State != SlotQuarantined || pool.Slots[0].FailureReason == "" {
 		t.Fatalf("quarantine not recorded: %#v", pool.Slots[0])
+	}
+}
+
+func TestLeaseStoreBlockedShrinkDoesNotMutateState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "leases.json")
+	store := LeaseStore{Path: path, SlotCount: 3}
+	for index := 0; index < 3; index++ {
+		if _, err := store.Acquire(
+			fmt.Sprintf("client-%d", index), "SHA256:key", "", "",
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shrunk := LeaseStore{Path: path, SlotCount: 1}
+	if _, _, err := shrunk.ResizePlan(); err == nil ||
+		!strings.Contains(err.Error(), "slot-002 is provisioning") {
+		t.Fatalf("blocked shrink error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("blocked shrink changed lease state")
 	}
 }
 
@@ -113,5 +182,30 @@ func TestLeaseStoreRedactsCapability(t *testing.T) {
 	}
 	if pool.Slots[0].CapabilityHash == "" || pool.Slots[0].CapabilityHash == grant.Capability {
 		t.Fatal("capability was not stored in verifier-only form")
+	}
+}
+
+func TestLeaseStoreCorruptStateRecoveryKeepsOtherSlotsQuarantined(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "leases.json")
+	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := LeaseStore{Path: path, SlotCount: 2}
+	if _, err := store.Status(); !errors.Is(err, ErrCorruptLeaseState) {
+		t.Fatalf("status error = %v", err)
+	}
+	if err := store.BeginRecovery("slot-001"); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.Slots[0].State != SlotDraining || pool.Slots[1].State != SlotQuarantined {
+		t.Fatalf("recovery pool = %#v", pool.Slots)
+	}
+	backups, err := filepath.Glob(path + ".corrupt-*")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("corrupt-state backups = %v, %v", backups, err)
 	}
 }

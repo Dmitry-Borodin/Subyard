@@ -31,6 +31,8 @@ PEER_SSH_DIR="$PEER_ROOT/ssh"
 PEER_YARD_ENTRY="$HOME/.local/bin/yard"
 PEER_YARD_BACKUP="$PEER_ROOT/user-yard-entry.backup"
 PEER_YARD_STATE="$PEER_ROOT/.user-yard-entry-state"
+PEER_PROFILE_BACKUP="$PEER_ROOT/user-profile.backup"
+PEER_PROFILE_STATE="$PEER_ROOT/.user-profile-state"
 PEER_AUTH_STATE="$PEER_ROOT/.authorized-keys-state"
 PEER_CONFIG_STATE="$PEER_ROOT/.ssh-config-state"
 PEER_REAL_YARD_MARKER="$PEER_ROOT/.subyard-p0-real-yard"
@@ -273,6 +275,21 @@ owner() (
   printf 'ok: VM1 owner, legacy upgrade, lifecycle, Incus and rollback\n'
 )
 
+owner_migration() (
+  [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner migration lane requires VM1'
+  trap owner_cleanup EXIT
+  prepare_owner_go_cache
+  YARD_BUILD_VERSION=p0-owner dev/build-engine.sh --force >/dev/null
+  ensure_owner_incus
+  OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
+  OWNER_BASELINE_CAPTURED=1
+  incus image info "$OWNER_BASE_IMAGE" --project default >/dev/null 2>&1 \
+    || die "cached owner base image $OWNER_BASE_IMAGE is required"
+  prepare_owner_image_cache_project subyard-e2e-yard
+  owner_profile_migration_contract
+  printf 'ok: VM1 e2e-yard release upgrade migrated to test-yard\n'
+)
+
 controller() (
   local temp='' rc
   [ "$SUBYARD_E2E_VM" = 2 ] || die 'controller lane requires VM2'
@@ -305,7 +322,7 @@ controller() (
 )
 
 install_peer_wrapper() {
-  local wrapper="$PEER_ROOT/yard-wrapper"
+  local wrapper="$PEER_ROOT/yard-wrapper" profile="$HOME/.profile"
   [ ! -e "$PEER_YARD_STATE" ] && [ ! -e "$PEER_YARD_BACKUP" ] \
     && [ ! -L "$PEER_YARD_BACKUP" ] || die 'peer yard entry backup is already staged'
   [ ! -d "$PEER_YARD_ENTRY" ] || die 'peer yard entry is a directory'
@@ -330,12 +347,20 @@ install_peer_wrapper() {
   } > "$wrapper"
   chmod 0755 "$wrapper"
   install -m 0755 "$wrapper" "$PEER_YARD_ENTRY"
+  if [ -e "$profile" ]; then
+    [ -f "$profile" ] && [ ! -L "$profile" ] || die 'peer login profile is unsafe'
+    cp -p "$profile" "$PEER_PROFILE_BACKUP"
+    printf 'file\n' > "$PEER_PROFILE_STATE"
+  else
+    printf 'absent\n' > "$PEER_PROFILE_STATE"
+  fi
+  printf '\n# %s\nPATH="$HOME/.local/bin:$PATH"\nexport PATH\n' "$MARKER" >> "$profile"
   [ "$(bash -lc 'command -v yard')" = "$PEER_YARD_ENTRY" ] \
     || die "login shell does not resolve the peer CLI through $PEER_YARD_ENTRY"
 }
 
 remove_peer_wrapper() {
-  local state
+  local state profile="$HOME/.profile"
   [ -e "$PEER_YARD_STATE" ] || return 0
   state="$(cat "$PEER_YARD_STATE")"
   case "$state" in
@@ -364,6 +389,15 @@ remove_peer_wrapper() {
     *) die 'peer yard entry backup state is invalid' ;;
   esac
   find "$PEER_YARD_STATE" -delete
+  if [ -e "$PEER_PROFILE_STATE" ]; then
+    state="$(cat "$PEER_PROFILE_STATE")"
+    case "$state" in
+      absent) find "$profile" -delete ;;
+      file) mv -f "$PEER_PROFILE_BACKUP" "$profile" ;;
+      *) die 'peer login profile restore state is invalid' ;;
+    esac
+    find "$PEER_PROFILE_STATE" -delete
+  fi
 }
 
 bootstrap_peer_keys() {
@@ -777,7 +811,7 @@ peer_credentials() {
 }
 
 peer_projects() {
-  local source="$PEER_ROOT/project" remote_pwd
+  local source="$PEER_ROOT/project" remote_pwd inventory owner_selector="e2e-vm-2/default"
   local ssh_config="$HOME/.ssh/config"
   local include="Include $PEER_ROOT/home/.ssh/subyard-peer.config"
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'remote project controller requires VM1'
@@ -800,14 +834,72 @@ peer_projects() {
   grep -Fqx "$include" "$ssh_config" || printf '%s\n' "$include" >> "$ssh_config"
   "$PEER_YARD_ENTRY" remote add peer "dev@$PEER_IP" --yes >/dev/null
   "$PEER_YARD_ENTRY" -Y peer sync "$source" --yes >/dev/null
-  remote_pwd="$("$PEER_YARD_ENTRY" -Y peer shell "$source" --yes -- pwd)"
+  inventory="$("$PEER_YARD_ENTRY" list)"
+  grep -Eq '(^|[[:space:]])project([[:space:]]|$)' <<<"$inventory" \
+    || die 'ordinary list did not refresh the remote owner inventory'
+  remote_pwd="$("$PEER_YARD_ENTRY" -Y "$owner_selector" shell project --yes -- pwd)"
   case "$remote_pwd" in /srv/workspaces/*/src) ;; *) die 'remote shell did not enter the synced project' ;; esac
-  "$PEER_YARD_ENTRY" -Y peer shell "$source" --yes -- \
+  "$PEER_YARD_ENTRY" -Y "$owner_selector" shell project --yes -- \
     sh -c 'printf "remote-mutated\n" >> result.txt'
-  "$PEER_YARD_ENTRY" -Y peer shell "$source" --yes -- \
+  "$PEER_YARD_ENTRY" -Y "$owner_selector" shell project --yes -- \
     grep -Fqx remote-mutated result.txt
-  "$PEER_YARD_ENTRY" -Y peer remove "$source" --yes >/dev/null
+  printf 'ok: ordinary list refreshed authoritative cross-owner inventory\n'
+}
+
+peer_projects_offline() {
+  local source="$PEER_ROOT/project" inventory rc
+  local owner_config="$PEER_ROOT/home/.ssh/subyard-peer.config"
+  local owner_backup="$PEER_ROOT/home/.ssh/subyard-peer.config.online"
+  [ "$SUBYARD_E2E_VM" = 1 ] || die 'remote project controller requires VM1'
+  ssh -O exit yard-peer >/dev/null 2>&1 || true
+  cp -p "$owner_config" "$owner_backup"
+  {
+    printf 'Host *\n    HostName 127.0.0.1\n    Port 9\n'
+    cat "$owner_backup"
+  } > "$owner_config"
+  set +e
+  inventory="$("$PEER_YARD_ENTRY" list --live 2>&1)"
+  rc=$?
+  set -e
+  mv -f "$owner_backup" "$owner_config"
+  [ "$rc" = 0 ] || die "aggregate list returned $rc for an offline owner"
+  grep -Fqi stale <<<"$inventory" \
+    || die "offline owner did not expose its last snapshot as stale: $inventory"
+  grep -Eq '(^|[[:space:]])project([[:space:]]|$)' <<<"$inventory" \
+    || die 'offline owner lost its explicit stale project snapshot'
+  printf 'ok: offline owner returned zero with an explicit stale snapshot\n'
+}
+
+peer_projects_finish() {
+  local source="$PEER_ROOT/project" inventory owner_selector="e2e-vm-2/default"
+  [ "$SUBYARD_E2E_VM" = 1 ] || die 'remote project controller requires VM1'
+  inventory="$("$PEER_YARD_ENTRY" list --live)"
+  grep -Eq '(^|[[:space:]])project([[:space:]]|$)' <<<"$inventory" \
+    || die 'force refresh did not recover the remote owner inventory'
+  "$PEER_YARD_ENTRY" -Y "$owner_selector" remove project --yes >/dev/null
+  inventory="$("$PEER_YARD_ENTRY" list --live)"
+  ! grep -Eq '(^|[[:space:]])project([[:space:]]|$)' <<<"$inventory" \
+    || die 'authoritative replacement retained a removed ghost project'
+  printf 'ok: force refresh recovered and authoritative deletion left no ghost project\n'
   printf 'ok: release-installed remote add, sync and two project shells\n'
+}
+
+peer_deny() {
+  local authorized="$HOME/.ssh/authorized_keys" peer_key temp
+  [ "$SUBYARD_E2E_VM" = 2 ] || die 'peer denial target requires VM2'
+  peer_key="$(cat "$PEER_SSH_DIR/authorized-peer.pub")"
+  temp="$(mktemp "$HOME/.ssh/.authorized-keys.XXXXXX")"
+  awk -v key="$peer_key" '$0 != key' "$authorized" > "$temp"
+  chmod 0600 "$temp"
+  mv -f "$temp" "$authorized"
+}
+
+peer_allow() {
+  local authorized="$HOME/.ssh/authorized_keys" peer_key
+  [ "$SUBYARD_E2E_VM" = 2 ] || die 'peer authorization target requires VM2'
+  peer_key="$(cat "$PEER_SSH_DIR/authorized-peer.pub")"
+  grep -Fqx "$peer_key" "$authorized" || printf '%s\n' "$peer_key" >> "$authorized"
+  chmod 0600 "$authorized"
 }
 
 remove_peer_ssh_include() {
@@ -906,6 +998,7 @@ case "$MODE" in
   capacity-preflight) capacity_preflight ;;
   capacity-verify-cleanup) capacity_verify_cleanup ;;
   owner) owner ;;
+  owner-migration) owner_migration ;;
   controller) controller ;;
   peer-prepare) peer_prepare ;;
   peer-prepare-resume) peer_prepare_finish ;;
@@ -914,6 +1007,10 @@ case "$MODE" in
   peer-probe) peer_probe ;;
   peer-yard-start) peer_yard_start ;;
   peer-projects) peer_projects ;;
+  peer-projects-offline) peer_projects_offline ;;
+  peer-projects-finish) peer_projects_finish ;;
+  peer-deny) peer_deny ;;
+  peer-allow) peer_allow ;;
   peer-rpc) peer_rpc ;;
   peer-credentials) peer_credentials ;;
   peer-clean) peer_clean ;;

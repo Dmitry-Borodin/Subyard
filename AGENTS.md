@@ -18,11 +18,9 @@ toolchain. Run `./tests/run.sh` before finishing shell or CLI changes. CI additi
 The operator owns outer-yard `start`, `stop` and teardown. The root broker owns inner slot
 create/start/stop; agents only acquire leases.
 
-Before first use, run `dev/agent-e2e.sh --prepare`. If the agent worktree is inside a normal
-developer yard, ask the L0 operator to run
-`yard -Y test-yard test-vms enroll --project <project>`; a shared L0 worktree may still use
-`yard -Y test-yard init`. The persistent controller key stays under the agent user's
-`~/.subyard/e2e/`; every lease uses a separate ephemeral guest key.
+Before first use, run `dev/agent-e2e.sh --prepare`. Standard callers reach the bounded facade
+through the provisioned yard-to-yard route. The persistent controller key stays under the agent
+user's `~/.subyard/e2e/`; every lease uses a separate ephemeral guest key.
 
 Run checks from the current public worktree with:
 

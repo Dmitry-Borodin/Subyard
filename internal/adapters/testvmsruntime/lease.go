@@ -20,6 +20,11 @@ const (
 	LeaseTTL           = 10 * time.Minute
 )
 
+var (
+	ErrCorruptLeaseState     = errors.New("corrupt lease state")
+	ErrUnsupportedLeaseState = errors.New("unsupported lease state")
+)
+
 type SlotState string
 
 const (
@@ -195,6 +200,10 @@ func (store LeaseStore) FinishDrain(slotID string, stopErr error) error {
 		if err != nil {
 			return err
 		}
+		if slot.State == SlotAvailable && stopErr == nil {
+			// A concurrent release/revoke may have completed the same fencing sequence first.
+			return nil
+		}
 		if slot.State != SlotDraining {
 			return fmt.Errorf("slot %s is not draining", slotID)
 		}
@@ -245,7 +254,7 @@ func (store LeaseStore) BeginDrainSlot(slotID, reason string) error {
 }
 
 func (store LeaseStore) BeginRecovery(slotID string) error {
-	return store.withLock(true, func(pool *LeasePool) error {
+	err := store.withLock(true, func(pool *LeasePool) error {
 		slot, err := findSlot(pool, slotID)
 		if err != nil {
 			return err
@@ -257,6 +266,10 @@ func (store LeaseStore) BeginRecovery(slotID string) error {
 		slot.FailureReason = "operator recovery"
 		return nil
 	})
+	if !errors.Is(err, ErrCorruptLeaseState) && !errors.Is(err, ErrUnsupportedLeaseState) {
+		return err
+	}
+	return store.rebuildCorruptPoolForRecovery(slotID)
 }
 
 func (store LeaseStore) Quarantine(grant LeaseGrant, cause error) error {
@@ -287,6 +300,24 @@ func (store LeaseStore) withLock(write bool, operation func(*LeasePool) error) e
 	if store.SlotCount < 1 {
 		return errors.New("slot count must be positive")
 	}
+	return store.withPoolLock(func(pool *LeasePool) error {
+		if err := reconcileSlotCount(pool, store.SlotCount); err != nil {
+			return err
+		}
+		before, _ := json.Marshal(*pool)
+		expireStale(pool, store.now())
+		if err := operation(pool); err != nil {
+			return err
+		}
+		after, _ := json.Marshal(*pool)
+		if write || string(before) != string(after) {
+			return writeJSONAtomic(store.Path, *pool)
+		}
+		return nil
+	})
+}
+
+func (store LeaseStore) withPoolLock(operation func(*LeasePool) error) error {
 	if err := os.MkdirAll(filepath.Dir(store.Path), 0o700); err != nil {
 		return err
 	}
@@ -303,19 +334,7 @@ func (store LeaseStore) withLock(write bool, operation func(*LeasePool) error) e
 	if err != nil {
 		return err
 	}
-	if err := reconcileSlotCount(&pool, store.SlotCount); err != nil {
-		return err
-	}
-	before, _ := json.Marshal(pool)
-	expireStale(&pool, store.now())
-	if err := operation(&pool); err != nil {
-		return err
-	}
-	after, _ := json.Marshal(pool)
-	if write || string(before) != string(after) {
-		return writeJSONAtomic(store.Path, pool)
-	}
-	return nil
+	return operation(&pool)
 }
 
 func (store LeaseStore) load() (LeasePool, error) {
@@ -331,13 +350,66 @@ func (store LeaseStore) load() (LeasePool, error) {
 		return pool, err
 	}
 	if err := json.Unmarshal(payload, &pool); err != nil {
-		return pool, fmt.Errorf("corrupt lease state: %w", err)
+		return pool, fmt.Errorf("%w: %v", ErrCorruptLeaseState, err)
 	}
 	if pool.SchemaVersion != LeaseSchemaVersion || pool.ResourceType != "agent-e2e" ||
 		pool.ResourceID != "test-vms" {
-		return pool, errors.New("unsupported lease state")
+		return pool, ErrUnsupportedLeaseState
 	}
 	return pool, nil
+}
+
+func (store LeaseStore) rebuildCorruptPoolForRecovery(slotID string) error {
+	number, err := slotNumber(slotID, store.SlotCount)
+	if err != nil {
+		return err
+	}
+	return store.withRawLock(func() error {
+		if _, loadErr := store.load(); !errors.Is(loadErr, ErrCorruptLeaseState) &&
+			!errors.Is(loadErr, ErrUnsupportedLeaseState) {
+			if loadErr == nil {
+				return errors.New("lease state changed while preparing recovery")
+			}
+			return loadErr
+		}
+		backup := fmt.Sprintf("%s.corrupt-%d", store.Path, store.now().UnixNano())
+		if err := os.Rename(store.Path, backup); err != nil {
+			return fmt.Errorf("preserve corrupt lease state: %w", err)
+		}
+		pool := LeasePool{
+			SchemaVersion: LeaseSchemaVersion, ResourceType: "agent-e2e",
+			ResourceID: "test-vms",
+		}
+		for index := 1; index <= store.SlotCount; index++ {
+			state := SlotQuarantined
+			reason := "lease state recovery required"
+			if index == number {
+				state = SlotDraining
+				reason = "operator recovery"
+			}
+			pool.Slots = append(pool.Slots, LeaseSlot{
+				SlotID: fmt.Sprintf("slot-%03d", index), ResourceGeneration: 1,
+				State: state, FailureReason: reason,
+			})
+		}
+		return writeJSONAtomic(store.Path, pool)
+	})
+}
+
+func (store LeaseStore) withRawLock(operation func() error) error {
+	if err := os.MkdirAll(filepath.Dir(store.Path), 0o700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(store.Path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	return operation()
 }
 
 func reconcileSlotCount(pool *LeasePool, count int) error {
@@ -355,9 +427,79 @@ func reconcileSlotCount(pool *LeasePool, count int) error {
 				return fmt.Errorf("cannot shrink pool: retiring %s is %s", slot.SlotID, slot.State)
 			}
 		}
-		pool.Slots = pool.Slots[:count]
+		return errors.New("pool shrink requires physical reconciliation")
 	}
 	return nil
+}
+
+func (store LeaseStore) PrepareResize() ([]LeaseSlot, error) {
+	var retiring []LeaseSlot
+	err := store.withPoolLock(func(pool *LeasePool) error {
+		if len(pool.Slots) < store.SlotCount {
+			if err := reconcileSlotCount(pool, store.SlotCount); err != nil {
+				return err
+			}
+			return writeJSONAtomic(store.Path, *pool)
+		}
+		if len(pool.Slots) == store.SlotCount {
+			return nil
+		}
+		for index := store.SlotCount; index < len(pool.Slots); index++ {
+			slot := &pool.Slots[index]
+			if slot.State == SlotDraining && slot.FailureReason == "pool resize" {
+				continue
+			}
+			if slot.State != SlotAvailable {
+				return fmt.Errorf("cannot shrink pool: retiring %s is %s", slot.SlotID, slot.State)
+			}
+		}
+		for index := store.SlotCount; index < len(pool.Slots); index++ {
+			slot := &pool.Slots[index]
+			slot.State = SlotDraining
+			slot.FailureReason = "pool resize"
+			retiring = append(retiring, *slot)
+		}
+		return writeJSONAtomic(store.Path, *pool)
+	})
+	return retiring, err
+}
+
+func (store LeaseStore) ResizePlan() (int, []LeaseSlot, error) {
+	current := 0
+	var retiring []LeaseSlot
+	err := store.withPoolLock(func(pool *LeasePool) error {
+		current = len(pool.Slots)
+		if current <= store.SlotCount {
+			return nil
+		}
+		for index := store.SlotCount; index < current; index++ {
+			slot := pool.Slots[index]
+			if slot.State != SlotAvailable &&
+				(slot.State != SlotDraining || slot.FailureReason != "pool resize") {
+				return fmt.Errorf("cannot shrink pool: retiring %s is %s",
+					slot.SlotID, slot.State)
+			}
+			retiring = append(retiring, slot)
+		}
+		return nil
+	})
+	return current, retiring, err
+}
+
+func (store LeaseStore) CommitResize() error {
+	return store.withPoolLock(func(pool *LeasePool) error {
+		if len(pool.Slots) < store.SlotCount {
+			return errors.New("pool resize was not prepared")
+		}
+		for index := store.SlotCount; index < len(pool.Slots); index++ {
+			slot := pool.Slots[index]
+			if slot.State != SlotDraining || slot.FailureReason != "pool resize" {
+				return fmt.Errorf("retiring %s is not fenced for pool resize", slot.SlotID)
+			}
+		}
+		pool.Slots = pool.Slots[:store.SlotCount]
+		return writeJSONAtomic(store.Path, *pool)
+	})
 }
 
 func expireStale(pool *LeasePool, now time.Time) {

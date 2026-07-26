@@ -684,8 +684,7 @@ then verify the unchanged yard identity:
   yard -Y %s status
 to retire that yard after the config migration:
   yard -Y %s test-vms status
-  yard -Y %s test-vms down
-  yard -Y %s teardown`, yardFile, yardName, yardName, yardName, yardName, yardName)}
+  yard -Y %s teardown`, yardFile, yardName, yardName, yardName, yardName)}
 }
 
 func environmentFrom(explicit map[string]string) environment {

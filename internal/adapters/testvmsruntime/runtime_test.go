@@ -52,8 +52,8 @@ func fixtureConfig(t *testing.T) Config {
 	cfg := Config{
 		Enabled: true, Project: "subyard-e2e-vms", Prefix: "e2e-vm",
 		Image: "images:debian/13/cloud", CPU: 2, Memory: "1GiB", Disk: "10GiB",
-		SlotCount: 2, TTL: LeaseTTL, BootTimeout: 30 * time.Second, DevUser: "dev",
-		StateDir: filepath.Join(root, "state"), PublicDir: filepath.Join(root, "public"),
+		SlotCount: 2, BootTimeout: 30 * time.Second, DevUser: "dev",
+		StateDir:  filepath.Join(root, "state"),
 		AgentUser: "root", AgentPublicKey: fixturePublicKey(t),
 		AgentHome:     filepath.Join(root, "agent"),
 		StatusCommand: "sudo -n " + DefaultInstalledPath + " _test-vms-facade", Incus: "incus",
@@ -78,7 +78,7 @@ func fixturePublicKey(t *testing.T) string {
 func TestAcquireSlotRejectsInsufficientCapacityBeforeMutation(t *testing.T) {
 	runtime := &Runtime{Config: fixtureConfig(t)}
 	runtime.AvailableBytes = func(string) (uint64, error) {
-		return 4 * 1024 * 1024 * 1024, nil
+		return HostReserveBytes + 2*InitialVMHeadroomBytes - 1, nil
 	}
 	var mutations int
 	runtime.Runner = &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
@@ -100,6 +100,102 @@ func TestAcquireSlotRejectsInsufficientCapacityBeforeMutation(t *testing.T) {
 	}
 	if mutations != 0 {
 		t.Fatalf("capacity preflight performed %d mutation(s)", mutations)
+	}
+}
+
+func TestStopRunningVMAcceptsConcurrentSuccessfulStop(t *testing.T) {
+	cfg := fixtureConfig(t)
+	runner := &fakeRunner{handler: func(
+		_ string, arguments, _ []string, _ io.Reader,
+	) ([]byte, []byte, error) {
+		switch strings.Join(arguments, " ") {
+		case "stop e2e-vm-1 --project subyard-e2e-vms --timeout 60":
+			return nil, nil, errors.New("matching non-reusable operation has now succeeded")
+		case "list e2e-vm-1 --project subyard-e2e-vms -f csv -c s":
+			return []byte("STOPPED\n"), nil, nil
+		default:
+			return nil, nil, fmt.Errorf("unexpected call: %s", strings.Join(arguments, " "))
+		}
+	}}
+	runtime := &Runtime{Config: cfg, Runner: runner}
+	if err := runtime.stopRunningVM(context.Background(), "e2e-vm-1"); err != nil {
+		t.Fatalf("concurrent successful stop was rejected: %v", err)
+	}
+}
+
+func TestReconcilePoolRetriesPhysicalShrinkAndRejectsForeignNetwork(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		networkMarker string
+		failFirst     bool
+		wantSuccess   bool
+	}{
+		{name: "partial cleanup retry", networkMarker: managedMarker, failFirst: true, wantSuccess: true},
+		{name: "foreign marker", networkMarker: "foreign", wantSuccess: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := fixtureConfig(t)
+			cfg.SlotCount = 1
+			storePath := cfg.leaseState()
+			large := LeaseStore{Path: storePath, SlotCount: 2}
+			if _, err := large.PrepareResize(); err != nil {
+				t.Fatal(err)
+			}
+			deleteAttempts := 0
+			runner := &fakeRunner{handler: func(
+				_ string, arguments, _ []string, _ io.Reader,
+			) ([]byte, []byte, error) {
+				joined := strings.Join(arguments, " ")
+				switch joined {
+				case "project show subyard-e2e-vms-slot-2":
+					return nil, nil, errors.New("not found")
+				case "network show e2e-vm-net-2 --project default":
+					return nil, nil, nil
+				case "network get e2e-vm-net-2 user.subyard.managed --project default":
+					return []byte(test.networkMarker + "\n"), nil, nil
+				case "network delete e2e-vm-net-2 --project default":
+					deleteAttempts++
+					if test.failFirst && deleteAttempts == 1 {
+						return nil, nil, errors.New("synthetic delete failure")
+					}
+					return nil, nil, nil
+				default:
+					return nil, nil, fmt.Errorf("unexpected call: %s", joined)
+				}
+			}}
+			var output bytes.Buffer
+			runtime := &Runtime{
+				Config: cfg, Runner: runner, Stdout: &output,
+				AvailableBytes: func(string) (uint64, error) {
+					return 20 * 1024 * 1024 * 1024, nil
+				},
+			}
+			small := LeaseStore{Path: storePath, SlotCount: 1}
+			err := runtime.ReconcilePool(context.Background(), small)
+			if test.failFirst && err != nil {
+				err = runtime.ReconcilePool(context.Background(), small)
+			}
+			if test.wantSuccess {
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool, statusErr := small.Status()
+				if statusErr != nil || len(pool.Slots) != 1 {
+					t.Fatalf("shrunk pool = %#v, %v", pool.Slots, statusErr)
+				}
+				if !strings.Contains(output.String(), "slots 2 -> 1, maximum VMs 2") {
+					t.Fatalf("resize plan missing from output: %q", output.String())
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), "not Subyard-managed") {
+					t.Fatalf("foreign marker error = %v", err)
+				}
+				payload, readErr := os.ReadFile(storePath)
+				if readErr != nil || !bytes.Contains(payload, []byte(`"slot_id": "slot-002"`)) {
+					t.Fatalf("retiring state was truncated: %q, %v", payload, readErr)
+				}
+			}
+		})
 	}
 }
 
@@ -306,14 +402,10 @@ func TestCleanupRejectsForeignProject(t *testing.T) {
 	}
 }
 
-func TestAgentPolicyManifestAndStatusAreAtomic(t *testing.T) {
+func TestLeaseDataAccountPolicyIsAtomic(t *testing.T) {
 	cfg := fixtureConfig(t)
 	cfg.AgentAuthorizedKeys = filepath.Join(cfg.AgentHome, ".ssh", "authorized_keys")
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	created := time.Unix(1_800_000_000, 0)
-	if err := writePrivateFile(cfg.createdAt(), []byte(fmt.Sprintf("%d\n", created.Unix()))); err != nil {
 		t.Fatal(err)
 	}
 	runtime := Runtime{Config: cfg, Runner: &fakeRunner{}}
@@ -337,34 +429,12 @@ func TestAgentPolicyManifestAndStatusAreAtomic(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatal("agent reconciliation is not idempotent")
 	}
-	host1 := fixturePublicKey(t)
-	host2 := fixturePublicKey(t)
-	if err := runtime.writeManifest("ready", "ready",
-		"10.42.0.11", host1, "10.42.0.12", host2); err != nil {
-		t.Fatal(err)
-	}
-	var status bytes.Buffer
-	if err := WritePublicStatus(&status, cfg.manifest()); err != nil {
-		t.Fatal(err)
-	}
-	expectedVMRecord := "\nvm\t1\te2e-vm-1\t10.42.0.11\t" +
-		strings.Replace(host1, " ", "\t", 1) + "\n"
-	if !strings.Contains(status.String(), expectedVMRecord) {
-		t.Fatalf("status = %q", status.String())
-	}
-	if mode := fileMode(t, cfg.manifest()); mode != 0o644 {
-		t.Fatalf("manifest mode = %o", mode)
-	}
 	if err := runtime.restrictAgentAccess("operator-down"); err != nil {
 		t.Fatal(err)
 	}
 	authorized, _ = os.ReadFile(cfg.AgentAuthorizedKeys)
 	if strings.Contains(string(authorized), "port-forwarding") {
 		t.Fatal("down policy retained forwarding")
-	}
-	manifest, _ := os.ReadFile(cfg.manifest())
-	if !strings.Contains(string(manifest), "state\tdown\n") {
-		t.Fatal("down state was not published")
 	}
 }
 
@@ -374,10 +444,6 @@ func TestLeaseReaperDoesNotDeleteRetainedAllocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Unix(1_800_000_000, 0)
-	if err := writePrivateFile(cfg.createdAt(),
-		[]byte(fmt.Sprintf("%d\n", now.Add(-cfg.TTL-time.Second).Unix()))); err != nil {
-		t.Fatal(err)
-	}
 	runner := &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
 		switch strings.Join(arguments, " ") {
 		case "project show " + cfg.Project:
@@ -403,16 +469,6 @@ func TestLeaseReaperDoesNotDeleteRetainedAllocation(t *testing.T) {
 	}
 	if _, err := os.Stat(cfg.leaseState()); err != nil {
 		t.Fatalf("lease reaper did not initialize broker state: %v", err)
-	}
-}
-
-func TestPublicStatusFallsBackWhenManifestIsMissing(t *testing.T) {
-	var output bytes.Buffer
-	if err := WritePublicStatus(&output, filepath.Join(t.TempDir(), "missing")); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "reason\tmanifest-missing") {
-		t.Fatalf("output = %q", output.String())
 	}
 }
 

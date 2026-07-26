@@ -19,9 +19,15 @@ grep -Fq 'iifname "e2e-vm-net-*" drop' "$PROVISION" \
   || fail "inner provisioner does not block guest-initiated access to L1"
 grep -Fq 'PasswordAuthentication no' "$PROVISION" \
   || fail "bastion provisioner does not disable password authentication"
-grep -Fq 'AuthorizedKeysFile /var/lib/subyard/e2e-agent/.ssh/authorized_keys' "$PROVISION" \
+grep -Fq 'ssh-keygen -A' "$ROOT/internal/adapters/testvmsruntime/guest.go" \
+  || fail "guest SSH reconciliation does not repair missing host keys"
+grep -Fq 'AuthorizedKeysCommand /usr/local/libexec/subyard/test-vms-authorized-key %u %t %k' "$PROVISION" \
+  && grep -Fq 'restrict,command="sudo -n /usr/local/libexec/subyard/test-vms-inner _test-vms-facade"' "$PROVISION" \
   && grep -Fq 'NOPASSWD: /usr/local/libexec/subyard/test-vms-inner _test-vms-facade' "$PROVISION" \
-  || fail "enrolled controller admission is not bounded by the forced facade"
+  || fail "default-open controller admission is not bounded by the forced facade"
+! sed -n '/^reconcile_agent_sshd_policy()/,/^}/p' "$PROVISION" \
+  | grep -Fq 'rm -f /usr/local/libexec/subyard/test-vms-authorized-key' \
+  || fail "controller AuthorizedKeysCommand helper is deleted during reconciliation"
 grep -Fq 'subyard-e2e-slot-' "$PROVISION" \
   || fail "physical provisioner does not isolate slot data accounts"
 grep -Fq 'apt-get install -y -qq --no-install-recommends' "$PROVISION" \
@@ -36,7 +42,7 @@ grep -Fq 'install -d -m 0750 -o root -g "$primary" "$home/.ssh"' "$PROVISION" \
 grep -Fq 'chown root:"$primary" "$home/.ssh/authorized_keys"' "$PROVISION" \
   || fail "bastion authorized_keys is not root-owned and account-readable"
 grep -Fq '_test-vms-worker gc' "$PROVISION" \
-  && grep -Fq '_test-vms-worker reconcile-access' "$PROVISION" \
+  && grep -Fq '_test-vms-worker reconcile-pool --yes' "$PROVISION" \
   || fail "physical provisioner does not invoke the installed Go worker"
 grep -Fq 'subyard-test-vms-lease-reaper.timer' "$PROVISION" \
   && grep -Fq '_test-vms-worker drain-all' "$PROVISION" \

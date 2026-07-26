@@ -34,6 +34,11 @@ only on first acquire. Shrink is fail-closed while a retiring slot is held, prov
 or quarantined. Retained resources are removed only by the confirmed operator configuration
 reconcile, never by lease release or age-based GC.
 
+Nested VM disks are thin-provisioned. Capacity checks do not reserve the sum of their virtual
+maximum sizes: before creating a missing VM, the broker requires 1 GiB of initial headroom per
+missing VM and keeps a fixed 5 GiB filesystem reserve. CPU, RAM and disk values remain hard per-VM
+limits.
+
 The other physical defaults are:
 
 ```env
@@ -52,17 +57,10 @@ Prepare the persistent controller identity once:
 dev/agent-e2e.sh --prepare
 ```
 
-If the worktree runs inside a normal developer yard, the L0 operator enrolls its published
-controller key:
-
-```sh
-yard -Y test-yard test-vms enroll --project Subyard
-```
-
-The command reads the fixed public-key request, shows its Ed25519 fingerprint and asks for
-confirmation. It returns the route and host-key pins to that project. The enrolled controller key
-receives only the versioned forced facade (`status/acquire/renew/release`); it never receives an L1
-shell, PTY, file transfer, arbitrary forwarding or Incus access.
+A standard caller reaches the outer yard through the provisioned yard-to-yard route. Any valid
+Ed25519 controller key is admitted only to the versioned forced facade
+(`status/acquire/renew/release`). It never receives an L1 shell, PTY, file transfer, arbitrary
+forwarding or Incus access.
 
 Inspect the redacted pool without acquiring:
 
@@ -117,7 +115,7 @@ cannot reach L1 management, L0/private/metadata networks, the broker, its state/
 Incus. A normal development yard may still run its own L1-local Incus containers; it does not
 receive the `NESTED_E2E_VMS=1` devices and policy required to run the operator-owned nested VM pool.
 
-Run the negative transport checks after changes to enrollment, routing or SSH policy:
+Run the negative transport checks after changes to routing, admission or SSH policy:
 
 ```sh
 dev/agent-e2e.sh --verify-boundary

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func fixtureBackend(t *testing.T, enrolled bool) *Backend {
+func fixtureBackend(t *testing.T) *Backend {
 	t.Helper()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "scripts", "e2e-lab"), 0o755); err != nil {
@@ -25,15 +25,6 @@ func fixtureBackend(t *testing.T, enrolled bool) *Backend {
 		t.Fatal(err)
 	}
 	client := filepath.Join(root, "client")
-	if enrolled {
-		if err := os.MkdirAll(client, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(client, "agent-access.pub"),
-			[]byte(fixturePublicKey(t)+" fixture\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 	return &Backend{
 		RepositoryRoot: root, Dispatcher: dispatcher, Project: "subyard-test",
 		Instance: "yard-test", YardName: "test-yard", DesiredPower: "stopped",
@@ -49,7 +40,7 @@ func fixtureBackend(t *testing.T, enrolled bool) *Backend {
 }
 
 func TestBackendApplyInstallsCurrentEngineAndPublishesRoute(t *testing.T) {
-	backend := fixtureBackend(t, true)
+	backend := fixtureBackend(t)
 	var power []string
 	backend.Start = func(context.Context) error {
 		power = append(power, "start")
@@ -74,8 +65,8 @@ func TestBackendApplyInstallsCurrentEngineAndPublishesRoute(t *testing.T) {
 			if err != nil || string(payload) != "fixture-provision\n" {
 				return nil, nil, fmt.Errorf("wrong provision payload: %q", payload)
 			}
-			if !strings.Contains(joined, "--env E2E_AGENT_PUBLIC_KEY=ssh-ed25519 ") {
-				return nil, nil, fmt.Errorf("enrolled controller key was not provisioned")
+			if !strings.Contains(joined, "--env E2E_AGENT_PUBLIC_KEY= --") {
+				return nil, nil, fmt.Errorf("default-open admission retained a static controller key")
 			}
 			return nil, nil, nil
 		case joined == "exec yard-test --project subyard-test -- ip -4 -o route show default":
@@ -97,36 +88,49 @@ func TestBackendApplyInstallsCurrentEngineAndPublishesRoute(t *testing.T) {
 	if strings.Join(power, ",") != "start,stop" {
 		t.Fatalf("temporary power = %v", power)
 	}
-	route, err := os.ReadFile(filepath.Join(
-		backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"], "route.tsv"))
+	current, err := currentRouteDirectory(backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := os.ReadFile(filepath.Join(current, "route.tsv"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(route), "hostname\t10.10.0.5\n") {
 		t.Fatalf("route = %q", route)
 	}
-	known, err := os.ReadFile(filepath.Join(
-		backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"], "known_hosts"))
+	info, err := os.Stat(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("route generation mode = %v", info.Mode().Perm())
+	}
+	known, err := os.ReadFile(filepath.Join(current, "known_hosts"))
 	if err != nil || !strings.HasPrefix(string(known), "subyard-e2e-bastion ssh-ed25519 ") {
 		t.Fatalf("known_hosts = %q, %v", known, err)
 	}
 }
 
 func TestStoppedBackendConvergenceUsesExactBundleMarker(t *testing.T) {
-	backend := fixtureBackend(t, true)
+	backend := fixtureBackend(t)
 	state, err := backend.state()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(state.clientDirectory, 0o755); err != nil {
+	generation := filepath.Join(state.clientDirectory, ".route-fixture")
+	if err := os.MkdirAll(generation, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(state.clientDirectory, "route.tsv"),
+	if err := os.WriteFile(filepath.Join(generation, "route.tsv"),
 		[]byte("subyard-e2e-route-v1\nhostname\tfixture\nport\t22\nhost_key_alias\tfixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(state.clientDirectory, "known_hosts"),
+	if err := os.WriteFile(filepath.Join(generation, "known_hosts"),
 		[]byte("subyard-e2e-bastion "+fixturePublicKey(t)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(generation), filepath.Join(state.clientDirectory, "current")); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
@@ -157,104 +161,32 @@ func TestStoppedBackendConvergenceUsesExactBundleMarker(t *testing.T) {
 	if converged {
 		t.Fatal("engine drift was accepted")
 	}
-}
-
-func TestBackendRejectsSymlinkEnrollment(t *testing.T) {
-	backend := fixtureBackend(t, false)
-	client := backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"]
-	if err := os.MkdirAll(client, 0o755); err != nil {
+	if err := os.WriteFile(backend.Dispatcher, []byte("fixture-engine"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(client, "target.pub")
-	if err := os.WriteFile(target, []byte(fixturePublicKey(t)+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, filepath.Join(client, "agent-access.pub")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := backend.state(); err == nil {
-		t.Fatal("symlink enrollment was accepted")
-	}
-}
-
-func TestBackendPrefersPersistentEnrollmentAcrossRuntimeRoots(t *testing.T) {
-	backend := fixtureBackend(t, false)
-	delete(backend.Environment, "SUBYARD_E2E_CLIENT_EXPORT_DIR")
-	backend.DataHome = filepath.Join(t.TempDir(), "data")
-	persistent, err := EnrollmentDirectory(backend.DataHome, backend.YardName)
+	backend.Environment["E2E_VM_MEMORY"] = "2GiB"
+	converged, err = backend.Converged(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := SetEnrollment(persistent, fixturePublicKey(t)); err != nil {
-		t.Fatal(err)
-	}
-	first, err := backend.state()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.clientDirectory != persistent || first.agentConfigured != "1" {
-		t.Fatalf("first state = %#v", first)
-	}
-
-	replacement := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(replacement, "scripts", "e2e-lab"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(replacement, "scripts", "e2e-lab", "provision.sh"),
-		[]byte("replacement-provision\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	backend.RepositoryRoot = replacement
-	second, err := backend.state()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.clientDirectory != persistent || second.agentKey != first.agentKey {
-		t.Fatalf("replacement runtime lost enrollment: %#v", second)
-	}
-}
-
-func TestExplicitRevokeDoesNotFallBackToLegacyCheckout(t *testing.T) {
-	backend := fixtureBackend(t, false)
-	delete(backend.Environment, "SUBYARD_E2E_CLIENT_EXPORT_DIR")
-	backend.DataHome = filepath.Join(t.TempDir(), "data")
-	legacy := filepath.Join(
-		backend.RepositoryRoot, "temp", "agent-e2e", backend.YardName,
-	)
-	if err := os.MkdirAll(legacy, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(legacy, "agent-access.pub"),
-		[]byte(fixturePublicKey(t)+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	persistent, err := EnrollmentDirectory(backend.DataHome, backend.YardName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := SetEnrollment(persistent, ""); err != nil {
-		t.Fatal(err)
-	}
-	state, err := backend.state()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.clientDirectory != persistent || state.agentConfigured != "0" || state.agentKey != "" {
-		t.Fatalf("revoked state fell back to legacy enrollment: %#v", state)
+	if converged {
+		t.Fatal("physical VM limit drift was accepted")
 	}
 }
 
 func TestDisabledBackendRemovesPublishedRoute(t *testing.T) {
-	backend := fixtureBackend(t, false)
+	backend := fixtureBackend(t)
 	backend.Environment["NESTED_E2E_VMS"] = "0"
 	client := backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"]
 	if err := os.MkdirAll(client, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"route.tsv", "known_hosts"} {
-		if err := os.WriteFile(filepath.Join(client, name), []byte("stale"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	generation := filepath.Join(client, ".route-stale")
+	if err := os.MkdirAll(generation, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(generation), filepath.Join(client, "current")); err != nil {
+		t.Fatal(err)
 	}
 	backend.Runner = &fakeRunner{handler: func(_ string, arguments, _ []string, stdin io.Reader) ([]byte, []byte, error) {
 		joined := strings.Join(arguments, " ")
@@ -274,9 +206,7 @@ func TestDisabledBackendRemovesPublishedRoute(t *testing.T) {
 	if err := backend.Apply(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"route.tsv", "known_hosts"} {
-		if _, err := os.Stat(filepath.Join(client, name)); !os.IsNotExist(err) {
-			t.Fatalf("%s remains", name)
-		}
+	if _, err := os.Lstat(filepath.Join(client, "current")); !os.IsNotExist(err) {
+		t.Fatalf("current route remains: %v", err)
 	}
 }

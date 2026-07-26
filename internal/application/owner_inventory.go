@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
@@ -54,6 +55,7 @@ func (builder OwnerInventoryBuilder) Read(ctx context.Context) (domain.OwnerInve
 		if err != nil {
 			return domain.OwnerInventory{}, fmt.Errorf("read state for yard %q: %w", yard.YardName, err)
 		}
+		state = strings.ToUpper(state)
 		entry := domain.OwnerYard{
 			Name: yard.YardName, Kind: string(yard.InstanceType), Instance: yard.InstanceName,
 			State: state, SSHPort: yard.SSHPort, DevUser: yard.DevUser,

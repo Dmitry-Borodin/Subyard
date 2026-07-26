@@ -32,10 +32,11 @@ type Backend struct {
 type backendState struct {
 	enabled         string
 	cpu             string
+	image           string
+	memory          string
+	disk            string
 	slotCount       string
-	agentKey        string
-	agentConfigured string
-	agentKeyHash    string
+	bootTimeout     string
 	engineHash      string
 	marker          string
 	clientDirectory string
@@ -69,8 +70,6 @@ func (backend *Backend) Converged(ctx context.Context) (bool, error) {
 		"exec", backend.Instance, "--project", backend.Project,
 		"--env", "WANT_ENABLED="+state.enabled,
 		"--env", "WANT_ENGINE_HASH="+state.engineHash,
-		"--env", "WANT_AGENT_CONFIGURED="+state.agentConfigured,
-		"--env", "WANT_AGENT_KEY_HASH="+state.agentKeyHash,
 		"--", DefaultInstalledPath, "_test-vms-worker", "doctor")
 	return err == nil, nil
 }
@@ -132,7 +131,7 @@ func (backend *Backend) Apply(ctx context.Context) (err error) {
 	} {
 		arguments = append(arguments, "--env", name+"="+backend.Environment[name])
 	}
-	arguments = append(arguments, "--env", "E2E_AGENT_PUBLIC_KEY="+state.agentKey,
+	arguments = append(arguments, "--env", "E2E_AGENT_PUBLIC_KEY=",
 		"--", "bash", "-euo", "pipefail", "-s")
 	fmt.Fprintln(backend.Output, "  [ .. ] reconciling nested VM physical backend")
 	_, stderr, runErr := backend.Runner.Run(ctx, "incus", arguments, nil, provision)
@@ -142,7 +141,7 @@ func (backend *Backend) Apply(ctx context.Context) (err error) {
 		}
 		return runErr
 	}
-	if state.enabled == "1" && state.agentConfigured == "1" {
+	if state.enabled == "1" {
 		if err := backend.publishRoute(ctx, state); err != nil {
 			return err
 		}
@@ -167,7 +166,11 @@ func (backend *Backend) state() (backendState, error) {
 	}
 	state := backendState{
 		enabled: value("NESTED_E2E_VMS", "0"), cpu: value("E2E_VM_CPU", "4"),
+		image:           value("E2E_VM_IMAGE", "images:debian/13/cloud"),
+		memory:          value("E2E_VM_MEMORY", "4GiB"),
+		disk:            value("E2E_VM_DISK", "20GiB"),
 		slotCount:       value("E2E_VM_SLOT_COUNT", "2"),
+		bootTimeout:     value("E2E_VM_BOOT_TIMEOUT", "300"),
 		provision:       filepath.Join(backend.RepositoryRoot, "scripts", "e2e-lab", "provision.sh"),
 		clientDirectory: backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"],
 	}
@@ -182,31 +185,7 @@ func (backend *Backend) state() (backendState, error) {
 		if yard == "" {
 			yard = "default"
 		}
-		persistent, persistentErr := EnrollmentDirectory(backend.DataHome, yard)
-		if persistentErr == nil {
-			managed, _, _, managedErr := CurrentEnrollment(persistent)
-			if managedErr != nil {
-				return state, managedErr
-			}
-			if managed {
-				state.clientDirectory = persistent
-			}
-		}
-		if state.clientDirectory == "" {
-			state.clientDirectory = filepath.Join(
-				backend.RepositoryRoot, "temp", "agent-e2e", yard,
-			)
-		}
-	}
-	key, configured, err := readEnrollment(filepath.Join(state.clientDirectory, "agent-access.pub"))
-	if err != nil {
-		return state, fmt.Errorf("agent enrollment request must be one regular Ed25519 public-key line: %w", err)
-	}
-	state.agentKey = key
-	if configured {
-		state.agentConfigured = "1"
-	} else {
-		state.agentConfigured = "0"
+		state.clientDirectory = filepath.Join(backend.DataHome, "e2e", "routes", yard)
 	}
 	engineHash, err := fileSHA256(backend.Dispatcher)
 	if err != nil {
@@ -217,46 +196,24 @@ func (backend *Backend) state() (backendState, error) {
 		return state, err
 	}
 	state.engineHash = engineHash
-	keyHash := sha256.Sum256([]byte(state.agentKey))
-	state.agentKeyHash = hex.EncodeToString(keyHash[:])
 	revision := sha256.Sum256([]byte(engineHash + "\n" + provisionHash + "\n"))
 	state.marker = strings.Join([]string{
-		state.enabled, hex.EncodeToString(revision[:]), state.agentKeyHash, state.cpu, state.slotCount,
+		state.enabled, hex.EncodeToString(revision[:]), state.image, state.cpu,
+		state.memory, state.disk, state.slotCount, state.bootTimeout,
 	}, ":")
 	return state, nil
 }
 
-func readEnrollment(path string) (string, bool, error) {
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", false, errors.New("enrollment is not a regular file")
-	}
-	payload, err := os.ReadFile(path)
-	if err != nil {
-		return "", false, err
-	}
-	key, _, err := ParseEnrollment(payload)
-	return key, err == nil, err
-}
-
 func (backend *Backend) routeConverged(state backendState) (bool, error) {
-	route := filepath.Join(state.clientDirectory, "route.tsv")
-	known := filepath.Join(state.clientDirectory, "known_hosts")
-	if state.enabled != "1" || state.agentConfigured != "1" {
-		for _, path := range []string{route, known} {
-			if _, err := os.Lstat(path); err == nil {
-				return false, nil
-			} else if !os.IsNotExist(err) {
-				return false, err
-			}
-		}
-		return true, nil
+	current, err := currentRouteDirectory(state.clientDirectory)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	route := filepath.Join(current, "route.tsv")
+	known := filepath.Join(current, "known_hosts")
+	if state.enabled != "1" {
+		_, err := os.Lstat(filepath.Join(state.clientDirectory, "current"))
+		return os.IsNotExist(err), nil
 	}
 	routePayload, err := os.ReadFile(route)
 	if err != nil || !strings.HasPrefix(string(routePayload), "subyard-e2e-route-v1\n") {
@@ -327,23 +284,85 @@ func (backend *Backend) publishRoute(ctx context.Context, state backendState) er
 	if err := os.MkdirAll(state.clientDirectory, 0o755); err != nil {
 		return err
 	}
+	generation, err := os.MkdirTemp(state.clientDirectory, ".route-")
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(generation, 0o755); err != nil {
+		_ = os.RemoveAll(generation)
+		return err
+	}
+	keepGeneration := false
+	defer func() {
+		if !keepGeneration {
+			_ = os.RemoveAll(generation)
+		}
+	}()
 	route := "subyard-e2e-route-v1\n" +
 		"hostname\t" + addressesFound[0] + "\nport\t22\nhost_key_alias\tsubyard-e2e-bastion\n"
-	if err := writeAtomic(filepath.Join(state.clientDirectory, "route.tsv"), []byte(route), 0o644); err != nil {
+	if err := writeAtomic(filepath.Join(generation, "route.tsv"), []byte(route), 0o644); err != nil {
 		return err
 	}
 	known := "subyard-e2e-bastion " + hostKey + "\n"
-	return writeAtomic(filepath.Join(state.clientDirectory, "known_hosts"), []byte(known), 0o644)
+	if err := writeAtomic(filepath.Join(generation, "known_hosts"), []byte(known), 0o644); err != nil {
+		return err
+	}
+	link := filepath.Join(state.clientDirectory, ".current-new")
+	_ = os.Remove(link)
+	if err := os.Symlink(filepath.Base(generation), link); err != nil {
+		return err
+	}
+	if err := os.Rename(link, filepath.Join(state.clientDirectory, "current")); err != nil {
+		_ = os.Remove(link)
+		return err
+	}
+	keepGeneration = true
+	return removeInactiveRouteGenerations(state.clientDirectory, filepath.Base(generation))
 }
 
 func (backend *Backend) removeRoute(state backendState) error {
-	var failures []error
-	for _, name := range []string{"route.tsv", "known_hosts"} {
-		if err := os.Remove(filepath.Join(state.clientDirectory, name)); err != nil && !os.IsNotExist(err) {
-			failures = append(failures, err)
+	current := filepath.Join(state.clientDirectory, "current")
+	if err := os.Remove(current); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func currentRouteDirectory(root string) (string, error) {
+	link := filepath.Join(root, "current")
+	target, err := os.Readlink(link)
+	if err != nil {
+		return "", err
+	}
+	if filepath.Base(target) != target || !strings.HasPrefix(target, ".route-") {
+		return "", errors.New("unsafe test-vms route generation")
+	}
+	return filepath.Join(root, target), nil
+}
+
+func removeInactiveRouteGenerations(root, active string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == active || !strings.HasPrefix(name, ".route-") {
+			continue
+		}
+		path := filepath.Join(root, name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("unsafe inactive test-vms route generation %q", path)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return err
 		}
 	}
-	return errors.Join(failures...)
+	return nil
 }
 
 func (backend *Backend) outerState(ctx context.Context) (string, error) {

@@ -46,14 +46,6 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "_test-vms-status" {
-		manifest := os.Getenv("SUBYARD_E2E_ALLOCATION_MANIFEST")
-		if err := testvmsruntime.WritePublicStatus(os.Stdout, manifest); err != nil {
-			fmt.Fprintf(os.Stderr, "test-vms: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
 	if len(os.Args) > 1 && os.Args[1] == "_test-vms-facade" {
 		configPath := os.Getenv("SUBYARD_TEST_VMS_CONFIG")
 		if configPath == "" {

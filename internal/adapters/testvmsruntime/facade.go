@@ -136,6 +136,7 @@ func redactPool(pool *LeasePool) {
 		slot.CapabilityHash = ""
 		slot.LeaseID = ""
 		slot.ClientID = ""
+		slot.ControllerFingerprint = ""
 	}
 }
 

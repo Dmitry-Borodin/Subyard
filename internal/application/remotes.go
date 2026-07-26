@@ -72,7 +72,7 @@ func (service RemoteService) prepareOwner(ctx context.Context, prepared domain.R
 	if !safeRemoteUser(owner.DevUser) {
 		return prepared, errors.New("owner inventory reported an invalid devUser")
 	}
-	if owner.State != "RUNNING" {
+	if !strings.EqualFold(owner.State, "RUNNING") {
 		return prepared, fmt.Errorf("remote yard state is %s — start it on the owner host first", valueOr(owner.State, "UNKNOWN"))
 	}
 	if repair && prepared.Existing.SSHPort != owner.SSHPort {

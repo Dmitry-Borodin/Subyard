@@ -37,6 +37,7 @@ import (
 	"github.com/Subyard/Subyard/internal/credential"
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/migration"
+	"github.com/Subyard/Subyard/internal/ownerinventory"
 	"github.com/Subyard/Subyard/internal/ports"
 	"github.com/Subyard/Subyard/internal/resource"
 	"github.com/Subyard/Subyard/internal/rpc"
@@ -48,33 +49,32 @@ var Version = "0.1.0-dev"
 var operationCounter atomic.Uint64
 
 type Options struct {
-	RepositoryRoot        string
-	DispatcherPath        string
-	Program               string
-	Arguments             []string
-	Environment           []string
-	WorkingDir            string
-	Stdin                 io.Reader
-	Stdout                io.Writer
-	Stderr                io.Writer
-	Incus                 ports.Incus
-	Executor              ports.InstanceExecutor
-	ProjectData           ports.YardExecutor
-	ProjectDevices        ports.InstanceDeviceManager
-	ProjectArchive        ports.DirectoryArchiver
-	ProjectExports        ports.ProjectExportStore
-	ProjectVSCode         ports.VSCode
-	ProjectObserver       ports.ProjectObserver
-	StatusFacts           ports.StatusFactsReader
-	Credentials           ports.CredentialMetadataReader
-	AdapterRunner         ports.AdapterRunner
-	InitPlatform          ports.InitPlatform
-	RemoteControl         ports.RemoteControl
-	Prompt                ports.Prompter
-	Config                ports.ConfigApplier
-	TestVMEnrollmentApply TestVMEnrollmentApplyFunc
-	Clock                 ports.Clock
-	Audit                 ports.AuditSink
+	RepositoryRoot  string
+	DispatcherPath  string
+	Program         string
+	Arguments       []string
+	Environment     []string
+	WorkingDir      string
+	Stdin           io.Reader
+	Stdout          io.Writer
+	Stderr          io.Writer
+	Incus           ports.Incus
+	Executor        ports.InstanceExecutor
+	ProjectData     ports.YardExecutor
+	ProjectDevices  ports.InstanceDeviceManager
+	ProjectArchive  ports.DirectoryArchiver
+	ProjectExports  ports.ProjectExportStore
+	ProjectVSCode   ports.VSCode
+	ProjectObserver ports.ProjectObserver
+	StatusFacts     ports.StatusFactsReader
+	Credentials     ports.CredentialMetadataReader
+	AdapterRunner   ports.AdapterRunner
+	InitPlatform    ports.InitPlatform
+	RemoteControl   ports.RemoteControl
+	Prompt          ports.Prompter
+	Config          ports.ConfigApplier
+	Clock           ports.Clock
+	Audit           ports.AuditSink
 }
 
 type CLI struct {
@@ -369,7 +369,7 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return 0
 	case "@test-vms":
 		fmt.Fprintf(cli.options.Stdout,
-			"Usage: %s test-vms <status | revoke --slot N | recover --slot N | up | down | enroll --project PROJECT [--revoke]>\n",
+			"Usage: %s test-vms <status | revoke --slot N | recover --slot N>\n",
 			cli.options.Program)
 		return 0
 	case "@teardown":
@@ -1207,10 +1207,12 @@ func (cli *CLI) runProjectList(
 		project     domain.OwnerProject
 	}
 	var rows []row
-	incomplete := false
+	fatal := false
 	for _, result := range selected {
 		if result.err != nil {
-			incomplete = true
+			if result.inventory.HostID == "" || errors.Is(result.err, ownerinventory.ErrIntegrity) {
+				fatal = true
+			}
 			owner := result.inventory.HostID
 			if owner == "" {
 				owner = "unknown owner"
@@ -1246,7 +1248,7 @@ func (cli *CLI) runProjectList(
 	})
 	if len(rows) == 0 {
 		fmt.Fprintln(cli.options.Stdout, "No projects in the selected owner inventory.")
-		if incomplete {
+		if fatal {
 			return 1
 		}
 		return 0
@@ -1261,7 +1263,7 @@ func (cli *CLI) runProjectList(
 		fmt.Fprintf(cli.options.Stdout, "%-24s %-6s %-10s %-20s %s\n",
 			row.project.Name, row.project.Mode, target, row.owner, row.yard)
 	}
-	if incomplete {
+	if fatal {
 		return 1
 	}
 	return 0

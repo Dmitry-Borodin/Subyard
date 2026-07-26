@@ -34,6 +34,24 @@ device_exists() { incus config device list "$INSTANCE_NAME" "${PROJ[@]}" 2>/dev/
 device_get() { incus config device get "$INSTANCE_NAME" "$1" "$2" "${PROJ[@]}" 2>/dev/null || true; }
 instance_get() { incus config get "$INSTANCE_NAME" "$1" "${PROJ[@]}" 2>/dev/null || true; }
 
+reconcile_e2e_route_mount() {
+  local source="$SUBYARD_HOME/e2e/routes" target=/run/subyard/e2e-routes
+  install -d -m 0755 "$source"
+  if device_exists subyard-e2e-routes; then
+    if [ "$(device_get subyard-e2e-routes type)" = disk ] \
+      && [ "$(device_get subyard-e2e-routes source)" = "$source" ] \
+      && [ "$(device_get subyard-e2e-routes path)" = "$target" ] \
+      && [ "$(device_get subyard-e2e-routes readonly)" = true ]; then
+      ok "shared E2E routes → $target unchanged"
+      return
+    fi
+    incus config device remove "$INSTANCE_NAME" subyard-e2e-routes "${PROJ[@]}" >/dev/null
+  fi
+  incus config device add "$INSTANCE_NAME" subyard-e2e-routes disk "${PROJ[@]}" \
+    source="$source" path="$target" readonly=true
+  ok "shared E2E routes → $target (read-only)"
+}
+
 # --- preconditions -----------------------------------------------------------
 incus_preflight
 incus project show "$INCUS_PROJECT" >/dev/null 2>&1 \
@@ -100,6 +118,10 @@ else
     die "instance creation failed"
   fi
 fi
+
+# Every yard receives the same non-secret route/host-key registry. The test-vms backend writes it
+# on the owner host; no project enrollment or checkout-local artifact is involved.
+reconcile_e2e_route_mount
 
 # --- 2. trusted nested-VM capability (container only, opt-in) ----------------
 # These settings belong to the L0/L1 boundary and must be present before the

@@ -102,11 +102,13 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 		}, fmt.Sprintf("slot-%03d", number))
 	}
 	switch action {
-	case "up":
+	case "reconcile-pool":
 		if !yes {
 			return errors.New("confirmation required (re-run with --yes for automation)")
 		}
-		return runtime.up(ctx)
+		return runtime.ReconcilePool(ctx, LeaseStore{
+			Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
+		})
 	case "status":
 		return (Facade{
 			Store: LeaseStore{
@@ -114,27 +116,18 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 			},
 			Output: runtime.Stdout,
 		}).Run("status")
-	case "down":
-		if !yes {
-			return errors.New("confirmation required (re-run with --yes for automation)")
-		}
-		fmt.Fprintln(runtime.Stdout,
-			"Delete both disposable VMs, their inner Incus project and synthetic SSH identity.")
-		return runtime.cleanupManaged(ctx, false)
 	case "gc":
 		return runtime.gc(ctx)
 	case "drain-all":
 		return runtime.DrainAll(ctx, LeaseStore{
 			Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
 		}, "outer yard stopping")
-	case "reconcile-access":
-		return runtime.reconcileExistingAgentAccess(ctx)
 	default:
-		return fmt.Errorf("unknown command %q (expected up, status or down)", action)
+		return fmt.Errorf("unknown test-vms worker command %q", action)
 	}
 }
 
-func (runtime *Runtime) up(ctx context.Context) (err error) {
+func (runtime *Runtime) provisionPair(ctx context.Context) (err error) {
 	cfg := runtime.Config
 	fmt.Fprintf(runtime.Stdout,
 		"Create or start one retained two-VM lease slot with SSH and passwordless sudo.\n")
@@ -152,13 +145,9 @@ func (runtime *Runtime) up(ctx context.Context) (err error) {
 		_ = runtime.restrictAgentAccess("allocation-failed")
 		_ = runtime.collectFailureDiagnostics(ctx, err)
 		fmt.Fprintln(runtime.Stderr,
-			"test-vms: failed allocation was left in place for diagnosis; operator cleanup: yard test-vms down")
+			"test-vms: failed slot provisioning was quarantined for operator recovery")
 	}()
 	if err = runtime.ensureProject(ctx); err != nil {
-		return err
-	}
-	if err = writePrivateFile(cfg.createdAt(),
-		[]byte(strconv.FormatInt(runtime.Now().Unix(), 10)+"\n")); err != nil {
 		return err
 	}
 	if err = writePrivateFile(cfg.knownHosts(), nil); err != nil {
@@ -208,7 +197,7 @@ func (runtime *Runtime) up(ctx context.Context) (err error) {
 	}
 	_ = os.Remove(cfg.revokedKey())
 	fmt.Fprintln(runtime.Stdout,
-		"  [ ok ] both VMs are ready for the enrolled agent and operator diagnostics")
+		"  [ ok ] both VMs are ready for the current lease and operator diagnostics")
 	return nil
 }
 
@@ -402,45 +391,6 @@ func (runtime *Runtime) startVM(ctx context.Context, vm string) error {
 	return nil
 }
 
-func (runtime *Runtime) status(ctx context.Context) error {
-	cfg := runtime.Config
-	if !runtime.projectExists(ctx) {
-		fmt.Fprintln(runtime.Stdout, "test-vms: down")
-		return nil
-	}
-	if err := runtime.requireProjectMarker(ctx); err != nil {
-		return err
-	}
-	remaining := time.Duration(0)
-	if created, ok := readEpoch(cfg.createdAt()); ok {
-		remaining = created.Add(cfg.TTL).Sub(runtime.Now())
-		if remaining < 0 {
-			remaining = 0
-		}
-	}
-	for index := 1; index <= 2; index++ {
-		vm := cfg.vm(index)
-		if !runtime.vmExists(ctx, vm) {
-			fmt.Fprintf(runtime.Stdout, "%s\tMISSING\t-\n", vm)
-			continue
-		}
-		if err := runtime.requireVMMarker(ctx, vm); err != nil {
-			return err
-		}
-		state, err := runtime.incus(ctx, "list", vm, "--project", cfg.Project, "-f", "csv", "-c", "s")
-		if err != nil {
-			return err
-		}
-		address, _ := runtime.vmIP(ctx, vm)
-		if address == "" {
-			address = "-"
-		}
-		fmt.Fprintf(runtime.Stdout, "%s\t%s\t%s\n", vm, strings.TrimSpace(state), address)
-	}
-	fmt.Fprintf(runtime.Stdout, "ttl_remaining_seconds\t%d\n", int64(remaining/time.Second))
-	return nil
-}
-
 func (runtime *Runtime) gc(ctx context.Context) error {
 	store := LeaseStore{
 		Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
@@ -450,8 +400,10 @@ func (runtime *Runtime) gc(ctx context.Context) error {
 
 func (runtime *Runtime) cleanupManaged(ctx context.Context, quiet bool) error {
 	cfg := runtime.Config
-	if err := runtime.restrictAgentAccess("down"); err != nil {
-		return err
+	if _, err := user.Lookup(cfg.AgentUser); err == nil {
+		if err := runtime.restrictAgentAccess("cleanup"); err != nil {
+			return err
+		}
 	}
 	if runtime.projectExists(ctx) {
 		if err := runtime.requireProjectMarker(ctx); err != nil {
@@ -483,7 +435,7 @@ func (runtime *Runtime) cleanupManaged(ctx context.Context, quiet bool) error {
 		}
 	}
 	for _, path := range []string{
-		cfg.keyPath(), cfg.keyPath() + ".pub", cfg.knownHosts(), cfg.createdAt(),
+		cfg.keyPath(), cfg.keyPath() + ".pub", cfg.knownHosts(),
 		cfg.failureLog(), cfg.keyRevision(), cfg.revokedKey(),
 	} {
 		_ = os.Remove(path)
@@ -681,7 +633,10 @@ func (runtime *Runtime) ensureStateDir() error {
 		if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 			return err
 		}
-		return os.Chmod(cfg.StateDir, 0o700)
+		if err := os.Chmod(cfg.StateDir, 0o700); err != nil {
+			return err
+		}
+		return writePrivateFile(cfg.stateMarker(), []byte(managedMarker+"\n"))
 	}
 	info, err := os.Stat(cfg.StateDir)
 	if err != nil || !info.IsDir() {

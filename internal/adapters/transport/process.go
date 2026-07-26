@@ -64,13 +64,26 @@ func SSHYard(program, target, yard string, connectTimeout time.Duration) (Proces
 		remote = append(remote, "-Y", yard)
 	}
 	remote = append(remote, "rpc", "--stdio")
+	command := "exec " + shellCommand(remote)
 	return Process{
 		Program: program,
-		Arguments: append([]string{
+		Arguments: []string{
 			"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + strconv.Itoa(seconds),
-			target, "--",
-		}, remote...),
+			target, "--", "bash", "-lc", shellQuote(command),
+		},
 	}, nil
+}
+
+func shellCommand(arguments []string) string {
+	quoted := make([]string, len(arguments))
+	for index, argument := range arguments {
+		quoted[index] = shellQuote(argument)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (transport Process) Call(ctx context.Context, _ string, request []byte) ([]byte, error) {

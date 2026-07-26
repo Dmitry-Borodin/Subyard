@@ -159,6 +159,52 @@ _yard() {
             _arguments ${registry_options[@]}
           fi
           ;;
+        config)
+          if (( CURRENT == 2 )); then
+            local -a sub; sub=( ${=command_verbs} )
+            _describe -t subcommands 'config subcommand' sub
+          elif [[ ${words[2]} == sync ]]; then
+            if (( CURRENT == 3 )); then
+              local -a syncsub
+              syncsub=( connect path status pull push help --check --adopt --apply --yes --help )
+              _describe -t subcommands 'config sync action' syncsub
+            else
+              case ${words[3]} in
+                connect)
+                  _arguments '--host-id[owner host ID]:host ID:' \
+                    '--checkout[private checkout path]:directory:_directories' \
+                    '--init[initialize an empty remote]' \
+                    '--apply[refresh affected running yards]' \
+                    '--yes[skip confirmation]' '--help[show help]'
+                  ;;
+                status) _arguments '--offline[use cached refs only]' '--help[show help]' ;;
+                pull) _arguments '--apply[refresh affected running yards]' '--yes[skip confirmation]' '--help[show help]' ;;
+                push)
+                  _arguments '(-m --message)'{-m,--message}'[commit message]:message:' \
+                    '--apply[refresh affected running yards]' \
+                    '--yes[skip confirmation]' '--help[show help]'
+                  ;;
+                path|help) ;;
+                *) _arguments '--check[read-only convergence check]' '--adopt[adopt unmanaged live files]' \
+                    '--apply[refresh affected running yards]' '--yes[skip confirmation]' '--help[show help]' '*:checkout:_directories' ;;
+              esac
+            fi
+          elif [[ ${words[CURRENT-1]} == --scope ]]; then
+            local -a scopes; scopes=( shared host yard )
+            _describe -t scopes 'persistent scope' scopes
+          elif [[ ${words[2]} == import ]]; then
+            _arguments '--scope[persistent scope]:scope:(shared host yard)' \
+              '--yes[skip confirmation]' '1:setting:' '2:file:_files'
+          elif [[ ${words[2]} == set ]]; then
+            _arguments '--scope[persistent scope]:scope:(shared host yard)' \
+              '--yes[skip confirmation]' '1:setting:' '2:value:'
+          elif [[ ${words[2]} == unset || ${words[2]} == edit ]]; then
+            _arguments '--scope[persistent scope]:scope:(shared host yard)' \
+              '--yes[skip confirmation]' '1:setting:'
+          else
+            _arguments ${registry_options[@]}
+          fi
+          ;;
         clone)
           if [[ ${words[CURRENT-1]} == --target ]]; then
             local -a tg; tg=( yard ${(f)"$(_yard_profiles)"} )

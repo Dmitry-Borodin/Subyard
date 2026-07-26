@@ -36,10 +36,16 @@ completion_words="$({
   COMP_WORDS=("$ROOT/bin/yard" init --r); COMP_CWORD=2; _yard; printf '%s\n' "${COMPREPLY[@]}"
   COMP_WORDS=("$ROOT/bin/yard" provision ope); COMP_CWORD=2; _yard; printf '%s\n' "${COMPREPLY[@]}"
   COMP_WORDS=("$ROOT/bin/yard" --res); COMP_CWORD=1; _yard; printf '%s\n' "${COMPREPLY[@]}"
+  COMP_WORDS=("$ROOT/bin/yard" config sy); COMP_CWORD=2; _yard; printf '%s\n' "${COMPREPLY[@]}"
+  COMP_WORDS=("$ROOT/bin/yard" config sync pu); COMP_CWORD=3; _yard; printf '%s\n' "${COMPREPLY[@]}"
+  COMP_WORDS=("$ROOT/bin/yard" config sync push --a); COMP_CWORD=4; _yard; printf '%s\n' "${COMPREPLY[@]}"
 } | sort -u)"
 grep -qx -- '--reset' <<<"$completion_words" || fail 'Bash completion omitted manifest init options'
 grep -qx -- 'openclaw' <<<"$completion_words" || fail 'Bash completion omitted profile values'
 grep -qx -- '--resources' <<<"$completion_words" || fail 'Bash completion omitted global resources option'
+grep -qx -- 'sync' <<<"$completion_words" || fail 'Bash completion omitted config sync'
+grep -qx -- 'pull' <<<"$completion_words" || fail 'Bash completion omitted config sync pull'
+grep -qx -- '--apply' <<<"$completion_words" || fail 'Bash completion omitted config sync push --apply'
 grep -Fq -- '--command-options' "$ROOT/completions/yard.zsh" \
   && grep -Fq -- '--command-verbs' "$ROOT/completions/yard.zsh" \
   || fail 'Zsh completion does not consume manifest options and verbs'

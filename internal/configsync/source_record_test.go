@@ -37,6 +37,24 @@ func TestConfigurationSourceRecordIsProtectedAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestConfigurationSourceRecordPinsGitOrigin(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "config")
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	origin := "git@example.invalid:private/config.git"
+	if err := RegisterSourceOrigin(configHome, checkout, origin); err != nil {
+		t.Fatal(err)
+	}
+	record, exists, err := ReadSourceRecord(configHome)
+	if err != nil || !exists || record.Origin != origin {
+		t.Fatalf("source origin record: %#v exists=%v err=%v", record, exists, err)
+	}
+	if err := RegisterSourceOrigin(
+		configHome, checkout, "git@example.invalid:other/config.git",
+	); err == nil {
+		t.Fatal("changed source origin was accepted")
+	}
+}
+
 func TestConfigurationSourceRecordRejectsUnsafeState(t *testing.T) {
 	t.Run("relative registration", func(t *testing.T) {
 		if err := RegisterSource(filepath.Join(t.TempDir(), "config"), "relative"); err == nil {

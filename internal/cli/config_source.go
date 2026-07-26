@@ -22,12 +22,15 @@ import (
 const sourceStagePrefix = ".subyard-config-source-"
 
 type configSourceConnectOptions struct {
-	origin   string
-	checkout string
-	hostID   string
+	origin      string
+	checkout    string
+	hostID      string
+	initialize  bool
+	materialize bool
 }
 
 type preparedConfigSource struct {
+	origin           string
 	checkout         string
 	stage            string
 	existingAncestor string
@@ -35,65 +38,32 @@ type preparedConfigSource struct {
 	options          configsync.Options
 	needsClone       bool
 	needsRegister    bool
+	initialPush      bool
+	initialBranch    string
 }
 
-func (cli *CLI) runConfigSource(
+func (cli *CLI) runConfigSyncConnect(
 	ctx context.Context,
 	loaded config.Loaded,
 	arguments []string,
 	assumeYes bool,
 ) int {
-	if len(arguments) == 0 || commandHelpRequested(arguments) {
-		fmt.Fprintf(cli.options.Stdout,
-			"Usage: %s config source connect <git-url> [--host-id ID] [--checkout PATH] [--yes] | path\n"+
-				"  connect  clone, register and import a private Git configuration source\n"+
-				"  path     print the registered owner-host checkout path\n",
-			cli.options.Program)
-		return 0
-	}
-	action := arguments[0]
-	if action != "connect" && action != "path" {
-		cli.errorf("config source expects connect or path")
-		return 2
-	}
 	if loaded.Context.YardType == domain.YardRemote {
-		forwarded := append([]string{"source"}, arguments...)
-		if assumeYes && action == "connect" {
+		forwarded := append([]string{"sync", "connect"}, arguments...)
+		if assumeYes {
 			forwarded = append(forwarded, "--yes")
 		}
 		return cli.forwardRemote(ctx, loaded.Context, "config", forwarded)
 	}
-	if action == "path" {
-		if len(arguments) != 1 {
-			cli.errorf("config source path accepts no arguments")
-			return 2
-		}
-		record, exists, err := configsync.ReadSourceRecord(
-			loaded.Context.Paths.ConfigHome,
-		)
-		if err != nil {
-			cli.errorf("config source path: %v", err)
-			return 1
-		}
-		if !exists {
-			cli.errorf(
-				"config source path: no source is registered; run %s config source connect <git-url>",
-				cli.options.Program,
-			)
-			return 1
-		}
-		fmt.Fprintln(cli.options.Stdout, record.Checkout)
-		return 0
-	}
-	connect, parsedYes, err := cli.parseConfigSourceConnect(arguments[1:])
+	connect, parsedYes, err := cli.parseConfigSourceConnect(arguments)
 	if err != nil {
-		cli.errorf("config source connect: %v", err)
+		cli.errorf("config sync connect: %v", err)
 		return 2
 	}
 	assumeYes = assumeYes || parsedYes
 	prepared, err := cli.prepareConfigSource(ctx, loaded, connect)
 	if err != nil {
-		cli.errorf("config source connect: %v", err)
+		cli.errorf("config sync connect: %v", err)
 		return 1
 	}
 	defer prepared.cleanup()
@@ -103,7 +73,7 @@ func (cli *CLI) runConfigSource(
 	writeConfigSyncPlan(cli.options.Stdout, prepared.preview)
 	if !prepared.needsClone && !prepared.needsRegister &&
 		!prepared.preview.NeedsApply() {
-		fmt.Fprintln(cli.options.Stdout, "config source: already connected and converged")
+		fmt.Fprintln(cli.options.Stdout, "config sync: already connected and converged")
 		return 0
 	}
 	consequences := make([]string, 0, len(prepared.preview.Changes)+3)
@@ -115,6 +85,10 @@ func (cli *CLI) runConfigSource(
 		consequences = append(consequences,
 			"register the owner-host configuration source checkout")
 	}
+	if prepared.initialPush {
+		consequences = append(consequences,
+			"create and push the initial configuration commit without force")
+	}
 	if prepared.preview.InitializeHostID {
 		consequences = append(consequences,
 			"record owner host ID "+prepared.preview.HostID)
@@ -122,44 +96,82 @@ func (cli *CLI) runConfigSource(
 	for _, change := range prepared.preview.Changes {
 		consequences = append(consequences, change.Action+" "+change.Path)
 	}
+	if connect.materialize && configSyncPlanNeedsMaterialization(prepared.preview) {
+		consequences = append(consequences,
+			"refresh affected file settings in running local yards")
+	}
 	orchestrator := cli.operationOrchestrator(
 		cli.env["SUBYARD_OPERATION_ID"], loaded, nil, nil,
 	)
 	operation, err := orchestrator.Prepare(loaded.Context, domain.CommandPolicy{
-		Name: "config source connect", Effect: domain.CommandMutate,
+		Name: "config sync connect", Effect: domain.CommandMutate,
 		RemotePolicy: domain.RemoteOnOwner, Consequences: consequences,
 	})
 	if err != nil {
-		cli.errorf("config source connect: %v", err)
+		cli.errorf("config sync connect: %v", err)
 		return 1
 	}
 	operation, err = orchestrator.Confirm(ctx, operation, assumeYes)
 	if errors.Is(err, application.ErrDeclined) {
-		cli.errorf("config source connect: operation declined")
+		cli.errorf("config sync connect: operation declined")
 		return 1
 	}
 	if err != nil {
-		cli.errorf("config source connect: %v", err)
+		cli.errorf("config sync connect: %v", err)
 		return 1
 	}
-	adapter := &configSourceConnectAdapter{prepared: prepared}
+	adapter := &configSourceConnectAdapter{cli: cli, prepared: prepared}
 	orchestrator.Runner = adapter
 	if _, _, err := orchestrator.RunAdapter(ctx, operation, domain.AdapterRequest{
 		OperationID: operation.OperationID,
 		Adapter:     "config-source",
 		Action:      "connect",
 	}, nil); err != nil {
-		cli.errorf("config source connect: %v", err)
+		cli.errorf("config sync connect: %v", err)
 		return 1
 	}
-	fmt.Fprintf(cli.options.Stdout, "config source: connected %s\n", prepared.checkout)
+	fmt.Fprintf(cli.options.Stdout, "config sync: connected %s\n", prepared.checkout)
 	if adapter.plan.NeedsApply() {
 		fmt.Fprintf(cli.options.Stdout, "config sync: applied generation %d\n",
 			adapter.plan.Generation)
-		cli.writeConfigSyncFollowups(loaded, adapter.plan)
+		if connect.materialize {
+			if err := cli.materializeConfigSyncPlan(ctx, loaded, adapter.plan, true); err != nil {
+				cli.errorf("config sync connect --apply: %v", err)
+				return 1
+			}
+		}
+		cli.writeConfigSyncFollowups(loaded, adapter.plan, connect.materialize)
 	} else {
 		fmt.Fprintln(cli.options.Stdout, "config sync: already converged")
 	}
+	return 0
+}
+
+func (cli *CLI) runConfigSyncPath(
+	ctx context.Context,
+	loaded config.Loaded,
+	arguments []string,
+) int {
+	if loaded.Context.YardType == domain.YardRemote {
+		return cli.forwardRemote(ctx, loaded.Context, "config", []string{"sync", "path"})
+	}
+	if len(arguments) != 0 {
+		cli.errorf("config sync path accepts no arguments")
+		return 2
+	}
+	record, exists, err := configsync.ReadSourceRecord(loaded.Context.Paths.ConfigHome)
+	if err != nil {
+		cli.errorf("config sync path: %v", err)
+		return 1
+	}
+	if !exists {
+		cli.errorf(
+			"config sync path: no source is registered; run %s config sync connect <git-url>",
+			cli.options.Program,
+		)
+		return 1
+	}
+	fmt.Fprintln(cli.options.Stdout, record.Checkout)
 	return 0
 }
 
@@ -189,6 +201,10 @@ func (cli *CLI) parseConfigSourceConnect(
 			}
 		case "-y", "--yes":
 			assumeYes = true
+		case "--init":
+			result.initialize = true
+		case "--apply":
+			result.materialize = true
 		default:
 			if strings.HasPrefix(argument, "-") {
 				return result, false, fmt.Errorf("unknown option %q", argument)
@@ -248,6 +264,7 @@ func (cli *CLI) prepareConfigSource(
 		)
 	}
 	prepared := &preparedConfigSource{
+		origin:        origin,
 		checkout:      checkout,
 		needsRegister: !registered,
 	}
@@ -294,6 +311,30 @@ func (cli *CLI) prepareConfigSource(
 	if request.hostID != "" {
 		environment["SUBYARD_HOST_ID"] = request.hostID
 	}
+	sourceHead, headErr := cli.configGitOutput(
+		ctx, sourceRoot, "rev-parse", "--verify", "HEAD",
+	)
+	if headErr != nil {
+		if !request.initialize {
+			prepared.cleanup()
+			return nil, errors.New(
+				"configuration repository has no commit; repeat connect with --init to create the initial manifest",
+			)
+		}
+		branch, branchErr := cli.initializeConfigSource(ctx, sourceRoot)
+		if branchErr != nil {
+			prepared.cleanup()
+			return nil, branchErr
+		}
+		prepared.initialPush = true
+		prepared.initialBranch = branch
+	} else if request.initialize {
+		_ = sourceHead
+		prepared.cleanup()
+		return nil, errors.New(
+			"--init is only valid for an empty configuration repository",
+		)
+	}
 	prepared.options = configsync.Options{
 		SourceRoot: sourceRoot, SourceIdentityRoot: checkout,
 		ConfigHome:     loaded.Context.Paths.ConfigHome,
@@ -317,6 +358,49 @@ func (cli *CLI) prepareConfigSource(
 		)
 	}
 	return prepared, nil
+}
+
+func (cli *CLI) initializeConfigSource(
+	ctx context.Context,
+	checkout string,
+) (string, error) {
+	if _, err := cli.configGitOutput(
+		ctx, checkout, "var", "GIT_AUTHOR_IDENT",
+	); err != nil {
+		return "", errors.New(
+			"Git author identity is not configured; set user.name and user.email for the operator account",
+		)
+	}
+	branch, err := cli.configGitOutput(
+		ctx, checkout, "symbolic-ref", "--quiet", "--short", "HEAD",
+	)
+	branch = strings.TrimSpace(branch)
+	if err != nil || branch == "" {
+		branch = "main"
+		if err := cli.configGitRun(
+			ctx, checkout, "symbolic-ref", "HEAD", "refs/heads/"+branch,
+		); err != nil {
+			return "", fmt.Errorf("initialize Git branch: %w", err)
+		}
+	}
+	manifest := filepath.Join(checkout, "subyard-config.json")
+	if err := os.WriteFile(
+		manifest, []byte("{\n  \"schemaVersion\": 1\n}\n"), 0o600,
+	); err != nil {
+		return "", err
+	}
+	if err := cli.configGitRun(
+		ctx, checkout, "add", "--", "subyard-config.json",
+	); err != nil {
+		return "", fmt.Errorf("stage initial configuration manifest: %w", err)
+	}
+	if err := cli.configGitRun(
+		ctx, checkout, "commit", "--quiet", "-m",
+		"Initialize Subyard configuration",
+	); err != nil {
+		return "", fmt.Errorf("create initial configuration commit: %w", err)
+	}
+	return branch, nil
 }
 
 func (cli *CLI) cloneConfigSource(
@@ -371,6 +455,45 @@ func hardenClonedConfigSource(root string) error {
 				return fmt.Errorf("cloned path is not operator-owned: %s", path)
 			}
 			if stat.Nlink != 1 {
+				return nil
+			}
+		}
+		protected := info.Mode().Perm() &^ 0o022
+		if protected == info.Mode().Perm() {
+			return nil
+		}
+		return os.Chmod(path, protected)
+	})
+}
+
+func hardenConfigCandidate(root string) error {
+	gitPath := filepath.Join(root, ".git")
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == gitPath && info.IsDir() {
+			return filepath.SkipDir
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.Mode().IsRegular() {
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok || stat.Uid != uint32(os.Getuid()) {
+				return fmt.Errorf("candidate path is not operator-owned: %s", path)
+			}
+			if stat.Nlink != 1 {
+				content, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				if err := os.Remove(path); err != nil {
+					return err
+				}
+				if err := os.WriteFile(path, content, info.Mode().Perm()&^0o022); err != nil {
+					return err
+				}
 				return nil
 			}
 		}
@@ -619,12 +742,13 @@ func (prepared *preparedConfigSource) cleanup() {
 }
 
 type configSourceConnectAdapter struct {
+	cli      *CLI
 	prepared *preparedConfigSource
 	plan     configsync.Plan
 }
 
 func (adapter *configSourceConnectAdapter) Run(
-	_ context.Context,
+	ctx context.Context,
 	request domain.AdapterRequest,
 	_ io.Reader,
 ) (domain.AdapterResult, string, error) {
@@ -656,13 +780,25 @@ func (adapter *configSourceConnectAdapter) Run(
 			"configuration source or live settings changed after preview; rerun connect",
 		)
 	}
-	if err := configsync.RegisterSource(
-		finalOptions.ConfigHome, prepared.checkout,
+	if err := configsync.RegisterSourceOrigin(
+		finalOptions.ConfigHome, prepared.checkout, prepared.origin,
 	); err != nil {
 		return domain.AdapterResult{}, "", err
 	}
 	if err := configsync.Apply(finalPlan); err != nil {
 		return domain.AdapterResult{}, "", err
+	}
+	if prepared.initialPush {
+		refspec := "HEAD:refs/heads/" + prepared.initialBranch
+		if err := adapter.cli.configGitRun(
+			ctx, prepared.checkout, "push", "--porcelain", "--set-upstream",
+			"origin", refspec,
+		); err != nil {
+			return domain.AdapterResult{}, "", fmt.Errorf(
+				"push initial configuration commit: %w; checkout remains registered and ahead for a safe retry",
+				err,
+			)
+		}
 	}
 	adapter.plan = finalPlan
 	return domain.AdapterResult{

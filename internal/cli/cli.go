@@ -191,7 +191,7 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return cli.runMigration(ctx, yard, commandArguments)
 	}
 	if core && definition.Handler == "@config" {
-		configSync, check := configSyncInvocation(commandArguments)
+		configSync, check, status := configSyncInvocation(commandArguments)
 		if configSync {
 			operatorHome := cli.env["SUBYARD_OPERATOR_HOME"]
 			if operatorHome == "" {
@@ -212,6 +212,11 @@ func (cli *CLI) Run(ctx context.Context) int {
 					"config sync --check: interrupted transaction requires recovery by a normal config sync",
 				)
 				return 1
+			}
+			if pending && status && (yard == "" || yard == "default") {
+				return cli.runPendingConfigSyncStatus(
+					ctx, configHome, configSyncStatusArguments(commandArguments),
+				)
 			}
 			if pending {
 				if recoveryErr := configsync.Recover(configHome); recoveryErr != nil {
@@ -408,26 +413,42 @@ func (cli *CLI) Run(ctx context.Context) int {
 	return code
 }
 
-func configSyncInvocation(arguments []string) (bool, bool) {
+func configSyncInvocation(arguments []string) (bool, bool, bool) {
 	if len(arguments) != 0 && (arguments[0] == "-y" || arguments[0] == "--yes") {
 		arguments = arguments[1:]
 	}
 	if len(arguments) == 0 {
-		return false, false
+		return false, false, false
 	}
 	switch arguments[0] {
 	case "sync":
-		for _, argument := range arguments[1:] {
-			if argument == "--check" {
-				return true, true
+		if len(arguments) >= 2 {
+			switch arguments[1] {
+			case "status":
+				return true, false, true
+			case "help", "--help", "-h", "path":
+				return false, false, false
 			}
 		}
-		return true, false
-	case "source":
-		return len(arguments) >= 2 && arguments[1] == "connect", false
+		for _, argument := range arguments[1:] {
+			if argument == "--check" {
+				return true, true, false
+			}
+		}
+		return true, false, false
 	default:
-		return false, false
+		return false, false, false
 	}
+}
+
+func configSyncStatusArguments(arguments []string) []string {
+	if len(arguments) != 0 && (arguments[0] == "-y" || arguments[0] == "--yes") {
+		arguments = arguments[1:]
+	}
+	if len(arguments) >= 2 && arguments[0] == "sync" && arguments[1] == "status" {
+		return arguments[2:]
+	}
+	return nil
 }
 
 func (cli *CLI) projectObserver() ports.ProjectObserver {

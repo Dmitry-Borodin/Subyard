@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/Subyard/Subyard/internal/config"
@@ -17,6 +18,7 @@ const sourceRecordSchema = 1
 type SourceRecord struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Checkout      string `json:"checkout"`
+	Origin        string `json:"origin,omitempty"`
 }
 
 func SourceRecordPath(configHome string) string {
@@ -33,9 +35,16 @@ func ReadSourceRecord(configHome string) (SourceRecord, bool, error) {
 }
 
 func RegisterSource(configHome, checkout string) error {
+	return RegisterSourceOrigin(configHome, checkout, "")
+}
+
+func RegisterSourceOrigin(configHome, checkout, origin string) error {
 	clean, err := validateRecordedCheckout(checkout)
 	if err != nil {
 		return err
+	}
+	if strings.ContainsAny(origin, "\x00\r\n") {
+		return errors.New("configuration source origin contains unsafe characters")
 	}
 	if err := ensureConfigurationRoot(configHome); err != nil {
 		return err
@@ -55,11 +64,17 @@ func RegisterSource(configHome, checkout string) error {
 				"configuration source is already registered at %s", current.Checkout,
 			)
 		}
-		return nil
+		if current.Origin != "" && origin != "" && current.Origin != origin {
+			return errors.New("configuration source origin does not match its registration")
+		}
+		if current.Origin != "" || origin == "" {
+			return nil
+		}
 	}
 	content, err := json.MarshalIndent(SourceRecord{
 		SchemaVersion: sourceRecordSchema,
 		Checkout:      clean,
+		Origin:        origin,
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -115,6 +130,11 @@ func readSourceRecord(configHome string) (SourceRecord, bool, error) {
 	if err != nil {
 		return SourceRecord{}, false, fmt.Errorf(
 			"invalid configuration source record: %w", err,
+		)
+	}
+	if strings.ContainsAny(record.Origin, "\x00\r\n") {
+		return SourceRecord{}, false, errors.New(
+			"invalid configuration source record origin",
 		)
 	}
 	return record, true, nil

@@ -96,8 +96,18 @@ the consumer:
 
 `yard config status [--all-local]` checks only materialized file settings in running local yards.
 `yard config apply [--all-local]` refreshes those consumers after confirmation. Neither command is a
-generic scalar settings writer; edit the appropriate plain configuration file and confirm the result
-with `config show`.
+Git transport command. Use the typed persistent writers before publishing a change:
+
+```sh
+yard config set <SETTING> <VALUE> --scope shared|host|yard
+yard config unset <SETTING> --scope shared|host|yard
+yard config import <FILE_SETTING> <path> --scope shared|host|yard
+yard config edit <FILE_SETTING> --scope shared|host|yard
+```
+
+Select a non-default yard with `-Y <yard>` before using `--scope yard`. Each writer validates the
+catalog type and scope, rejects secret-looking content and asks before changing the persistent
+configuration. `config edit` requires `VISUAL` or `EDITOR` to name one executable.
 
 Remote yard definitions can be inspected with `yard -Y <remote> config show`. `--all-local` never
 changes remote owner hosts implicitly.
@@ -113,20 +123,22 @@ Release installation and migration never ask for a Git URL or require network ac
 private repository explicitly once on each physical owner host:
 
 ```sh
-yard config source connect \
+yard config sync connect \
   git@github.com:you/subyard-config.git \
   --host-id workstation-a
 ```
 
-`source connect` prepares the clone in a private temporary directory, validates its selected HostID
+`sync connect` prepares the clone in a private temporary directory, validates its selected HostID
 and exact adoption plan, then asks once before installing the checkout, registering its path and
 applying that plan. The default destination is `~/.local/share/subyard-config`; use `--checkout` to
 select an existing checkout or another destination. An existing checkout must have the requested
 `origin`. A declined or invalid staged clone is removed.
 
 Yard does not store Git credentials. Configure SSH or a Git credential helper on that owner host;
-credential-bearing URLs, URL queries and fragments are rejected. `connect` performs only the initial
-clone. Yard never commits or pushes, and it does not run later `git fetch` or `git pull` commands.
+credential-bearing URLs, URL queries and fragments are rejected. Use `--init` only when connecting
+an empty remote: after the same preview it creates and pushes a minimal initial manifest using the
+operator account's configured Git identity. No background fetch, pull, commit or push runs
+automatically.
 
 The checkout root contains a tracked `subyard-config.json`:
 
@@ -173,27 +185,44 @@ by later syncs. It is not published or added to the source automatically. Each h
 `shared` and its exact `hosts/<HostID>` overlay, so another host subtree is neither applied nor an
 enrollment requirement. Two hosts may have yards with the same name without collapsing them.
 
-After onboarding, use Git itself for transport and history. The registered path is available through
-`config source path`, and `config sync` no longer needs the path argument:
+After onboarding, use the bounded sync commands for transport and history. The registered path is
+available through `config sync path`, and bare `config sync` imports the current checkout without
+network access:
 
 ```sh
-git -C "$(yard config source path)" pull --ff-only
-yard config sync --check
-yard config sync
+yard config sync status
+yard config sync pull --apply
+yard config sync push -m "Update host configuration" --apply
 ```
+
+`sync status` fetches by default and reports registration, sanitized remote, branch/upstream,
+checkout HEAD, dirty/conflict counts, ahead/behind/diverged relation, last fetch, applied commit,
+generation and recovery state. `--offline` uses cached refs. A fetch/auth failure still prints the
+available local diagnostics and exits non-zero. Automation is manual.
+
+`sync pull` permits only a clean fast-forward of the exact upstream, validates the candidate before
+one confirmation, then imports it transactionally. `sync push` exports only explicit
+catalog-known, syncable, non-secret persistent settings, creates one commit from `-m` using the
+operator's Git identity, validates/imports it locally and pushes only `HEAD` to the exact upstream
+without force. It never reads configuration back from a running container and never exports keys,
+secrets, projects, generated state or arbitrary runtime files. Dirty, conflicted, detached,
+upstream-less or diverged checkouts fail closed; Subyard does not stash, merge, rebase, reset or
+resolve conflicts.
 
 `--check` is read-only, never prompts, and exits non-zero when an apply or local manifest update is
 needed. A changing sync prints the source commit and exact redacted managed-path plan, then asks once.
-It does not run `init`, `start`, `stop`, `teardown`, `config apply`, project operations or Git
-commands. Follow-up commands are printed by application mode.
+`--apply` composes the import with `yard config apply` for affected running local yards under the
+same top-level confirmation. It does not run `yard init`, start, stop, teardown, project operations
+or remote fan-out. Remaining follow-up commands are printed by application mode.
 
-An existing unmanaged target requires a reviewed first import with `--adopt`. Later local edits are
-reported as managed drift and restored only through the confirmed exact plan. A path removed from Git
-is deleted only when the local manifest owned its previous exact digest. Removing a yard definition
-fails while its Incus yard or project state still exists; sync never becomes teardown. Removing the
-selected host subtree means an intentionally empty host overlay: the exact plan removes only its
-previously managed paths, subject to the same digest, drift and in-use guards. Unmanaged local paths
-are left alone.
+For bare checkout-to-live import, an existing unmanaged target requires a reviewed first import with
+`--adopt`. `sync push` instead adopts only its own exact validated persistent export. Later local
+edits are reported as managed drift and restored only through the confirmed exact plan. A path
+removed from Git is deleted only when the local manifest owned its previous exact digest. Removing a
+yard definition fails while its Incus yard or project state still exists; sync never becomes
+teardown. Removing the selected host subtree means an intentionally empty host overlay: the exact
+plan removes only its previously managed paths, subject to the same digest, drift and in-use guards.
+Unmanaged local paths are left alone.
 
 The source must be an operator-owned Git worktree root with a clean selected subtree. Tracked,
 untracked, ignored, unmerged, symlinked, hard-linked, executable or group/world-writable inputs fail
@@ -204,14 +233,14 @@ To roll back desired settings, check out or revert the intended Git revision and
 and sync commands. An interrupted confirmed transaction is recovered before the next mutating sync;
 `--check` reports pending recovery without changing the live root.
 
-When invoked for a registered remote yard, `config source connect`, `config source path` and
-`config sync` run on that owner host:
+When invoked for a registered remote yard, the `config sync` family runs on that owner host:
 
 ```sh
-yard -Y remote config source connect \
+yard -Y remote config sync connect \
   git@github.com:you/subyard-config.git \
   --host-id remote-owner
-yard -Y remote config sync --check
+yard -Y remote config sync status
+yard -Y remote config sync pull --apply
 ```
 
 The checkout and Git authentication stay on the owner host; the controller does not upload or cache
@@ -230,37 +259,28 @@ their provenance with `yard config show`. Only fields marked `syncable: yes` may
 - secrets, keys, generated consumers, project state, host identity, desired power and support tools
   stay local and are never copied.
 
-A minimal repository for the first host can be prepared without reading or copying the whole live
-root:
+A minimal empty remote can be initialized without reading or copying the whole live root:
 
 ```sh
-checkout=$HOME/.local/share/subyard-config
-
-install -d -m 0700 "$checkout"
-git -C "$checkout" init
-printf '%s\n' '{"schemaVersion":1}' >"$checkout/subyard-config.json"
-git -C "$checkout" add subyard-config.json
-git -C "$checkout" commit -m 'Add Subyard configuration source'
-git -C "$checkout" remote add origin git@github.com:you/subyard-config.git
-git -C "$checkout" push -u origin HEAD
-```
-
-Add and commit `shared/config.env` only when common settings are needed. Add
-`hosts/<HostID>/config.env`, host overrides or yard definitions only for real differences belonging
-to that host; empty marker files are unnecessary. Connect the existing checkout by giving the same
-origin URL and path. The command performs local enrollment, shows the exact adoption plan and asks
-once:
-
-```sh
-yard config source connect \
+yard config sync connect \
   git@github.com:you/subyard-config.git \
   --host-id replace-with-stable-host-id \
-  --checkout "$checkout"
+  --init
+```
+
+For an existing repository, connect it directly. To publish real persistent settings, change them
+through the typed writer and let `sync push` build the exact managed export:
+
+```sh
+yard config sync connect \
+  git@github.com:you/subyard-config.git \
+  --host-id replace-with-stable-host-id
+yard config set SSH_PORT 2222 --scope host
+yard config sync push -m "Set host SSH port"
 ```
 
 Do not copy `~/.config/subyard` recursively. In particular, do not add ignored secret or runtime
 paths just to make the worktree appear clean: selected ignored and untracked source paths are
 rejected. After `connect`, the checkout path and saved local `host-id` are authoritative. Each
-additional owner host runs its own `source connect`; a matching subtree does not need to exist in
-Git when that host uses only shared settings. Yard does not create a host entry or run Git
-commit/push.
+additional owner host runs its own `sync connect`; a matching subtree does not need to exist in Git
+when that host uses only shared settings.

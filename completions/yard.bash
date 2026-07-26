@@ -174,6 +174,34 @@ _yard() {
         COMPREPLY=( $(compgen -W "$command_options" -- "$cur") )
       fi
       ;;
+    config)
+      local config_action="${COMP_WORDS[cmdidx+1]:-}"
+      if [ "$cword" -eq "$((cmdidx + 1))" ]; then
+        COMPREPLY=( $(compgen -W "$command_verbs" -- "$cur") )
+      elif [ "$config_action" = sync ]; then
+        local sync_action="${COMP_WORDS[cmdidx+2]:-}"
+        if [ "$cword" -eq "$((cmdidx + 2))" ]; then
+          COMPREPLY=( $(compgen -W "connect path status pull push help --check --adopt --apply --yes --help" -- "$cur") )
+        elif [ "$prev" = --checkout ]; then
+          COMPREPLY=( $(compgen -d -- "$cur") )
+        else
+          case "$sync_action" in
+            connect) COMPREPLY=( $(compgen -W "--host-id --checkout --init --apply --yes --help" -- "$cur") ) ;;
+            status) COMPREPLY=( $(compgen -W "--offline --help" -- "$cur") ) ;;
+            pull) COMPREPLY=( $(compgen -W "--apply --yes --help" -- "$cur") ) ;;
+            push) COMPREPLY=( $(compgen -W "-m --message --apply --yes --help" -- "$cur") ) ;;
+            path|help) COMPREPLY=() ;;
+            *) COMPREPLY=( $(compgen -W "--check --adopt --apply --yes --help" -- "$cur") ) ;;
+          esac
+        fi
+      elif [ "$prev" = --scope ]; then
+        COMPREPLY=( $(compgen -W "shared host yard" -- "$cur") )
+      elif [ "$config_action" = import ] && [[ "$cur" != -* ]]; then
+        COMPREPLY=( $(compgen -f -- "$cur") )
+      else
+        COMPREPLY=( $(compgen -W "--scope --all-local --yes --help" -- "$cur") )
+      fi
+      ;;
     clone)
       if [ "$prev" = "--target" ]; then COMPREPLY=( $(compgen -W "yard $(_yard_profiles "${COMP_WORDS[0]}")" -- "$cur") ); return 0; fi
       [[ "$cur" == -* ]] && COMPREPLY=( $(compgen -W "$command_options" -- "$cur") ) ;;

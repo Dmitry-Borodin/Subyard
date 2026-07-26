@@ -416,6 +416,27 @@ func TestConfigSyncCheckLeavesRecoveryPendingAndMutationRecoversFirst(t *testing
 	var stdout, stderr bytes.Buffer
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "status", "--offline"},
+		Environment: environment, WorkingDir: root, Prompt: &testkit.Prompt{},
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stdout.String(), "recovery: required") ||
+		!strings.Contains(stdout.String(), "live: blocked") {
+		t.Fatalf("pending recovery status: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Lstat(filepath.Join(configHome, ".sync", "transaction.json")); err != nil {
+		t.Fatalf("read-only status changed pending recovery state: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
 		Arguments:   []string{"config", "sync", source, "--check", "--adopt"},
 		Environment: environment, WorkingDir: root, Prompt: &testkit.Prompt{},
 		Stdout: &stdout, Stderr: &stderr,
@@ -469,7 +490,7 @@ func TestConfigSourceConnectClonesRegistersAndAppliesWithOnePrompt(t *testing.T)
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard",
 		Arguments: []string{
-			"config", "source", "connect", source,
+			"config", "sync", "connect", source,
 			"--host-id", "owner-a",
 		},
 		Environment: environment, WorkingDir: root, Prompt: prompt,
@@ -489,7 +510,7 @@ func TestConfigSourceConnectClonesRegistersAndAppliesWithOnePrompt(t *testing.T)
 		"Configuration source onboarding",
 		"checkout: " + checkout,
 		"owner-host: owner-a",
-		"config source: connected " + checkout,
+		"config sync: connected " + checkout,
 		"config sync: applied generation 1",
 	} {
 		if !strings.Contains(stdout.String(), expected) {
@@ -515,7 +536,7 @@ func TestConfigSourceConnectClonesRegistersAndAppliesWithOnePrompt(t *testing.T)
 	stderr.Reset()
 	program, err = New(Options{
 		RepositoryRoot: root, Program: "yard",
-		Arguments:   []string{"config", "source", "path"},
+		Arguments:   []string{"config", "sync", "path"},
 		Environment: environment, WorkingDir: root,
 		Stdout: &stdout, Stderr: &stderr,
 	})
@@ -551,7 +572,7 @@ func TestConfigSourceConnectClonesRegistersAndAppliesWithOnePrompt(t *testing.T)
 	program, err = New(Options{
 		RepositoryRoot: root, Program: "yard",
 		Arguments: []string{
-			"config", "source", "connect", source,
+			"config", "sync", "connect", source,
 			"--host-id", "owner-a", "--checkout", checkout,
 		},
 		Environment: environment, WorkingDir: root, Prompt: idempotentPrompt,
@@ -579,7 +600,7 @@ func TestConfigSourceConnectOnboardsSharedOnlySource(t *testing.T) {
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard",
 		Arguments: []string{
-			"config", "source", "connect", source, "--host-id", "owner-a",
+			"config", "sync", "connect", source, "--host-id", "owner-a",
 		},
 		Environment: environment, WorkingDir: root, Prompt: prompt,
 		Stdout: &stdout, Stderr: &stderr,
@@ -601,7 +622,7 @@ func TestConfigSourceConnectOnboardsSharedOnlySource(t *testing.T) {
 		"initialize: host-id",
 		"add",
 		"overrides/shared/config.env",
-		"config source: connected " + checkout,
+		"config sync: connected " + checkout,
 	} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("shared-only source connect omitted %q:\n%s", expected, stdout.String())
@@ -654,7 +675,7 @@ func TestConfigSyncTransitionsBetweenSharedOnlyAndHostOverlay(t *testing.T) {
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard",
 		Arguments: []string{
-			"config", "source", "connect", source, "--host-id", "owner-a", "--yes",
+			"config", "sync", "connect", source, "--host-id", "owner-a", "--yes",
 		},
 		Environment: environment, WorkingDir: root,
 		Stdout: &stdout, Stderr: &stderr,
@@ -822,7 +843,7 @@ func TestConfigSourceConnectDeclineLeavesNoCheckoutOrRegistration(t *testing.T) 
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard",
 		Arguments: []string{
-			"config", "source", "connect", source,
+			"config", "sync", "connect", source,
 			"--host-id", "owner-a", "--checkout", checkout,
 		},
 		Environment: environment, WorkingDir: root, Prompt: prompt,
@@ -858,7 +879,7 @@ func TestConfigSourceConnectRejectsEmbeddedCredentialsAndRemoteForwards(t *testi
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard",
 		Arguments: []string{
-			"config", "source", "connect",
+			"config", "sync", "connect",
 			"https://token@example.invalid/private.git",
 		},
 		Environment: environment, WorkingDir: root,
@@ -888,7 +909,7 @@ printf '%s\n' "$@" >"$SUBYARD_TEST_SSH_LOG"
 	program, err = New(Options{
 		RepositoryRoot: root, Program: "yard",
 		Arguments: []string{
-			"-Y", "remote", "config", "source", "connect",
+			"-Y", "remote", "config", "sync", "connect",
 			"git@example.invalid:private/config.git",
 			"--host-id", "owner-b", "--yes",
 		},
@@ -908,7 +929,7 @@ printf '%s\n' "$@" >"$SUBYARD_TEST_SSH_LOG"
 	output := string(forwarded)
 	for _, expected := range []string{
 		"-t\nowner.example\n--\nbash\n-lc\n",
-		`'\''yard'\'' '\''-Y'\'' '\''inner'\'' '\''config'\'' '\''source'\'' '\''connect'\''`,
+		`'\''yard'\'' '\''-Y'\'' '\''inner'\'' '\''config'\'' '\''sync'\'' '\''connect'\''`,
 		"git@example.invalid:private/config.git",
 		"--host-id",
 		"owner-b",
@@ -918,6 +939,486 @@ printf '%s\n' "$@" >"$SUBYARD_TEST_SSH_LOG"
 			t.Fatalf("remote source forwarding omitted %q:\n%s", expected, output)
 		}
 	}
+}
+
+func TestConfigSyncStatusNotConfiguredAndOldSourceCommandsAreRemoved(t *testing.T) {
+	root, _, _, environment := configCommandFixture(t)
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "status", "--offline"},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 {
+		t.Fatalf("unconfigured status: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	for _, expected := range []string{
+		"versioned: no",
+		"automation: manual",
+		"registration: not configured",
+		"yard config sync connect <git-url>",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("unconfigured status omitted %q:\n%s", expected, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "source", "path"},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 2 {
+		t.Fatalf("removed config source command: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "help"},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("sync help: code=%d stderr=%s", code, stderr.String())
+	}
+	for _, expected := range []string{
+		"config sync connect <git-url>",
+		"config sync status",
+		"config sync pull --apply",
+		"config sync push -m",
+		"no background pull or push",
+		"never reads",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("sync help omitted %q:\n%s", expected, stdout.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "config source") {
+		t.Fatalf("sync help retained removed source command:\n%s", stdout.String())
+	}
+}
+
+func TestConfigSyncConnectInitCreatesInitialCommit(t *testing.T) {
+	root, home, _, environment := configCommandFixture(t)
+	remote := filepath.Join(t.TempDir(), "empty.git")
+	runConfigSyncGit(t, filepath.Dir(remote), "init", "--bare", "-q", remote)
+	environment = append(environment,
+		"GIT_AUTHOR_NAME=Subyard Test",
+		"GIT_AUTHOR_EMAIL=test@invalid",
+		"GIT_COMMITTER_NAME=Subyard Test",
+		"GIT_COMMITTER_EMAIL=test@invalid",
+	)
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "sync", "connect", remote,
+			"--host-id", "owner-a", "--init", "--yes",
+		},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("init connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	manifest := configSourceGitOutput(
+		t, remote, "show", "HEAD:subyard-config.json",
+	)
+	if !strings.Contains(manifest, `"schemaVersion": 1`) {
+		t.Fatalf("initial manifest = %q", manifest)
+	}
+	checkout := filepath.Join(home, ".local", "share", "subyard-config")
+	upstream := strings.TrimSpace(configSourceGitOutput(
+		t, checkout, "rev-parse", "--abbrev-ref", "@{upstream}",
+	))
+	if upstream == "" {
+		t.Fatal("initialized checkout has no upstream")
+	}
+}
+
+func TestConfigSyncConnectApplyRefreshesAffectedRunningYardWithOnePrompt(t *testing.T) {
+	root, _, configHome, environment := configCommandFixture(t)
+	source := filepath.Join(t.TempDir(), "source")
+	writeConfigCommandFile(t, filepath.Join(source, "subyard-config.json"),
+		"{\n  \"schemaVersion\": 1\n}\n")
+	relative := filepath.Join("codex", "config.toml")
+	content := "model = \"test\"\n"
+	writeConfigCommandFile(t,
+		filepath.Join(source, "hosts", "owner-a", "overrides", "agents", relative),
+		content)
+	runConfigSyncGit(t, source, "init", "-q")
+	commitConfigSource(t, source, "host file setting")
+	writeConfigCommandFile(t,
+		filepath.Join(configHome, "overrides", "host", "agents", relative),
+		content, 0o600)
+
+	loaded := loadConfigCommandContext(t, root, environment, "default")
+	fake := &testkit.Incus{Instances: map[string]ports.InstanceInfo{
+		loaded.Context.IncusProject + "/" + loaded.Context.InstanceName: {
+			Name:    loaded.Context.InstanceName,
+			Project: loaded.Context.IncusProject,
+			Status:  "Running",
+		},
+	}}
+	appendHashSteps(t, fake, loaded)
+	prompt := &testkit.Prompt{Answers: []bool{true}}
+	applier := &recordingConfigApplier{}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "sync", "connect", source,
+			"--host-id", "owner-a", "--apply",
+		},
+		Environment: environment, WorkingDir: root, Prompt: prompt,
+		Incus: fake, Executor: fake, Config: applier,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("connect --apply: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(prompt.Seen) != 1 {
+		t.Fatalf("connect --apply prompted %d times: %#v", len(prompt.Seen), prompt.Seen)
+	}
+	if strings.Join(applier.yards, ",") != "default" {
+		t.Fatalf("connect --apply refreshed %#v", applier.yards)
+	}
+}
+
+func TestConfigSyncPullFetchesFastForwardsAndImports(t *testing.T) {
+	root, home, configHome, environment := configCommandFixture(t)
+	remote, publisher := configBareSourceRepository(
+		t, "owner-a", "SSH_PORT=2295\n",
+	)
+	checkout := filepath.Join(home, ".local", "share", "subyard-config")
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{
+			"config", "sync", "connect", remote,
+			"--host-id", "owner-a", "--yes",
+		},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+
+	writeConfigCommandFile(t,
+		filepath.Join(publisher, "hosts", "owner-a", "config.env"),
+		"SSH_PORT=2296\n")
+	commitConfigSource(t, publisher, "remote update")
+	runConfigSyncGit(t, publisher, "push", "-q")
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "status"},
+		Environment: environment, WorkingDir: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stdout.String(), "relation: behind 1") {
+		t.Fatalf("behind status: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+
+	prompt := &testkit.Prompt{Answers: []bool{true}}
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"config", "sync", "pull"},
+		Environment: environment, WorkingDir: root, Prompt: prompt,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("pull: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if len(prompt.Seen) != 1 {
+		t.Fatalf("pull prompted %d times: %#v", len(prompt.Seen), prompt.Seen)
+	}
+	content, err := os.ReadFile(filepath.Join(configHome, "config.env"))
+	if err != nil || strings.TrimSpace(string(content)) != "SSH_PORT=2296" {
+		t.Fatalf("pull did not import remote settings: %q %v", content, err)
+	}
+	head := strings.TrimSpace(configSourceGitOutput(
+		t, checkout, "rev-parse", "HEAD",
+	))
+	upstream := strings.TrimSpace(configSourceGitOutput(
+		t, checkout, "rev-parse", "@{upstream}",
+	))
+	if head != upstream {
+		t.Fatalf("pull did not fast-forward: head=%s upstream=%s", head, upstream)
+	}
+}
+
+func TestConfigSetAndSyncPushCommitPersistentHostSettings(t *testing.T) {
+	root, home, configHome, environment := configCommandFixture(t)
+	remote, _ := configBareSourceRepository(
+		t, "owner-a", "SSH_PORT=2297\n",
+	)
+	environment = append(environment,
+		"GIT_AUTHOR_NAME=Subyard Test",
+		"GIT_AUTHOR_EMAIL=test@invalid",
+		"GIT_COMMITTER_NAME=Subyard Test",
+		"GIT_COMMITTER_EMAIL=test@invalid",
+	)
+	var stdout, stderr bytes.Buffer
+	run := func(arguments ...string) int {
+		t.Helper()
+		stdout.Reset()
+		stderr.Reset()
+		program, err := New(Options{
+			RepositoryRoot: root, Program: "yard",
+			Arguments: arguments, Environment: environment, WorkingDir: root,
+			Stdout: &stdout, Stderr: &stderr,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return program.Run(context.Background())
+	}
+	if code := run(
+		"config", "sync", "connect", remote,
+		"--host-id", "owner-a", "--yes",
+	); code != 0 {
+		t.Fatalf("connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if code := run(
+		"config", "set", "SSH_PORT", "2298", "--scope", "host", "--yes",
+	); code != 0 {
+		t.Fatalf("config set: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if code := run(
+		"config", "set", "E2E_VM_CPU", "3", "--scope", "shared", "--yes",
+	); code != 0 {
+		t.Fatalf("config set shared: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	writeConfigCommandFile(t,
+		filepath.Join(configHome, "projects", "must-not-export"), "runtime\n")
+	writeConfigCommandFile(t,
+		filepath.Join(configHome, "secrets", "must-not-export"), "credential\n")
+	if code := run(
+		"config", "sync", "push", "-m", "Update SSH port", "--yes",
+	); code != 0 {
+		t.Fatalf("config push: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	versioned := configSourceGitOutput(
+		t, remote, "show", "HEAD:hosts/owner-a/config.env",
+	)
+	if strings.TrimSpace(versioned) != "SSH_PORT='2298'" {
+		t.Fatalf("pushed host config = %q", versioned)
+	}
+	shared := configSourceGitOutput(
+		t, remote, "show", "HEAD:shared/config.env",
+	)
+	if strings.TrimSpace(shared) != "E2E_VM_CPU='3'" {
+		t.Fatalf("pushed shared config = %q", shared)
+	}
+	tree := configSourceGitOutput(t, remote, "ls-tree", "-r", "--name-only", "HEAD")
+	if strings.Contains(tree, "must-not-export") ||
+		strings.Contains(tree, "projects/") || strings.Contains(tree, "secrets/") {
+		t.Fatalf("push exported runtime or secret paths:\n%s", tree)
+	}
+	checkout := filepath.Join(home, ".local", "share", "subyard-config")
+	status := strings.TrimSpace(configSourceGitOutput(
+		t, checkout, "status", "--short",
+	))
+	if status != "" {
+		t.Fatalf("push left dirty checkout: %s", status)
+	}
+	if code := run("config", "sync", "status", "--offline"); code != 0 {
+		t.Fatalf("post-push status: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	gone := remote + ".temporarily-unavailable"
+	if err := os.Rename(remote, gone); err != nil {
+		t.Fatal(err)
+	}
+	if code := run("config", "sync", "status"); code != 1 ||
+		!strings.Contains(stdout.String(), "fetch: failed") ||
+		!strings.Contains(stdout.String(), "head:") {
+		t.Fatalf("fetch failure status: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if err := os.Rename(gone, remote); err != nil {
+		t.Fatal(err)
+	}
+	runConfigSyncGit(t, checkout, "remote", "set-url", "origin",
+		filepath.Join(t.TempDir(), "changed.git"))
+	if code := run("config", "sync", "status", "--offline"); code != 1 ||
+		!strings.Contains(stdout.String(), "remote identity changed") {
+		t.Fatalf("changed origin status: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+}
+
+func TestConfigGitStatusParsingAndURLRedaction(t *testing.T) {
+	state := configGitState{}
+	parseConfigGitPorcelain(&state, []byte(
+		"M  hosts/owner/config.env\x00"+
+			" M shared/config.env\x00"+
+			"?? scratch\x00"+
+			"UU hosts/owner/conflict\x00",
+	))
+	if state.Worktree != "conflicted" || state.Staged != 2 ||
+		state.Unstaged != 2 || state.Untracked != 1 || state.Conflicts != 1 {
+		t.Fatalf("parsed Git state: %#v", state)
+	}
+	for input, expected := range map[string]string{
+		"https://user:secret@example.invalid/private.git?token=secret#fragment": "https://example.invalid/private.git",
+		"ssh://git@example.invalid/private.git":                                 "ssh://git@example.invalid/private.git",
+		"git@example.invalid:private/config.git":                                "git@example.invalid:private/config.git",
+	} {
+		if actual := sanitizeConfigGitURL(input); actual != expected {
+			t.Fatalf("sanitize %q = %q, want %q", input, actual, expected)
+		}
+	}
+}
+
+func TestConfigSyncPushRejectsConcurrentRemoteAdvanceWithoutForce(t *testing.T) {
+	root, _, _, environment := configCommandFixture(t)
+	remote, publisher := configBareSourceRepository(
+		t, "owner-a", "SSH_PORT=2301\n",
+	)
+	environment = append(environment,
+		"GIT_AUTHOR_NAME=Subyard Test",
+		"GIT_AUTHOR_EMAIL=test@invalid",
+		"GIT_COMMITTER_NAME=Subyard Test",
+		"GIT_COMMITTER_EMAIL=test@invalid",
+	)
+	run := func(options Options) int {
+		t.Helper()
+		options.RepositoryRoot = root
+		options.Program = "yard"
+		options.Environment = environment
+		options.WorkingDir = root
+		program, err := New(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return program.Run(context.Background())
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(Options{
+		Arguments: []string{
+			"config", "sync", "connect", remote,
+			"--host-id", "owner-a", "--yes",
+		},
+		Stdout: &stdout, Stderr: &stderr,
+	}); code != 0 {
+		t.Fatalf("connect: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(Options{
+		Arguments: []string{
+			"config", "set", "SSH_PORT", "2302", "--scope", "host", "--yes",
+		},
+		Stdout: &stdout, Stderr: &stderr,
+	}); code != 0 {
+		t.Fatalf("set: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	prompt := &callbackPrompt{callback: func() {
+		writeConfigCommandFile(t,
+			filepath.Join(publisher, "shared", "config.env"),
+			"BASE_IMAGE=images:debian/13\n")
+		commitConfigSource(t, publisher, "concurrent remote change")
+		runConfigSyncGit(t, publisher, "push", "-q")
+	}}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(Options{
+		Arguments: []string{
+			"config", "sync", "push", "-m", "Local host update",
+		},
+		Prompt: prompt, Stdout: &stdout, Stderr: &stderr,
+	}); code != 1 ||
+		!strings.Contains(stderr.String(), "push failed without force") ||
+		!strings.Contains(stderr.String(), "local checkout remains ahead") {
+		t.Fatalf("concurrent push: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+	if prompt.seen != 1 {
+		t.Fatalf("concurrent push prompted %d times", prompt.seen)
+	}
+	versioned := configSourceGitOutput(
+		t, remote, "show", "HEAD:hosts/owner-a/config.env",
+	)
+	if strings.TrimSpace(versioned) != "SSH_PORT=2301" {
+		t.Fatalf("failed push changed remote host config: %q", versioned)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(Options{
+		Arguments: []string{"config", "sync", "status"},
+		Stdout:    &stdout, Stderr: &stderr,
+	}); code != 1 || !strings.Contains(stdout.String(), "relation: diverged 1/1") {
+		t.Fatalf("post-rejection status: code=%d stdout=%s stderr=%s",
+			code, stdout.String(), stderr.String())
+	}
+}
+
+type callbackPrompt struct {
+	callback func()
+	seen     int
+}
+
+func (prompt *callbackPrompt) Confirm(
+	_ context.Context,
+	_ string,
+	_ []string,
+) (bool, error) {
+	prompt.seen++
+	if prompt.callback != nil {
+		prompt.callback()
+	}
+	return true, nil
 }
 
 type recordingConfigApplier struct {
@@ -1039,6 +1540,34 @@ func configSharedOnlyGitRepository(t *testing.T) string {
 	runConfigSyncGit(t, source, "init", "-q")
 	commitConfigSource(t, source, "shared only")
 	return source
+}
+
+func configBareSourceRepository(
+	t *testing.T,
+	hostID string,
+	hostConfig string,
+) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	publisher := filepath.Join(root, "publisher")
+	if err := os.MkdirAll(publisher, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runConfigSyncGit(t, root, "init", "--bare", "-q", remote)
+	runConfigSyncGit(t, publisher, "init", "-q", "-b", "main")
+	writeConfigCommandFile(t, filepath.Join(publisher, "subyard-config.json"),
+		"{\n  \"schemaVersion\": 1\n}\n")
+	writeConfigCommandFile(t,
+		filepath.Join(publisher, "hosts", hostID, "config.env"), hostConfig)
+	runConfigSyncGit(t, publisher, "add", "-A")
+	runConfigSyncGit(t, publisher,
+		"-c", "user.name=Subyard Test", "-c", "user.email=test@invalid",
+		"commit", "-q", "-m", "initial")
+	runConfigSyncGit(t, publisher, "remote", "add", "origin", remote)
+	runConfigSyncGit(t, publisher, "push", "-q", "-u", "origin", "main")
+	runConfigSyncGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	return remote, publisher
 }
 
 func commitConfigSource(t *testing.T, source, message string) {

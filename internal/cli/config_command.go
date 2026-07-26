@@ -42,14 +42,17 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 	}
 	if len(arguments) == 0 || commandHelpRequested(arguments) {
 		fmt.Fprintf(cli.options.Stdout,
-			"Usage: %s config fields [SETTING] | show [SETTING] | paths | source <connect|path> | status [--all-local] | apply [--all-local] [--yes] | sync [checkout] [--check] [--adopt] [--yes]\n"+
+			"Usage: %s config fields [SETTING] | show [SETTING] | paths | set|unset|import|edit ... | status [--all-local] | apply [--all-local] [--yes] | sync <command>\n"+
 				"  fields  list the typed public settings contract (read-only)\n"+
 				"  show    explain effective Subyard settings and their sources (read-only)\n"+
 				"  paths   list configuration sources and storage roles (read-only)\n"+
-				"  source  connect or inspect the owner-host private Git checkout\n"+
+				"  set     write a typed persistent scalar setting\n"+
+				"  unset   remove a persistent scalar setting\n"+
+				"  import  replace a typed persistent file setting from a file\n"+
+				"  edit    edit a typed persistent file setting with VISUAL or EDITOR\n"+
 				"  status  check materialized file settings in running local yards (read-only)\n"+
 				"  apply   refresh materialized file settings in running local yards\n"+
-				"  sync    validate and import versioned non-secret desired settings\n",
+				"  sync    connect, inspect, pull, push or import versioned non-secret settings\n",
 			cli.options.Program)
 		return 0
 	}
@@ -83,8 +86,10 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 		return cli.writeConfigPaths(loaded)
 	case "sync":
 		return cli.runConfigSync(ctx, loaded, arguments[1:], assumeYes)
-	case "source":
-		return cli.runConfigSource(ctx, loaded, arguments[1:], assumeYes)
+	case "set", "unset", "import", "edit":
+		return cli.runConfigAuthoring(
+			ctx, loaded, action, arguments[1:], assumeYes,
+		)
 	}
 	allLocal := false
 	for _, argument := range arguments[1:] {
@@ -101,7 +106,9 @@ func (cli *CLI) runConfig(ctx context.Context, loaded config.Loaded, arguments [
 	switch action {
 	case "status", "apply":
 	default:
-		cli.errorf("config expects fields, show, paths, source, status, apply or sync")
+		cli.errorf(
+			"config expects fields, show, paths, set, unset, import, edit, status, apply or sync",
+		)
 		return 2
 	}
 	targets, err := cli.localConfigTargets(loaded, allLocal)
@@ -157,6 +164,31 @@ func (cli *CLI) runConfigSync(
 	arguments []string,
 	assumeYes bool,
 ) int {
+	if len(arguments) != 0 {
+		switch arguments[0] {
+		case "help":
+			if len(arguments) != 1 {
+				cli.errorf("config sync help accepts no arguments")
+				return 2
+			}
+			cli.writeConfigSyncHelp()
+			return 0
+		case "connect":
+			return cli.runConfigSyncConnect(ctx, loaded, arguments[1:], assumeYes)
+		case "path":
+			return cli.runConfigSyncPath(ctx, loaded, arguments[1:])
+		case "status":
+			return cli.runConfigSyncStatus(ctx, loaded, arguments[1:])
+		case "pull":
+			return cli.runConfigSyncPull(ctx, loaded, arguments[1:], assumeYes)
+		case "push":
+			return cli.runConfigSyncPush(ctx, loaded, arguments[1:], assumeYes)
+		}
+	}
+	if commandHelpRequested(arguments) {
+		cli.writeConfigSyncHelp()
+		return 0
+	}
 	if loaded.Context.YardType == domain.YardRemote {
 		forwarded := append([]string{"sync"}, arguments...)
 		if assumeYes {
@@ -164,13 +196,15 @@ func (cli *CLI) runConfigSync(
 		}
 		return cli.forwardRemote(ctx, loaded.Context, "config", forwarded)
 	}
-	source, check, adopt := "", false, false
+	source, check, adopt, materialize := "", false, false, false
 	for _, argument := range arguments {
 		switch argument {
 		case "--check":
 			check = true
 		case "--adopt":
 			adopt = true
+		case "--apply":
+			materialize = true
 		case "-y", "--yes":
 			assumeYes = true
 		default:
@@ -185,6 +219,10 @@ func (cli *CLI) runConfigSync(
 			source = argument
 		}
 	}
+	if check && materialize {
+		cli.errorf("config sync: --check and --apply cannot be used together")
+		return 2
+	}
 	if source == "" {
 		record, exists, err := configsync.ReadSourceRecord(
 			loaded.Context.Paths.ConfigHome,
@@ -195,7 +233,7 @@ func (cli *CLI) runConfigSync(
 		}
 		if !exists {
 			cli.errorf(
-				"config sync: no checkout was provided or registered; run %s config source connect <git-url>",
+				"config sync: no checkout was provided or registered; run %s config sync connect <git-url>",
 				cli.options.Program,
 			)
 			return 2
@@ -241,6 +279,10 @@ func (cli *CLI) runConfigSync(
 		for _, change := range plan.Changes {
 			consequences = append(consequences, change.Action+" "+change.Path)
 		}
+		if materialize && configSyncPlanNeedsMaterialization(plan) {
+			consequences = append(consequences,
+				"refresh affected file settings in running local yards")
+		}
 		orchestrator := cli.operationOrchestrator(
 			cli.env["SUBYARD_OPERATION_ID"], loaded, nil, nil,
 		)
@@ -277,8 +319,44 @@ func (cli *CLI) runConfigSync(
 		return 0
 	}
 	fmt.Fprintf(cli.options.Stdout, "config sync: applied generation %d\n", plan.Generation)
-	cli.writeConfigSyncFollowups(loaded, plan)
+	if materialize {
+		if err := cli.materializeConfigSyncPlan(ctx, loaded, plan, true); err != nil {
+			cli.errorf("config sync --apply: %v", err)
+			return 1
+		}
+	}
+	cli.writeConfigSyncFollowups(loaded, plan, materialize)
 	return 0
+}
+
+func (cli *CLI) writeConfigSyncHelp() {
+	fmt.Fprintf(cli.options.Stdout,
+		"Usage: %s config sync [checkout] [--check] [--adopt] [--apply] [--yes]\n"+
+			"       %s config sync connect <git-url> [--host-id ID] [--checkout PATH] [--init] [--apply] [--yes]\n"+
+			"       %s config sync path\n"+
+			"       %s config sync status [--offline]\n"+
+			"       %s config sync pull [--apply] [--yes]\n"+
+			"       %s config sync push -m <message> [--apply] [--yes]\n\n"+
+			"Versioned sync is manual; no background pull or push runs automatically.\n"+
+			"  connect  clone, register and import a private Git configuration source\n"+
+			"  path     print the registered owner-host checkout path\n"+
+			"  status   show registration, Git relation, conflicts and applied generation\n"+
+			"  pull     fetch, fast-forward and transactionally import remote settings\n"+
+			"  push     export persistent syncable settings, commit and push upstream\n"+
+			"  --apply  also refresh affected file settings in running local yards\n\n"+
+			"Examples:\n"+
+			"  %s config sync connect <git-url> --apply\n"+
+			"  %s config sync status\n"+
+			"  %s config sync pull --apply\n"+
+			"  %s config sync push -m \"Update host configuration\" --apply\n\n"+
+			"push uses the current operator account's configured Git author. It exports only\n"+
+			"explicit catalog-known, syncable, non-secret persistent settings. It never reads\n"+
+			"configuration back from running containers and never exports keys, secrets,\n"+
+			"project data, generated state or arbitrary runtime files.\n",
+		cli.options.Program, cli.options.Program, cli.options.Program,
+		cli.options.Program, cli.options.Program, cli.options.Program,
+		cli.options.Program, cli.options.Program, cli.options.Program,
+		cli.options.Program)
 }
 
 type configSyncAdapter struct {
@@ -381,7 +459,11 @@ func (cli *CLI) configSyncYardInUse(loaded config.Loaded) configsync.YardUseProb
 	}
 }
 
-func (cli *CLI) writeConfigSyncFollowups(loaded config.Loaded, plan configsync.Plan) {
+func (cli *CLI) writeConfigSyncFollowups(
+	loaded config.Loaded,
+	plan configsync.Plan,
+	materialized bool,
+) {
 	needsApply, needsInit, nextCommand := false, false, false
 	initAll, applyAll := false, false
 	initYards, applyYards := map[string]struct{}{}, map[string]struct{}{}
@@ -415,7 +497,7 @@ func (cli *CLI) writeConfigSyncFollowups(loaded config.Loaded, plan configsync.P
 	if nextCommand {
 		fmt.Fprintln(cli.options.Stdout, "  next command: effective automatically")
 	}
-	if needsApply {
+	if needsApply && !materialized {
 		if applyAll {
 			fmt.Fprintf(cli.options.Stdout, "  config apply: %s config apply --all-local\n",
 				cli.options.Program)
@@ -458,6 +540,60 @@ func (cli *CLI) configSyncLocalYards(loaded config.Loaded) []string {
 		}
 	}
 	return result
+}
+
+func (cli *CLI) materializeConfigSyncPlan(
+	ctx context.Context,
+	loaded config.Loaded,
+	plan configsync.Plan,
+	assumeYes bool,
+) error {
+	all := false
+	names := map[string]struct{}{}
+	for _, change := range plan.Changes {
+		applies := false
+		for _, application := range change.Applications {
+			if application == config.SettingConfigApply {
+				applies = true
+				break
+			}
+		}
+		if !applies {
+			continue
+		}
+		if name, scoped := configSyncPathYard(change.Path); scoped {
+			names[name] = struct{}{}
+		} else {
+			all = true
+		}
+	}
+	if !all && len(names) == 0 {
+		fmt.Fprintln(cli.options.Stdout,
+			"config sync --apply: no materialized file settings changed")
+		return nil
+	}
+	var targets []configTarget
+	var err error
+	if all {
+		targets, err = cli.localConfigTargets(loaded, true)
+	} else {
+		for _, name := range sortedSet(names) {
+			target, loadErr := cli.loadInventoryLoaded(name, loaded)
+			if loadErr != nil {
+				return fmt.Errorf("yard %s: %w", name, loadErr)
+			}
+			if target.Context.YardType != domain.YardRemote {
+				targets = append(targets, configTarget{Name: name, Loaded: target})
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if code := cli.applyConfig(ctx, targets, assumeYes); code != 0 {
+		return errors.New("materialized configuration refresh failed")
+	}
+	return nil
 }
 
 func configSyncPathYard(path string) (string, bool) {

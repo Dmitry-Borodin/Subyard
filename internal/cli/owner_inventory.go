@@ -190,6 +190,22 @@ type ownerInventoryResult struct {
 	err       error
 }
 
+const projectListOwnerWidth = 20
+
+// compactProjectListOwner bounds an already validated ASCII HostID for the
+// human project table. Identity-bearing outputs keep the original value.
+func compactProjectListOwner(value string) string {
+	if len(value) <= projectListOwnerWidth {
+		return value
+	}
+	return value[:projectListOwnerWidth-len("...")] + "..."
+}
+
+func printProjectListRow(writer io.Writer, name, mode, target, owner, yard string) {
+	fmt.Fprintf(writer, "%-24s %-6s %-10s %-20s %s\n",
+		name, mode, target, compactProjectListOwner(owner), yard)
+}
+
 func (cli *CLI) allOwnerInventories(
 	ctx context.Context, loaded config.Loaded, force bool,
 ) []ownerInventoryResult {

@@ -1289,7 +1289,7 @@ func (cli *CLI) runProjectList(
 		if target == "" {
 			target = "yard"
 		}
-		fmt.Fprintf(cli.options.Stdout, "%-24s %-6s %-10s %-20s %s\n",
+		printProjectListRow(cli.options.Stdout,
 			row.project.Name, row.project.Mode, target, row.owner, row.yard)
 	}
 	if fatal {

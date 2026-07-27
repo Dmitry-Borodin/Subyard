@@ -1025,6 +1025,59 @@ func TestNativeListRepairsLegacyProjectPermissions(t *testing.T) {
 	}
 }
 
+func TestNativeListBoundsOnlyOwnerDisplay(t *testing.T) {
+	root, environment, stateDirectory := nativeFixture(t)
+	store, err := state.NewFileStore(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(context.Background(), domain.ProjectRecord{
+		Schema: 1, ProjectID: "demo-12345678", Name: "Demo", HostPath: "/host/Demo",
+		YardPath: "/srv/workspaces/demo-12345678/src", Mode: domain.ProjectSync, SSHHost: "yard",
+		Target: "yard",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const hostID = "5034c950-74d0-46c4-9428-b7835e602109"
+	writeCLIFile(t, filepath.Join(filepath.Dir(stateDirectory), "host-id"), hostID+"\n", 0o600)
+	fakeIncus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{}}
+
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"list"}, Environment: environment,
+		WorkingDir: root, Stdout: &stdout, Stderr: &stderr, Incus: fakeIncus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("list failed: code=%d stderr=%q", code, stderr.String())
+	}
+	want := "" +
+		"NAME                     MODE   TARGET     OWNER                YARD\n" +
+		"Demo                     sync   yard       5034c950-74d0-46c... default\n"
+	if stdout.String() != want {
+		t.Fatalf("bounded list output drifted:\ngot:\n%swant:\n%s", stdout.String(), want)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{"list", "--complete-projects"}, Environment: environment,
+		WorkingDir: root, Stdout: &stdout, Stderr: &stderr, Incus: fakeIncus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("project completion failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if want := hostID + "/default/Demo\nDemo\n"; stdout.String() != want {
+		t.Fatalf("completion changed owner identity: got %q, want %q", stdout.String(), want)
+	}
+}
+
 func TestProjectAdaptersReceiveGoResolvedSnapshotAndGoCommitsState(t *testing.T) {
 	root, environment, stateDirectory := nativeFixture(t)
 	projectPath := filepath.Join(root, "Demo")

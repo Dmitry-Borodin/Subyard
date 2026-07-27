@@ -947,6 +947,65 @@ func TestReleaseMigrationRunsTypedOperationThroughGenericLifecycle(t *testing.T)
 	}
 }
 
+func TestReleaseRollbackResumesCanonicalOwner(t *testing.T) {
+	options, legacyRegistration, currentRegistration, calls :=
+		typedReleaseMigrationFixture(t, "0")
+	if err := os.RemoveAll(filepath.Dir(legacyRegistration)); err != nil {
+		t.Fatal(err)
+	}
+	writeMigrationFixture(t, currentRegistration, "YARD_TEMPLATE=test-vms\n")
+	writeMigrationFixture(
+		t,
+		filepath.Join(filepath.Dir(options.Executable), "incus-state"),
+		"current\n",
+	)
+	if _, err := ApplyRelease(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	activateFixtureRelease(t, options)
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
+		t.Fatalf("canonical owner finalize: changed=%v err=%v", changed, err)
+	}
+	tx, exists, err := readTransaction(options.ConfigHome, options.Version)
+	if err != nil || !exists || len(tx.Operations) != 1 ||
+		tx.Operations[0].Before != "current" ||
+		tx.Operations[0].Phase != operationCommitted {
+		t.Fatalf("canonical owner transaction = %#v, exists=%v err=%v", tx, exists, err)
+	}
+	if _, err := os.Stat(calls); !os.IsNotExist(err) {
+		t.Fatalf("canonical owner no-op invoked lifecycle: %v", err)
+	}
+
+	// Reproduce an updater whose later operation failed: rollback has already
+	// reached the pre-existing canonical owner and must be resumable without
+	// undoing its candidate reconciliation.
+	tx.ToRuntime = currentRuntimeTarget(options.RuntimeRoot)
+	tx.Phase = "rolling-back"
+	tx.RollbackOps = true
+	tx.Operations[0].Phase = operationRollingBack
+	if err := writeTransaction(options.ConfigHome, tx); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		report, err := RollbackRelease(context.Background(), options)
+		if err != nil {
+			t.Fatalf("canonical owner rollback attempt %d: %v", attempt+1, err)
+		}
+		if report.Layout != 1 {
+			t.Fatalf("canonical owner rollback report = %#v", report)
+		}
+	}
+	tx, exists, err = readTransaction(options.ConfigHome, options.Version)
+	if err != nil || !exists || tx.Phase != "rolled-back" ||
+		tx.Operations[0].Phase != operationRolledBack {
+		t.Fatalf("canonical owner rollback transaction = %#v, exists=%v err=%v",
+			tx, exists, err)
+	}
+	if _, err := os.Stat(currentRegistration); err != nil {
+		t.Fatalf("canonical owner rollback changed current registration: %v", err)
+	}
+}
+
 func TestReleaseMigrationReopensCommittedNoopAfterSourceIngress(t *testing.T) {
 	options, legacyRegistration, currentRegistration, _ := typedReleaseMigrationFixture(t, "0")
 	if err := os.Remove(legacyRegistration); err != nil {

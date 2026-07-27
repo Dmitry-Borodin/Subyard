@@ -354,6 +354,9 @@ owner() (
   ./bin/yard -Y test-yard init --yes
   ./bin/yard -Y test-yard check
   ./bin/yard -Y test-yard init --yes
+  ! incus exec yard-test-yard --project subyard-test-yard -- \
+    test -s /var/lib/subyard/e2e-agent/.ssh/authorized_keys \
+    || die 'legacy static controller key survived test-vms reconciliation'
   [ "$(incus exec yard-test-yard --project subyard-test-yard -- stat -c '%U:%G:%a' /var/lib/subyard/test-vms)" = root:root:700 ] \
     || die 'nested state permissions did not converge'
   ! incus exec yard-test-yard --project subyard-test-yard -- id -nG dev | tr ' ' '\n' \

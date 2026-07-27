@@ -161,7 +161,7 @@ EOF
 }
 
 reconcile_agent_account() {
-  local user="$E2E_AGENT_USER" home="$E2E_AGENT_HOME" primary group
+  local user="$E2E_AGENT_USER" home="$E2E_AGENT_HOME" primary group directory keys
   if ! id -u "$user" >/dev/null 2>&1; then
     useradd --system --create-home --home-dir "$home" --shell /bin/sh "$user"
   fi
@@ -172,11 +172,44 @@ reconcile_agent_account() {
     [ -n "$group" ] && [ "$group" != "$primary" ] || continue
     gpasswd -d "$user" "$group" >/dev/null
   done < <(id -nG "$user" | tr ' ' '\n')
+  for directory in "$home" "$home/.ssh"; do
+    if [ -e "$directory" ] || [ -L "$directory" ]; then
+      [ -d "$directory" ] && [ ! -L "$directory" ] \
+        || { printf 'agent account directory %s is unsafe\n' "$directory" >&2; return 1; }
+    fi
+  done
   install -d -m 0755 -o root -g root "$home"
   install -d -m 0750 -o root -g "$primary" "$home/.ssh"
-  touch "$home/.ssh/authorized_keys"
-  chmod 0640 "$home/.ssh/authorized_keys"
-  chown root:"$primary" "$home/.ssh/authorized_keys"
+  keys="$home/.ssh/authorized_keys"
+  if [ -e "$keys" ] || [ -L "$keys" ]; then
+    [ -f "$keys" ] && [ ! -L "$keys" ] &&
+      [ "$(stat -c '%u:%h' "$keys")" = 0:1 ] \
+      || { printf 'agent authorized_keys is unsafe\n' >&2; return 1; }
+    chmod 0640 "$keys"
+    chown root:"$primary" "$keys"
+  else
+    install -m 0640 -o root -g "$primary" /dev/null "$keys"
+  fi
+}
+
+retire_agent_static_keys() {
+  local user="$E2E_AGENT_USER" home="$E2E_AGENT_HOME" primary keys candidate
+  id -u "$user" >/dev/null 2>&1 \
+    || { printf 'agent account disappeared before key retirement\n' >&2; return 1; }
+  primary="$(id -gn "$user")"
+  keys="$home/.ssh/authorized_keys"
+  [ -d "$home" ] && [ ! -L "$home" ] &&
+    [ -d "$home/.ssh" ] && [ ! -L "$home/.ssh" ] &&
+    [ -f "$keys" ] && [ ! -L "$keys" ] &&
+    [ "$(stat -c '%U:%G:%a:%h' "$keys")" = "root:$primary:640:1" ] \
+    || { printf 'agent authorized_keys changed before retirement\n' >&2; return 1; }
+  candidate="$(mktemp "$home/.ssh/.authorized_keys.XXXXXX")"
+  if ! chmod 0640 "$candidate" ||
+     ! chown root:"$primary" "$candidate" ||
+     ! mv -fT -- "$candidate" "$keys"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
 }
 
 slot_home_has_managed_marker() {
@@ -490,6 +523,7 @@ reconcile_test_vm_state_directory
 reconcile_agent_account
 reconcile_slot_accounts
 reconcile_agent_sshd_policy
+retire_agent_static_keys
 
 reconcile_inner_incus
 install_inner_firewall

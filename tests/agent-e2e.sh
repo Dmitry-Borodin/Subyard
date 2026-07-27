@@ -461,6 +461,18 @@ grep -Fq 'cleanup_owned_host_incus' "$ROOT/dev/e2e/release-migration-catch-up.sh
   && grep -Fq 'host_incus storage delete default --project default' \
     "$ROOT/dev/e2e/release-migration-catch-up.sh" \
   || fail "release catch-up cleanup can leave its fixture-owned default Incus pool behind"
+grep -Fq 'BROKEN_VERSION=0.4.1' "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'RELEASE_040_TARGET=releases/0.4.0-68b9925f6880' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'RELEASE_041_TARGET=releases/0.4.1-fc5b03078508' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'validate_hotfix_transaction rolling-back rolling-back' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'sync -f "$(dirname "$journal")"' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'published 0.4.0 -> broken 0.4.1 -> recovered 0.4.2 hotfix lane passed' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  || fail "release catch-up hotfix lane does not cover exact published recovery and candidate retry"
 grep -Fq 'dev/agent-e2e.sh --wait 20m --vm both' \
   "$ROOT/dev/e2e/release-migration-consumer.sh" \
   && grep -Fq 'dev/agent-e2e.sh --verify-boundary' \

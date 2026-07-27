@@ -442,6 +442,35 @@ func TestNoopRollbackLeavesLateSourceIngressForItsOwningTransaction(t *testing.T
 	}
 }
 
+func TestNoopRollbackAcceptsExistingCanonicalRegistration(t *testing.T) {
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	currentRegistration := filepath.Join(
+		configHome,
+		"yards",
+		CurrentYard,
+		"config.env",
+	)
+	write(t, currentRegistration, "YARD_TEMPLATE=test-vms\n")
+	options := Options{
+		Executable:  fakeExecutable(t, root),
+		ConfigHome:  configHome,
+		DataHome:    filepath.Join(root, "data"),
+		Environment: os.Environ(),
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := Rollback(context.Background(), options, StateCurrent); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyRollback(options, StateCurrent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if payload := read(t, currentRegistration); payload != "YARD_TEMPLATE=test-vms\n" {
+		t.Fatalf("no-op rollback changed current registration: %q", payload)
+	}
+}
+
 func TestCommitResumesAfterRegistrationMoveAndFinishesCurrentYard(t *testing.T) {
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")

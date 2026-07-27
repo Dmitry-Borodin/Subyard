@@ -50,6 +50,30 @@ func TestBrokerRuntimeOperationRefreshesOnlyAnActiveBroker(t *testing.T) {
 	}
 }
 
+func TestBrokerRuntimeOperationSkipsAnAlreadyCurrentActiveBroker(t *testing.T) {
+	options, state := brokerRuntimeFixture(t, "RUNNING", "active")
+	expected, err := fileDigest(filepath.Join(options.RepositoryRoot, "bin", "yard-engine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, state.installedHash, expected+"\n")
+
+	before, err := PrepareBrokerRuntime(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitBrokerRuntime(context.Background(), options, before); err != nil {
+		t.Fatal(err)
+	}
+	calls := read(t, state.yardCalls)
+	if strings.Contains(calls, "-Y test-yard init --yes\n") {
+		t.Fatalf("already current broker was initialized twice:\n%s", calls)
+	}
+	if !strings.Contains(calls, "-Y test-yard test-vms status\n") {
+		t.Fatalf("already current broker skipped verification:\n%s", calls)
+	}
+}
+
 func TestBrokerRuntimeOperationLeavesStoppedBrokerUntouched(t *testing.T) {
 	options, state := brokerRuntimeFixture(t, "STOPPED", "inactive")
 	original := strings.Repeat("1", 64) + "\n"

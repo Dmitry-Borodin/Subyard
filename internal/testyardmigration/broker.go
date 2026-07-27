@@ -56,6 +56,13 @@ func CommitBrokerRuntime(
 	if before != BrokerRuntimeActive {
 		return VerifyBrokerRuntime(ctx, options, before)
 	}
+	// A preceding owner/route operation may already have reconciled the
+	// candidate while publishing the canonical route. Avoid a second init,
+	// while retaining this operation as the sole refresh owner when the route
+	// was already ready.
+	if err := VerifyBrokerRuntime(ctx, options, before); err == nil {
+		return nil
+	}
 	if err := run(ctx, options, CurrentYard, nil, "init", "--yes"); err != nil {
 		return fmt.Errorf("update active test VM broker: %w", err)
 	}

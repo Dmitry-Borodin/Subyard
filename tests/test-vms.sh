@@ -51,8 +51,18 @@ grep -Fq 'run_with_progress "installing inner Incus and QEMU"' "$PROVISION" \
   || fail "inner VM backend package installation has no periodic progress"
 grep -Fq 'install -d -m 0750 -o root -g "$primary" "$home/.ssh"' "$PROVISION" \
   || fail "bastion SSH directory is not root-owned and account-readable"
-grep -Fq 'chown root:"$primary" "$home/.ssh/authorized_keys"' "$PROVISION" \
-  || fail "bastion authorized_keys is not root-owned and account-readable"
+grep -Fq 'candidate="$(mktemp "$home/.ssh/.authorized_keys.XXXXXX")"' "$PROVISION" \
+  && grep -Fq 'chown root:"$primary" "$candidate"' "$PROVISION" \
+  && grep -Fq 'mv -fT -- "$candidate" "$keys"' "$PROVISION" \
+  || fail "bastion static authorized_keys is not atomically retired"
+grep -Fq '[ -f "$keys" ] && [ ! -L "$keys" ]' "$PROVISION" \
+  && grep -Fq 'stat -c '\''%u:%h'\''' "$PROVISION" \
+  && grep -Fq 'agent authorized_keys is unsafe' "$PROVISION" \
+  || fail "bastion authorized_keys replacement is not fail-closed"
+policy_call="$(grep -n '^reconcile_agent_sshd_policy$' "$PROVISION" | tail -n1 | cut -d: -f1)"
+retire_call="$(grep -n '^retire_agent_static_keys$' "$PROVISION" | tail -n1 | cut -d: -f1)"
+[ -n "$policy_call" ] && [ -n "$retire_call" ] && [ "$policy_call" -lt "$retire_call" ] \
+  || fail "static controller key is retired before dynamic admission is active"
 grep -Fq '_test-vms-worker gc' "$PROVISION" \
   && grep -Fq '_test-vms-worker reconcile-pool --yes' "$PROVISION" \
   || fail "physical provisioner does not invoke the installed Go worker"
@@ -104,6 +114,9 @@ if SUBYARD_E2E_LEGACY_FIXTURE=1 \
 fi
 grep -Fq 'user.subyard.managed' "$ROOT/dev/e2e/seed-test-vms-legacy-state.sh" \
   || fail "legacy upgrade fixture does not verify candidate ownership"
+grep -Fq 'subyard-managed-e2e-agent' "$ROOT/dev/e2e/seed-test-vms-legacy-state.sh" \
+  && grep -Fq 'legacy static controller key survived' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "legacy upgrade fixture does not exercise static controller-key retirement"
 
 # shellcheck source=scripts/e2e-lab/provision.sh
 . "$PROVISION"

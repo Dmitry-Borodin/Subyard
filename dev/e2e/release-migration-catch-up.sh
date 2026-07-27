@@ -7,12 +7,21 @@ MODE="${1:-auto}"
 VM="${SUBYARD_E2E_VM:-}"
 OLD_VERSION=0.3.1
 MISSED_VERSION=0.4.0
+BROKEN_VERSION=0.4.1
 OLD_INSTALLER_SHA256=3d578aa7200a55973d5e638c249511af949c461a29ee0d148af77d3514449371
 CANDIDATE_VERSION="0.4.1-catchup-vm${VM:-unknown}"
+RELEASE_040_TARGET=releases/0.4.0-68b9925f6880
+RELEASE_041_TARGET=releases/0.4.1-fc5b03078508
+HOTFIX_TRANSACTION_ID=0c236d864db6a03cb9daac14e09ad97e
+if [ "$MODE" = hotfix ]; then
+  CANDIDATE_VERSION=0.4.2
+fi
 STATE_ROOT="/var/tmp/subyard-release-catchup-vm${VM:-unknown}"
 MARKER="subyard-release-catchup-vm${VM:-unknown}"
 OPERATOR="subyardmigrate${VM:-x}"
 OPERATOR_HOME="$STATE_ROOT/operator-home"
+OPERATOR_RUNTIME="$OPERATOR_HOME/.subyard/runtime"
+HOTFIX_BACKUP="$OPERATOR_HOME/.subyard/recovery/0.4.1-transaction.before-repair.json"
 CANDIDATE_RELEASE="$STATE_ROOT/candidate"
 INSTALLER="$STATE_ROOT/subyard-install-0.3.1.sh"
 SUDOERS="/etc/sudoers.d/$MARKER"
@@ -223,7 +232,8 @@ prepare_host() {
     auto) [ "$VM" = 1 ] && MODE=direct || MODE=missed ;;
     direct) [ "$VM" = 1 ] || die "the direct lane is pinned to VM1" ;;
     missed) [ "$VM" = 2 ] || die "the missed lane is pinned to VM2" ;;
-    *) die "expected auto, direct or missed" ;;
+    hotfix) [ "$VM" = 1 ] || die "the hotfix lane is pinned to VM1" ;;
+    *) die "expected auto, direct, missed or hotfix" ;;
   esac
   for command in curl git go jq ssh-keygen sudo tar; do
     command -v "$command" >/dev/null 2>&1 || die "$command is required"
@@ -373,6 +383,349 @@ prepare_legacy_owner() {
   ok "published $OLD_VERSION legacy owner is ready"
 }
 
+assert_hotfix_runtime_links() {
+  local current="$1" previous="$2"
+  [ "$(operator_env readlink "$OPERATOR_RUNTIME/current")" = "$current" ] \
+    || die "unexpected current runtime link"
+  [ "$(operator_env readlink "$OPERATOR_RUNTIME/previous")" = "$previous" ] \
+    || die "unexpected previous runtime link"
+}
+
+assert_hotfix_route_ready() {
+  operator_env bash -c '
+    set -euo pipefail
+    root="$1"
+    [ -d "$root" ] && [ ! -L "$root" ]
+    [ -L "$root/current" ]
+    target="$(readlink "$root/current")"
+    case "$target" in .route-*) ;; *) exit 1 ;; esac
+    case "$target" in */*) exit 1 ;; esac
+    [ -d "$root/$target" ] && [ ! -L "$root/$target" ]
+    for file in route.tsv known_hosts; do
+      [ -f "$root/$target/$file" ] && [ ! -L "$root/$target/$file" ]
+    done
+  ' _ "$OPERATOR_HOME/.subyard/e2e/routes/test-yard" \
+    || die "canonical test-yard route is unavailable or unsafe"
+}
+
+assert_hotfix_static_key() {
+  local expectation="$1"
+  case "$expectation" in
+    present)
+      host_incus exec "$CURRENT_INSTANCE" --project "$CURRENT_PROJECT" -- \
+        test -s /var/lib/subyard/e2e-agent/.ssh/authorized_keys \
+        || die "legacy static controller key is unavailable"
+      ;;
+    absent)
+      host_incus exec "$CURRENT_INSTANCE" --project "$CURRENT_PROJECT" -- \
+        bash -euo pipefail -c '
+          keys=/var/lib/subyard/e2e-agent/.ssh/authorized_keys
+          [ -f "$keys" ] && [ ! -L "$keys" ] && [ ! -s "$keys" ]
+          group="$(id -g subyard-e2e-agent)"
+          [ "$(stat -c "%u:%g:%a" "$keys")" = "0:$group:640" ]
+        ' || die "candidate did not safely retire the static controller key"
+      ;;
+    *) die "unknown static-key expectation $expectation" ;;
+  esac
+}
+
+hotfix_migrate() {
+  operator_env env SUBYARD_REPOSITORY_ROOT="$OPERATOR_RUNTIME/current" \
+    "$OPERATOR_RUNTIME/current/bin/yard-engine" _migrate "$1"
+}
+
+hotfix_transaction_directory() {
+  local version="${1:?transaction version is required}"
+  operator_env bash -c '
+    set -euo pipefail
+    root="$1"
+    version="$2"
+    [ -d "$root" ] && [ ! -L "$root" ]
+    selected=
+    shopt -s nullglob
+    for transaction in "$root"/*; do
+      [ -d "$transaction" ] && [ ! -L "$transaction" ]
+      journal="$transaction/transaction.json"
+      [ -f "$journal" ] && [ ! -L "$journal" ]
+      to_release="$(jq -er \
+        ".toRelease | select(type == \"string\" and length > 0)" "$journal")"
+      [ "$to_release" = "$version" ] || continue
+      [ -z "$selected" ]
+      selected="$transaction"
+    done
+    [ -n "$selected" ]
+    printf "%s\n" "$selected"
+  ' _ "$OPERATOR_HOME/.config/subyard/migrations/transactions" "$version"
+}
+
+validate_hotfix_transaction() {
+  local phase="$1" owner_phase="$2" transaction journal
+  transaction="$(hotfix_transaction_directory "$BROKEN_VERSION")" \
+    || die "0.4.1 migration transaction is missing or ambiguous"
+  [ "$(basename "$transaction")" = "$HOTFIX_TRANSACTION_ID" ] \
+    || die "0.4.1 migration transaction has an unexpected identity"
+  journal="$transaction/transaction.json"
+  operator_env bash -c '
+    set -euo pipefail
+    owner="$(id -u)"
+    root="$1"
+    transaction="$2"
+    for directory in "$root" "$root/transactions" "$transaction"; do
+      [ -d "$directory" ] && [ ! -L "$directory" ]
+      [ "$(stat -c "%a:%u" "$directory")" = "700:$owner" ]
+    done
+    for file in "$root/state.json" "$transaction/transaction.json"; do
+      [ -f "$file" ] && [ ! -L "$file" ]
+      [ "$(stat -c "%a:%u:%h" "$file")" = "600:$owner:1" ]
+    done
+    ! find "$root" -xdev -type l -print -quit | grep -q .
+  ' _ "$OPERATOR_HOME/.config/subyard/migrations" "$transaction" \
+    || die "0.4.1 migration metadata is unsafe"
+  operator_env jq -e \
+    --arg phase "$phase" \
+    --arg owner_phase "$owner_phase" \
+    --arg from "$RELEASE_040_TARGET" \
+    --arg to "$RELEASE_041_TARGET" '
+      ([
+        "schemaVersion", "fromLayout", "toLayout", "fromRuntime",
+        "toRelease", "toRuntime", "phase", "migrations", "operations",
+        "rollbackOperations"
+      ] - keys | length) == 0 and
+      (keys - [
+        "schemaVersion", "fromLayout", "toLayout", "fromRuntime",
+        "toRelease", "toRuntime", "phase", "migrations", "entries",
+        "operations", "rollbackOperations"
+      ] | length) == 0 and
+      .schemaVersion == 1 and .fromLayout == 1 and .toLayout == 2 and
+      .fromRuntime == $from and .toRelease == "0.4.1" and
+      .toRuntime == $to and .phase == $phase and
+      .migrations == ["migrate-test-yard-owner"] and
+      ((.entries // []) | length) == 0 and .rollbackOperations == true and
+      (.operations | length) == 2 and
+      (.operations[0] | (keys | sort)) ==
+        (["migrationId", "operationId", "kind", "before", "phase"] | sort) and
+      .operations[0] == {
+        migrationId: "migrate-test-yard-owner",
+        operationId: "test-yard-owner",
+        kind: "test-yard-owner-v1",
+        before: "current",
+        phase: $owner_phase
+      } and
+      (.operations[1] | (keys | sort)) ==
+        (["migrationId", "operationId", "kind", "before", "phase"] | sort) and
+      .operations[1].migrationId == "migrate-test-yard-owner" and
+      .operations[1].operationId == "test-yard-route-consumers" and
+      .operations[1].kind == "test-yard-route-consumers-v1" and
+      .operations[1].phase == "rolled-back" and
+      (.operations[1].before | fromjson) == {
+        schemaVersion: 1,
+        active: true,
+        consumers: [{
+          project: "subyard",
+          instance: "yard",
+          yard: "default",
+          mounted: false
+        }]
+      }
+    ' "$journal" >/dev/null \
+    || die "0.4.1 migration transaction does not match the guarded recovery shape"
+}
+
+prepare_hotfix_current_owner() {
+  info "updating published $OLD_VERSION to published $MISSED_VERSION"
+  operator_yard update --version "$MISSED_VERSION" --yes
+  [ "$(operator_yard --version)" = "yard $MISSED_VERSION" ] \
+    || die "published $MISSED_VERSION runtime is not active"
+  [ "$(operator_env readlink "$OPERATOR_RUNTIME/current")" = "$RELEASE_040_TARGET" ] \
+    || die "published $MISSED_VERSION release identity changed"
+  operator_env test ! -e \
+    "$OPERATOR_HOME/.config/subyard/yards/test-yard" \
+    || die "canonical registration already exists"
+  operator_env mv \
+    "$OPERATOR_HOME/.config/subyard/yards/e2e-yard" \
+    "$OPERATOR_HOME/.config/subyard/yards/test-yard"
+  host_incus project create "$CURRENT_PROJECT" \
+    -c features.images=false \
+    -c user.subyard.release-catchup="$MARKER" >/dev/null
+  info "initializing canonical test-yard with published $MISSED_VERSION"
+  operator_yard -Y test-yard init --yes
+  operator_yard -Y test-yard start --yes
+  operator_yard -Y test-yard check
+  [ "$(host_incus config get "$CURRENT_INSTANCE" user.subyard.managed \
+    --project "$CURRENT_PROJECT")" = true ] \
+    || die "canonical owner instance is not managed"
+  operator_yard -Y test-yard test-vms status >/dev/null
+  assert_hotfix_route_ready
+  ! host_incus config device get "$CONSUMER_INSTANCE" subyard-e2e-routes type \
+    --project "$CONSUMER_PROJECT" >/dev/null 2>&1 \
+    || die "0.4.0 unexpectedly mounted the canonical route in the consumer"
+  ok "published 0.4.0 canonical owner and route are ready"
+}
+
+seed_hotfix_failure() {
+  info "seeding the legacy static controller admission"
+  operator_env env \
+    SUBYARD_E2E_VM=1 \
+    SUBYARD_E2E_LEGACY_FIXTURE=1 \
+    bash -s -- "$CURRENT_PROJECT" "$CURRENT_INSTANCE" \
+    < "$ROOT/dev/e2e/seed-test-vms-legacy-state.sh"
+  assert_hotfix_static_key present
+  operator_env bash -c '
+    set -euo pipefail
+    root="$1"
+    [ -L "$root/current" ]
+    target="$(readlink "$root/current")"
+    case "$target" in .route-*) ;; *) exit 1 ;; esac
+    case "$target" in */*) exit 1 ;; esac
+    [ -d "$root/$target" ] && [ ! -L "$root/$target" ]
+    unlink "$root/current"
+  ' _ "$OPERATOR_HOME/.subyard/e2e/routes/test-yard" \
+    || die "refusing to remove an unsafe canonical route link"
+  operator_env test ! -e \
+    "$OPERATOR_HOME/.subyard/e2e/routes/test-yard/current" \
+    || die "canonical route link remains before the broken update"
+  ok "route-missing/static-key precondition matches the affected host"
+}
+
+reproduce_broken_update() {
+  local doctor_output doctor_rc engine_hash output report rc
+  info "reproducing the released $BROKEN_VERSION migration failure"
+  set +e
+  output="$(operator_yard update --version "$BROKEN_VERSION" --yes 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "$output"
+  [ "$rc" -ne 0 ] || die "published $BROKEN_VERSION unexpectedly succeeded"
+  for expected in \
+    "publish canonical test-yard route" \
+    "test-yard rollback expected registration state current, found current" \
+    "migration commit and recovery both failed"; do
+    grep -Fq "$expected" <<<"$output" \
+      || die "published $BROKEN_VERSION failure omitted: $expected"
+  done
+  assert_hotfix_runtime_links "$RELEASE_041_TARGET" "$RELEASE_040_TARGET"
+  assert_hotfix_static_key present
+  engine_hash="$(operator_env sha256sum \
+    "$OPERATOR_RUNTIME/current/bin/yard-engine" | awk '{print $1}')"
+  set +e
+  doctor_output="$(
+    host_incus exec "$CURRENT_INSTANCE" --project "$CURRENT_PROJECT" -- \
+      env WANT_ENABLED=1 WANT_ENGINE_HASH="$engine_hash" \
+      /usr/local/libexec/subyard/test-vms-inner _test-vms-worker doctor 2>&1
+  )"
+  doctor_rc=$?
+  set -e
+  [ "$doctor_rc" -ne 0 ] \
+    && grep -Fq "test-vms: static controller key remains active" <<<"$doctor_output" \
+    || die "published 0.4.1 doctor did not confirm the static-key failure"
+  assert_hotfix_route_ready
+  ! host_incus config device get "$CONSUMER_INSTANCE" subyard-e2e-routes type \
+    --project "$CONSUMER_PROJECT" >/dev/null 2>&1 \
+    || die "failed route operation retained the consumer mount"
+  report="$(hotfix_migrate check)"
+  jq -e '
+    .schemaVersion == 1 and .layout == 1 and .targetLayout == 2 and
+    .requiredMigrations == ["migrate-test-yard-owner"] and
+    .affectedResources == ["test-yard-owner", "test-yard-route-consumers"] and
+    .phase == "rolling-back"
+  ' <<<"$report" >/dev/null \
+    || die "released $BROKEN_VERSION did not retain the expected rollback report"
+  validate_hotfix_transaction rolling-back rolling-back
+  ok "published 0.4.1 reproduced the exact rolling-back transaction"
+}
+
+repair_broken_update() {
+  local before_hash report transaction journal
+  transaction="$(hotfix_transaction_directory "$BROKEN_VERSION")"
+  journal="$transaction/transaction.json"
+  before_hash="$(operator_env sha256sum "$journal" | awk '{print $1}')"
+  operator_env install -d -m 0700 "$(dirname "$HOTFIX_BACKUP")"
+  operator_env test ! -e "$HOTFIX_BACKUP" \
+    || die "refusing to replace an existing migration recovery backup"
+  operator_env install -m 0600 "$journal" "$HOTFIX_BACKUP"
+  [ "$(operator_env sha256sum "$HOTFIX_BACKUP" | awk '{print $1}')" = "$before_hash" ] \
+    || die "migration recovery backup changed during copy"
+  operator_env bash -c '
+    set -euo pipefail
+    journal="$1"
+    temporary="$(mktemp "$(dirname "$journal")/.transaction.XXXXXX")"
+    trap "rm -f -- \"$temporary\"" EXIT
+    jq "
+      (.operations[] |
+        select(.migrationId == \"migrate-test-yard-owner\" and
+          .operationId == \"test-yard-owner\" and
+          .kind == \"test-yard-owner-v1\" and
+          .before == \"current\" and
+          .phase == \"rolling-back\") |
+        .phase) = \"rolled-back\"
+    " "$journal" > "$temporary"
+    chmod 0600 "$temporary"
+    sync -f "$temporary"
+    mv -fT -- "$temporary" "$journal"
+    sync -f "$(dirname "$journal")"
+    trap - EXIT
+  ' _ "$journal"
+  validate_hotfix_transaction rolling-back rolled-back
+  operator_env jq -e --slurpfile original "$HOTFIX_BACKUP" '
+    . == ($original[0] | (.operations[0].phase) = "rolled-back")
+  ' "$journal" >/dev/null \
+    || die "journal repair changed more than the canonical owner phase"
+  report="$(hotfix_migrate rollback)"
+  jq -e '
+    .layout == 1 and .targetLayout == 2 and
+    .phase == "rolled-back" and .changed == true
+  ' <<<"$report" >/dev/null \
+    || die "guarded journal repair did not finish migration rollback"
+  report="$(hotfix_migrate rollback)"
+  jq -e '
+    .layout == 1 and .targetLayout == 2 and
+    (has("phase") | not) and .changed == false
+  ' <<<"$report" >/dev/null \
+    || die "completed migration rollback is not idempotent"
+  validate_hotfix_transaction rolled-back rolled-back
+  operator_env "$OPERATOR_RUNTIME/current/scripts/install-runtime-release.sh" \
+    --runtime-root "$OPERATOR_RUNTIME" --rollback
+  assert_hotfix_runtime_links "$RELEASE_040_TARGET" "$RELEASE_041_TARGET"
+  [ "$(operator_yard --version)" = "yard $MISSED_VERSION" ] \
+    || die "runtime rollback did not restore published $MISSED_VERSION"
+  operator_yard -Y test-yard check
+  assert_hotfix_route_ready
+  assert_hotfix_static_key present
+  ! host_incus config device get "$CONSUMER_INSTANCE" subyard-e2e-routes type \
+    --project "$CONSUMER_PROJECT" >/dev/null 2>&1 \
+    || die "manual recovery unexpectedly mounted the consumer route"
+  report="$(hotfix_migrate check)"
+  jq -e '
+    .layout == 1 and .targetLayout == 1 and
+    ((.requiredMigrations // []) | length) == 0
+  ' <<<"$report" >/dev/null \
+    || die "restored 0.4.0 runtime does not accept the recovered layout"
+  ok "guarded journal repair and runtime rollback restored usable 0.4.0"
+}
+
+verify_hotfix_boundary() {
+  local engine_hash old_transaction
+  [ "$(operator_yard --version)" = "yard $CANDIDATE_VERSION" ] \
+    || die "hotfix candidate runtime is not active"
+  case "$(operator_env readlink "$OPERATOR_RUNTIME/current")" in
+    releases/0.4.2-*) ;;
+    *) die "hotfix candidate release identity is unexpected" ;;
+  esac
+  [ "$(operator_env readlink "$OPERATOR_RUNTIME/previous")" = "$RELEASE_040_TARGET" ] \
+    || die "hotfix candidate did not retain 0.4.0 as previous"
+  assert_hotfix_static_key absent
+  engine_hash="$(operator_env sha256sum \
+    "$OPERATOR_RUNTIME/current/bin/yard-engine" | awk '{print $1}')"
+  host_incus exec "$CURRENT_INSTANCE" --project "$CURRENT_PROJECT" -- \
+    env WANT_ENABLED=1 WANT_ENGINE_HASH="$engine_hash" \
+    /usr/local/libexec/subyard/test-vms-inner _test-vms-worker doctor \
+    || die "candidate test-vms doctor did not converge"
+  old_transaction="$OPERATOR_HOME/.config/subyard/migrations/transactions/$HOTFIX_TRANSACTION_ID"
+  operator_env test ! -e "$old_transaction" \
+    || die "candidate cleanup retained the rolled-back 0.4.1 transaction"
+  ok "candidate broker migration retired static admission and converged the broker"
+}
+
 upgrade_through_missed_release() {
   [ "$MODE" = missed ] || return 0
   info "updating through published yard $MISSED_VERSION"
@@ -482,6 +835,22 @@ prepare_operator
 prepare_candidate
 install_old_runtime
 prepare_consumer
+if [ "$MODE" = hotfix ]; then
+  prepare_hotfix_current_owner
+  seed_hotfix_failure
+  reproduce_broken_update
+  repair_broken_update
+  upgrade_candidate
+  verify_control_plane
+  verify_hotfix_boundary
+  info "reinstalling the same hotfix candidate"
+  upgrade_candidate
+  verify_control_plane
+  verify_hotfix_boundary
+  verify_data_plane
+  printf 'ok: published 0.4.0 -> broken 0.4.1 -> recovered 0.4.2 hotfix lane passed\n'
+  exit 0
+fi
 prepare_legacy_owner
 upgrade_through_missed_release
 upgrade_candidate

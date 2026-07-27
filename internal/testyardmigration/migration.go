@@ -281,6 +281,19 @@ func VerifyRollback(options Options, before State) error {
 	if err := validateOptions(&options); err != nil {
 		return err
 	}
+	if before == StateCurrent {
+		observed, err := inspectRegistration(options)
+		if err != nil {
+			return err
+		}
+		if observed.state != StateCurrent {
+			return fmt.Errorf(
+				"test-yard no-op rollback expected current registration, found %s",
+				observed.state,
+			)
+		}
+		return nil
+	}
 	if before == StateAbsent {
 		observed, err := inspectRegistration(options)
 		if err != nil {

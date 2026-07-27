@@ -43,6 +43,16 @@ if id -u "$agent_user" >/dev/null 2>&1; then
   userdel --remove "$agent_user" >/dev/null 2>&1 || true
 fi
 if [ -e "$agent_home" ]; then find "$agent_home" -depth -delete; fi
+useradd --system --create-home --home-dir "$agent_home" --shell /bin/sh "$agent_user"
+usermod --password x "$agent_user"
+agent_group="$(id -gn "$agent_user")"
+install -d -m 0755 -o root -g root "$agent_home"
+install -d -m 0750 -o root -g "$agent_group" "$agent_home/.ssh"
+read -r key_type key_blob _ < /etc/ssh/ssh_host_ed25519_key.pub
+printf 'restrict,command="sudo -n /usr/local/libexec/subyard/test-vms-inner status" %s %s subyard-managed-e2e-agent\n' \
+  "$key_type" "$key_blob" > "$agent_home/.ssh/authorized_keys"
+chmod 0640 "$agent_home/.ssh/authorized_keys"
+chown root:"$agent_group" "$agent_home/.ssh/authorized_keys"
 rm -f /etc/ssh/sshd_config.d/90-subyard-e2e-agent.conf
 
 systemctl daemon-reload
@@ -51,4 +61,4 @@ systemctl reload ssh.service
 LEGACY
 
 printf '  [ok] seeded legacy nested-VM boundary in %s/%s\n' "$project" "$instance"
-printf '       current init must remove legacy privileges and restore the boundary\n'
+printf '       current init must remove legacy privileges/static admission and restore the boundary\n'

@@ -247,6 +247,26 @@ func (execution *initExecution) run(ctx context.Context, cli *CLI, output io.Wri
 	return nil
 }
 
+func reconcileMigrationTestVMs(ctx context.Context, platform ports.InitPlatform) error {
+	converged, err := platform.CheckStage(ctx, ports.ReconcileStageTestVMs)
+	if err != nil {
+		return err
+	}
+	if !converged {
+		if err := platform.ApplyStage(ctx, ports.ReconcileStageTestVMs); err != nil {
+			return err
+		}
+	}
+	converged, err = platform.VerifyStage(ctx, ports.ReconcileStageTestVMs)
+	if err != nil {
+		return err
+	}
+	if !converged {
+		return errors.New("test VM backend did not converge")
+	}
+	return nil
+}
+
 func (cli *CLI) printInitProvisionHint(
 	ctx context.Context,
 	execution *initExecution,

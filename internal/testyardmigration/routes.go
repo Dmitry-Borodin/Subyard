@@ -113,14 +113,21 @@ func CommitRouteConsumers(ctx context.Context, options Options, before string) e
 		return err
 	}
 	if !routeReady || !hasManagedYard(yards, CurrentYard) {
-		if err := run(ctx, options, CurrentYard, nil, "init", "--yes"); err != nil {
+		if err := run(
+			ctx,
+			options,
+			CurrentYard,
+			nil,
+			"_migrate",
+			"reconcile-test-vm-broker",
+		); err != nil {
 			return fmt.Errorf("publish canonical test-yard route: %w", err)
 		}
 	}
 	if routeReady, err = inspectCurrentRoute(options); err != nil {
 		return err
 	} else if !routeReady {
-		return errors.New("test-yard init did not publish the canonical route")
+		return errors.New("test-yard broker reconcile did not publish the canonical route")
 	}
 	yards, err = inspectManagedYards(ctx, options)
 	if err != nil {

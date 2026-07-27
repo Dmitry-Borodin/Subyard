@@ -149,8 +149,11 @@ func TestRouteConsumersCommitRepublishesMissingCanonicalRoute(t *testing.T) {
 	if err := CommitRouteConsumers(context.Background(), options, before); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(read(t, state.yardCalls), "-Y test-yard init --yes\n") {
-		t.Fatal("missing canonical route did not trigger targeted test-yard init")
+	if !strings.Contains(
+		read(t, state.yardCalls),
+		"-Y test-yard _migrate reconcile-test-vm-broker\n",
+	) {
+		t.Fatal("missing canonical route did not trigger bounded broker reconcile")
 	}
 }
 
@@ -242,7 +245,7 @@ set -eu
 [ "$SUBYARD_INTERNAL_MIGRATION_CHILD" = 1 ]
 printf '%s\n' "$*" >> "$ROUTE_YARD_CALLS"
 case "$*" in
-  "-Y test-yard init --yes")
+  "-Y test-yard _migrate reconcile-test-vm-broker")
     [ -L "$ROUTE_ROOT/current" ] || ln -s .route-test "$ROUTE_ROOT/current"
     ;;
   *) exit 2 ;;

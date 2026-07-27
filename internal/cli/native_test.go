@@ -521,6 +521,61 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 	}
 }
 
+func TestMigrationRootStepsAuthorizeThroughControllingTerminal(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "sudo.log")
+	writeCLIFile(t, filepath.Join(bin, "sudo"), `#!/bin/sh
+printf '%s\n' "$*" >> "$SUDO_LOG"
+if [ "$*" = "-n true" ]; then
+	[ -f "$SUDO_LOG.auth" ] || exit 1
+	exit 0
+fi
+if [ "$*" = "-v" ]; then
+	IFS= read -r input
+	printf 'input=%s\n' "$input" >> "$SUDO_LOG"
+	: > "$SUDO_LOG.auth"
+fi
+`, 0o700)
+	terminalPath := filepath.Join(root, "terminal")
+	writeCLIFile(t, terminalPath, "migration-terminal-input\n", 0o600)
+	t.Setenv("PATH", bin)
+	environment = append(
+		environment,
+		"PATH="+bin,
+		"SUDO_LOG="+logPath,
+		"SUBYARD_INTERNAL_MIGRATION_CHILD=1",
+	)
+	var diagnostics bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+		Stdin: strings.NewReader("closed migration stdin"), Stdout: &diagnostics, Stderr: &diagnostics,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	program.operatorTerminal = func() bool { return false }
+	program.openTerminal = func() (*os.File, error) {
+		return os.OpenFile(terminalPath, os.O_RDWR, 0)
+	}
+	if err := program.prepareSudoPrivileges(
+		context.Background(), &diagnostics, 1000, "teardown",
+	); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) !=
+		"-n true\n-v\ninput=migration-terminal-input\n-n true\n" {
+		t.Fatalf("migration sudo did not use the controlling terminal: %q", payload)
+	}
+}
+
 func TestStructuredMutationSharesTypedAdapterAcrossCLIAndRPC(t *testing.T) {
 	root, environment, _ := nativeFixture(t)
 	clock := testkit.NewManualClock(time.Unix(100, 0))

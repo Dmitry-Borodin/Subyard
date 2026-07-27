@@ -111,6 +111,84 @@ func (fixture *initPlatformFixture) RefreshConfigs(context.Context) error {
 	return nil
 }
 
+func TestMigrationBrokerReconcileIsBoundedToTestVMStage(t *testing.T) {
+	root := repositoryRoot(t)
+	home := t.TempDir()
+	configHome := filepath.Join(home, ".config", "subyard")
+	yardDirectory := filepath.Join(configHome, "yards", "test-yard")
+	if err := os.MkdirAll(yardDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(yardDirectory, "config.env"),
+		"YARD_TEMPLATE=test-vms\nSSH_PORT=2223\n", 0o600)
+	environment := []string{
+		"HOME=" + home,
+		"SUBYARD_OPERATOR_HOME=" + home,
+		"SUBYARD_CONFIG_HOME=" + configHome,
+		"SUBYARD_HOME=" + filepath.Join(home, ".subyard"),
+		"SUBYARD_NO_AUDIT=1",
+	}
+
+	var stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"-Y", "test-yard", "_migrate", "reconcile-test-vm-broker"},
+		Environment: environment, WorkingDir: home, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code == 0 ||
+		!strings.Contains(stderr.String(), "migration child is required") {
+		t.Fatalf("broker reconcile accepted a public invocation: code=%d stderr=%q",
+			code, stderr.String())
+	}
+
+	platform := newInitPlatformFixture()
+	platform.converged[ports.ReconcileStageTestVMs] = false
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"-Y", "test-yard", "_migrate", "reconcile-test-vm-broker"},
+		Environment: append(environment, "SUBYARD_INTERNAL_MIGRATION_CHILD=1"),
+		WorkingDir:  home, Stderr: &stderr, InitPlatform: platform,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("broker reconcile failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !slices.Equal(platform.applied, []ports.ReconcileStageID{
+		ports.ReconcileStageTestVMs,
+	}) {
+		t.Fatalf("migration broker reconcile applied stages %v", platform.applied)
+	}
+	if len(platform.preflightFresh) != 0 {
+		t.Fatalf("migration broker reconcile ran host preflight: %v",
+			platform.preflightFresh)
+	}
+
+	platform.applied = nil
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"-Y", "test-yard", "_migrate", "reconcile-test-vm-broker"},
+		Environment: append(environment, "SUBYARD_INTERNAL_MIGRATION_CHILD=1"),
+		WorkingDir:  home, Stderr: &stderr, InitPlatform: platform,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("converged broker reconcile failed: code=%d stderr=%q",
+			code, stderr.String())
+	}
+	if len(platform.applied) != 0 {
+		t.Fatalf("converged migration broker reapplied stages %v", platform.applied)
+	}
+}
+
 func (fixture *initPlatformFixture) Teardown(context.Context) error {
 	fixture.teardowns++
 	for stage := range fixture.converged {

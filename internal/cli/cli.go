@@ -86,6 +86,7 @@ type CLI struct {
 	resources        resource.Registry
 	inventoryRoutes  map[string]config.Loaded
 	operatorTerminal func() bool
+	openTerminal     func() (*os.File, error)
 }
 
 func New(options Options) (*CLI, error) {
@@ -143,6 +144,9 @@ func New(options Options) (*CLI, error) {
 		return terminalStream(options.Stdin) &&
 			terminalStream(options.Stdout) &&
 			terminalStream(options.Stderr)
+	}
+	cli.openTerminal = func() (*os.File, error) {
+		return os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	}
 	return cli, nil
 }
@@ -1519,7 +1523,8 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 	if len(arguments) != 1 ||
 		(arguments[0] != "paths" && arguments[0] != "check" &&
 			arguments[0] != "apply" && arguments[0] != "finalize" &&
-			arguments[0] != "rollback" && arguments[0] != "cleanup") {
+			arguments[0] != "rollback" && arguments[0] != "cleanup" &&
+			arguments[0] != "reconcile-test-vm-broker") {
 		cli.errorf("internal: invalid _migrate action")
 		return 2
 	}
@@ -1580,6 +1585,26 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		}
 		if err := json.NewEncoder(cli.options.Stdout).Encode(payload); err != nil {
 			cli.errorf("state migration paths: %v", err)
+			return 1
+		}
+		return 0
+	}
+	if arguments[0] == "reconcile-test-vm-broker" {
+		if migrationEnvironment["SUBYARD_INTERNAL_MIGRATION_CHILD"] != "1" {
+			cli.errorf("internal: test VM broker migration child is required")
+			return 1
+		}
+		if !loaded.Context.NestedE2EVMs ||
+			loaded.Context.InstanceType != domain.InstanceContainer {
+			cli.errorf("state migration test VM broker context is not active")
+			return 1
+		}
+		platform := cli.options.InitPlatform
+		if platform == nil {
+			platform = cli.initPlatform(loaded, []domain.Context{loaded.Context})
+		}
+		if err := reconcileMigrationTestVMs(ctx, platform); err != nil {
+			cli.errorf("state migration test VM broker reconcile: %v", err)
 			return 1
 		}
 		return 0
@@ -2469,18 +2494,33 @@ func (cli *CLI) prepareSudoPrivileges(
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("authorize root steps for %s: %w", operation, err)
 	}
+	stdin, stdout, stderr := cli.options.Stdin, cli.options.Stdout, cli.options.Stderr
+	var terminal *os.File
 	if cli.operatorTerminal == nil || !cli.operatorTerminal() {
-		return fmt.Errorf(
-			"sudo authorization is required for root steps in %s; rerun 'yard %s' in an operator terminal",
-			operation, operation,
-		)
+		if cli.env["SUBYARD_INTERNAL_MIGRATION_CHILD"] != "1" ||
+			cli.openTerminal == nil {
+			return fmt.Errorf(
+				"sudo authorization is required for root steps in %s; rerun 'yard %s' in an operator terminal",
+				operation, operation,
+			)
+		}
+		var err error
+		terminal, err = cli.openTerminal()
+		if err != nil {
+			return fmt.Errorf(
+				"sudo authorization is required for root steps in %s; rerun 'yard update' in an operator terminal",
+				operation,
+			)
+		}
+		defer terminal.Close()
+		stdin, stdout, stderr = terminal, terminal, terminal
 	}
 	fmt.Fprintf(diagnostics, "  [ .. ] authorizing root steps for %s\n", operation)
 	command := exec.CommandContext(ctx, "sudo", "-v")
 	command.Env = environmentList(cli.env, nil)
-	command.Stdin = cli.options.Stdin
-	command.Stdout = cli.options.Stdout
-	command.Stderr = cli.options.Stderr
+	command.Stdin = stdin
+	command.Stdout = stdout
+	command.Stderr = stderr
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("authorize root steps for %s: %w", operation, err)
 	}

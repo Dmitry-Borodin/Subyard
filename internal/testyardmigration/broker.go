@@ -57,13 +57,20 @@ func CommitBrokerRuntime(
 		return VerifyBrokerRuntime(ctx, options, before)
 	}
 	// A preceding owner/route operation may already have reconciled the
-	// candidate while publishing the canonical route. Avoid a second init,
+	// candidate while publishing the canonical route. Avoid a second reconcile,
 	// while retaining this operation as the sole refresh owner when the route
 	// was already ready.
 	if err := VerifyBrokerRuntime(ctx, options, before); err == nil {
 		return nil
 	}
-	if err := run(ctx, options, CurrentYard, nil, "init", "--yes"); err != nil {
+	if err := run(
+		ctx,
+		options,
+		CurrentYard,
+		nil,
+		"_migrate",
+		"reconcile-test-vm-broker",
+	); err != nil {
 		return fmt.Errorf("update active test VM broker: %w", err)
 	}
 	if err := VerifyBrokerRuntime(ctx, options, before); err != nil {
@@ -149,10 +156,25 @@ func RollbackBrokerRuntime(
 	if err != nil {
 		return err
 	}
-	if err := run(ctx, previous, CurrentYard, nil, "init", "--yes"); err != nil {
-		return fmt.Errorf("restore previous active test VM broker: %w", err)
+	runErr := run(
+		ctx,
+		previous,
+		CurrentYard,
+		nil,
+		"_migrate",
+		"reconcile-test-vm-broker",
+	)
+	verifyErr := VerifyBrokerRuntime(ctx, previous, before)
+	if verifyErr == nil {
+		return nil
 	}
-	return VerifyBrokerRuntime(ctx, previous, before)
+	if runErr != nil {
+		return errors.Join(
+			fmt.Errorf("restore previous active test VM broker: %w", runErr),
+			fmt.Errorf("verify previous active test VM broker: %w", verifyErr),
+		)
+	}
+	return verifyErr
 }
 
 func ValidateBrokerRuntimeState(state BrokerRuntimeState) error {

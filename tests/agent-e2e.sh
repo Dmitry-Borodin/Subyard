@@ -470,9 +470,33 @@ grep -Fq 'BROKEN_VERSION=0.4.1' "$ROOT/dev/e2e/release-migration-catch-up.sh" \
     "$ROOT/dev/e2e/release-migration-catch-up.sh" \
   && grep -Fq 'sync -f "$(dirname "$journal")"' \
     "$ROOT/dev/e2e/release-migration-catch-up.sh" \
-  && grep -Fq 'published 0.4.0 -> broken 0.4.1 -> recovered 0.4.2 hotfix lane passed' \
+  && grep -Fq 'published 0.4.0 -> broken 0.4.1 -> recovered 0.4.3 hotfix lane passed' \
     "$ROOT/dev/e2e/release-migration-catch-up.sh" \
   || fail "release catch-up hotfix lane does not cover exact published recovery and candidate retry"
+grep -Fq 'clean published 0.4.0 -> 0.4.3 hotfix lane passed' \
+  "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'legacy published 0.4.0 owner -> 0.4.3 hotfix lane passed' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'require_operator_password_sudo' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'operator_env sudo -k' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'spawn -noecho $env(SUBYARD_YARD_BIN) update' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'operator unexpectedly retained passwordless sudo' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  || fail "release hotfix lanes do not exercise ordinary updates with cold password-required sudo"
+grep -Fq 'FAILED_HOTFIX_VERSION=0.4.2' \
+  "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'RELEASE_042_TARGET=releases/0.4.2-17608894ab09' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'validate_failed_hotfix_transaction' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'repair_failed_hotfix_operation test-vm-broker-runtime' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && grep -Fq 'published 0.4.0 -> broken 0.4.2 -> recovered 0.4.3 hotfix lane passed' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  || fail "release catch-up does not reproduce and recover the exact broken 0.4.2 transaction"
 grep -Fq 'dev/agent-e2e.sh --wait 20m --vm both' \
   "$ROOT/dev/e2e/release-migration-consumer.sh" \
   && grep -Fq 'dev/agent-e2e.sh --verify-boundary' \

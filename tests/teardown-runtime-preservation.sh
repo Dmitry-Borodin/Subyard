@@ -23,6 +23,9 @@ INCUS_FEATURES_IMAGES=false
 INCUS_FEATURES_IMAGES=true
 incus_project_has_isolated_images fixture \
   || fail 'isolated project images were not treated as yard-owned'
+grep -Fq 'STORAGE_POOL="${STORAGE_POOL:-$SRV_POOL}"' \
+  "$ROOT/scripts/teardown-physical.sh" \
+  || fail 'teardown does not inherit the configured yard storage pool'
 
 data_home="$TMP/default-home"
 runtime_root="$data_home/runtime"

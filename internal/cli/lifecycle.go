@@ -86,7 +86,9 @@ func (cli *CLI) executeLifecycle(
 		return domain.AdapterResult{}, errors.New("lifecycle execution is required")
 	}
 	if execution.action == "start" && cli.options.AdapterRunner == nil {
-		if err := cli.prepareNetworkManagerPrivileges(ctx, diagnostics, os.Geteuid()); err != nil {
+		if err := cli.prepareNetworkManagerPrivileges(
+			ctx, diagnostics, os.Geteuid(), execution.action,
+		); err != nil {
 			return domain.AdapterResult{}, err
 		}
 	}

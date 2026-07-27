@@ -49,7 +49,7 @@ func (runner ProvisionRunner) Run(
 		physical := request
 		physical.Adapter = "lifecycle"
 		physical.Action = "start"
-		physical.Arguments = []string{"--reconcile"}
+		physical.Arguments = []string{"start", "--reconcile"}
 		physicalResult, text, physicalErr := runner.Physical.Run(ctx, physical, nil)
 		output.WriteString(text)
 		if physicalErr != nil || physicalResult.Status != "ok" {
@@ -67,7 +67,7 @@ func (runner ProvisionRunner) Run(
 		physical := request
 		physical.Adapter = "lifecycle"
 		physical.Action = "stop"
-		physical.Arguments = []string{"--reconcile"}
+		physical.Arguments = []string{"stop", "--reconcile"}
 		physicalResult, text, physicalErr := runner.Physical.Run(ctx, physical, nil)
 		output.WriteString(text)
 		if physicalErr != nil {

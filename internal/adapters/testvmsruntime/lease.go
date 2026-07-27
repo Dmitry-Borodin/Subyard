@@ -23,6 +23,7 @@ const (
 var (
 	ErrCorruptLeaseState     = errors.New("corrupt lease state")
 	ErrUnsupportedLeaseState = errors.New("unsupported lease state")
+	ErrLeaseBusy             = errors.New("busy")
 )
 
 type SlotState string
@@ -104,6 +105,22 @@ func (store LeaseStore) Status() (LeasePool, error) {
 }
 
 func (store LeaseStore) Acquire(clientID, fingerprint, label, purpose string) (LeaseGrant, error) {
+	return store.acquire(clientID, fingerprint, label, purpose, "")
+}
+
+func (store LeaseStore) AcquireSlot(
+	clientID, fingerprint, label, purpose, slotID string,
+) (LeaseGrant, error) {
+	number, err := slotNumber(slotID, store.SlotCount)
+	if err != nil || slotID != fmt.Sprintf("slot-%03d", number) {
+		return LeaseGrant{}, fmt.Errorf("invalid slot id %q", slotID)
+	}
+	return store.acquire(clientID, fingerprint, label, purpose, slotID)
+}
+
+func (store LeaseStore) acquire(
+	clientID, fingerprint, label, purpose, requestedSlot string,
+) (LeaseGrant, error) {
 	if !safeLeaseText(clientID, 96) || clientID == "" {
 		return LeaseGrant{}, errors.New("invalid client_id")
 	}
@@ -119,7 +136,13 @@ func (store LeaseStore) Acquire(clientID, fingerprint, label, purpose string) (L
 		expireStale(pool, now)
 		for index := range pool.Slots {
 			slot := &pool.Slots[index]
+			if requestedSlot != "" && slot.SlotID != requestedSlot {
+				continue
+			}
 			if slot.State != SlotAvailable {
+				if requestedSlot != "" {
+					return fmt.Errorf("%w: %s is %s", ErrLeaseBusy, slot.SlotID, slot.State)
+				}
 				continue
 			}
 			leaseID, err := randomToken(16)
@@ -149,7 +172,7 @@ func (store LeaseStore) Acquire(clientID, fingerprint, label, purpose string) (L
 			}
 			return nil
 		}
-		return errors.New("busy")
+		return ErrLeaseBusy
 	})
 	return grant, err
 }

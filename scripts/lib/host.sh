@@ -15,6 +15,8 @@ require_root() {
     warn "this needs root: $why"
     if [ "${SUBYARD_SUDO_PREAUTHORIZED:-0}" = 1 ]; then
       info "re-running under pre-authorized sudo…"
+      sudo -n true </dev/null 2>/dev/null \
+        || die "sudo authorization expired; re-run the parent yard command in an operator terminal"
       sudo_args=(-n)
     else
       info "re-running under sudo (you'll be asked for your password)…"
@@ -25,6 +27,22 @@ require_root() {
   printf '\n%sNeeds root and sudo is not installed — run as root:%s\n    %s%s %s%s\n\n' \
     "$C_WARN" "$C_OFF" "$C_HEAD" "$SUBYARD_SCRIPT_PATH" "${SUBYARD_SCRIPT_ARGV[*]:-}" "$C_OFF" >&2
   exit 1
+}
+
+host_sudo() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+    return
+  fi
+  command -v sudo >/dev/null 2>&1 \
+    || { warn "sudo is required to change the owner host"; return 1; }
+  if [ "${SUBYARD_SUDO_PREAUTHORIZED:-0}" = 1 ]; then
+    sudo -n true </dev/null 2>/dev/null \
+      || { warn "sudo authorization expired; re-run the parent yard command in an operator terminal"; return 1; }
+    sudo -n -- "$@"
+  else
+    sudo -- "$@"
+  fi
 }
 
 subyard_home_remove_preserving_runtime() {

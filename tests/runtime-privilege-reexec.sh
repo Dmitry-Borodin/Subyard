@@ -32,13 +32,16 @@ install -d "$TMP/bin"
 cat > "$TMP/bin/id" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
-  -u) printf '1000\n' ;;
+  -u) printf '%s\n' "${MOCK_UID:-1000}" ;;
   -un) printf 'operator\n' ;;
   *) exec /usr/bin/id "$@" ;;
 esac
 SH
 cat > "$TMP/bin/sudo" <<'SH'
 #!/usr/bin/env bash
+if [ "${MOCK_SUDO_EXPIRED:-0}" = 1 ] && [ "${1:-}" = -n ] && [ "${2:-}" = true ]; then
+  exit 1
+fi
 printf '%s\n' "$@" > "$MOCK_SUDO_LOG"
 SH
 chmod +x "$TMP/bin/id" "$TMP/bin/sudo"
@@ -123,3 +126,63 @@ if grep -Fxq -- "HOME=$TMP/operator home" "$MOCK_SUDO_LOG"; then
 fi
 
 printf 'ok: child phases own re-exec identity and preauthorized sudo preserves operator roots\n'
+
+DIRECT_SUDO_LOG="$TMP/direct-sudo.argv"
+(
+  PATH="$TMP/bin:$PATH"
+  MOCK_SUDO_LOG="$DIRECT_SUDO_LOG"
+  SUBYARD_SCRIPT_PATH="$TMP/direct.sh"
+  SUBYARD_SCRIPT_ARGV=(--yes)
+  warn() { :; }
+  info() { :; }
+  die() { printf '%s\n' "$*" >&2; exit 1; }
+  # shellcheck source=scripts/lib/engine-context.sh
+  . "$ROOT/scripts/lib/engine-context.sh"
+  # shellcheck source=scripts/lib/host.sh
+  . "$ROOT/scripts/lib/host.sh"
+  require_root fixture
+)
+if grep -Fxq -- -n "$DIRECT_SUDO_LOG"; then
+  fail 'direct foreground sudo re-entry was forced non-interactive'
+fi
+
+EXPIRED_SUDO_LOG="$TMP/expired-sudo.argv"
+if printf 'payload-must-not-be-read\n' | (
+  PATH="$TMP/bin:$PATH"
+  MOCK_SUDO_LOG="$EXPIRED_SUDO_LOG"
+  export MOCK_SUDO_EXPIRED=1
+  SUBYARD_SUDO_PREAUTHORIZED=1
+  SUBYARD_SCRIPT_PATH="$TMP/expired.sh"
+  SUBYARD_SCRIPT_ARGV=(--yes)
+  warn() { :; }
+  info() { :; }
+  die() { printf '%s\n' "$*" >&2; exit 1; }
+  # shellcheck source=scripts/lib/engine-context.sh
+  . "$ROOT/scripts/lib/engine-context.sh"
+  # shellcheck source=scripts/lib/host.sh
+  . "$ROOT/scripts/lib/host.sh"
+  require_root fixture
+) >"$TMP/expired.out" 2>&1; then
+  fail 'expired preauthorized sudo credential was accepted'
+fi
+grep -Fq 'sudo authorization expired' "$TMP/expired.out" \
+  || fail 'expired preauthorized sudo error was not actionable'
+[ ! -e "$EXPIRED_SUDO_LOG" ] \
+  || fail 'expired preauthorized path reached the elevated command'
+
+ROOT_SUDO_LOG="$TMP/root-sudo.argv"
+(
+  PATH="$TMP/bin:$PATH"
+  export MOCK_UID=0
+  MOCK_SUDO_LOG="$ROOT_SUDO_LOG"
+  SUBYARD_SCRIPT_PATH="$TMP/root.sh"
+  SUBYARD_SCRIPT_ARGV=()
+  # shellcheck source=scripts/lib/engine-context.sh
+  . "$ROOT/scripts/lib/engine-context.sh"
+  # shellcheck source=scripts/lib/host.sh
+  . "$ROOT/scripts/lib/host.sh"
+  require_root fixture
+)
+[ ! -e "$ROOT_SUDO_LOG" ] || fail 'EUID 0 invoked sudo'
+
+printf 'ok: sudo leaves keep direct prompts, fail closed when preauthorization expires, and skip sudo as root\n'

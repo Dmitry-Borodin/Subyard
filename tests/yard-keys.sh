@@ -211,6 +211,7 @@ PATH="$TMP/bin:$PATH" \
 cat > "$TMP/bin/sudo" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+[ "${1:-}" != -- ] || shift
 [ "$1 $2" = 'systemctl start' ] || exit 81
 mkdir -m 0700 "$EXPECTED_RUNTIME_DIR"
 printf '%s\n' "$*" >> "$SUDO_LOG"

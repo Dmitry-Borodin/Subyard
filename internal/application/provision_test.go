@@ -12,11 +12,12 @@ import (
 )
 
 type provisionFixture struct {
-	instance ports.InstanceInfo
-	updates  []map[string]string
-	actions  []string
-	profiles []string
-	fail     string
+	instance  ports.InstanceInfo
+	updates   []map[string]string
+	actions   []string
+	arguments [][]string
+	profiles  []string
+	fail      string
 }
 
 func (fixture *provisionFixture) Instance(context.Context, string, string) (ports.InstanceInfo, error) {
@@ -50,6 +51,7 @@ func (fixture *provisionFixture) Run(_ context.Context, request domain.AdapterRe
 		return domain.AdapterResult{Schema: 1, OperationID: request.OperationID, Status: "ok"}, "", nil
 	}
 	fixture.actions = append(fixture.actions, request.Action)
+	fixture.arguments = append(fixture.arguments, append([]string(nil), request.Arguments...))
 	if request.Action == "start" {
 		fixture.instance.Status = "Running"
 	}
@@ -68,6 +70,10 @@ func TestProvisionRestoresTemporarilyStartedYard(t *testing.T) {
 	}
 	if result.Status != "ok" || !slices.Equal(fixture.actions, []string{"start", "stop"}) {
 		t.Fatalf("result=%+v actions=%v", result, fixture.actions)
+	}
+	if !slices.Equal(fixture.arguments[0], []string{"start", "--reconcile"}) ||
+		!slices.Equal(fixture.arguments[1], []string{"stop", "--reconcile"}) {
+		t.Fatalf("lifecycle arguments=%v", fixture.arguments)
 	}
 	if !slices.Equal(fixture.profiles, []string{"android", "openclaw"}) {
 		t.Fatalf("profiles=%v", fixture.profiles)

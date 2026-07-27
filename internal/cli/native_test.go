@@ -368,7 +368,11 @@ func TestNetworkManagerPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
 	writeCLIFile(t, filepath.Join(bin, "sudo"), `#!/bin/sh
 printf '%s\n' "$*" >> "$SUDO_LOG"
 if [ "$*" = "-n true" ]; then
-	exit "${SUDO_NONINTERACTIVE_RC:-0}"
+	[ -f "$SUDO_LOG.auth" ] || exit "${SUDO_NONINTERACTIVE_RC:-0}"
+	exit 0
+fi
+if [ "$*" = "-v" ]; then
+	: > "$SUDO_LOG.auth"
 fi
 `, 0o700)
 	t.Setenv("PATH", bin)
@@ -381,14 +385,18 @@ fi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := program.prepareNetworkManagerPrivileges(context.Background(), &diagnostics, 1000); err != nil {
+	program.operatorTerminal = func() bool { return true }
+	if err := program.prepareNetworkManagerPrivileges(
+		context.Background(), &diagnostics, 1000, "start",
+	); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(payload) != "-n true\n-v\n" || !strings.Contains(diagnostics.String(), "authorizing") {
+	if string(payload) != "-n true\n-v\n-n true\n" ||
+		!strings.Contains(diagnostics.String(), "authorizing") {
 		t.Fatalf("sudo authorization was not explicit: log=%q diagnostics=%q", payload, diagnostics.String())
 	}
 
@@ -396,7 +404,9 @@ fi
 	if err := os.Remove(logPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := program.prepareNetworkManagerPrivileges(context.Background(), &diagnostics, 1000); err != nil {
+	if err := program.prepareNetworkManagerPrivileges(
+		context.Background(), &diagnostics, 1000, "start",
+	); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
@@ -414,7 +424,11 @@ func TestRootStepPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
 	writeCLIFile(t, filepath.Join(bin, "sudo"), `#!/bin/sh
 printf '%s\n' "$*" >> "$SUDO_LOG"
 if [ "$*" = "-n true" ]; then
-	exit "${SUDO_NONINTERACTIVE_RC:-0}"
+	[ -f "$SUDO_LOG.auth" ] || exit "${SUDO_NONINTERACTIVE_RC:-0}"
+	exit 0
+fi
+if [ "$*" = "-v" ]; then
+	: > "$SUDO_LOG.auth"
 fi
 IFS= read -r input
 printf 'input=%s\n' "$input" >> "$SUDO_LOG"
@@ -429,6 +443,7 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 	if err != nil {
 		t.Fatal(err)
 	}
+	program.operatorTerminal = func() bool { return true }
 	if err := program.prepareSudoPrivileges(
 		context.Background(), &diagnostics, 1000, "teardown",
 	); err != nil {
@@ -438,7 +453,7 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(payload) != "-n true\n-v\ninput=operator-terminal-input\n" ||
+	if string(payload) != "-n true\n-v\ninput=operator-terminal-input\n-n true\n" ||
 		!strings.Contains(diagnostics.String(), "authorizing root steps for teardown") {
 		t.Fatalf("root-step sudo authorization did not retain operator stdio: log=%q diagnostics=%q",
 			payload, diagnostics.String())
@@ -483,6 +498,26 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 	}
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("root execution invoked sudo: %v", err)
+	}
+
+	if err := os.Remove(logPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if err := os.Remove(logPath + ".auth"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	program.operatorTerminal = func() bool { return false }
+	if err := program.prepareSudoPrivileges(
+		context.Background(), &diagnostics, 1000, "teardown",
+	); err == nil || !strings.Contains(err.Error(), "operator terminal") {
+		t.Fatalf("no-TTY sudo did not fail with an actionable diagnostic: %v", err)
+	}
+	payload, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "-n true\n" {
+		t.Fatalf("no-TTY sudo attempted an interactive authorization: %q", payload)
 	}
 }
 

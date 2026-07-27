@@ -25,6 +25,7 @@ GUEST_IDENTITY=""
 GUEST_USER=root
 DATA_USER=""
 LEASE_SLOT=""
+REQUESTED_SLOT=""
 LEASE_ID=""
 LEASE_EPOCH=""
 LEASE_CAPABILITY=""
@@ -56,11 +57,11 @@ usage() {
 Usage:
   dev/agent-e2e.sh [--yard NAME] --prepare
   dev/agent-e2e.sh [--yard NAME] --status
-  dev/agent-e2e.sh [--yard NAME] [--wait DURATION] [--vm 1|2|both] -- COMMAND [ARG...]
-  dev/agent-e2e.sh [--yard NAME] [--vm 1|2|both] -- COMMAND [ARG...]
-  dev/agent-e2e.sh [--yard NAME] --ssh 1|2 [-- COMMAND [ARG...]]
-  dev/agent-e2e.sh [--yard NAME] --ssh-stdin 1|2 -- COMMAND [ARG...]
-  dev/agent-e2e.sh [--yard NAME] --verify-boundary
+  dev/agent-e2e.sh [--yard NAME] [--slot N] [--wait DURATION] [--vm 1|2|both] -- COMMAND [ARG...]
+  dev/agent-e2e.sh [--yard NAME] [--slot N] [--vm 1|2|both] -- COMMAND [ARG...]
+  dev/agent-e2e.sh [--yard NAME] [--slot N] --ssh 1|2 [-- COMMAND [ARG...]]
+  dev/agent-e2e.sh [--yard NAME] [--slot N] --ssh-stdin 1|2 -- COMMAND [ARG...]
+  dev/agent-e2e.sh [--yard NAME] [--slot N] --verify-boundary
 
 The normal form copies the current tracked, dirty and non-ignored public worktree to each selected
 VM, runs COMMAND as dev, streams output and removes every run directory. A direct ./bin/yard command
@@ -75,6 +76,8 @@ separate ephemeral guest key.
 
 The operator owns the outer test yard. Acquire creates or starts only the selected inner slot pair;
 release fences access and stops that pair without deleting its disks.
+--slot N requires that exact broker slot and never falls back to another slot. Without it, acquire
+keeps selecting the first available slot.
 EOF
 }
 
@@ -299,6 +302,8 @@ parse_lease_grant() {
   [[ "$LEASE_SLOT" =~ ^slot-[0-9]{3}$ && "$LEASE_ID" =~ ^[0-9a-f]+$ \
     && "$LEASE_EPOCH" =~ ^[1-9][0-9]*$ && "$LEASE_CAPABILITY" =~ ^[0-9a-f]+$ ]] \
     || die "facade returned invalid lease credentials"
+  [ -z "$REQUESTED_SLOT" ] || [ "$LEASE_SLOT" = "$REQUESTED_SLOT" ] \
+    || die "facade returned $LEASE_SLOT, requested $REQUESTED_SLOT"
   count="$(jq '.grant.targets | length' <<<"$response")"
   [ "$count" = 2 ] || die "facade returned an incomplete VM pair"
   VM_IP=(); VM_HOST_KEY=()
@@ -322,6 +327,14 @@ parse_lease_grant() {
   chmod 0600 "$GUEST_KNOWN_HOSTS"
 }
 
+lease_acquire_command() {
+  local client="$1" fingerprint="$2" label="$3" purpose="$4" type="$5" blob="$6"
+  printf 'acquire %s %s %s %s %s %s' \
+    "$client" "$fingerprint" "$label" "$purpose" "$type" "$blob"
+  [ -z "$REQUESTED_SLOT" ] || printf ' %s' "$REQUESTED_SLOT"
+  printf '\n'
+}
+
 acquire_lease() {
   local client fingerprint label=checkout purpose=agent-e2e type blob response code started
   command -v jq >/dev/null 2>&1 || die "jq is required"
@@ -336,10 +349,12 @@ acquire_lease() {
   fingerprint="$(ssh-keygen -lf "$IDENTITY.pub" -E sha256 | awk '{print $2}')"
   started=$SECONDS
   while true; do
-    response="$(facade_request "acquire $client $fingerprint $label $purpose $type $blob")" \
+    response="$(facade_request \
+      "$(lease_acquire_command "$client" "$fingerprint" "$label" "$purpose" "$type" "$blob")")" \
       || die "test environment unavailable"
     code="$(jq -r '.code // empty' <<<"$response")"
     if parse_lease_grant "$response"; then
+      ok "lease acquired: $LEASE_SLOT"
       write_client_config
       return 0
     fi
@@ -646,6 +661,13 @@ main() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --yard) [ "$#" -ge 2 ] || die "--yard needs a yard name"; E2E_YARD="$2"; shift 2 ;;
+      --slot)
+        [ "$#" -ge 2 ] || die "--slot needs a broker slot number"
+        [[ "$2" =~ ^[1-9][0-9]{0,2}$ ]] \
+          || die "--slot must be an integer from 1 through 999"
+        printf -v REQUESTED_SLOT 'slot-%03d' "$2"
+        shift 2
+        ;;
       --vm) [ "$#" -ge 2 ] || die "--vm needs 1, 2 or both"; selector="$2"; shift 2 ;;
       --ssh) [ "$#" -ge 2 ] || die "--ssh needs 1 or 2"; mode=ssh; ssh_vm="$2"; shift 2 ;;
       --ssh-stdin)
@@ -676,8 +698,14 @@ main() {
   done
   configure_yard_scope
   case "$mode" in
-    prepare) [ "${#command[@]}" -eq 0 ] || die "--prepare takes no command"; prepare_identity; return ;;
+    prepare)
+      [ -z "$REQUESTED_SLOT" ] || die "--slot is not valid with --prepare"
+      [ "${#command[@]}" -eq 0 ] || die "--prepare takes no command"
+      prepare_identity
+      return
+      ;;
     status)
+      [ -z "$REQUESTED_SLOT" ] || die "--slot is not valid with --status"
       [ "${#command[@]}" -eq 0 ] || die "--status takes no command"
       facade_request status || die "test environment unavailable"
       return

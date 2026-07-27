@@ -9,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 subyard_require_engine_context
 # shellcheck source=scripts/lib/ui.sh
 . "$SCRIPT_DIR/lib/ui.sh"
+# shellcheck source=scripts/lib/host.sh
+. "$SCRIPT_DIR/lib/host.sh"
 
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 UNIT_DIR="${SUBYARD_KEYS_SYSTEMD_DIR:-$SUBYARD_OPERATOR_HOME/.config/systemd/user}"
@@ -60,7 +62,7 @@ ensure_user_systemd_manager() {
   if [ "$uid" -eq 0 ]; then
     systemctl start "$unit" || die "could not start the user systemd manager for $user"
   elif command -v sudo >/dev/null 2>&1; then
-    sudo systemctl start "$unit" || die "could not start the user systemd manager for $user"
+    host_sudo systemctl start "$unit" || die "could not start the user systemd manager for $user"
   else
     die "the user systemd manager is unavailable and sudo is missing"
   fi
@@ -117,7 +119,7 @@ if [ "$linger" != yes ]; then
   if [ "$(id -u)" -eq 0 ]; then
     loginctl enable-linger "$(id -un)" || die "could not enable systemd lingering"
   elif command -v sudo >/dev/null 2>&1; then
-    sudo loginctl enable-linger "$(id -un)" || die "could not enable systemd lingering"
+    host_sudo loginctl enable-linger "$(id -un)" || die "could not enable systemd lingering"
   else
     die "systemd lingering is disabled and sudo is unavailable; the 24-hour sync bound cannot be installed"
   fi

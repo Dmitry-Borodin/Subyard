@@ -62,7 +62,7 @@ power_nm_prepare_reader() {
   command -v sudo >/dev/null 2>&1 \
     || { power_fail "sudo is required to verify NetworkManager configuration"; return 1; }
   if [ "${SUBYARD_SUDO_PREAUTHORIZED:-0}" = 1 ]; then
-    sudo -n -v \
+    sudo -n true </dev/null \
       || { power_fail "sudo authorization expired; re-run 'yard start' in an operator terminal"; return 1; }
   else
     sudo -v \

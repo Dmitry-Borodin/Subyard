@@ -156,7 +156,15 @@ grep -Fq '"$candidate_yard" _migrate finalize' \
 
  ensure_identity
 lease_blob="$(awk '{print $2}' "$IDENTITY.pub")"
+REQUESTED_SLOT=slot-002
+[ "$(lease_acquire_command client SHA256:key checkout tests ssh-ed25519 "$lease_blob")" = \
+  "acquire client SHA256:key checkout tests ssh-ed25519 $lease_blob slot-002" ] \
+  || fail "exact slot selector was not passed through the acquire command"
 lease_response="$(printf '{"schema_version":1,"status":"ok","grant":{"slot_id":"slot-001","lease_id":"aabb","capability":"ccdd","lease_epoch":3,"data_user":"subyard-e2e-slot-1","targets":[{"selector":1,"name":"e2e-vm-1","address":"10.42.1.11","host_key_type":"ssh-ed25519","host_key_blob":"%s"},{"selector":2,"name":"e2e-vm-2","address":"10.42.1.12","host_key_type":"ssh-ed25519","host_key_blob":"%s"}]}}' "$lease_blob" "$lease_blob")"
+if (parse_lease_grant "$lease_response") >/dev/null 2>&1; then
+  fail "lease grant for a different broker slot was accepted"
+fi
+REQUESTED_SLOT=slot-001
 parse_lease_grant "$lease_response" \
   || fail "valid lease grant was rejected"
 [ "$LEASE_SLOT" = slot-001 ] && [ "$DATA_USER" = subyard-e2e-slot-1 ] \
@@ -165,6 +173,10 @@ parse_lease_grant "$lease_response" \
 if (parse_lease_grant '{"status":"ok","grant":{"capability":"secret"}}') >/dev/null 2>&1; then
   fail "incomplete lease grant was accepted"
 fi
+REQUESTED_SLOT=''
+[ "$(lease_acquire_command client SHA256:key checkout tests ssh-ed25519 "$lease_blob")" = \
+  "acquire client SHA256:key checkout tests ssh-ed25519 $lease_blob" ] \
+  || fail "automatic acquire command changed when no slot was requested"
 ensure_identity
 BASTION_HOSTNAME=127.0.0.1
 BASTION_PORT=2223

@@ -42,6 +42,60 @@ func TestLeaseStoreConfiguredCapacityMatrix(t *testing.T) {
 	}
 }
 
+func TestLeaseStoreAcquireSlotDoesNotFallback(t *testing.T) {
+	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 2}
+	grant, err := store.AcquireSlot(
+		"exact", "SHA256:key", "checkout", "tests", "slot-002",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.SlotID != "slot-002" {
+		t.Fatalf("exact acquire returned %s", grant.SlotID)
+	}
+	before, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Slots[0].State != SlotAvailable ||
+		before.Slots[1].State != SlotProvisioning {
+		t.Fatalf("unexpected exact acquire state: %#v", before.Slots)
+	}
+	if _, err := store.AcquireSlot(
+		"second", "SHA256:key", "", "", "slot-002",
+	); !errors.Is(err, ErrLeaseBusy) {
+		t.Fatalf("occupied exact acquire error = %v", err)
+	}
+	after, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Slots[0] != before.Slots[0] {
+		t.Fatalf("failed exact acquire mutated neighbor: before=%#v after=%#v",
+			before.Slots[0], after.Slots[0])
+	}
+	if err := store.Quarantine(grant, errors.New("fixture failure")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireSlot(
+		"third", "SHA256:key", "", "", "slot-002",
+	); !errors.Is(err, ErrLeaseBusy) {
+		t.Fatalf("quarantined exact acquire error = %v", err)
+	}
+	automatic, err := store.Acquire("automatic", "SHA256:key", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if automatic.SlotID != "slot-001" {
+		t.Fatalf("automatic acquire returned %s", automatic.SlotID)
+	}
+	if _, err := store.AcquireSlot(
+		"invalid", "SHA256:key", "", "", "slot-2",
+	); err == nil || errors.Is(err, ErrLeaseBusy) {
+		t.Fatalf("non-canonical slot error = %v", err)
+	}
+}
+
 func TestLeaseStoreConcurrentCapacityAndFencing(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
 	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 2, Now: func() time.Time {

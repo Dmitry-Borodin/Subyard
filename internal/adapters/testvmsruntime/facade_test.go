@@ -43,6 +43,57 @@ func TestFacadeContractAndRedaction(t *testing.T) {
 	}
 }
 
+func TestFacadeExactSlotAcquireIsBackwardCompatible(t *testing.T) {
+	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 2}
+	var output bytes.Buffer
+	var provisioned []string
+	facade := Facade{
+		Store: store, Output: &output,
+		OnAcquire: func(grant LeaseGrant, _ string) (LeaseGrant, error) {
+			provisioned = append(provisioned, grant.SlotID)
+			return grant, store.MarkHeld(grant)
+		},
+	}
+	key := strings.Fields(fixturePublicKey(t))
+	base := "acquire client SHA256:key checkout tests " + key[0] + " " + key[1]
+	if err := facade.Run(base + " slot-002"); err != nil {
+		t.Fatal(err)
+	}
+	var exact facadeResponse
+	if err := json.Unmarshal(output.Bytes(), &exact); err != nil {
+		t.Fatal(err)
+	}
+	if exact.Grant == nil || exact.Grant.SlotID != "slot-002" ||
+		len(provisioned) != 1 || provisioned[0] != "slot-002" {
+		t.Fatalf("exact acquire response=%s provisioned=%v", output.String(), provisioned)
+	}
+	output.Reset()
+	if err := facade.Run(base + " slot-002"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"code":"busy"`) || len(provisioned) != 1 {
+		t.Fatalf("occupied exact response=%s provisioned=%v", output.String(), provisioned)
+	}
+	output.Reset()
+	if err := facade.Run(base); err != nil {
+		t.Fatal(err)
+	}
+	var automatic facadeResponse
+	if err := json.Unmarshal(output.Bytes(), &automatic); err != nil {
+		t.Fatal(err)
+	}
+	if automatic.Grant == nil || automatic.Grant.SlotID != "slot-001" {
+		t.Fatalf("automatic acquire response=%s", output.String())
+	}
+	output.Reset()
+	if err := facade.Run(base + " slot-2"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"code":"invalid_request"`) {
+		t.Fatalf("non-canonical slot response=%s", output.String())
+	}
+}
+
 func TestFacadeReleaseReplayAndWrongCredentialsReturnLeaseLost(t *testing.T) {
 	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 1}
 	var output bytes.Buffer

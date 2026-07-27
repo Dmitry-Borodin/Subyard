@@ -49,17 +49,28 @@ func (facade Facade) Run(originalCommand string) error {
 			SchemaVersion: LeaseSchemaVersion, Status: "ok", Pool: &pool,
 		})
 	case "acquire":
-		if len(fields) != 7 {
+		if len(fields) != 7 && len(fields) != 8 {
 			return facade.writeError("invalid_request",
-				"acquire requires client_id fingerprint label purpose key_type key_blob")
+				"acquire requires client_id fingerprint label purpose key_type key_blob [slot_id]")
 		}
 		publicKey := fields[5] + " " + fields[6]
 		if _, err := normalizedPublicKey(publicKey); err != nil || fields[5] != "ssh-ed25519" {
 			return facade.writeError("invalid_request", "lease key must be Ed25519")
 		}
-		grant, err := facade.Store.Acquire(fields[1], fields[2], fields[3], fields[4])
+		var grant LeaseGrant
+		var err error
+		if len(fields) == 8 {
+			grant, err = facade.Store.AcquireSlot(
+				fields[1], fields[2], fields[3], fields[4], fields[7],
+			)
+		} else {
+			grant, err = facade.Store.Acquire(fields[1], fields[2], fields[3], fields[4])
+		}
 		if err != nil {
-			if err.Error() == "busy" {
+			if errors.Is(err, ErrLeaseBusy) {
+				if len(fields) == 8 {
+					return facade.writeError("busy", "requested slot is busy or unavailable")
+				}
 				return facade.writeError("busy", "all configured slots are busy or unavailable")
 			}
 			return facade.writeError("invalid_request", err.Error())

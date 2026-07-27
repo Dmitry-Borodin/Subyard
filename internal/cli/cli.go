@@ -43,6 +43,7 @@ import (
 	"github.com/Subyard/Subyard/internal/rpc"
 	"github.com/Subyard/Subyard/internal/state"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 )
 
 var Version = "0.1.0-dev"
@@ -78,12 +79,13 @@ type Options struct {
 }
 
 type CLI struct {
-	options         Options
-	env             map[string]string
-	baseEnv         map[string]string
-	manifest        command.Manifest
-	resources       resource.Registry
-	inventoryRoutes map[string]config.Loaded
+	options          Options
+	env              map[string]string
+	baseEnv          map[string]string
+	manifest         command.Manifest
+	resources        resource.Registry
+	inventoryRoutes  map[string]config.Loaded
+	operatorTerminal func() bool
 }
 
 func New(options Options) (*CLI, error) {
@@ -133,10 +135,16 @@ func New(options Options) (*CLI, error) {
 	for name, value := range baseEnvironment {
 		activeEnvironment[name] = value
 	}
-	return &CLI{
+	cli := &CLI{
 		options: options, env: activeEnvironment, baseEnv: baseEnvironment,
 		manifest: manifest, resources: resources, inventoryRoutes: make(map[string]config.Loaded),
-	}, nil
+	}
+	cli.operatorTerminal = func() bool {
+		return terminalStream(options.Stdin) &&
+			terminalStream(options.Stdout) &&
+			terminalStream(options.Stderr)
+	}
+	return cli, nil
 }
 
 func (cli *CLI) Run(ctx context.Context) int {
@@ -2333,7 +2341,7 @@ func (cli *CLI) executeStructuredCommand(
 		return result, err
 	}
 	if initRun != nil && definition.Handler == "@init" {
-		if cli.options.InitPlatform == nil {
+		if cli.options.InitPlatform == nil && initRun.mode != initConfigs {
 			if err := cli.prepareSudoPrivileges(
 				ctx, diagnostics, os.Geteuid(), definition.Name,
 			); err != nil {
@@ -2461,6 +2469,12 @@ func (cli *CLI) prepareSudoPrivileges(
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("authorize root steps for %s: %w", operation, err)
 	}
+	if cli.operatorTerminal == nil || !cli.operatorTerminal() {
+		return fmt.Errorf(
+			"sudo authorization is required for root steps in %s; rerun 'yard %s' in an operator terminal",
+			operation, operation,
+		)
+	}
 	fmt.Fprintf(diagnostics, "  [ .. ] authorizing root steps for %s\n", operation)
 	command := exec.CommandContext(ctx, "sudo", "-v")
 	command.Env = environmentList(cli.env, nil)
@@ -2469,6 +2483,12 @@ func (cli *CLI) prepareSudoPrivileges(
 	command.Stderr = cli.options.Stderr
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("authorize root steps for %s: %w", operation, err)
+	}
+	if !cli.sudoAvailableWithoutPrompt(ctx) {
+		return fmt.Errorf(
+			"sudo authorization for root steps in %s did not create a non-interactive credential",
+			operation,
+		)
 	}
 	return nil
 }
@@ -2482,7 +2502,12 @@ func (cli *CLI) sudoAvailableWithoutPrompt(ctx context.Context) bool {
 	return command.Run() == nil
 }
 
-func (cli *CLI) prepareNetworkManagerPrivileges(ctx context.Context, diagnostics io.Writer, effectiveUID int) error {
+func (cli *CLI) prepareNetworkManagerPrivileges(
+	ctx context.Context,
+	diagnostics io.Writer,
+	effectiveUID int,
+	operation string,
+) error {
 	if effectiveUID == 0 {
 		return nil
 	}
@@ -2502,22 +2527,12 @@ func (cli *CLI) prepareNetworkManagerPrivileges(ctx context.Context, diagnostics
 	default:
 		return fmt.Errorf("inspect NetworkManager before host network check: unexpected state %q", state)
 	}
-	if cli.sudoAvailableWithoutPrompt(ctx) {
-		return nil
-	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("authorize the NetworkManager safety check: %w", err)
-	}
-	fmt.Fprintln(diagnostics, "  [ .. ] authorizing the NetworkManager safety check")
-	command := exec.CommandContext(ctx, "sudo", "-v")
-	command.Env = environmentList(cli.env, nil)
-	command.Stdin = cli.options.Stdin
-	command.Stdout = cli.options.Stdout
-	command.Stderr = cli.options.Stderr
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("authorize the NetworkManager safety check: %w", err)
-	}
-	return nil
+	return cli.prepareSudoPrivileges(ctx, diagnostics, effectiveUID, operation)
+}
+
+func terminalStream(stream any) bool {
+	file, ok := stream.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
 }
 
 func (cli *CLI) globalQuery(arguments []string) (int, bool) {

@@ -148,7 +148,7 @@ reset_case
 : > "$MOCK_SUDO_AUTH"
 SUBYARD_SUDO_PREAUTHORIZED=1 power_nm_prepare_reader \
   || fail "preauthorized adapter did not accept cached sudo credentials"
-grep -Fxq -- '-n -v' "$MOCK_SUDO_LOG" \
+grep -Fxq -- '-n true' "$MOCK_SUDO_LOG" \
   || fail "preauthorized adapter attempted an interactive sudo prompt"
 
 reset_case

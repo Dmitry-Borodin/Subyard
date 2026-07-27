@@ -169,7 +169,7 @@ for entry in ${u_mounts[@]+"${u_mounts[@]}"}; do
   IFS=: read -r mn mp mro mmode <<<"$entry"
   [ -n "$mn" ] && [ -n "$mp" ] || { warn "bad YARD_MOUNTS entry '$entry' — skipping"; continue; }
   dev="yx-$mn"; src="$HOST_BASE/$mn"
-  sudo install -d -m "${mmode:-0755}" -o "$DEV_UID" -g "$DEV_UID" "$src"
+  host_sudo install -d -m "${mmode:-0755}" -o "$DEV_UID" -g "$DEV_UID" "$src"
   want_ro=0; [ "$mro" = ro ] && want_ro=1
   want_shift=false; [ "$SHIFT_MODE" = shift ] && want_shift=true
   if device_exists "$dev"; then

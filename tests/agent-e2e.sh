@@ -46,10 +46,15 @@ expected_scope_snapshot="$(printf '%s\n%s\n' \
 if "$ROOT/dev/agent-e2e.sh" --yard '../unsafe' --prepare >/dev/null 2>&1; then
   fail "agent runner accepted an unsafe yard selector"
 fi
+if "$ROOT/dev/agent-e2e.sh" --slot 0 --prepare >/dev/null 2>&1; then
+  fail "agent runner accepted an invalid exact slot"
+fi
 
 fixture="$TMP/worktree"
 mkdir -p "$fixture/private" "$fixture/temp"
 git -C "$fixture" init -q
+git -C "$fixture" remote add origin \
+  'https://token:private-value@github.com/Subyard/Attribution.git?access=private-value'
 printf 'private/\ntemp/\nignored.secret\n' > "$fixture/.gitignore"
 printf 'tracked\n' > "$fixture/tracked.txt"
 printf 'removed\n' > "$fixture/removed.txt"
@@ -60,6 +65,63 @@ printf 'temp\n' > "$fixture/temp/cache.txt"
 git -C "$fixture" add .gitignore tracked.txt removed.txt
 printf 'changed\n' >> "$fixture/tracked.txt"
 rm "$fixture/removed.txt"
+
+project_label="$(derive_project_label "$fixture")"
+[ "$project_label" = Subyard/Attribution ] \
+  || fail "safe project label was not derived from origin: $project_label"
+case "$project_label" in *token* | *private-value*) fail "project label disclosed Git credentials" ;; esac
+for remote_case in \
+  'git@github.com:Subyard/Attribution.git' \
+  'ssh://git@github.com/Subyard/Attribution.git'; do
+  git -C "$fixture" remote set-url origin "$remote_case"
+  [ "$(derive_project_label "$fixture")" = Subyard/Attribution ] \
+    || fail "safe project label was not derived from $remote_case"
+done
+git -C "$fixture" remote remove origin
+[[ "$(derive_project_label "$fixture")" =~ ^local-[0-9a-f]{8}$ ]] \
+  || fail "repo without origin did not receive an opaque local project label"
+SUBYARD_E2E_PROJECT_LABEL="$(printf ' unsafe\tproject/with unicode \342\230\203')"
+[ "$(derive_project_label "$fixture")" = unsafe-project/with-unicode ] \
+  || fail "unsafe project override was not normalized"
+unset SUBYARD_E2E_PROJECT_LABEL
+checkout_id="$(ensure_checkout_id "$fixture")"
+[ "$(ensure_checkout_id "$fixture")" = "$checkout_id" ] \
+  || fail "checkout identity was not stable"
+other_checkout="$TMP/other-checkout"
+mkdir -p "$other_checkout"
+git -C "$other_checkout" init -q
+[ "$(ensure_checkout_id "$other_checkout")" != "$checkout_id" ] \
+  || fail "different worktrees received the same checkout identity"
+run_a="$(new_run_id)"
+run_b="$(new_run_id)"
+[[ "$run_a" =~ ^[0-9a-f]{8}$ && "$run_b" =~ ^[0-9a-f]{8}$ && "$run_a" != "$run_b" ]] \
+  || fail "per-acquire run identities are invalid or reused"
+[ "$(derive_purpose run '' bash dev/e2e/release-migration-catch-up.sh auto)" = \
+    release-migration-catch-up ] \
+  || fail "runner did not derive a bounded script purpose"
+[ "$(derive_purpose ssh 'manual diagnostic')" = manual-diagnostic ] \
+  || fail "explicit purpose was not normalized"
+LEASE_PROJECT=Subyard/Attribution
+LEASE_CHECKOUT="$checkout_id"
+LEASE_RUN="$run_a"
+LEASE_PURPOSE=contract-tests
+lease_request="$(lease_acquire_request client SHA256:key ssh-ed25519 keyblob)"
+[ "$lease_request" = \
+    "acquire client SHA256:key Subyard/Attribution@$checkout_id#$run_a contract-tests ssh-ed25519 keyblob" ] \
+  || fail "runner did not carry attribution through the compatible acquire protocol"
+LEASE_REQUESTED_SLOT='slot-002'
+exact_request="$(lease_acquire_request client SHA256:key ssh-ed25519 keyblob)"
+[ "$exact_request" = \
+  "acquire client SHA256:key Subyard/Attribution@$checkout_id#$run_a contract-tests ssh-ed25519 keyblob slot-002" ] \
+  || fail "runner did not retain the existing exact-slot acquire protocol"
+LEASE_SLOT='slot-002'
+lease_grant_matches_request || fail "matching exact-slot grant was rejected"
+LEASE_SLOT='slot-001'
+if lease_grant_matches_request; then
+  fail "mismatched exact-slot grant was accepted before transport"
+fi
+LEASE_REQUESTED_SLOT=
+LEASE_SLOT=
 
 bundle="$TMP/worktree.tar.gz"
 build_bundle "$fixture" "$bundle"
@@ -89,6 +151,11 @@ write_guest_command 2 "$command_root" sh -c \
   'test "$SUBYARD_E2E_VM" = 2 && test "$1" = "argument with spaces"' fixture 'argument with spaces' \
   > "$TMP/run.sh"
 bash "$TMP/run.sh" || fail "guest command did not preserve its argv or VM selector"
+grep -Fxq 'export SUBYARD_E2E_PROJECT=Subyard/Attribution' "$TMP/run.sh" \
+  && grep -Fxq "export SUBYARD_E2E_CHECKOUT=$checkout_id" "$TMP/run.sh" \
+  && grep -Fxq "export SUBYARD_E2E_RUN_ID=$run_a" "$TMP/run.sh" \
+  && grep -Fxq 'export SUBYARD_E2E_PURPOSE=contract-tests' "$TMP/run.sh" \
+  || fail "guest command omitted public lease context"
 write_guest_command 1 "$command_root" ./bin/yard --version > "$TMP/yard-run.sh"
 grep -Fxq './dev/build-engine.sh' "$TMP/yard-run.sh" \
   || fail "direct guest yard command does not build its explicit development engine"
@@ -154,17 +221,9 @@ grep -Fq '"$candidate_yard" _migrate finalize' \
   && ! grep -Fq '_migrate-test-yard' "$ROOT/dev/bootstrap-runtime.sh" \
   || fail "source bootstrap does not use the generic ordered migration lifecycle"
 
- ensure_identity
+ensure_identity
 lease_blob="$(awk '{print $2}' "$IDENTITY.pub")"
-REQUESTED_SLOT=slot-002
-[ "$(lease_acquire_command client SHA256:key checkout tests ssh-ed25519 "$lease_blob")" = \
-  "acquire client SHA256:key checkout tests ssh-ed25519 $lease_blob slot-002" ] \
-  || fail "exact slot selector was not passed through the acquire command"
 lease_response="$(printf '{"schema_version":1,"status":"ok","grant":{"slot_id":"slot-001","lease_id":"aabb","capability":"ccdd","lease_epoch":3,"data_user":"subyard-e2e-slot-1","targets":[{"selector":1,"name":"e2e-vm-1","address":"10.42.1.11","host_key_type":"ssh-ed25519","host_key_blob":"%s"},{"selector":2,"name":"e2e-vm-2","address":"10.42.1.12","host_key_type":"ssh-ed25519","host_key_blob":"%s"}]}}' "$lease_blob" "$lease_blob")"
-if (parse_lease_grant "$lease_response") >/dev/null 2>&1; then
-  fail "lease grant for a different broker slot was accepted"
-fi
-REQUESTED_SLOT=slot-001
 parse_lease_grant "$lease_response" \
   || fail "valid lease grant was rejected"
 [ "$LEASE_SLOT" = slot-001 ] && [ "$DATA_USER" = subyard-e2e-slot-1 ] \
@@ -173,10 +232,19 @@ parse_lease_grant "$lease_response" \
 if (parse_lease_grant '{"status":"ok","grant":{"capability":"secret"}}') >/dev/null 2>&1; then
   fail "incomplete lease grant was accepted"
 fi
-REQUESTED_SLOT=''
-[ "$(lease_acquire_command client SHA256:key checkout tests ssh-ed25519 "$lease_blob")" = \
-  "acquire client SHA256:key checkout tests ssh-ed25519 $lease_blob" ] \
-  || fail "automatic acquire command changed when no slot was requested"
+LEASE_PROJECT=Subyard/Attribution
+LEASE_CHECKOUT='checkout-a'
+LEASE_RUN='run-a'
+LEASE_PURPOSE=contract-tests
+structured_response="$(printf '{"schema_version":1,"status":"ok","grant":{"slot_id":"slot-002","lease_id":"eeff","capability":"1122","lease_epoch":4,"context":{"schema_version":1,"project":"Subyard/Attribution","checkout":"checkout-a","run":"run-a","purpose":"contract-tests"},"data_user":"subyard-e2e-slot-2","targets":[{"selector":1,"name":"e2e-vm-1","address":"10.42.2.11","host_key_type":"ssh-ed25519","host_key_blob":"%s"},{"selector":2,"name":"e2e-vm-2","address":"10.42.2.12","host_key_type":"ssh-ed25519","host_key_blob":"%s"}]}}' "$lease_blob" "$lease_blob")"
+parse_lease_grant "$structured_response" \
+  || fail "structured lease grant was rejected"
+[ "$LEASE_SLOT" = slot-002 ] \
+  || fail "structured lease context was lost"
+changed_context="$(jq -c '.grant.context.project = "Foreign/Project"' <<<"$structured_response")"
+if (parse_lease_grant "$changed_context") >/dev/null 2>&1; then
+  fail "facade attribution mismatch was accepted"
+fi
 ensure_identity
 BASTION_HOSTNAME=127.0.0.1
 BASTION_PORT=2223
@@ -234,6 +302,20 @@ resolve_bastion_route
 [ "$BASTION_KNOWN_HOSTS" = "$route_registry/test-yard/current/known_hosts" ] \
   || fail "product-owned bastion route lost its pinned host key"
 
+status_fixture='{"schema_version":1,"status":"ok","pool":{"schema_version":1,"resource_type":"agent-e2e","resource_id":"test-vms","slots":[{"slot_id":"slot-001","resource_generation":1,"lease_epoch":3,"state":"held","project":"Subyard/Attribution","checkout":"checkout-a","run":"run-a","purpose":"contract-tests","acquired_at":"2026-07-26T20:00:00Z","expires_at":"2026-07-26T20:20:00Z"},{"slot_id":"slot-002","resource_generation":1,"lease_epoch":2,"state":"available"},{"slot_id":"slot-003","resource_generation":1,"lease_epoch":0,"state":"available","acquired_at":"0001-01-01T00:00:00Z","expires_at":"0001-01-01T00:00:00Z"}]}}'
+rendered_status="$(render_pool_status "$status_fixture")"
+printf '%s\n' "$rendered_status" | grep -Fq 'SLOT     STATE' \
+  && printf '%s\n' "$rendered_status" | grep -Fq 'Subyard/Attribution' \
+  || fail "human pool status omitted active-holder attribution"
+! printf '%s\n' "$rendered_status" | grep -Fq '0001-01-01' \
+  || fail "human pool status exposed zero timestamps"
+long_project=project/abcdefghijklmnopqrstuvwxyz0123456789
+long_status="$(jq -c --arg project "$long_project" \
+  '.pool.slots[0].project = $project' <<<"$status_fixture")"
+long_rendered_status="$(render_pool_status "$long_status")"
+grep -Fq "$long_project" <<<"$long_rendered_status" \
+  || fail "human pool status truncated an attribution identifier"
+
 # Model direct guest SSH and cleanup locally.
 guest() {
   shift
@@ -285,6 +367,11 @@ grep -Fq 'RENAME_BASE_REVISION=' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not install the real pre-rename runtime"
 grep -Fq 'write_owner_registration e2e-yard e2e-vms' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not exercise the retired registration"
+grep -Fq 'OWNER_DIAGNOSTIC_VM_MEMORY="${P0_E2E_DIAGNOSTIC_VM_MEMORY:-700MiB}"' \
+  "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'E2E_VM_MEMORY=%s' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq ': "${E2E_VM_MEMORY:=4GiB}"' "$ROOT/scripts/e2e-lab/provision.sh" \
+  || fail "P0 memory limit is not diagnostic-only or changed the production default"
 grep -Fq 'runtime activation retained the old e2e-yard registration' \
   "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not verify automatic retirement of the old yard"

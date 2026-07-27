@@ -38,9 +38,10 @@ func (runtime *Runtime) AcquireSlot(
 	if err := child.provisionPair(ctx); err != nil {
 		return grant, err
 	}
-	if err := store.MarkHeld(grant); err != nil {
-		_ = child.stopRetained(ctx)
-		return grant, err
+	for selector := 1; selector <= 2; selector++ {
+		if err := child.installLeaseContext(ctx, child.Config.vm(selector), grant); err != nil {
+			return grant, err
+		}
 	}
 	grant.DataUser = child.Config.AgentUser
 	for selector := 1; selector <= 2; selector++ {
@@ -61,6 +62,13 @@ func (runtime *Runtime) AcquireSlot(
 			Selector: selector, Name: vm, Address: address,
 			HostKeyType: keyType, HostKeyBlob: keyBlob,
 		})
+	}
+	if err := child.enableAgentAccess(ctx); err != nil {
+		return grant, err
+	}
+	if err := store.MarkHeld(grant); err != nil {
+		_ = child.stopRetained(ctx)
+		return grant, err
 	}
 	return grant, nil
 }

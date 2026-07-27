@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "minimumLayout": 1,
-  "currentLayout": 3,
+  "currentLayout": 2,
   "migrations": [
     {
       "id": "migrate-test-yard-owner",
@@ -18,20 +18,6 @@
         {
           "id": "test-yard-route-consumers",
           "kind": "test-yard-route-consumers-v1"
-        }
-      ]
-    },
-    {
-      "id": "refresh-test-vm-broker",
-      "fromLayout": 2,
-      "toLayout": 3,
-      "resources": ["test-vm-broker-runtime"],
-      "finalizePolicy": "ordered-after-active-verify",
-      "rollbackPolicy": "reverse-before-runtime-swap",
-      "operations": [
-        {
-          "id": "test-vm-broker-runtime",
-          "kind": "test-vm-broker-runtime-v1"
         }
       ]
     }

@@ -3,6 +3,7 @@ package testvmsruntime
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,28 +15,51 @@ func TestFacadeContractAndRedaction(t *testing.T) {
 	var output bytes.Buffer
 	facade := Facade{Store: store, Output: &output}
 	key := strings.Fields(fixturePublicKey(t))
-	if err := facade.Run("acquire client SHA256:key checkout tests " + key[0] + " " + key[1]); err != nil {
+	command := "acquire client SHA256:key Subyard/Subyard@checkout-a#run-a tests " +
+		key[0] + " " + key[1]
+	if err := facade.Run(command); err != nil {
 		t.Fatal(err)
 	}
 	var acquired facadeResponse
 	if err := json.Unmarshal(output.Bytes(), &acquired); err != nil {
 		t.Fatal(err)
 	}
-	if acquired.Grant == nil || acquired.Grant.Capability == "" {
-		t.Fatalf("missing grant: %#v", acquired)
+	if acquired.Grant == nil || acquired.Grant.Capability == "" ||
+		acquired.Grant.Context == nil ||
+		acquired.Grant.Context.Project != "Subyard/Subyard" ||
+		acquired.Grant.Context.Checkout != "checkout-a" ||
+		acquired.Grant.Context.Run != "run-a" ||
+		acquired.Grant.Context.Purpose != "tests" {
+		t.Fatalf("missing attributed grant: %#v", acquired)
+	}
+	if err := store.Quarantine(
+		*acquired.Grant, errors.New("fixture failed at /home/dev/private"),
+	); err != nil {
+		t.Fatal(err)
 	}
 	output.Reset()
 	if err := facade.Run("status"); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), acquired.Grant.Capability) ||
-		strings.Contains(output.String(), acquired.Grant.LeaseID) ||
-		strings.Contains(output.String(), "client") ||
-		strings.Contains(output.String(), "SHA256:key") {
-		t.Fatal("status disclosed lease credentials")
+	status := output.String()
+	for _, secret := range []string{
+		acquired.Grant.Capability, acquired.Grant.LeaseID, "client",
+		"SHA256:key", "/home/dev/private",
+	} {
+		if strings.Contains(status, secret) {
+			t.Fatalf("status disclosed %q: %s", secret, status)
+		}
+	}
+	for _, attribution := range []string{
+		`"project":"Subyard/Subyard"`, `"checkout":"checkout-a"`,
+		`"run":"run-a"`, `"purpose":"tests"`,
+	} {
+		if !strings.Contains(status, attribution) {
+			t.Fatalf("status omitted %s: %s", attribution, status)
+		}
 	}
 	output.Reset()
-	if err := facade.Run("acquire second SHA256:key checkout tests " + key[0] + " " + key[1]); err != nil {
+	if err := facade.Run(command); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `"code":"busy"`) {
@@ -144,8 +168,9 @@ func TestFacadeReleaseReplayAndWrongCredentialsReturnLeaseLost(t *testing.T) {
 
 func TestFacadeRejectsUnboundedInput(t *testing.T) {
 	var output bytes.Buffer
+	path := filepath.Join(t.TempDir(), "leases.json")
 	facade := Facade{
-		Store:  LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 1},
+		Store:  LeaseStore{Path: path, SlotCount: 1},
 		Output: &output,
 	}
 	if err := facade.Run("status arbitrary"); err != nil {
@@ -153,5 +178,15 @@ func TestFacadeRejectsUnboundedInput(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), `"code":"invalid_request"`) {
 		t.Fatalf("response=%s", output.String())
+	}
+	output.Reset()
+	key := strings.Fields(fixturePublicKey(t))
+	if err := facade.Run(
+		"acquire client SHA256:key /home/dev/private tests " + key[0] + " " + key[1],
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"code":"invalid_request"`) {
+		t.Fatalf("private-path response=%s", output.String())
 	}
 }

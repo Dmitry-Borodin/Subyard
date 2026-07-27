@@ -122,8 +122,14 @@ func CommitRouteConsumers(ctx context.Context, options Options, before string) e
 	} else if !routeReady {
 		return errors.New("test-yard init did not publish the canonical route")
 	}
-	if err := validateCurrentRouteIdentity(ctx, options); err != nil {
+	yards, err = inspectManagedYards(ctx, options)
+	if err != nil {
 		return err
+	}
+	if managedYardRunning(yards, CurrentYard) {
+		if err := validateCurrentRouteIdentity(ctx, options); err != nil {
+			return err
+		}
 	}
 	if err := validateRouteSource(options); err != nil {
 		return err
@@ -301,8 +307,10 @@ func verifyRouteConsumers(
 	if !hasManagedYard(yards, CurrentYard) {
 		return errors.New("canonical test-yard instance is absent from the managed yard inventory")
 	}
-	if err := validateCurrentRouteIdentity(ctx, options); err != nil {
-		return err
+	if managedYardRunning(yards, CurrentYard) {
+		if err := validateCurrentRouteIdentity(ctx, options); err != nil {
+			return err
+		}
 	}
 	if exact {
 		if err := validatePreparedSet(prepared.Consumers, nonOwnerYards(yards), true); err != nil {
@@ -378,6 +386,15 @@ func validateCommitInventory(
 		return fmt.Errorf("route consumer inventory changed before commit: %w", err)
 	}
 	return nil
+}
+
+func managedYardRunning(yards []managedYard, name string) bool {
+	for _, yard := range yards {
+		if yard.Yard == name {
+			return strings.EqualFold(yard.Status, "running")
+		}
+	}
+	return false
 }
 
 func validatePreparedSet(

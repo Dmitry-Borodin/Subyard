@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	LeaseSchemaVersion = 1
-	LeaseTTL           = 10 * time.Minute
+	LeaseSchemaVersion            = 1
+	LeaseAttributionSchemaVersion = 1
+	LeaseTTL                      = 10 * time.Minute
 )
 
 var (
@@ -45,6 +46,9 @@ type LeaseSlot struct {
 	ClientID              string    `json:"client_id,omitempty"`
 	ControllerFingerprint string    `json:"controller_fingerprint,omitempty"`
 	DisplayLabel          string    `json:"display_label,omitempty"`
+	Project               string    `json:"project,omitempty"`
+	Checkout              string    `json:"checkout,omitempty"`
+	Run                   string    `json:"run,omitempty"`
 	Purpose               string    `json:"purpose,omitempty"`
 	LeaseID               string    `json:"lease_id,omitempty"`
 	CapabilityHash        string    `json:"capability_hash,omitempty"`
@@ -69,8 +73,17 @@ type LeaseGrant struct {
 	Capability string        `json:"capability"`
 	LeaseEpoch uint64        `json:"lease_epoch"`
 	ExpiresAt  time.Time     `json:"expires_at"`
+	Context    *LeaseContext `json:"context,omitempty"`
 	DataUser   string        `json:"data_user,omitempty"`
 	Targets    []LeaseTarget `json:"targets,omitempty"`
+}
+
+type LeaseContext struct {
+	SchemaVersion int    `json:"schema_version"`
+	Project       string `json:"project"`
+	Checkout      string `json:"checkout"`
+	Run           string `json:"run"`
+	Purpose       string `json:"purpose"`
 }
 
 type LeaseTarget struct {
@@ -105,7 +118,8 @@ func (store LeaseStore) Status() (LeasePool, error) {
 }
 
 func (store LeaseStore) Acquire(clientID, fingerprint, label, purpose string) (LeaseGrant, error) {
-	return store.acquire(clientID, fingerprint, label, purpose, "")
+	context := legacyLeaseContext(label, purpose)
+	return store.acquire(clientID, fingerprint, label, purpose, context, "")
 }
 
 func (store LeaseStore) AcquireSlot(
@@ -115,11 +129,13 @@ func (store LeaseStore) AcquireSlot(
 	if err != nil || slotID != fmt.Sprintf("slot-%03d", number) {
 		return LeaseGrant{}, fmt.Errorf("invalid slot id %q", slotID)
 	}
-	return store.acquire(clientID, fingerprint, label, purpose, slotID)
+	context := legacyLeaseContext(label, purpose)
+	return store.acquire(clientID, fingerprint, label, purpose, context, slotID)
 }
 
 func (store LeaseStore) acquire(
-	clientID, fingerprint, label, purpose, requestedSlot string,
+	clientID, fingerprint, label, purpose string, context *LeaseContext,
+	requestedSlot string,
 ) (LeaseGrant, error) {
 	if !safeLeaseText(clientID, 96) || clientID == "" {
 		return LeaseGrant{}, errors.New("invalid client_id")
@@ -128,6 +144,10 @@ func (store LeaseStore) acquire(
 		return LeaseGrant{}, errors.New("invalid controller fingerprint")
 	}
 	if !safeLeaseText(label, 80) || !safeLeaseText(purpose, 160) {
+		return LeaseGrant{}, errors.New("invalid display metadata")
+	}
+	if (label != "" && context == nil && !safeLeaseLabel(label, 80)) ||
+		(purpose != "" && !safeLeaseLabel(purpose, 80)) {
 		return LeaseGrant{}, errors.New("invalid display metadata")
 	}
 	var grant LeaseGrant
@@ -158,6 +178,11 @@ func (store LeaseStore) acquire(
 			slot.ClientID = clientID
 			slot.ControllerFingerprint = fingerprint
 			slot.DisplayLabel = label
+			if context != nil {
+				slot.Project = context.Project
+				slot.Checkout = context.Checkout
+				slot.Run = context.Run
+			}
 			slot.Purpose = purpose
 			slot.LeaseID = leaseID
 			slot.CapabilityHash = capabilityDigest(capability)
@@ -169,6 +194,10 @@ func (store LeaseStore) acquire(
 			grant = LeaseGrant{
 				SlotID: slot.SlotID, LeaseID: leaseID, Capability: capability,
 				LeaseEpoch: slot.LeaseEpoch, ExpiresAt: slot.ExpiresAt,
+			}
+			if context != nil {
+				current := *context
+				grant.Context = &current
 			}
 			return nil
 		}
@@ -549,6 +578,9 @@ func clearLease(slot *LeaseSlot) {
 	slot.ClientID = ""
 	slot.ControllerFingerprint = ""
 	slot.DisplayLabel = ""
+	slot.Project = ""
+	slot.Checkout = ""
+	slot.Run = ""
 	slot.Purpose = ""
 	slot.LeaseID = ""
 	slot.CapabilityHash = ""
@@ -558,6 +590,79 @@ func clearLease(slot *LeaseSlot) {
 	slot.LastHeartbeatAt = time.Time{}
 	slot.ExpiresAt = time.Time{}
 	slot.FailureReason = ""
+}
+
+func legacyLeaseContext(label, purpose string) *LeaseContext {
+	hash := strings.LastIndex(label, "#")
+	at := strings.LastIndex(label, "@")
+	if at <= 0 || hash <= at+1 || hash == len(label)-1 {
+		return nil
+	}
+	context := LeaseContext{
+		SchemaVersion: LeaseAttributionSchemaVersion,
+		Project:       label[:at],
+		Checkout:      label[at+1 : hash],
+		Run:           label[hash+1:],
+		Purpose:       purpose,
+	}
+	if validateLeaseContext(context) != nil {
+		return nil
+	}
+	return &context
+}
+
+func validateLeaseContext(context LeaseContext) error {
+	if context.SchemaVersion != LeaseAttributionSchemaVersion {
+		return errors.New("unsupported lease attribution schema")
+	}
+	for _, field := range []struct {
+		name    string
+		value   string
+		maximum int
+	}{
+		{name: "project", value: context.Project, maximum: 48},
+		{name: "checkout", value: context.Checkout, maximum: 24},
+		{name: "run", value: context.Run, maximum: 24},
+		{name: "purpose", value: context.Purpose, maximum: 80},
+	} {
+		if !safeLeaseLabel(field.value, field.maximum) {
+			return fmt.Errorf("invalid lease attribution %s", field.name)
+		}
+	}
+	if !safeLeaseText(contextDisplayLabel(context), 80) {
+		return errors.New("lease attribution is too long")
+	}
+	return nil
+}
+
+func contextDisplayLabel(context LeaseContext) string {
+	return context.Project + "@" + context.Checkout + "#" + context.Run
+}
+
+func safeLeaseLabel(value string, maximum int) bool {
+	if value == "" || len(value) > maximum {
+		return false
+	}
+	if strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") ||
+		strings.Contains(value, "//") {
+		return false
+	}
+	for _, component := range strings.Split(value, "/") {
+		if component == "." || component == ".." {
+			return false
+		}
+	}
+	for _, character := range value {
+		switch {
+		case character >= 'a' && character <= 'z':
+		case character >= 'A' && character <= 'Z':
+		case character >= '0' && character <= '9':
+		case strings.ContainsRune("._/+-:", character):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func randomToken(bytes int) (string, error) {

@@ -414,19 +414,29 @@ func TestRegistryRejectsNonContiguousAndUnsafeDefinitions(t *testing.T) {
 	}
 }
 
-func TestShippedRegistryOrdersOwnerBeforeRouteConsumers(t *testing.T) {
+func TestShippedRegistryOrdersOwnerConsumersThenBrokerRefresh(t *testing.T) {
 	registry, err := LoadRegistry(filepath.Join("..", "..", "config", "migrations.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(registry.Migrations) != 1 {
-		t.Fatalf("shipped migration count = %d, want 1", len(registry.Migrations))
+	if len(registry.Migrations) != 2 || registry.CurrentLayout != 3 {
+		t.Fatalf(
+			"shipped registry layout=%d migrations=%d, want layout 3 with 2 migrations",
+			registry.CurrentLayout,
+			len(registry.Migrations),
+		)
 	}
 	operations := registry.Migrations[0].Operations
 	if len(operations) != 2 ||
 		operations[0].Kind != OperationKindTestYardOwnerV1 ||
 		operations[1].Kind != OperationKindTestYardRouteConsumersV1 {
 		t.Fatalf("shipped operation order = %#v", operations)
+	}
+	broker := registry.Migrations[1]
+	if broker.FromLayout != 2 || broker.ToLayout != 3 ||
+		len(broker.Operations) != 1 ||
+		broker.Operations[0].Kind != OperationKindTestVMBrokerRuntimeV1 {
+		t.Fatalf("shipped broker migration = %#v", broker)
 	}
 }
 

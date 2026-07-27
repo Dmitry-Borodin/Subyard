@@ -260,7 +260,9 @@ fi
 typed_base_artifact="$("$ROOT/dev/package-engine.sh" --output-dir "$release" \
   --version 1.0.0-typed-base --runtime-installer "$legacy_031_installer" \
   --migration-registry "$ROOT/tests/fixtures/migrations/layout-1.json")"
-typed_artifact="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.0.1-test)"
+typed_artifact="$("$ROOT/dev/package-engine.sh" --output-dir "$release" \
+  --version 1.0.1-test \
+  --migration-registry "$ROOT/tests/fixtures/migrations/layout-2-production.json")"
 jq -e '.version == "1.0.1-test" and .migrationSchema == 1 and
   .minimumConfigLayout == 1 and .configLayout == 2' \
   "$typed_artifact.manifest.json" >/dev/null \

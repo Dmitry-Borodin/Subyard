@@ -30,6 +30,9 @@ func prepareTypedOperation(
 		return string(state), err
 	case OperationKindTestYardRouteConsumersV1:
 		return testyardmigration.PrepareRouteConsumers(ctx, testYardOptions(options))
+	case OperationKindTestVMBrokerRuntimeV1:
+		state, err := testyardmigration.PrepareBrokerRuntime(ctx, testYardOptions(options))
+		return string(state), err
 	default:
 		return "", fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
 	}
@@ -54,6 +57,12 @@ func commitTypedOperation(
 			testYardOptions(options),
 			before,
 		)
+	case OperationKindTestVMBrokerRuntimeV1:
+		return testyardmigration.CommitBrokerRuntime(
+			ctx,
+			testYardOptions(options),
+			testyardmigration.BrokerRuntimeState(before),
+		)
 	default:
 		return fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
 	}
@@ -76,6 +85,12 @@ func verifyTypedOperation(
 			ctx,
 			testYardOptions(options),
 			before,
+		)
+	case OperationKindTestVMBrokerRuntimeV1:
+		return testyardmigration.VerifyBrokerRuntime(
+			ctx,
+			testYardOptions(options),
+			testyardmigration.BrokerRuntimeState(before),
 		)
 	default:
 		return fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
@@ -107,6 +122,12 @@ func rollbackTypedOperation(
 			ctx,
 			testYardOptions(options),
 			before,
+		)
+	case OperationKindTestVMBrokerRuntimeV1:
+		return testyardmigration.RollbackBrokerRuntime(
+			ctx,
+			testYardOptions(options),
+			testyardmigration.BrokerRuntimeState(before),
 		)
 	default:
 		return fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
@@ -172,6 +193,15 @@ func reprepareTypedOperation(
 			return "", false, err
 		}
 		return current, true, nil
+	case OperationKindTestVMBrokerRuntimeV1:
+		current, err := testyardmigration.PrepareBrokerRuntime(
+			ctx,
+			testYardOptions(options),
+		)
+		if err != nil {
+			return "", false, err
+		}
+		return string(current), true, nil
 	default:
 		return "", false, fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
 	}
@@ -195,13 +225,15 @@ func testYardOptions(options ReleaseOptions) testyardmigration.Options {
 		stderr = io.Discard
 	}
 	return testyardmigration.Options{
-		Executable:  executable,
-		Incus:       options.Incus,
-		ConfigHome:  options.ConfigHome,
-		DataHome:    options.DataHome,
-		Environment: environment,
-		Stdout:      diagnostics,
-		Stderr:      stderr,
+		Executable:     executable,
+		RepositoryRoot: options.RepositoryRoot,
+		RuntimeRoot:    options.RuntimeRoot,
+		Incus:          options.Incus,
+		ConfigHome:     options.ConfigHome,
+		DataHome:       options.DataHome,
+		Environment:    environment,
+		Stdout:         diagnostics,
+		Stderr:         stderr,
 	}
 }
 
@@ -229,6 +261,15 @@ func validateOperationState(operation transactionOperation) error {
 		}
 	case OperationKindTestYardRouteConsumersV1:
 		if err := testyardmigration.ValidateRouteConsumersState(operation.Before); err != nil {
+			return fmt.Errorf(
+				"typed migration operation has invalid prepared state: %w",
+				err,
+			)
+		}
+	case OperationKindTestVMBrokerRuntimeV1:
+		if err := testyardmigration.ValidateBrokerRuntimeState(
+			testyardmigration.BrokerRuntimeState(operation.Before),
+		); err != nil {
 			return fmt.Errorf(
 				"typed migration operation has invalid prepared state: %w",
 				err,

@@ -25,11 +25,15 @@ GUEST_IDENTITY=""
 GUEST_USER=root
 DATA_USER=""
 LEASE_SLOT=""
-REQUESTED_SLOT=""
 LEASE_ID=""
 LEASE_EPOCH=""
 LEASE_CAPABILITY=""
 LEASE_KEEPER_PID=""
+LEASE_PROJECT=""
+LEASE_CHECKOUT=""
+LEASE_RUN=""
+LEASE_PURPOSE=""
+LEASE_REQUESTED_SLOT=""
 WAIT_SECONDS=0
 declare -A GUEST_DIRS=()
 declare -A VM_IP=()
@@ -56,11 +60,10 @@ usage() {
   cat <<'EOF'
 Usage:
   dev/agent-e2e.sh [--yard NAME] --prepare
-  dev/agent-e2e.sh [--yard NAME] --status
-  dev/agent-e2e.sh [--yard NAME] [--slot N] [--wait DURATION] [--vm 1|2|both] -- COMMAND [ARG...]
-  dev/agent-e2e.sh [--yard NAME] [--slot N] [--vm 1|2|both] -- COMMAND [ARG...]
-  dev/agent-e2e.sh [--yard NAME] [--slot N] --ssh 1|2 [-- COMMAND [ARG...]]
-  dev/agent-e2e.sh [--yard NAME] [--slot N] --ssh-stdin 1|2 -- COMMAND [ARG...]
+  dev/agent-e2e.sh [--yard NAME] --status [--json]
+  dev/agent-e2e.sh [--yard NAME] [--slot N] [--wait DURATION] [--purpose LABEL] [--vm 1|2|both] -- COMMAND [ARG...]
+  dev/agent-e2e.sh [--yard NAME] [--slot N] [--purpose LABEL] --ssh 1|2 [-- COMMAND [ARG...]]
+  dev/agent-e2e.sh [--yard NAME] [--slot N] [--purpose LABEL] --ssh-stdin 1|2 -- COMMAND [ARG...]
   dev/agent-e2e.sh [--yard NAME] [--slot N] --verify-boundary
 
 The normal form copies the current tracked, dirty and non-ignored public worktree to each selected
@@ -75,9 +78,10 @@ accepts standard controller keys through the bounded forced-command facade. Ever
 separate ephemeral guest key.
 
 The operator owns the outer test yard. Acquire creates or starts only the selected inner slot pair;
-release fences access and stops that pair without deleting its disks.
---slot N requires that exact broker slot and never falls back to another slot. Without it, acquire
-keeps selecting the first available slot.
+release fences access and stops that pair without deleting its disks. e2e-vm-1 and e2e-vm-2 are
+lease-relative selectors, not physical slot names. Every invocation acquires a new lease; use one
+script or one interactive SSH session when several steps must share mutable guest state. Optional
+--slot N atomically requests one broker slot and fails without falling back to another slot.
 EOF
 }
 
@@ -276,6 +280,127 @@ ensure_client_id() {
   printf '%s\n' "$value"
 }
 
+bounded_context_label() {
+  local raw="$1" maximum="$2" value digest keep
+  value="$(printf '%s' "$raw" | LC_ALL=C tr -cs 'A-Za-z0-9._/+-:' '-')"
+  value="${value#-}"
+  value="${value%-}"
+  [ -n "$value" ] || value=unknown
+  if [ "${#value}" -gt "$maximum" ]; then
+    digest="$(printf '%s' "$value" | sha256sum | awk '{print substr($1, 1, 8)}')"
+    keep=$((maximum - 9))
+    value="${value:0:keep}-$digest"
+  fi
+  printf '%s\n' "$value"
+}
+
+derive_project_label() {
+  local root="$1" remote="${SUBYARD_E2E_PROJECT_LABEL:-}" path owner repository
+  if [ -n "$remote" ]; then
+    bounded_context_label "$remote" 48
+    return
+  fi
+  remote="$(git -C "$root" config --get remote.origin.url 2>/dev/null || true)"
+  remote="${remote%%\?*}"
+  remote="${remote%%#*}"
+  case "$remote" in
+    *://*)
+      path="${remote#*://}"
+      case "$path" in */*) path="${path#*/}" ;; *) path='' ;; esac
+      ;;
+    *:*)
+      case "${remote%%:*}" in */* | '') path='' ;; *) path="${remote#*:}" ;; esac
+      ;;
+    *) path='' ;;
+  esac
+  path="${path#/}"
+  path="${path%/}"
+  path="${path%.git}"
+  repository="${path##*/}"
+  owner="${path%/*}"
+  owner="${owner##*/}"
+  if [ -n "$owner" ] && [ -n "$repository" ] && [ "$owner" != "$path" ]; then
+    bounded_context_label "$owner/$repository" 48
+    return
+  fi
+  path="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$root")"
+  printf 'local-%s\n' "$(printf '%s' "$path" | sha256sum | awk '{print substr($1, 1, 8)}')"
+}
+
+ensure_checkout_id() {
+  local root="$1" canonical digest directory path temp value
+  canonical="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" \
+    || die "cannot identify the E2E worktree"
+  digest="$(printf '%s' "$canonical" | sha256sum | awk '{print $1}')"
+  directory="$STATE_BASE/checkouts"
+  path="$directory/$digest"
+  umask 077
+  install -d -m 0700 "$directory"
+  if [ ! -r "$path" ]; then
+    value="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+    temp="$(mktemp "$directory/.checkout-id.XXXXXX")"
+    printf '%s\n' "$value" > "$temp"
+    chmod 0600 "$temp"
+    if ! ln "$temp" "$path" 2>/dev/null && [ ! -r "$path" ]; then
+      rm -f "$temp"
+      die "cannot persist E2E checkout identity"
+    fi
+    rm -f "$temp"
+  fi
+  read -r value < "$path"
+  [[ "$value" =~ ^[0-9a-f]{8}$ ]] || die "invalid persistent E2E checkout identity"
+  printf '%s\n' "$value"
+}
+
+new_run_id() {
+  od -An -N4 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+derive_purpose() {
+  local mode="$1" explicit="$2" argument candidate=''; shift 2
+  if [ -n "$explicit" ]; then
+    bounded_context_label "$explicit" 80
+    return
+  fi
+  case "$mode" in
+    verify) candidate=verify-boundary ;;
+    ssh)
+      if [ "$#" -eq 0 ]; then
+        candidate=ssh
+      fi
+      ;;
+  esac
+  if [ -z "$candidate" ]; then
+    for argument in "$@"; do
+      case "$argument" in
+        *.sh | */*)
+          candidate="${argument##*/}"
+          candidate="${candidate%.sh}"
+          break
+          ;;
+      esac
+    done
+  fi
+  if [ -z "$candidate" ] && [ "${1:-}" = go ] && [ "${2:-}" = test ]; then
+    candidate=go-test
+  fi
+  [ -n "$candidate" ] || candidate="${1:-agent-e2e}"
+  bounded_context_label "$candidate" 80
+}
+
+lease_acquire_request() {
+  local client="$1" fingerprint="$2" key_type="$3" key_blob="$4" label
+  label="$LEASE_PROJECT@$LEASE_CHECKOUT#$LEASE_RUN"
+  if [ -n "$LEASE_REQUESTED_SLOT" ]; then
+    printf 'acquire %s %s %s %s %s %s %s\n' \
+      "$client" "$fingerprint" "$label" "$LEASE_PURPOSE" \
+      "$key_type" "$key_blob" "$LEASE_REQUESTED_SLOT"
+    return
+  fi
+  printf 'acquire %s %s %s %s %s %s\n' \
+    "$client" "$fingerprint" "$label" "$LEASE_PURPOSE" "$key_type" "$key_blob"
+}
+
 facade_request() {
   local command="$1" bootstrap
   ensure_identity
@@ -290,8 +415,75 @@ facade_request() {
   return "$rc"
 }
 
+format_duration() {
+  local seconds="$1"
+  [ "$seconds" -ge 0 ] 2>/dev/null || seconds=0
+  if [ "$seconds" -ge 3600 ]; then
+    printf '%dh%02dm' "$((seconds / 3600))" "$(((seconds % 3600) / 60))"
+  elif [ "$seconds" -ge 60 ]; then
+    printf '%dm%02ds' "$((seconds / 60))" "$((seconds % 60))"
+  else
+    printf '%ds' "$seconds"
+  fi
+}
+
+render_pool_status() {
+  local response="$1" now slot state project checkout run purpose acquired expires reference
+  local reference_epoch age detail
+  now="$(date -u +%s)"
+  printf '%-8s %-12s %-32s %-10s %-10s %-24s %-8s %s\n' \
+    SLOT STATE PROJECT CHECKOUT RUN PURPOSE AGE EXPIRES
+  while IFS=$'\t' read -r slot state project checkout run purpose acquired expires; do
+    age=-
+    detail=-
+    if [ "$state" != available ]; then
+      reference="$acquired"
+      if [ "$reference" != "-" ]; then
+        reference_epoch="$(date -u -d "$reference" +%s 2>/dev/null || true)"
+        if [[ "$reference_epoch" =~ ^[0-9]+$ ]]; then
+          age="$(format_duration "$((now - reference_epoch))")"
+        fi
+      fi
+      if [ "$expires" != "-" ]; then
+        reference_epoch="$(date -u -d "$expires" +%s 2>/dev/null || true)"
+        if [[ "$reference_epoch" =~ ^[0-9]+$ ]]; then
+          detail="in $(format_duration "$((reference_epoch - now))")"
+        fi
+      fi
+    fi
+    printf '%-8s %-12s %-32s %-10s %-10s %-24s %-8s %s\n' \
+      "$slot" "$state" "$project" "$checkout" "$run" "$purpose" "$age" "$detail"
+  done < <(jq -r '
+    .pool.slots[] |
+    [
+      .slot_id, .state,
+      (if .state == "available" then "-" else (.project // .display_label // "-") end),
+      (if .state == "available" then "-" else (.checkout // "-") end),
+      (if .state == "available" then "-" else (.run // "-") end),
+      (if .state == "available" then "-" else (.purpose // "-") end),
+      (if (.acquired_at // "") | startswith("0001-") then "-"
+       else (.acquired_at // "-") end),
+      (if (.expires_at // "") | startswith("0001-") then "-"
+       else (.expires_at // "-") end)
+    ] | @tsv
+  ' <<<"$response")
+}
+
+report_busy_pool() {
+  local started="$1" response elapsed remaining
+  elapsed=$((SECONDS - started))
+  remaining=$((WAIT_SECONDS - elapsed))
+  [ "$remaining" -ge 0 ] || remaining=0
+  printf 'agent-e2e: pool busy; waited %s, deadline in %s, next retry in 5s\n' \
+    "$(format_duration "$elapsed")" "$(format_duration "$remaining")" >&2
+  if response="$(facade_request status 2>/dev/null)"; then
+    render_pool_status "$response" >&2 || true
+  fi
+}
+
 parse_lease_grant() {
   local response="$1" count selector name address key_type key_blob
+  local response_project response_checkout response_run response_purpose
   [ "$(jq -r '.status // empty' <<<"$response")" = ok ] || return 1
   LEASE_SLOT="$(jq -r '.grant.slot_id // empty' <<<"$response")"
   LEASE_ID="$(jq -r '.grant.lease_id // empty' <<<"$response")"
@@ -302,8 +494,17 @@ parse_lease_grant() {
   [[ "$LEASE_SLOT" =~ ^slot-[0-9]{3}$ && "$LEASE_ID" =~ ^[0-9a-f]+$ \
     && "$LEASE_EPOCH" =~ ^[1-9][0-9]*$ && "$LEASE_CAPABILITY" =~ ^[0-9a-f]+$ ]] \
     || die "facade returned invalid lease credentials"
-  [ -z "$REQUESTED_SLOT" ] || [ "$LEASE_SLOT" = "$REQUESTED_SLOT" ] \
-    || die "facade returned $LEASE_SLOT, requested $REQUESTED_SLOT"
+  response_project="$(jq -r '.grant.context.project // empty' <<<"$response")"
+  response_checkout="$(jq -r '.grant.context.checkout // empty' <<<"$response")"
+  response_run="$(jq -r '.grant.context.run // empty' <<<"$response")"
+  response_purpose="$(jq -r '.grant.context.purpose // empty' <<<"$response")"
+  if [ -n "$response_project$response_checkout$response_run$response_purpose" ]; then
+    [ "$response_project" = "$LEASE_PROJECT" ] \
+      && [ "$response_checkout" = "$LEASE_CHECKOUT" ] \
+      && [ "$response_run" = "$LEASE_RUN" ] \
+      && [ "$response_purpose" = "$LEASE_PURPOSE" ] \
+      || die "facade changed the requested lease attribution"
+  fi
   count="$(jq '.grant.targets | length' <<<"$response")"
   [ "$count" = 2 ] || die "facade returned an incomplete VM pair"
   VM_IP=(); VM_HOST_KEY=()
@@ -327,16 +528,12 @@ parse_lease_grant() {
   chmod 0600 "$GUEST_KNOWN_HOSTS"
 }
 
-lease_acquire_command() {
-  local client="$1" fingerprint="$2" label="$3" purpose="$4" type="$5" blob="$6"
-  printf 'acquire %s %s %s %s %s %s' \
-    "$client" "$fingerprint" "$label" "$purpose" "$type" "$blob"
-  [ -z "$REQUESTED_SLOT" ] || printf ' %s' "$REQUESTED_SLOT"
-  printf '\n'
+lease_grant_matches_request() {
+  [ -z "$LEASE_REQUESTED_SLOT" ] || [ "$LEASE_SLOT" = "$LEASE_REQUESTED_SLOT" ]
 }
 
 acquire_lease() {
-  local client fingerprint label=checkout purpose=agent-e2e type blob response code started
+  local client fingerprint type blob response code message started last_report request
   command -v jq >/dev/null 2>&1 || die "jq is required"
   [ -n "$LOCAL_TEMP" ] || die "lease temporary directory is not initialized"
   CLIENT_CONFIG="$LOCAL_TEMP/ssh_config"
@@ -347,20 +544,45 @@ acquire_lease() {
   read -r type blob _ < "$GUEST_IDENTITY.pub"
   client="$(ensure_client_id)"
   fingerprint="$(ssh-keygen -lf "$IDENTITY.pub" -E sha256 | awk '{print $2}')"
+  LEASE_PROJECT="$(derive_project_label "$REPO_ROOT")"
+  LEASE_CHECKOUT="$(ensure_checkout_id "$REPO_ROOT")"
+  [ -n "$LEASE_RUN" ] || LEASE_RUN="$(new_run_id)"
+  [[ "$LEASE_RUN" =~ ^[0-9a-f]{8}$ ]] || die "invalid E2E run identity"
+  [ -n "$LEASE_PURPOSE" ] || LEASE_PURPOSE=agent-e2e
+  request="$(lease_acquire_request "$client" "$fingerprint" "$type" "$blob")"
   started=$SECONDS
+  last_report=-30
   while true; do
-    response="$(facade_request \
-      "$(lease_acquire_command "$client" "$fingerprint" "$label" "$purpose" "$type" "$blob")")" \
-      || die "test environment unavailable"
+    if ! response="$(facade_request "$request")"; then
+      die "lease acquire outcome is unknown; refusing a second allocation"
+    fi
     code="$(jq -r '.code // empty' <<<"$response")"
     if parse_lease_grant "$response"; then
-      ok "lease acquired: $LEASE_SLOT"
+      if ! lease_grant_matches_request; then
+        printf 'agent-e2e: broker granted %s instead of requested %s; releasing without guest access\n' \
+          "$LEASE_SLOT" "$LEASE_REQUESTED_SLOT" >&2
+        release_lease \
+          || die "broker returned the wrong slot and its lease could not be released"
+        die "broker returned a slot other than the exact requested slot"
+      fi
       write_client_config
+      printf 'E2E lease: project=%s checkout=%s run=%s purpose=%s slot=%s' \
+        "$LEASE_PROJECT" "$LEASE_CHECKOUT" "$LEASE_RUN" "$LEASE_PURPOSE" "$LEASE_SLOT" >&2
+      printf '\n' >&2
       return 0
     fi
-    [ "$code" = busy ] || die "lease acquire failed (${code:-invalid response})"
+    if [ "$code" != busy ]; then
+      message="$(jq -r '.message // "invalid response"' <<<"$response")"
+      die "lease acquire failed (${code:-invalid_response}: $message)"
+    fi
+    [ -z "$LEASE_REQUESTED_SLOT" ] \
+      || die "requested E2E slot $LEASE_REQUESTED_SLOT is not available"
+    if [ "$((SECONDS - last_report))" -ge 30 ]; then
+      report_busy_pool "$started"
+      last_report=$SECONDS
+    fi
     [ "$WAIT_SECONDS" -gt 0 ] && [ "$((SECONDS - started))" -lt "$WAIT_SECONDS" ] \
-      || { printf '%s\n' "$response" >&2; return 4; }
+      || return 4
     sleep 5
   done
 }
@@ -370,15 +592,28 @@ lease_command() {
 }
 
 release_lease() {
+  local released_slot="$LEASE_SLOT" released_run="$LEASE_RUN" response code
   [ -n "$LEASE_ID" ] || return 0
-  facade_request "$(lease_command release)" >/dev/null || return 1
+  if ! response="$(facade_request "$(lease_command release)")"; then
+    printf 'agent-e2e: release failed for slot=%s run=%s\n' \
+      "$released_slot" "$released_run" >&2
+    return 1
+  fi
+  if [ "$(jq -r '.status // empty' <<<"$response")" != ok ]; then
+    code="$(jq -r '.code // "invalid_response"' <<<"$response")"
+    printf 'agent-e2e: release rejected for slot=%s run=%s (%s)\n' \
+      "$released_slot" "$released_run" "$code" >&2
+    return 1
+  fi
   LEASE_ID=""
+  printf 'E2E lease released: slot=%s run=%s\n' "$released_slot" "$released_run" >&2
 }
 
 lease_keeper() {
-  local owner_pid="$1"
+  local owner_pid="$1" response
   while sleep 60; do
-    if ! facade_request "$(lease_command renew)" >/dev/null; then
+    if ! response="$(facade_request "$(lease_command renew)")" ||
+      [ "$(jq -r '.status // empty' <<<"$response")" != ok ]; then
       printf 'agent-e2e: lease lost; stopping payload transport\n' >&2
       kill -TERM "$owner_pid" >/dev/null 2>&1 || true
       return 1
@@ -589,13 +824,18 @@ write_guest_command() {
 	local vm="$1" directory="$2"; shift 2
 	printf '#!/usr/bin/env bash\nset -euo pipefail\n'
 	printf 'cd %q\n' "$directory/src"
+	printf 'export SUBYARD_E2E_PROJECT=%q\n' "$LEASE_PROJECT"
+	printf 'export SUBYARD_E2E_CHECKOUT=%q\n' "$LEASE_CHECKOUT"
+	printf 'export SUBYARD_E2E_RUN_ID=%q\n' "$LEASE_RUN"
+	printf 'export SUBYARD_E2E_PURPOSE=%q\n' "$LEASE_PURPOSE"
+	printf 'export SUBYARD_E2E_SLOT=%q\n' "$LEASE_SLOT"
 	printf 'export SUBYARD_E2E_VM=%q\n' "$vm"
 	if [ "${1:-}" = ./bin/yard ]; then
 		printf './dev/build-engine.sh\n'
 	fi
 	printf 'exec'
-  printf ' %q' "$@"
-  printf '\n'
+	printf ' %q' "$@"
+	printf '\n'
 }
 
 prepare_guest() {
@@ -656,16 +896,19 @@ run_direct_ssh() {
 
 main() {
   local selector=both root bundle bundle_hash vm run_failed=0 cleanup_failed=0
-  local mode=run ssh_vm='' ssh_stdin=0 wait_value
+  local mode=run ssh_vm='' ssh_stdin=0 wait_value purpose_override='' status_json=0 slot_value=''
+  local status_response
   local -a selected=() command=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --yard) [ "$#" -ge 2 ] || die "--yard needs a yard name"; E2E_YARD="$2"; shift 2 ;;
       --slot)
-        [ "$#" -ge 2 ] || die "--slot needs a broker slot number"
-        [[ "$2" =~ ^[1-9][0-9]{0,2}$ ]] \
-          || die "--slot must be an integer from 1 through 999"
-        printf -v REQUESTED_SLOT 'slot-%03d' "$2"
+        [ "$#" -ge 2 ] || die "--slot needs a number from 1 to 999"
+        [ -z "$slot_value" ] || die "--slot may be specified only once"
+        slot_value="$2"
+        [[ "$slot_value" =~ ^[1-9][0-9]{0,2}$ ]] \
+          || die "--slot needs a number from 1 to 999"
+        printf -v LEASE_REQUESTED_SLOT 'slot-%03d' "$((10#$slot_value))"
         shift 2
         ;;
       --vm) [ "$#" -ge 2 ] || die "--vm needs 1, 2 or both"; selector="$2"; shift 2 ;;
@@ -678,6 +921,12 @@ main() {
         shift 2
         ;;
       --status) mode=status; shift ;;
+      --json) status_json=1; shift ;;
+      --purpose)
+        [ "$#" -ge 2 ] || die "--purpose needs a safe label"
+        purpose_override="$2"
+        shift 2
+        ;;
       --wait)
         [ "$#" -ge 2 ] || die "--wait needs a duration"
         wait_value="$2"
@@ -697,17 +946,27 @@ main() {
     esac
   done
   configure_yard_scope
+  [ "$status_json" = 0 ] || [ "$mode" = status ] || die "--json is valid only with --status"
+  [ -z "$purpose_override" ] || [ "$mode" != status ] || die "--purpose is not valid with --status"
+  [ -z "$LEASE_REQUESTED_SLOT" ] || {
+    [ "$mode" != status ] && [ "$mode" != prepare ] \
+      || die "--slot is valid only for commands that acquire a lease"
+  }
+  LEASE_PURPOSE="$(derive_purpose "$mode" "$purpose_override" "${command[@]}")"
   case "$mode" in
     prepare)
-      [ -z "$REQUESTED_SLOT" ] || die "--slot is not valid with --prepare"
       [ "${#command[@]}" -eq 0 ] || die "--prepare takes no command"
       prepare_identity
       return
       ;;
     status)
-      [ -z "$REQUESTED_SLOT" ] || die "--slot is not valid with --status"
       [ "${#command[@]}" -eq 0 ] || die "--status takes no command"
-      facade_request status || die "test environment unavailable"
+      status_response="$(facade_request status)" || die "test environment unavailable"
+      if [ "$status_json" = 1 ]; then
+        printf '%s\n' "$status_response"
+      else
+        render_pool_status "$status_response"
+      fi
       return
       ;;
     verify)

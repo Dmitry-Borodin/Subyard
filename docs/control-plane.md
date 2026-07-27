@@ -137,6 +137,11 @@ finalizes it only after the candidate is active, and restores the previous layou
 Every required transition from the persisted layout is applied in registry order, including typed
 lifecycle transitions. Migrations cannot execute registry-supplied commands or leave compatibility
 symlinks at old paths.
+After activation, the dedicated test-yard migration reconciles a configured broker only when its
+outer yard and broker service are already active, then verifies the installed engine and facade
+status. It never starts a stopped, disabled or never-initialized broker as an update side effect.
+A running legacy fixed-VM backend that predates the broker unit is treated as the active predecessor
+during the one-time owner migration.
 
 Before a project adapter starts, Go resolves paths/names/qualified selectors across yards, loads the
 owning context, validates the typed record and supplies a `SUBYARD_PROJECT_*` snapshot. Physical

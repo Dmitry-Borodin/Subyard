@@ -431,7 +431,8 @@ verify_control_plane() {
   operator_test_vms_status \
     | jq -e '.pool.slots | length == 2 and all(.state == "available")' >/dev/null
   operator_env jq -e \
-    '.layout == 2 and .applied == ["migrate-test-yard-owner"]' \
+    '.layout == 3 and
+      .applied == ["migrate-test-yard-owner", "refresh-test-vm-broker"]' \
     "$OPERATOR_HOME/.config/subyard/migrations/state.json" >/dev/null
   ok "owner, route publication, live consumer and layout converged without restart"
 }

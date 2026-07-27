@@ -98,9 +98,10 @@ func TestLeaseStoreAcquireSlotDoesNotFallback(t *testing.T) {
 
 func TestLeaseStoreConcurrentCapacityAndFencing(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
-	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 2, Now: func() time.Time {
-		return now
-	}}
+	store := LeaseStore{
+		Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 2,
+		Now: func() time.Time { return now },
+	}
 	var wait sync.WaitGroup
 	results := make(chan LeaseGrant, 3)
 	failures := make(chan error, 3)
@@ -234,7 +235,8 @@ func TestLeaseStoreRedactsCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pool.Slots[0].CapabilityHash == "" || pool.Slots[0].CapabilityHash == grant.Capability {
+	if pool.Slots[0].CapabilityHash == "" ||
+		pool.Slots[0].CapabilityHash == grant.Capability {
 		t.Fatal("capability was not stored in verifier-only form")
 	}
 }
@@ -255,11 +257,68 @@ func TestLeaseStoreCorruptStateRecoveryKeepsOtherSlotsQuarantined(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pool.Slots[0].State != SlotDraining || pool.Slots[1].State != SlotQuarantined {
+	if pool.Slots[0].State != SlotDraining ||
+		pool.Slots[1].State != SlotQuarantined {
 		t.Fatalf("recovery pool = %#v", pool.Slots)
 	}
 	backups, err := filepath.Glob(path + ".corrupt-*")
 	if err != nil || len(backups) != 1 {
 		t.Fatalf("corrupt-state backups = %v, %v", backups, err)
+	}
+}
+
+func TestLeaseStoreCombinedLabelPublishesOnlyCurrentAttribution(t *testing.T) {
+	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 1}
+	grant, err := store.Acquire(
+		"client", "SHA256:key", "Subyard/Subyard@checkout-a#run-a", "unit-tests",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Context == nil ||
+		grant.Context.Project != "Subyard/Subyard" ||
+		grant.Context.Checkout != "checkout-a" ||
+		grant.Context.Run != "run-a" ||
+		grant.Context.Purpose != "unit-tests" {
+		t.Fatalf("grant context = %#v", grant.Context)
+	}
+	pool, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := pool.Slots[0]
+	if slot.Project != grant.Context.Project ||
+		slot.Checkout != grant.Context.Checkout ||
+		slot.Run != grant.Context.Run ||
+		slot.Purpose != grant.Context.Purpose {
+		t.Fatalf("slot attribution = %#v", slot)
+	}
+	if err := store.BeginDrain(grant); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishDrain(grant.SlotID, nil); err != nil {
+		t.Fatal(err)
+	}
+	pool, err = store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot = pool.Slots[0]
+	if slot.Project != "" || slot.Checkout != "" ||
+		slot.Run != "" || slot.Purpose != "" {
+		t.Fatalf("released slot retained attribution: %#v", slot)
+	}
+}
+
+func TestLeaseStoreRejectsUnsafeAttributionBeforeMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "leases.json")
+	store := LeaseStore{Path: path, SlotCount: 1}
+	if _, err := store.Acquire(
+		"client", "SHA256:key", "/home/dev/private@checkout#run", "tests",
+	); err == nil {
+		t.Fatal("unsafe attribution was accepted")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("invalid attribution mutated state: %v", err)
 	}
 }

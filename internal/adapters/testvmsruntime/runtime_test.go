@@ -103,6 +103,48 @@ func TestAcquireSlotRejectsInsufficientCapacityBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestInstallLeaseContextUsesBoundedAtomicGuestFile(t *testing.T) {
+	cfg := fixtureConfig(t)
+	var guestArguments []string
+	runner := &fakeRunner{handler: func(
+		name string, arguments, _ []string, _ io.Reader,
+	) ([]byte, []byte, error) {
+		if name != "incus" || len(arguments) < 6 || arguments[0] != "exec" {
+			return nil, nil, fmt.Errorf("unexpected call: %s %s", name, strings.Join(arguments, " "))
+		}
+		guestArguments = append([]string(nil), arguments...)
+		return nil, nil, nil
+	}}
+	runtime := &Runtime{Config: cfg, Runner: runner}
+	leaseContext := LeaseContext{
+		SchemaVersion: LeaseAttributionSchemaVersion,
+		Project:       "Subyard/Subyard", Checkout: "checkout-a", Run: "run-a", Purpose: "unit-tests",
+	}
+	grant := LeaseGrant{SlotID: "slot-001", Context: &leaseContext}
+	if err := runtime.installLeaseContext(
+		context.Background(), "e2e-vm-1", grant,
+	); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(guestArguments, "\n")
+	for _, expected := range []string{
+		`"project":"Subyard/Subyard"`,
+		`"checkout":"checkout-a"`,
+		`"run":"run-a"`,
+		`"purpose":"unit-tests"`,
+		`"slot":"slot-001"`,
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("guest context omitted %s: %s", expected, joined)
+		}
+	}
+	call := strings.Join(runner.calls[0], " ")
+	if !strings.Contains(call, "mktemp /run/.subyard-e2e-lease.XXXXXX") ||
+		!strings.Contains(call, `mv -f "$temp" "$target"`) {
+		t.Fatalf("guest context is not atomic: %s", call)
+	}
+}
+
 func TestStopRunningVMAcceptsConcurrentSuccessfulStop(t *testing.T) {
 	cfg := fixtureConfig(t)
 	runner := &fakeRunner{handler: func(

@@ -25,14 +25,18 @@ user's `~/.subyard/e2e/`; every lease uses a separate ephemeral guest key.
 Run checks from the current public worktree with:
 
 ```sh
-dev/agent-e2e.sh -- ./bin/yard --version
-dev/agent-e2e.sh --vm 1 -- ./tests/some-real-host-check.sh
+dev/agent-e2e.sh --purpose version-check -- ./bin/yard --version
+dev/agent-e2e.sh --purpose real-host-check --vm 1 -- ./tests/some-real-host-check.sh
 ```
 
 The runner filters private/ignored files, verifies the bundle and removes its guest worktree.
-Use `--status`, bounded `--wait` and `--ssh 1|2` for diagnostics. Raw OpenSSH configuration is not
-an agent API. Run `--verify-boundary` after transport or admission changes. Never use the privileged
-outer yard as an agent workspace.
+Use human `--status`, explicit `--status --json`, bounded `--wait` and `--ssh 1|2` for diagnostics.
+Every invocation acquires a new broker slot and prints `project + checkout + run + purpose`;
+`e2e-vm-1/2` are relative to that lease, not physical slot names. Optional `--slot N` is an atomic
+broker request that fails without fallback; it is not permission to enter a physical VM directly.
+Keep stateful steps in one wrapper invocation or interactive SSH lease. Raw OpenSSH configuration is
+not an agent API. Run `--verify-boundary` after transport or admission changes. Never use the
+privileged outer yard as an agent workspace.
 Run `dev/e2e/p0-acceptance.sh` for the full allocated two-VM matrix.
 
 If there is any doubt that behavior is covered or a problem is reproduced, use the allocated

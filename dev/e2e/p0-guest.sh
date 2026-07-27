@@ -39,6 +39,7 @@ PEER_REAL_YARD_MARKER="$PEER_ROOT/.subyard-p0-real-yard"
 OWNER_BASELINE_IMAGES=''
 OWNER_BASELINE_CAPTURED=0
 OWNER_BASE_IMAGE="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
+OWNER_DIAGNOSTIC_VM_MEMORY="${P0_E2E_DIAGNOSTIC_VM_MEMORY:-700MiB}"
 
 die() { printf 'p0-guest: %s\n' "$*" >&2; exit 2; }
 valid_token() { [[ "$1" =~ ^[0-9]+$ ]]; }
@@ -143,8 +144,9 @@ write_owner_registration() { # <yard> <template> <ssh-port>
     grep -Fqx "# $MARKER" "$registration" \
       || die "refusing to replace unrelated registration $registration"
   fi
-  printf '# %s\nYARD_TEMPLATE=%s\nSSH_PORT=%s\nAGENTS=none\nDEV_UID=1001\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n' \
-    "$MARKER" "$template" "$port" "$OWNER_BASE_IMAGE" "$OWNER_BASE_IMAGE" \
+  printf '# %s\nYARD_TEMPLATE=%s\nSSH_PORT=%s\nAGENTS=none\nDEV_UID=1001\nE2E_VM_CPU=1\nE2E_VM_MEMORY=%s\nE2E_VM_DISK=10GiB\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n' \
+    "$MARKER" "$template" "$port" "$OWNER_DIAGNOSTIC_VM_MEMORY" \
+    "$OWNER_BASE_IMAGE" "$OWNER_BASE_IMAGE" \
     > "$registration"
 }
 
@@ -171,6 +173,24 @@ install_rename_base_runtime() {
     --provenance "$bundle.provenance.json" >/dev/null
 }
 
+install_current_base_runtime() {
+  local arch release artifact
+  arch="$(go env GOARCH)"
+  release="$ROOT/.build/p0-current-base-release"
+  artifact="$release/subyard-p0-current-base-linux-$arch"
+  dev/package-engine.sh \
+    --output-dir "$release" \
+    --version p0-current-base \
+    --arch "$arch" \
+    --migration-registry \
+      "$ROOT/tests/fixtures/migrations/layout-2-production.json" >/dev/null
+  scripts/install-runtime-release.sh \
+    --bundle "$artifact.tar.gz" \
+    --checksum "$artifact.tar.gz.sha256" \
+    --manifest "$artifact.tar.gz.manifest.json" \
+    --provenance "$artifact.tar.gz.provenance.json" >/dev/null
+}
+
 install_owner_runtime() {
   local arch release artifact
   arch="$(go env GOARCH)"
@@ -184,13 +204,92 @@ install_owner_runtime() {
     --provenance "$artifact.tar.gz.provenance.json" >/dev/null
 }
 
+canonical_broker_release_migration_contract() {
+  local runtime_root="${SUBYARD_HOME:-$HOME/.subyard}/runtime"
+  local active_old_hash active_new_hash candidate_runtime expected_hash inactive_marker
+  local rolled_back_hash
+  local current_registration old_yard state
+
+  [ "$("$runtime_root/current/bin/yard" --version)" = 'yard p0-current-base' ] \
+    || die 'broker migration fixture requires the canonical layout-2 runtime'
+  old_yard="$runtime_root/current/bin/yard"
+
+  # Exercise the dedicated layout 2 -> 3 broker operation independently from
+  # the owner rename, once stopped and once active.
+  write_owner_registration test-yard test-vms 2224
+  "$old_yard" -Y test-yard init --yes
+  "$old_yard" -Y test-yard stop --yes
+  state="$(incus list yard-test-yard --project subyard-test-yard -f csv -c s)"
+  [ "$state" = STOPPED ] || die 'inactive broker fixture did not remain stopped'
+  inactive_marker="$(incus config get yard-test-yard \
+    user.subyard.test_vms_revision --project subyard-test-yard)"
+
+  install_owner_runtime
+  state="$(incus list yard-test-yard --project subyard-test-yard -f csv -c s)"
+  [ "$state" = STOPPED ] \
+    || die 'release migration started an inactive broker'
+  [ "$(incus config get yard-test-yard user.subyard.test_vms_revision \
+    --project subyard-test-yard)" = "$inactive_marker" ] \
+    || die 'release migration rewrote an inactive broker'
+
+  "$runtime_root/current/scripts/install-runtime-release.sh" \
+    --runtime-root "$runtime_root" --rollback >/dev/null
+  [ "$("$runtime_root/current/bin/yard" --version)" = 'yard p0-current-base' ] \
+    || die 'active broker fixture did not restore the previous runtime'
+  old_yard="$runtime_root/current/bin/yard"
+  candidate_runtime="$runtime_root/previous"
+  SUBYARD_REPOSITORY_ROOT="$candidate_runtime" \
+    "$candidate_runtime/bin/yard-engine" _migrate cleanup >/dev/null
+  "$old_yard" -Y test-yard start --yes
+  "$old_yard" -Y test-yard init --yes
+  active_old_hash="$(incus exec yard-test-yard --project subyard-test-yard -- \
+    sha256sum /usr/local/libexec/subyard/test-vms-inner | awk '{print $1}')"
+
+  install_owner_runtime
+  expected_hash="$(sha256sum "$runtime_root/current/bin/yard-engine" | awk '{print $1}')"
+  active_new_hash="$(incus exec yard-test-yard --project subyard-test-yard -- \
+    sha256sum /usr/local/libexec/subyard/test-vms-inner | awk '{print $1}')"
+  [ "$active_new_hash" = "$expected_hash" ] && [ "$active_new_hash" != "$active_old_hash" ] \
+    || die 'release migration did not replace the active broker engine'
+  incus exec yard-test-yard --project subyard-test-yard -- \
+    systemctl is-active --quiet subyard-test-vms-broker.service \
+    || die 'release migration did not restore the active broker service'
+  "$runtime_root/current/bin/yard" -Y test-yard test-vms status >/dev/null \
+    || die 'release migration did not restore broker facade status'
+
+  "$runtime_root/current/scripts/install-runtime-release.sh" \
+    --runtime-root "$runtime_root" --rollback >/dev/null
+  [ "$("$runtime_root/current/bin/yard" --version)" = 'yard p0-current-base' ] \
+    || die 'canonical fixture did not restore its layout-2 runtime'
+  rolled_back_hash="$(incus exec yard-test-yard --project subyard-test-yard -- \
+    sha256sum /usr/local/libexec/subyard/test-vms-inner | awk '{print $1}')"
+  [ "$rolled_back_hash" = "$active_old_hash" ] \
+    || die 'runtime rollback did not restore the previous active broker engine'
+  candidate_runtime="$runtime_root/previous"
+  SUBYARD_REPOSITORY_ROOT="$candidate_runtime" \
+    "$candidate_runtime/bin/yard-engine" _migrate cleanup >/dev/null
+  old_yard="$runtime_root/current/bin/yard"
+  "$old_yard" -Y test-yard teardown --yes
+  current_registration="$OWNER_YARD_DIR/test-yard.env"
+  grep -Fqx "# $MARKER" "$current_registration" \
+    || die 'broker migration fixture lost its owned canonical registration'
+  find "$current_registration" -delete
+  printf 'ok: active broker auto-upgraded and inactive broker stayed inactive\n'
+}
+
 owner_profile_migration_contract() {
   local old_yard runtime_root="${SUBYARD_HOME:-$HOME/.subyard}/runtime" yard_info
+  install_current_base_runtime
+  old_yard="$runtime_root/current/bin/yard"
+  [ "$("$old_yard" --version)" = 'yard p0-current-base' ] \
+    || die 'canonical layout-2 runtime was not installed'
+
+  canonical_broker_release_migration_contract
   install_rename_base_runtime
   old_yard="$runtime_root/current/bin/yard"
   [ "$("$old_yard" --version)" = 'yard p0-rename-base' ] \
     || die 'pre-rename runtime was not installed'
-
+  prepare_owner_image_cache_project subyard-e2e-yard
   write_owner_registration e2e-yard e2e-vms 2224
   "$old_yard" -Y e2e-yard init --yes
   "$old_yard" -Y e2e-yard check
@@ -247,7 +346,7 @@ owner() (
 	OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
   OWNER_BASELINE_CAPTURED=1
 	bash dev/e2e/p0-real-incus.sh
-  prepare_owner_image_cache_project subyard-e2e-yard
+  prepare_owner_image_cache_project subyard-test-yard
   owner_profile_migration_contract
   ./bin/yard -Y test-yard start --yes
   SUBYARD_E2E_LEGACY_FIXTURE=1 \
@@ -259,6 +358,7 @@ owner() (
     || die 'nested state permissions did not converge'
   ! incus exec yard-test-yard --project subyard-test-yard -- id -nG dev | tr ' ' '\n' \
     | grep -Eq '^(incus-admin|yard)$' || die 'dev retained a privileged L1 group'
+  SUBYARD_E2E_YARD=test-yard bash dev/e2e/p1-lease-acceptance.sh
   owner_project_contract
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard --version >/dev/null
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y test-yard list >/dev/null
@@ -284,7 +384,7 @@ owner_migration() (
   OWNER_BASELINE_CAPTURED=1
   incus image info "$OWNER_BASE_IMAGE" --project default >/dev/null 2>&1 \
     || die "cached owner base image $OWNER_BASE_IMAGE is required"
-  prepare_owner_image_cache_project subyard-e2e-yard
+  prepare_owner_image_cache_project subyard-test-yard
   owner_profile_migration_contract
   printf 'ok: VM1 e2e-yard release upgrade migrated to test-yard\n'
 )
@@ -296,7 +396,8 @@ controller() (
   p0_capacity_prepare_subtree "$P0_CAPACITY_STATE_ROOT/controller"
   trap 'rc=$?; set +e; [ -z "$temp" ] || find "$temp" -depth -delete; p0_capacity_remove_subtree "$P0_CAPACITY_STATE_ROOT/controller"; p0_capacity_remove_build_cache; p0_capacity_remove_root_if_empty; exit "$rc"' EXIT
   shellcheck -x -S warning dev/e2e/p0-acceptance.sh dev/e2e/p0-guest.sh \
-    dev/e2e/lib-p0-capacity.sh dev/e2e/p0-real-incus.sh dev/e2e/p0-source-upgrade.sh \
+    dev/e2e/lib-p0-capacity.sh dev/e2e/p1-lease-acceptance.sh \
+    dev/e2e/p0-real-incus.sh dev/e2e/p0-source-upgrade.sh \
     dev/build-engine.sh tests/build-engine.sh \
     tests/agent-e2e.sh tests/real-host/incus-contract.sh
   ./tests/run.sh

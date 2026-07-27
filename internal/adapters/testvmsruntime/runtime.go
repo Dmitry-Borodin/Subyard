@@ -192,12 +192,9 @@ func (runtime *Runtime) provisionPair(ctx context.Context) (err error) {
 			return err
 		}
 	}
-	if err = runtime.enableAgentAccess(ctx); err != nil {
-		return err
-	}
 	_ = os.Remove(cfg.revokedKey())
 	fmt.Fprintln(runtime.Stdout,
-		"  [ ok ] both VMs are ready for the current lease and operator diagnostics")
+		"  [ ok ] both VMs are ready for lease context and bounded agent access")
 	return nil
 }
 

@@ -2,6 +2,7 @@ package testvmsruntime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -217,6 +218,52 @@ mv -f "$temp" "$authorized"`
 		"AGENT_KEY=" + agentKey, "AGENT_KEY_MARKER=" + agentKeyMarker,
 	}, "sh", "-eu", "-c", reconcileRoot)
 	return err
+}
+
+func (runtime *Runtime) installLeaseContext(
+	ctx context.Context, vm string, grant LeaseGrant,
+) error {
+	context := LeaseContext{
+		SchemaVersion: LeaseAttributionSchemaVersion,
+		Project:       "legacy",
+		Checkout:      "unknown",
+		Run:           "unknown",
+		Purpose:       "agent-e2e",
+	}
+	if grant.Context != nil {
+		context = *grant.Context
+	}
+	payload, err := json.Marshal(struct {
+		SchemaVersion int    `json:"schema_version"`
+		Project       string `json:"project"`
+		Checkout      string `json:"checkout"`
+		Run           string `json:"run"`
+		Purpose       string `json:"purpose"`
+		Slot          string `json:"slot"`
+	}{
+		SchemaVersion: context.SchemaVersion,
+		Project:       context.Project,
+		Checkout:      context.Checkout,
+		Run:           context.Run,
+		Purpose:       context.Purpose,
+		Slot:          grant.SlotID,
+	})
+	if err != nil {
+		return err
+	}
+	const install = `target=/run/subyard-e2e-lease.json
+temp="$(mktemp /run/.subyard-e2e-lease.XXXXXX)"
+trap 'rm -f "$temp"' EXIT
+printf "%s\n" "$LEASE_CONTEXT" > "$temp"
+chmod 0444 "$temp"
+mv -f "$temp" "$target"
+trap - EXIT`
+	if _, err := runtime.guest(ctx, vm, []string{
+		"LEASE_CONTEXT=" + string(payload),
+	}, "sh", "-eu", "-c", install); err != nil {
+		return fmt.Errorf("%s lease context: %w", vm, err)
+	}
+	return nil
 }
 
 func (runtime *Runtime) recordHostKey(ctx context.Context, vm string) error {

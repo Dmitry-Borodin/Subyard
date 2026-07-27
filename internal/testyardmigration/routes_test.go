@@ -169,10 +169,27 @@ func TestRouteConsumersSkipGuestProbeForStoppedYard(t *testing.T) {
 	}
 }
 
+func TestRouteConsumersSkipOwnerGuestProbeForStoppedCanonicalYard(t *testing.T) {
+	options, state := routeConsumerFixture(t, StateCurrent, true)
+	write(t, state.ownerStatus, "STOPPED\n")
+	before, err := PrepareRouteConsumers(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitRouteConsumers(context.Background(), options, before); err != nil {
+		t.Fatal(err)
+	}
+	calls := read(t, state.calls)
+	if strings.Contains(calls, "exec yard-test-yard --project subyard-test-yard --") {
+		t.Fatal("stopped canonical yard received an in-guest route identity probe")
+	}
+}
+
 type routeFixtureState struct {
 	calls         string
 	yardCalls     string
 	owner         string
+	ownerStatus   string
 	defaultDevice string
 	defaultStatus string
 	extra         string
@@ -206,12 +223,14 @@ func routeConsumerFixture(
 		calls:         filepath.Join(root, "incus-calls"),
 		yardCalls:     filepath.Join(root, "yard-calls"),
 		owner:         filepath.Join(root, "owner"),
+		ownerStatus:   filepath.Join(root, "owner-status"),
 		defaultDevice: filepath.Join(root, "default-device"),
 		defaultStatus: filepath.Join(root, "default-status"),
 		extra:         filepath.Join(root, "extra"),
 		ownerAddress:  filepath.Join(root, "owner-address"),
 	}
 	write(t, state.owner, owner+"\n")
+	write(t, state.ownerStatus, "RUNNING\n")
 	write(t, state.defaultDevice, "missing\n")
 	write(t, state.defaultStatus, "RUNNING\n")
 	write(t, state.extra, "0\n")
@@ -266,10 +285,10 @@ if [ "$*" = "list --all-projects --format=json" ]; then
   instance_json subyard yard default "$default_status" "$default_devices"
   printf ','
   if [ "$owner" = legacy ]; then
-    instance_json subyard-e2e-yard yard-e2e-yard e2e-yard RUNNING '{}'
+    instance_json subyard-e2e-yard yard-e2e-yard e2e-yard "$(cat "$ROUTE_OWNER_STATUS")" '{}'
   else
     current_devices="$(device_json "$ROUTE_CURRENT_DEVICE")"
-    instance_json subyard-test-yard yard-test-yard test-yard RUNNING "$current_devices"
+    instance_json subyard-test-yard yard-test-yard test-yard "$(cat "$ROUTE_OWNER_STATUS")" "$current_devices"
   fi
   if [ "$(cat "$ROUTE_EXTRA")" = 1 ]; then
     printf ','
@@ -325,6 +344,7 @@ exit 2
 		"ROUTE_INCUS_CALLS="+state.calls,
 		"ROUTE_YARD_CALLS="+state.yardCalls,
 		"ROUTE_OWNER="+state.owner,
+		"ROUTE_OWNER_STATUS="+state.ownerStatus,
 		"ROUTE_DEFAULT_DEVICE="+state.defaultDevice,
 		"ROUTE_DEFAULT_STATUS="+state.defaultStatus,
 		"ROUTE_CURRENT_DEVICE="+currentDevice,

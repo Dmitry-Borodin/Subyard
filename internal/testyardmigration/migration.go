@@ -21,13 +21,15 @@ const (
 )
 
 type Options struct {
-	Executable  string
-	Incus       string
-	ConfigHome  string
-	DataHome    string
-	Environment []string
-	Stdout      io.Writer
-	Stderr      io.Writer
+	Executable     string
+	RepositoryRoot string
+	RuntimeRoot    string
+	Incus          string
+	ConfigHome     string
+	DataHome       string
+	Environment    []string
+	Stdout         io.Writer
+	Stderr         io.Writer
 }
 
 type State string

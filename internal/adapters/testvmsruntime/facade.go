@@ -148,6 +148,7 @@ func redactPool(pool *LeasePool) {
 		slot.LeaseID = ""
 		slot.ClientID = ""
 		slot.ControllerFingerprint = ""
+		slot.FailureReason = ""
 	}
 }
 

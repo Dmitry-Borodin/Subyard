@@ -418,6 +418,7 @@ run_lanes() {
 }
 
 LOCAL_TEMP="$(mktemp -d "${TMPDIR:-/tmp}/subyard-agent-e2e.XXXXXX")"
+LEASE_PURPOSE=p0-acceptance
 acquire_lease
 start_lease_keeper
 CONFIG="$CLIENT_CONFIG"

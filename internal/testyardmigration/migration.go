@@ -532,10 +532,16 @@ func inspectRegistrationSet(options Options) (registrationSet, error) {
 		if exists, err := pathExists(currentDirectory); err != nil {
 			return registrationSet{}, err
 		} else if exists {
-			return registrationSet{}, fmt.Errorf(
-				"yard registration directory %q is incomplete",
-				CurrentYard,
-			)
+			recognized, err := validateSourceLinkedProjectState(currentDirectory)
+			if err != nil {
+				return registrationSet{}, err
+			}
+			if !recognized {
+				return registrationSet{}, fmt.Errorf(
+					"yard registration directory %q is incomplete",
+					CurrentYard,
+				)
+			}
 		}
 	}
 	return result, nil
@@ -693,7 +699,7 @@ func validateSourceLinkedProjectState(directory string) (bool, error) {
 		return false, nil
 	}
 	if err := validateOwnedAuxiliaryTree(filepath.Join(directory, "projects"), true); err != nil {
-		return false, fmt.Errorf("source-linked e2e-yard project state: %w", err)
+		return false, fmt.Errorf("source-linked test-yard project state: %w", err)
 	}
 	return true, nil
 }

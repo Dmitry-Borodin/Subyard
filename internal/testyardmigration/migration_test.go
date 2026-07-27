@@ -68,21 +68,25 @@ func TestApplyIsNoopWithoutLegacyRegistration(t *testing.T) {
 }
 
 func TestApplyIsNoopForSourceLinkedProjectStateBeforeConfigImport(t *testing.T) {
-	root := t.TempDir()
-	configHome := filepath.Join(root, "config")
-	write(
-		t,
-		filepath.Join(configHome, "yards", LegacyYard, "projects", ".lock"),
-		"",
-	)
-	if err := applyForTest(context.Background(), Options{
-		Executable:  fakeExecutable(t, root),
-		Incus:       filepath.Join(root, "missing-incus-must-not-run"),
-		ConfigHome:  configHome,
-		DataHome:    filepath.Join(root, "data"),
-		Environment: os.Environ(),
-	}); err != nil {
-		t.Fatal(err)
+	for _, yard := range []string{LegacyYard, CurrentYard} {
+		t.Run(yard, func(t *testing.T) {
+			root := t.TempDir()
+			configHome := filepath.Join(root, "config")
+			write(
+				t,
+				filepath.Join(configHome, "yards", yard, "projects", ".lock"),
+				"",
+			)
+			if err := applyForTest(context.Background(), Options{
+				Executable:  fakeExecutable(t, root),
+				Incus:       filepath.Join(root, "missing-incus-must-not-run"),
+				ConfigHome:  configHome,
+				DataHome:    filepath.Join(root, "data"),
+				Environment: os.Environ(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

@@ -125,17 +125,13 @@ func reprepareTypedOperation(
 	switch operation.Kind {
 	case OperationKindTestYardOwnerV1:
 		previous := testyardmigration.State(before)
-		if previous != testyardmigration.StateAbsent {
-			return "", false, fmt.Errorf(
-				"typed migration postcondition changed after commit from %q",
-				before,
-			)
-		}
 		current, err := testyardmigration.Prepare(ctx, testYardOptions(options))
 		if err != nil {
 			return "", false, err
 		}
 		switch current {
+		case testyardmigration.StateAbsent:
+			return string(current), false, nil
 		case testyardmigration.StateLegacyDirectory,
 			testyardmigration.StateLegacyDirectoryProjects,
 			testyardmigration.StateLegacyDirectoryOverrides,
@@ -144,6 +140,21 @@ func reprepareTypedOperation(
 			testyardmigration.StateLegacyDirectoryAdoptCurrent,
 			testyardmigration.StateLegacyFlatAdoptCurrent,
 			testyardmigration.StateCurrent:
+			if current == testyardmigration.StateCurrent {
+				return "", false, fmt.Errorf(
+					"typed migration postcondition changed after commit from %q",
+					before,
+				)
+			}
+			if previous != testyardmigration.StateAbsent &&
+				previous != testyardmigration.StateCurrent &&
+				current != previous {
+				return "", false, fmt.Errorf(
+					"typed migration postcondition changed from %q to %q",
+					before,
+					current,
+				)
+			}
 			return string(current), true, nil
 		default:
 			return "", false, fmt.Errorf(

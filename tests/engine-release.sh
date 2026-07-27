@@ -393,6 +393,12 @@ installed_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
   && [ ! -e "$migration_source" ] && [ -f "$migration_destination" ] \
   && jq -e '.layout == 2' "$SUBYARD_CONFIG_HOME/migrations/state.json" >/dev/null \
   || fail 'roll-forward through the same release pair was not idempotent'
+same_current_target="$(readlink "$runtime_root/current")"
+same_previous_target="$(readlink "$runtime_root/previous")"
+installed_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
+[ "$(readlink "$runtime_root/current")" = "$same_current_target" ] \
+  && [ "$(readlink "$runtime_root/previous")" = "$same_previous_target" ] \
+  || fail 'same-version update changed the current/previous rollback pair'
 
 artifact_three="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.2.0-test \
   --migration-registry "$ROOT/tests/fixtures/migrations/layout-3.json")"

@@ -114,4 +114,37 @@ func TestExecuteDownloadsAssetsAndPassesValidatedEnvironment(t *testing.T) {
 	if !strings.Contains(output.String(), "available=1.2.3") {
 		t.Fatalf("release status was not reported: %q", output.String())
 	}
+
+	currentEngine := filepath.Join(runtimeRoot, "current", "bin", "yard-engine")
+	if err := os.MkdirAll(filepath.Dir(currentEngine), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		currentEngine,
+		[]byte("#!/bin/sh\nprintf 'yard 1.2.3\\n'\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(capture); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err = release.Prepare(context.Background(), []string{
+		"--runtime-root", runtimeRoot, "--version", "1.2.3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.Execute(context.Background()); err != nil {
+		t.Fatalf("execute same-version release: %v (%s)", err, output.String())
+	}
+	arguments, err = os.ReadFile(capture)
+	if err != nil {
+		t.Fatal("same-version update skipped the installer")
+	}
+	if slices.Contains(strings.Fields(string(arguments)), "--check") ||
+		!strings.Contains(output.String(), "runtime is already current; reconciling migrations") {
+		t.Fatalf("same-version update did not reconcile migrations: args=%q output=%q",
+			arguments, output.String())
+	}
 }

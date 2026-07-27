@@ -233,6 +233,24 @@ if [ -e "$previous" ] || [ -L "$previous" ]; then
     || { printf 'install-runtime-release: previous runtime link is unsafe\n' >&2; exit 1; }
   old_previous_target="$(readlink "$previous")"
 fi
+if [ "$old_target" = "releases/$release_id" ]; then
+  migration_report="$(SUBYARD_REPOSITORY_ROOT="$destination" \
+    "$destination/bin/yard-engine" _migrate apply)" \
+    || { printf 'install-runtime-release: current runtime migration resume failed\n' >&2; exit 1; }
+  jq -e --argjson target "$target_layout" '.targetLayout == $target' \
+    <<<"$migration_report" >/dev/null \
+    || { printf 'install-runtime-release: migration registry does not match release manifest\n' >&2; exit 1; }
+  SUBYARD_REPOSITORY_ROOT="$destination" \
+    "$destination/bin/yard-engine" _migrate finalize >/dev/null \
+    || { printf 'install-runtime-release: current runtime migration commit failed\n' >&2; exit 1; }
+  SUBYARD_REPOSITORY_ROOT="$destination" \
+    "$destination/bin/yard-engine" _migrate cleanup >/dev/null \
+    || { printf 'install-runtime-release: stale migration recovery cleanup failed\n' >&2; exit 1; }
+  trap - EXIT
+  printf 'installed runtime %s\n' \
+    "$(SUBYARD_REPOSITORY_ROOT="$destination" "$destination/bin/yard-engine" --version)"
+  exit 0
+fi
 if [ -n "$old_target" ] && ! activate_link "$previous" "$old_target"; then
   SUBYARD_REPOSITORY_ROOT="$destination" \
     "$destination/bin/yard-engine" _migrate rollback >/dev/null

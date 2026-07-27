@@ -332,20 +332,31 @@ candidate_migrate() {
 }
 
 migration_transaction_directory() {
+  local version="${1:?migration transaction release version is required}"
   operator_env bash -c '
     set -euo pipefail
     root="$1"
+    version="$2"
     [ -d "$root" ] && [ ! -L "$root" ]
+    selected=
     shopt -s nullglob
-    entries=("$root"/*)
-    [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ] && [ ! -L "${entries[0]}" ]
-    printf "%s\n" "${entries[0]}"
-  ' _ "$OPERATOR_HOME/.config/subyard/migrations/transactions"
+    for transaction in "$root"/*; do
+      [ -d "$transaction" ] && [ ! -L "$transaction" ]
+      journal="$transaction/transaction.json"
+      [ -f "$journal" ] && [ ! -L "$journal" ]
+      to_release="$(jq -er ".toRelease | select(type == \"string\" and length > 0)" "$journal")"
+      [ "$to_release" = "$version" ] || continue
+      [ -z "$selected" ]
+      selected="$transaction"
+    done
+    [ -n "$selected" ]
+    printf "%s\n" "$selected"
+  ' _ "$OPERATOR_HOME/.config/subyard/migrations/transactions" "$version"
 }
 
 verify_protected_migration_state() {
   local transaction
-  transaction="$(migration_transaction_directory)" \
+  transaction="$(migration_transaction_directory "$VERSION_B")" \
     || die 'migration transaction directory is missing or ambiguous'
   operator_env bash -c '
     set -euo pipefail
@@ -388,7 +399,7 @@ seed_versioned_migration_input() {
 }
 
 verify_prepared_versioned_migration() {
-  local report transaction
+  local report transaction journal
   [ "$(operator_yard --version)" = "yard $VERSION_A" ] \
     || die 'prepared migration changed the active runtime'
   operator_env cmp "$MIGRATION_SOURCE" "$MIGRATION_DESTINATION" \
@@ -397,12 +408,27 @@ verify_prepared_versioned_migration() {
     .layout == 2 and .applied == ["migrate-test-yard-owner"]
   ' < <(operator_env cat "$MIGRATION_STATE") >/dev/null \
     || die 'prepared migration advanced the applied layout'
-  transaction="$(migration_transaction_directory)"
-  jq -e --arg version "$VERSION_B" '
+  transaction="$(migration_transaction_directory "$VERSION_B")"
+  journal="$(operator_env cat "$transaction/transaction.json")"
+  if ! jq -e --arg version "$VERSION_B" '
     .phase == "prepared" and .fromLayout == 2 and .toLayout == 3 and
-    .toRelease == $version and (.entries | length) == 1
-  ' < <(operator_env cat "$transaction/transaction.json") >/dev/null \
-    || die 'prepared migration journal is inconsistent'
+    .toRelease == $version and (.entries | length) == 1 and
+    (.operations | map([.migrationId, .operationId, .kind])) == [
+      ["migrate-test-yard-owner", "test-yard-owner", "test-yard-owner-v1"],
+      ["migrate-test-yard-owner", "test-yard-route-consumers",
+       "test-yard-route-consumers-v1"]
+    ]
+  ' <<<"$journal" >/dev/null; then
+    jq -c --arg version "$VERSION_B" '{
+      expectedToRelease: $version,
+      actual: {
+        phase, fromLayout, toLayout, toRelease,
+        entries: ((.entries // []) | length),
+        operations: ((.operations // []) | length)
+      }
+    }' <<<"$journal" >&2
+    die 'prepared migration journal is inconsistent'
+  fi
   report="$(candidate_migrate check)"
   jq -e '
     .layout == 2 and .targetLayout == 3 and .pending == true and .phase == "prepared"
@@ -423,10 +449,15 @@ verify_committed_versioned_migration() {
     .applied == ["migrate-test-yard-owner", "move-legacy-assignments"]
   ' < <(operator_env cat "$MIGRATION_STATE") >/dev/null \
     || die 'committed migration did not advance the applied layout'
-  transaction="$(migration_transaction_directory)"
+  transaction="$(migration_transaction_directory "$VERSION_B")"
   jq -e --arg version "$VERSION_B" '
     .phase == "committed" and .fromLayout == 2 and .toLayout == 3 and
-    .toRelease == $version and (.entries | length) == 1
+    .toRelease == $version and (.entries | length) == 1 and
+    (.operations | map([.migrationId, .operationId, .kind])) == [
+      ["migrate-test-yard-owner", "test-yard-owner", "test-yard-owner-v1"],
+      ["migrate-test-yard-owner", "test-yard-route-consumers",
+       "test-yard-route-consumers-v1"]
+    ]
   ' < <(operator_env cat "$transaction/transaction.json") >/dev/null \
     || die 'committed migration journal is inconsistent'
   report="$(candidate_migrate check)"
@@ -449,7 +480,7 @@ verify_rolled_back_versioned_migration() {
     .layout == 2 and .applied == ["migrate-test-yard-owner"]
   ' < <(operator_env cat "$MIGRATION_STATE") >/dev/null \
     || die 'runtime rollback did not restore the previous data layout'
-  transaction="$(migration_transaction_directory)"
+  transaction="$(migration_transaction_directory "$VERSION_B")"
   jq -e '.phase == "rolled-back" and .fromLayout == 2 and .toLayout == 3' \
     < <(operator_env cat "$transaction/transaction.json") >/dev/null \
     || die 'rolled-back migration journal is inconsistent'

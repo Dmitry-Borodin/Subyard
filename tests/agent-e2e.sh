@@ -340,6 +340,13 @@ grep -Fq '. "$ROOT/tests/helpers/test-context.sh"' "$ROOT/dev/e2e/p0-source-upgr
 grep -Fq 's/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/' \
   "$ROOT/dev/e2e/p0-source-upgrade.sh" \
   || fail "P0 source-upgrade lane does not verify the retired template migration"
+grep -Fq 'migration_transaction_directory "$VERSION_B"' \
+  "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  && grep -Fq 'to_release="$(jq -er ".toRelease' \
+    "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  && ! grep -Fq '[ "${#entries[@]}" -eq 1 ]' \
+    "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  || fail "P0 source-upgrade lane does not select its journal by release identity"
 grep -Fq 'OLD_VERSION=0.3.1' "$ROOT/dev/e2e/release-migration-catch-up.sh" \
   && grep -Fq 'MISSED_VERSION=0.4.0' "$ROOT/dev/e2e/release-migration-catch-up.sh" \
   && grep -Fq 'host_incus config device get "$CONSUMER_INSTANCE"' \

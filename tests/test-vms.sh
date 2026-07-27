@@ -72,9 +72,17 @@ grep -Fq 'config_candidate="$(mktemp /etc/subyard/.test-vms.env.XXXXXX)"' "$PROV
   && ! grep -Fq '} > /etc/subyard/test-vms.env' "$PROVISION" \
   || fail "test-vms config is published before pool reconcile succeeds"
 grep -Fq 'subyard-test-vms-lease-reaper.timer' "$PROVISION" \
+  && grep -Fq '_test-vms-worker broker-start' "$PROVISION" \
   && grep -Fq '_test-vms-worker drain-all' "$PROVISION" \
   && ! grep -Fq 'Remove expired Subyard disposable test VMs' "$PROVISION" \
   || fail "physical provisioner did not replace allocation-age GC with lease reaping"
+grep -Fq 'E2E_BROKER_SOURCE' "$PROVISION" \
+  && grep -Fq 'install-test-vms-host-sink.sh' "$ROOT/internal/adapters/reconcileruntime/runtime.go" \
+  && grep -Fq 'systemctl enable --now "$(basename "$TIMER_PATH")"' \
+    "$ROOT/scripts/install-test-vms-host-sink.sh" \
+  && ! grep -Fq 'systemctl start "$(basename "$SERVICE_PATH")"' \
+    "$ROOT/scripts/install-test-vms-host-sink.sh" \
+  || fail "broker spool producer and host sink are not rolled out sink-first"
 
 mkdir -p "$TMP/invoke-bin"
 cat > "$TMP/invoke-bin/incus" <<'SH'

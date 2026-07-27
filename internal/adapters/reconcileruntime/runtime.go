@@ -103,6 +103,15 @@ func (runtime Runtime) ApplyStage(ctx context.Context, stage ports.ReconcileStag
 		if err != nil {
 			return err
 		}
+		if runtime.Yard.NestedE2EVMs {
+			if err := runtime.runScriptEnvironment(ctx, runtime.Stderr, map[string]string{
+				"SUBYARD_TEST_VMS_SINK_ENGINE_SOURCE": runtime.environmentValue(
+					"SUBYARD_DISPATCHER_PATH",
+				),
+			}, "install-test-vms-host-sink.sh", "--yes"); err != nil {
+				return err
+			}
+		}
 		return runtime.testVMBackend(intent.Desired).Apply(ctx)
 	case ports.ReconcileStageKeys:
 		if err := runtime.runScript(ctx, runtime.Stderr, "install-key-tools.sh", "--yes"); err != nil {
@@ -598,7 +607,45 @@ func (runtime Runtime) testVMsConverged(ctx context.Context) (bool, error) {
 		}
 		return false, err
 	}
+	if runtime.Yard.NestedE2EVMs && !runtime.testVMHostSinkConverged(ctx) {
+		return false, nil
+	}
 	return runtime.testVMBackend(intent.Desired).Converged(ctx)
+}
+
+func (runtime Runtime) testVMHostSinkConverged(ctx context.Context) bool {
+	sink := runtime.environmentDefault(
+		"SUBYARD_TEST_VMS_SINK_PATH",
+		"/usr/local/libexec/subyard/test-vms-host-sink",
+	)
+	engine := runtime.environmentValue("SUBYARD_DISPATCHER_PATH")
+	if engine == "" || !executable(sink) || !sameFile(engine, sink) {
+		return false
+	}
+	service := runtime.environmentDefault(
+		"SUBYARD_TEST_VMS_SINK_SERVICE_PATH",
+		"/etc/systemd/system/subyard-test-vms-host-sink.service",
+	)
+	timer := runtime.environmentDefault(
+		"SUBYARD_TEST_VMS_SINK_TIMER_PATH",
+		"/etc/systemd/system/subyard-test-vms-host-sink.timer",
+	)
+	contents, err := os.ReadFile(service)
+	if err != nil ||
+		!hasLine(string(contents), "ExecStart="+sink+" _test-vms-host-sink sync") ||
+		!strings.Contains(
+			string(contents),
+			`Environment="SUBYARD_HOME=`+runtime.Yard.Paths.DataHome+`"`,
+		) {
+		return false
+	}
+	systemctl, err := runtime.executableFromPath("systemctl")
+	if err != nil {
+		return false
+	}
+	command := exec.CommandContext(ctx, systemctl, "is-enabled", "--quiet", filepath.Base(timer))
+	command.Env = runtime.Environment
+	return command.Run() == nil
 }
 
 func (runtime Runtime) testVMBackend(desired string) *testvmsruntime.Backend {

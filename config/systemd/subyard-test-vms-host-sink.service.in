@@ -1,0 +1,14 @@
+[Unit]
+Description=Collect Subyard test VM broker events on the physical owner host
+After=incus.service
+Requires=incus.service
+
+[Service]
+Type=oneshot
+Environment="SUBYARD_HOME=@SUBYARD_HOME@"
+Environment="SUBYARD_OPERATOR_GID=@SUBYARD_OPERATOR_GID@"
+ExecStart=@SUBYARD_TEST_VMS_HOST_SINK@ _test-vms-host-sink sync
+User=root
+Group=root
+UMask=0027
+

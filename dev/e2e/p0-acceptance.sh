@@ -23,6 +23,7 @@ SOURCE_HOST_STARTED=0
 CANDIDATE_HASH=''
 CAPACITY_LOG_DIR=''
 PEERS_ONLY="${SUBYARD_P0_PEERS_ONLY:-0}"
+BROKER_RECOVERY_ONLY="${SUBYARD_P0_BROKER_RECOVERY_ONLY:-0}"
 declare -A CAPACITY_PID=()
 declare -A CAPACITY_FLAG=()
 declare -A DEFAULT_BUILD_CACHE_BEFORE=()
@@ -419,6 +420,7 @@ run_lanes() {
 
 LOCAL_TEMP="$(mktemp -d "${TMPDIR:-/tmp}/subyard-agent-e2e.XXXXXX")"
 LEASE_PURPOSE=p0-acceptance
+[ "$BROKER_RECOVERY_ONLY" = 0 ] || LEASE_PURPOSE=p0-broker-recovery
 acquire_lease
 start_lease_keeper
 CONFIG="$CLIENT_CONFIG"
@@ -433,6 +435,17 @@ printf '  [ .. ] exact public candidate sha256=%s\n' "$CANDIDATE_HASH"
 # numeric-token contract. Derive it from the lease identity instead of the retired allocation ID.
 TOKEN="$((16#${LEASE_ID:0:8}))${LEASE_EPOCH}"
 [[ "$TOKEN" =~ ^[0-9]+$ ]] || die 'lease token is invalid'
+if [ "$BROKER_RECOVERY_ONLY" = 1 ]; then
+  HOME_STATE_BEFORE[1]="$(home_state 1)"
+  run_vm 1 capacity-preflight
+  run_vm 1 broker-recovery-owner
+  run_vm 1 capacity-verify-cleanup
+  [ "$(home_state 1)" = "${HOME_STATE_BEFORE[1]}" ] \
+    || die 'VM1 operator home permissions or ownership changed'
+  assert_no_worktrees
+  printf 'ok: P0 broker logging and quarantine rebuild acceptance passed\n'
+  exit 0
+fi
 vm1_ip="$(ssh -F "$CONFIG" -G e2e-vm-1 | awk '$1=="hostname" {print $2; exit}')"
 vm2_ip="$(ssh -F "$CONFIG" -G e2e-vm-2 | awk '$1=="hostname" {print $2; exit}')"
 

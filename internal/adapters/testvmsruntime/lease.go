@@ -17,6 +17,7 @@ import (
 
 const (
 	LeaseSchemaVersion            = 1
+	LeaseRecoverySchemaVersion    = 1
 	LeaseAttributionSchemaVersion = 1
 	LeaseTTL                      = 10 * time.Minute
 )
@@ -35,6 +36,7 @@ const (
 	SlotHeld         SlotState = "held"
 	SlotDraining     SlotState = "draining"
 	SlotQuarantined  SlotState = "quarantined"
+	SlotRecovering   SlotState = "recovering"
 	SlotUnavailable  SlotState = "unavailable"
 )
 
@@ -58,6 +60,11 @@ type LeaseSlot struct {
 	LastHeartbeatAt       time.Time `json:"last_heartbeat_at,omitempty"`
 	ExpiresAt             time.Time `json:"expires_at,omitempty"`
 	FailureReason         string    `json:"failure_reason,omitempty"`
+	LastFailureEventID    string    `json:"last_failure_event_id,omitempty"`
+	IncidentID            string    `json:"incident_id,omitempty"`
+	RecoveryAttempt       uint64    `json:"recovery_attempt"`
+	NextRecoveryAt        time.Time `json:"next_recovery_at,omitempty"`
+	RecoveryStartedAt     time.Time `json:"recovery_started_at,omitempty"`
 }
 
 type LeasePool struct {
@@ -65,6 +72,23 @@ type LeasePool struct {
 	ResourceType  string      `json:"resource_type"`
 	ResourceID    string      `json:"resource_id"`
 	Slots         []LeaseSlot `json:"slots"`
+}
+
+type leaseRecoveryJournal struct {
+	SchemaVersion int                 `json:"schema_version"`
+	Slots         []leaseRecoverySlot `json:"slots"`
+}
+
+type leaseRecoverySlot struct {
+	SlotID             string    `json:"slot_id"`
+	ResourceGeneration uint64    `json:"resource_generation"`
+	LeaseEpoch         uint64    `json:"lease_epoch"`
+	State              SlotState `json:"state"`
+	LastFailureEventID string    `json:"last_failure_event_id,omitempty"`
+	IncidentID         string    `json:"incident_id,omitempty"`
+	RecoveryAttempt    uint64    `json:"recovery_attempt"`
+	NextRecoveryAt     time.Time `json:"next_recovery_at,omitempty"`
+	RecoveryStartedAt  time.Time `json:"recovery_started_at,omitempty"`
 }
 
 type LeaseGrant struct {
@@ -191,6 +215,11 @@ func (store LeaseStore) acquire(
 			slot.LastHeartbeatAt = now
 			slot.ExpiresAt = now.Add(LeaseTTL)
 			slot.FailureReason = ""
+			slot.LastFailureEventID = ""
+			slot.IncidentID = ""
+			slot.RecoveryAttempt = 0
+			slot.NextRecoveryAt = time.Time{}
+			slot.RecoveryStartedAt = time.Time{}
 			grant = LeaseGrant{
 				SlotID: slot.SlotID, LeaseID: leaseID, Capability: capability,
 				LeaseEpoch: slot.LeaseEpoch, ExpiresAt: slot.ExpiresAt,
@@ -262,6 +291,7 @@ func (store LeaseStore) FinishDrain(slotID string, stopErr error) error {
 		if stopErr != nil {
 			slot.State = SlotQuarantined
 			slot.FailureReason = boundedReason(stopErr.Error())
+			slot.NextRecoveryAt = store.now()
 			return nil
 		}
 		clearLease(slot)
@@ -306,18 +336,7 @@ func (store LeaseStore) BeginDrainSlot(slotID, reason string) error {
 }
 
 func (store LeaseStore) BeginRecovery(slotID string) error {
-	err := store.withLock(true, func(pool *LeasePool) error {
-		slot, err := findSlot(pool, slotID)
-		if err != nil {
-			return err
-		}
-		if slot.State != SlotQuarantined {
-			return fmt.Errorf("slot %s is %s, not quarantined", slotID, slot.State)
-		}
-		slot.State = SlotDraining
-		slot.FailureReason = "operator recovery"
-		return nil
-	})
+	_, _, err := store.BeginScheduledRecovery(slotID, true)
 	if !errors.Is(err, ErrCorruptLeaseState) && !errors.Is(err, ErrUnsupportedLeaseState) {
 		return err
 	}
@@ -325,11 +344,152 @@ func (store LeaseStore) BeginRecovery(slotID string) error {
 }
 
 func (store LeaseStore) Quarantine(grant LeaseGrant, cause error) error {
-	return store.mutateOwned(grant, func(slot *LeaseSlot, _ time.Time) error {
+	return store.mutateOwned(grant, func(slot *LeaseSlot, now time.Time) error {
 		slot.State = SlotQuarantined
 		slot.FailureReason = boundedReason(cause.Error())
+		slot.NextRecoveryAt = now
 		return nil
 	})
+}
+
+func (store LeaseStore) SetQuarantineIncident(
+	slotID, failureEventID, incidentID string,
+) error {
+	if !brokerRecordID.MatchString(failureEventID) ||
+		!brokerRecordID.MatchString(incidentID) {
+		return errors.New("invalid quarantine incident identity")
+	}
+	return store.withLock(true, func(pool *LeasePool) error {
+		slot, err := findSlot(pool, slotID)
+		if err != nil {
+			return err
+		}
+		if slot.State != SlotQuarantined && slot.State != SlotRecovering {
+			return fmt.Errorf("slot %s is %s, not quarantined", slotID, slot.State)
+		}
+		slot.LastFailureEventID = failureEventID
+		slot.IncidentID = incidentID
+		if slot.NextRecoveryAt.IsZero() {
+			slot.NextRecoveryAt = store.now()
+		}
+		return nil
+	})
+}
+
+func (store LeaseStore) InterruptRecovery(slotID string, cause error) error {
+	if cause == nil {
+		return errors.New("interrupted recovery cause is required")
+	}
+	return store.withLock(true, func(pool *LeasePool) error {
+		slot, err := findSlot(pool, slotID)
+		if err != nil {
+			return err
+		}
+		if slot.State != SlotRecovering {
+			return fmt.Errorf("slot %s is %s, not recovering", slotID, slot.State)
+		}
+		slot.State = SlotQuarantined
+		slot.FailureReason = boundedReason(cause.Error())
+		slot.NextRecoveryAt = store.now()
+		slot.RecoveryStartedAt = time.Time{}
+		return nil
+	})
+}
+
+func (store LeaseStore) BeginScheduledRecovery(
+	slotID string,
+	force bool,
+) (LeaseSlot, bool, error) {
+	var snapshot LeaseSlot
+	started := false
+	err := store.withLock(true, func(pool *LeasePool) error {
+		slot, err := findSlot(pool, slotID)
+		if err != nil {
+			return err
+		}
+		if slot.State == SlotRecovering {
+			return nil
+		}
+		if slot.State != SlotQuarantined {
+			return fmt.Errorf("slot %s is %s, not quarantined", slotID, slot.State)
+		}
+		now := store.now()
+		if !force && !slot.NextRecoveryAt.IsZero() && now.Before(slot.NextRecoveryAt) {
+			snapshot = *slot
+			return nil
+		}
+		slot.State = SlotRecovering
+		slot.RecoveryAttempt++
+		slot.RecoveryStartedAt = now
+		slot.NextRecoveryAt = time.Time{}
+		snapshot = *slot
+		started = true
+		return nil
+	})
+	return snapshot, started, err
+}
+
+func (store LeaseStore) FinishRecovery(
+	slotID string,
+	cause error,
+	failureEventID, incidentID string,
+) (LeaseSlot, error) {
+	var snapshot LeaseSlot
+	err := store.withLock(true, func(pool *LeasePool) error {
+		slot, err := findSlot(pool, slotID)
+		if err != nil {
+			return err
+		}
+		if slot.State != SlotRecovering {
+			return fmt.Errorf("slot %s is %s, not recovering", slotID, slot.State)
+		}
+		now := store.now()
+		if cause != nil {
+			slot.State = SlotQuarantined
+			slot.FailureReason = boundedReason(cause.Error())
+			if failureEventID != "" {
+				if !brokerRecordID.MatchString(failureEventID) {
+					return errors.New("invalid recovery failure event identity")
+				}
+				slot.LastFailureEventID = failureEventID
+			}
+			if incidentID != "" {
+				if !brokerRecordID.MatchString(incidentID) {
+					return errors.New("invalid recovery incident identity")
+				}
+				slot.IncidentID = incidentID
+			}
+			slot.NextRecoveryAt = now.Add(recoveryDelay(slot.RecoveryAttempt))
+			slot.RecoveryStartedAt = time.Time{}
+			snapshot = *slot
+			return nil
+		}
+		lastEvent := slot.LastFailureEventID
+		lastIncident := slot.IncidentID
+		attempt := slot.RecoveryAttempt
+		clearLease(slot)
+		slot.ResourceGeneration++
+		slot.State = SlotAvailable
+		slot.LastFailureEventID = lastEvent
+		slot.IncidentID = lastIncident
+		slot.RecoveryAttempt = attempt
+		snapshot = *slot
+		return nil
+	})
+	return snapshot, err
+}
+
+func recoveryDelay(attempt uint64) time.Duration {
+	switch attempt {
+	case 0, 1:
+		return time.Minute
+	case 2:
+		return 5 * time.Minute
+	case 3:
+		return 15 * time.Minute
+	default:
+		return time.Hour
+	}
 }
 
 func (store LeaseStore) mutateOwned(
@@ -363,7 +523,7 @@ func (store LeaseStore) withLock(write bool, operation func(*LeasePool) error) e
 		}
 		after, _ := json.Marshal(*pool)
 		if write || string(before) != string(after) {
-			return writeJSONAtomic(store.Path, *pool)
+			return store.writePool(*pool)
 		}
 		return nil
 	})
@@ -404,11 +564,105 @@ func (store LeaseStore) load() (LeasePool, error) {
 	if err := json.Unmarshal(payload, &pool); err != nil {
 		return pool, fmt.Errorf("%w: %v", ErrCorruptLeaseState, err)
 	}
-	if pool.SchemaVersion != LeaseSchemaVersion || pool.ResourceType != "agent-e2e" ||
-		pool.ResourceID != "test-vms" {
+	if pool.SchemaVersion != LeaseSchemaVersion {
 		return pool, ErrUnsupportedLeaseState
 	}
+	if pool.ResourceType != "agent-e2e" || pool.ResourceID != "test-vms" {
+		return pool, ErrUnsupportedLeaseState
+	}
+	if err := store.mergeRecoveryJournal(&pool); err != nil {
+		return pool, err
+	}
 	return pool, nil
+}
+
+func (store LeaseStore) recoveryJournalPath() string {
+	return store.Path + ".recovery-v1.json"
+}
+
+func (store LeaseStore) writePool(pool LeasePool) error {
+	journal := leaseRecoveryJournal{SchemaVersion: LeaseRecoverySchemaVersion}
+	for _, slot := range pool.Slots {
+		if !slotHasRecoveryMetadata(slot) {
+			continue
+		}
+		journal.Slots = append(journal.Slots, leaseRecoverySlot{
+			SlotID:             slot.SlotID,
+			ResourceGeneration: slot.ResourceGeneration,
+			LeaseEpoch:         slot.LeaseEpoch,
+			State:              slot.State,
+			LastFailureEventID: slot.LastFailureEventID,
+			IncidentID:         slot.IncidentID,
+			RecoveryAttempt:    slot.RecoveryAttempt,
+			NextRecoveryAt:     slot.NextRecoveryAt,
+			RecoveryStartedAt:  slot.RecoveryStartedAt,
+		})
+	}
+	journalPath := store.recoveryJournalPath()
+	if len(journal.Slots) == 0 {
+		if err := os.Remove(journalPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	} else if err := writeJSONAtomic(journalPath, journal); err != nil {
+		return err
+	}
+	return writeJSONAtomic(store.Path, pool)
+}
+
+func (store LeaseStore) mergeRecoveryJournal(pool *LeasePool) error {
+	payload, err := os.ReadFile(store.recoveryJournalPath())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var journal leaseRecoveryJournal
+	if err := json.Unmarshal(payload, &journal); err != nil ||
+		journal.SchemaVersion != LeaseRecoverySchemaVersion {
+		return fmt.Errorf("%w: invalid lease recovery journal", ErrCorruptLeaseState)
+	}
+	seen := map[string]bool{}
+	for _, recovery := range journal.Slots {
+		if !brokerSlotID.MatchString(recovery.SlotID) ||
+			seen[recovery.SlotID] ||
+			recovery.ResourceGeneration == 0 ||
+			(recovery.LastFailureEventID != "" &&
+				!brokerRecordID.MatchString(recovery.LastFailureEventID)) ||
+			(recovery.IncidentID != "" &&
+				!brokerRecordID.MatchString(recovery.IncidentID)) {
+			return fmt.Errorf("%w: invalid lease recovery metadata", ErrCorruptLeaseState)
+		}
+		switch recovery.State {
+		case SlotAvailable, SlotQuarantined, SlotRecovering:
+		default:
+			return fmt.Errorf("%w: invalid lease recovery state", ErrCorruptLeaseState)
+		}
+		seen[recovery.SlotID] = true
+		slot, err := findSlot(pool, recovery.SlotID)
+		if err != nil ||
+			slot.ResourceGeneration != recovery.ResourceGeneration ||
+			slot.LeaseEpoch != recovery.LeaseEpoch ||
+			slot.State != recovery.State {
+			continue
+		}
+		slot.LastFailureEventID = recovery.LastFailureEventID
+		slot.IncidentID = recovery.IncidentID
+		slot.RecoveryAttempt = recovery.RecoveryAttempt
+		slot.NextRecoveryAt = recovery.NextRecoveryAt
+		slot.RecoveryStartedAt = recovery.RecoveryStartedAt
+	}
+	return nil
+}
+
+func slotHasRecoveryMetadata(slot LeaseSlot) bool {
+	return slot.State == SlotQuarantined ||
+		slot.State == SlotRecovering ||
+		slot.LastFailureEventID != "" ||
+		slot.IncidentID != "" ||
+		slot.RecoveryAttempt != 0 ||
+		!slot.NextRecoveryAt.IsZero() ||
+		!slot.RecoveryStartedAt.IsZero()
 }
 
 func (store LeaseStore) rebuildCorruptPoolForRecovery(slotID string) error {
@@ -425,6 +679,14 @@ func (store LeaseStore) rebuildCorruptPoolForRecovery(slotID string) error {
 			return loadErr
 		}
 		backup := fmt.Sprintf("%s.corrupt-%d", store.Path, store.now().UnixNano())
+		journalPath := store.recoveryJournalPath()
+		if _, err := os.Stat(journalPath); err == nil {
+			if err := os.Rename(journalPath, backup+".recovery-v1.json"); err != nil {
+				return fmt.Errorf("preserve corrupt lease recovery metadata: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
 		if err := os.Rename(store.Path, backup); err != nil {
 			return fmt.Errorf("preserve corrupt lease state: %w", err)
 		}
@@ -436,15 +698,15 @@ func (store LeaseStore) rebuildCorruptPoolForRecovery(slotID string) error {
 			state := SlotQuarantined
 			reason := "lease state recovery required"
 			if index == number {
-				state = SlotDraining
+				state = SlotQuarantined
 				reason = "operator recovery"
 			}
 			pool.Slots = append(pool.Slots, LeaseSlot{
 				SlotID: fmt.Sprintf("slot-%03d", index), ResourceGeneration: 1,
-				State: state, FailureReason: reason,
+				State: state, FailureReason: reason, NextRecoveryAt: store.now(),
 			})
 		}
-		return writeJSONAtomic(store.Path, pool)
+		return store.writePool(pool)
 	})
 }
 
@@ -491,7 +753,7 @@ func (store LeaseStore) PrepareResize() ([]LeaseSlot, error) {
 			if err := reconcileSlotCount(pool, store.SlotCount); err != nil {
 				return err
 			}
-			return writeJSONAtomic(store.Path, *pool)
+			return store.writePool(*pool)
 		}
 		if len(pool.Slots) == store.SlotCount {
 			return nil
@@ -511,7 +773,7 @@ func (store LeaseStore) PrepareResize() ([]LeaseSlot, error) {
 			slot.FailureReason = "pool resize"
 			retiring = append(retiring, *slot)
 		}
-		return writeJSONAtomic(store.Path, *pool)
+		return store.writePool(*pool)
 	})
 	return retiring, err
 }
@@ -550,7 +812,7 @@ func (store LeaseStore) CommitResize() error {
 			}
 		}
 		pool.Slots = pool.Slots[:store.SlotCount]
-		return writeJSONAtomic(store.Path, *pool)
+		return store.writePool(*pool)
 	})
 }
 
@@ -590,6 +852,11 @@ func clearLease(slot *LeaseSlot) {
 	slot.LastHeartbeatAt = time.Time{}
 	slot.ExpiresAt = time.Time{}
 	slot.FailureReason = ""
+	slot.LastFailureEventID = ""
+	slot.IncidentID = ""
+	slot.RecoveryAttempt = 0
+	slot.NextRecoveryAt = time.Time{}
+	slot.RecoveryStartedAt = time.Time{}
 }
 
 func legacyLeaseContext(label, purpose string) *LeaseContext {
@@ -722,5 +989,8 @@ func writeJSONAtomic(path string, value any) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
 }

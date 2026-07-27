@@ -99,7 +99,12 @@ func (runtime *Runtime) ReleaseSlot(ctx context.Context, grant LeaseGrant) error
 	if err != nil {
 		return err
 	}
-	return runtime.slotRuntime(slot, "").stopRetained(ctx)
+	snapshot, _ := storeSlot(LeaseStore{
+		Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
+	}, grant.SlotID)
+	evidence, err := runtime.slotRuntime(slot, "").stopRetainedWithEvidence(ctx)
+	runtime.recordStopOutcome(snapshot, evidence, err)
+	return err
 }
 
 func (runtime *Runtime) ReapExpired(ctx context.Context, store LeaseStore) error {
@@ -113,17 +118,77 @@ func (runtime *Runtime) ReapExpired(ctx context.Context, store LeaseStore) error
 		if slot.State != SlotDraining {
 			continue
 		}
+		kind := "lease.fence"
+		if slot.FailureReason == "heartbeat expired; cleanup required" {
+			kind = "lease.expired"
+		}
+		_, _ = runtime.eventRecorder().Record(BrokerEvent{
+			Kind:               kind,
+			SlotID:             slot.SlotID,
+			ResourceGeneration: slot.ResourceGeneration,
+			LeaseEpoch:         slot.LeaseEpoch,
+			FromState:          SlotHeld,
+			ToState:            SlotDraining,
+			Context:            leaseContextFromSlot(slot),
+		})
 		number, parseErr := slotNumber(slot.SlotID, runtime.Config.SlotCount)
 		if parseErr != nil {
 			result = errors.Join(result, parseErr)
 			continue
 		}
-		stopErr := runtime.slotRuntime(number, "").stopRetained(ctx)
+		evidence, stopErr := runtime.slotRuntime(number, "").stopRetainedWithEvidence(ctx)
+		runtime.recordStopOutcome(slot, evidence, stopErr)
 		if finishErr := store.FinishDrain(slot.SlotID, stopErr); finishErr != nil {
 			result = errors.Join(result, finishErr)
 		}
 		if stopErr != nil {
+			_, _ = runtime.eventRecorder().Record(BrokerEvent{
+				Kind:               "lease.stop_failed",
+				SlotID:             slot.SlotID,
+				ResourceGeneration: slot.ResourceGeneration,
+				LeaseEpoch:         slot.LeaseEpoch,
+				FromState:          SlotDraining,
+				ToState:            SlotQuarantined,
+				Error:              stopErr.Error(),
+				Context:            leaseContextFromSlot(slot),
+			})
+			if incidentErr := runtime.HandleQuarantine(
+				ctx,
+				store,
+				slot.SlotID,
+				stopErr,
+			); incidentErr != nil {
+				result = errors.Join(result, incidentErr)
+			}
 			result = errors.Join(result, stopErr)
+		} else {
+			_, _ = runtime.eventRecorder().Record(BrokerEvent{
+				Kind:               "lease.available",
+				SlotID:             slot.SlotID,
+				ResourceGeneration: slot.ResourceGeneration,
+				LeaseEpoch:         slot.LeaseEpoch,
+				FromState:          SlotDraining,
+				ToState:            SlotAvailable,
+				Context:            leaseContextFromSlot(slot),
+			})
+		}
+	}
+	pool, err = store.Status()
+	if err != nil {
+		return errors.Join(result, err)
+	}
+	now := runtime.Now().UTC()
+	for _, slot := range pool.Slots {
+		if !dueForRecovery(slot, now) {
+			continue
+		}
+		if recoveryErr := runtime.RecoverScheduled(
+			ctx,
+			store,
+			slot.SlotID,
+			false,
+		); recoveryErr != nil {
+			result = errors.Join(result, recoveryErr)
 		}
 	}
 	return result
@@ -144,17 +209,13 @@ func (runtime *Runtime) RevokeSlot(ctx context.Context, store LeaseStore, slotID
 }
 
 func (runtime *Runtime) RecoverSlot(ctx context.Context, store LeaseStore, slotID string) error {
-	if err := store.BeginRecovery(slotID); err != nil {
-		return err
+	if _, err := storeSlot(store, slotID); errors.Is(err, ErrCorruptLeaseState) ||
+		errors.Is(err, ErrUnsupportedLeaseState) {
+		if rebuildErr := store.rebuildCorruptPoolForRecovery(slotID); rebuildErr != nil {
+			return rebuildErr
+		}
 	}
-	number, err := slotNumber(slotID, runtime.Config.SlotCount)
-	if err != nil {
-		return err
-	}
-	child := runtime.slotRuntime(number, "")
-	child.prepareDefaults()
-	recoverErr := child.recoverErrored(ctx)
-	return store.FinishDrain(slotID, recoverErr)
+	return runtime.RecoverScheduled(ctx, store, slotID, true)
 }
 
 func (runtime *Runtime) ReconcilePool(ctx context.Context, store LeaseStore) error {
@@ -257,50 +318,6 @@ func (runtime *Runtime) cleanupRetiringSlot(ctx context.Context, slot int) error
 	return nil
 }
 
-func (runtime *Runtime) recoverErrored(ctx context.Context) error {
-	if err := runtime.restrictAgentAccess("operator-recovery"); err != nil {
-		return err
-	}
-	if !runtime.projectExists(ctx) {
-		return nil
-	}
-	if err := runtime.requireProjectMarker(ctx); err != nil {
-		return err
-	}
-	failedFirstBoot := recordedFirstBootFailure(runtime.Config.failureLog())
-	for selector := 1; selector <= 2; selector++ {
-		vm := runtime.Config.vm(selector)
-		if !runtime.vmExists(ctx, vm) {
-			continue
-		}
-		if err := runtime.requireVMMarker(ctx, vm); err != nil {
-			return err
-		}
-		state, err := runtime.incus(ctx, "list", vm, "--project", runtime.Config.Project,
-			"-f", "csv", "-c", "s")
-		if err != nil {
-			return err
-		}
-		// A cloud-init error is persisted on disk and cannot be repaired by
-		// stop/start. An explicit operator recovery may recreate only the exact
-		// marker-owned disposable pair; ordinary release always retains disks.
-		if strings.TrimSpace(state) == "ERROR" || failedFirstBoot {
-			if _, err := runtime.incus(ctx, "delete", "--force", vm,
-				"--project", runtime.Config.Project); err != nil {
-				return err
-			}
-		}
-	}
-	// Recovery is complete only after the same fencing and stop sequence used by release. A
-	// transient guest-agent or stop failure therefore keeps the slot quarantined and retryable.
-	return runtime.stopRetained(ctx)
-}
-
-func recordedFirstBootFailure(path string) bool {
-	diagnostics, err := os.ReadFile(path)
-	return err == nil && strings.Contains(string(diagnostics), "cloud-init status")
-}
-
 func (runtime *Runtime) prepareDefaults() {
 	if runtime.Runner == nil {
 		runtime.Runner = ProcessRunner{}
@@ -316,6 +333,14 @@ func (runtime *Runtime) prepareDefaults() {
 	}
 	if runtime.Sleep == nil {
 		runtime.Sleep = sleepContext
+	}
+	if runtime.Events == nil {
+		recorder := EventRecorder{
+			StateDir: runtime.Config.StateDir,
+			Source:   runtime.Config.BrokerSource,
+			Now:      runtime.Now,
+		}
+		runtime.Events = &recorder
 	}
 }
 
@@ -333,6 +358,7 @@ func (runtime *Runtime) slotRuntime(slot int, publicKey string) *Runtime {
 		Config: cfg, ConfigPath: runtime.ConfigPath, Runner: runtime.Runner,
 		Stdout: runtime.Stdout, Stderr: runtime.Stderr, Now: runtime.Now, Sleep: runtime.Sleep,
 		AvailableBytes: runtime.AvailableBytes, ExecutablePath: runtime.ExecutablePath,
+		Events: runtime.Events,
 	}
 }
 
@@ -411,14 +437,29 @@ func slotNumberUnbounded(slotID string) (int, error) {
 }
 
 func (runtime *Runtime) stopRetained(ctx context.Context) error {
+	_, err := runtime.stopRetainedWithEvidence(ctx)
+	return err
+}
+
+type stopEvidence struct {
+	guestKeyCleanupAttempts int
+	guestKeyCleanupDeferred int
+}
+
+func (runtime *Runtime) stopRetainedWithEvidence(ctx context.Context) (stopEvidence, error) {
+	var evidence stopEvidence
 	if err := runtime.restrictAgentAccess("released"); err != nil {
-		return err
+		return evidence, err
 	}
-	if !runtime.projectExists(ctx) {
-		return nil
+	exists, err := runtime.projectPresence(ctx)
+	if err != nil {
+		return evidence, fmt.Errorf("inventory retained slot project: %w", err)
+	}
+	if !exists {
+		return evidence, nil
 	}
 	if err := runtime.requireProjectMarker(ctx); err != nil {
-		return err
+		return evidence, err
 	}
 	for selector := 1; selector <= 2; selector++ {
 		vm := runtime.Config.vm(selector)
@@ -428,15 +469,17 @@ func (runtime *Runtime) stopRetained(ctx context.Context) error {
 		state, err := runtime.incus(ctx, "list", vm, "--project", runtime.Config.Project,
 			"-f", "csv", "-c", "s")
 		if err != nil {
-			return err
+			return evidence, err
 		}
 		if strings.TrimSpace(state) == "RUNNING" {
+			evidence.guestKeyCleanupAttempts++
 			keyCleanupErr := runtime.installManagedGuestKeys(ctx, vm)
 			stopErr := runtime.stopRunningVM(ctx, vm)
 			if stopErr != nil {
-				return errors.Join(keyCleanupErr, stopErr)
+				return evidence, errors.Join(keyCleanupErr, stopErr)
 			}
 			if keyCleanupErr != nil {
+				evidence.guestKeyCleanupDeferred++
 				// A rebooting guest can temporarily lose its Incus agent. The data-account
 				// forwarding key was already fenced above, so a verified stop closes access.
 				// The next acquire replaces guest lease keys before publishing forwarding.
@@ -445,10 +488,51 @@ func (runtime *Runtime) stopRetained(ctx context.Context) error {
 					vm)
 			}
 		} else if strings.TrimSpace(state) != "STOPPED" {
-			return fmt.Errorf("%s cannot be fenced from state %q", vm, strings.TrimSpace(state))
+			return evidence, fmt.Errorf(
+				"%s cannot be fenced from state %q",
+				vm,
+				strings.TrimSpace(state),
+			)
 		}
 	}
-	return nil
+	return evidence, nil
+}
+
+func (runtime *Runtime) recordStopOutcome(
+	slot LeaseSlot,
+	evidence stopEvidence,
+	stopErr error,
+) {
+	if slot.SlotID == "" {
+		return
+	}
+	if evidence.guestKeyCleanupAttempts != 0 {
+		cause := error(nil)
+		if evidence.guestKeyCleanupDeferred != 0 {
+			cause = fmt.Errorf(
+				"guest key cleanup deferred for %d of %d running VMs after verified stop",
+				evidence.guestKeyCleanupDeferred,
+				evidence.guestKeyCleanupAttempts,
+			)
+		}
+		_, _ = runtime.eventRecorder().Record(BrokerEvent{
+			Kind:               "guest_key.cleanup",
+			SlotID:             slot.SlotID,
+			ResourceGeneration: slot.ResourceGeneration,
+			LeaseEpoch:         slot.LeaseEpoch,
+			Error:              errorStringOrEmpty(cause),
+			Context:            leaseContextFromSlot(slot),
+		})
+	}
+	if stopErr == nil {
+		_, _ = runtime.eventRecorder().Record(BrokerEvent{
+			Kind:               "lease.stop_succeeded",
+			SlotID:             slot.SlotID,
+			ResourceGeneration: slot.ResourceGeneration,
+			LeaseEpoch:         slot.LeaseEpoch,
+			Context:            leaseContextFromSlot(slot),
+		})
+	}
 }
 
 func (runtime *Runtime) stopRunningVM(ctx context.Context, vm string) error {

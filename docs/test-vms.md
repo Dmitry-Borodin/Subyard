@@ -24,6 +24,9 @@ yard -Y test-yard status
 yard -Y test-yard test-vms status
 ```
 
+A `test-vms` initialization also converges a root-owned physical-host log sink and its one-minute
+timer. The outer yard receives no mount or socket that can write the host log root.
+
 A fresh yard with the effective `test-vms` capability starts with desired power `running`. Later
 `yard -Y test-yard stop` and `start` persist the normal managed power intent. Agent acquire never
 changes it. Stopping the outer yard drains all active slots before shutdown.
@@ -79,8 +82,10 @@ The active holder is reported as `project + checkout + run + purpose`. Project i
 label, checkout is a persistent opaque worktree ID, and run is a new public correlation ID per
 acquire. These fields are untrusted display metadata: authorization and fencing still use hidden
 lease credentials. Status never publishes controller fingerprints, lease IDs/capabilities, absolute
-checkout paths, Git credentials, command lines or guest endpoints. For an available retained slot,
-the attribution columns are empty.
+checkout paths, Git credentials, command lines, guest endpoints or the full failure reason. A
+quarantined or recovering slot instead exposes bounded recovery metadata:
+`last_failure_event_id`, `incident_id`, `recovery_attempt` and `next_recovery_at`. For an available
+retained slot, the attribution columns are empty.
 
 Run against both VMs of one automatically selected slot:
 
@@ -142,13 +147,56 @@ If a guest is rebooting and its agent is temporarily unavailable, the already-fe
 still permits a verified stop. The next acquire replaces every guest lease key before it publishes
 forwarding, so the previous credential cannot become reachable again.
 
-Provisioning, fencing or stop failure makes only that slot `quarantined`. Its disks remain for
-diagnosis and it is never handed to another caller. Lease identity is fenced by slot generation,
-lease epoch, lease ID and a server-side capability verifier; old credentials cannot revive after
-release or reuse.
+Provisioning, fencing or stop failure makes only that slot `quarantined`, and it is never handed to
+another caller. Lease identity is fenced by slot generation, lease epoch, lease ID and a server-side
+capability verifier; old credentials cannot revive after release or reuse.
 
-`test-vms recover --slot N` fences the slot and retains healthy disks. Only marker-owned VMs in
-`ERROR` or with a recorded failed first boot may be recreated.
+Quarantine is destructive because these slots are disposable. Before deletion, the broker fsyncs
+an immutable incident with the available project, VM and service diagnostics to its root-only local
+spool. It then verifies the managed project and every existing VM marker, refuses projects with
+foreign instances, deletes both VM disks in the slot pair, provisions both guests through the
+normal fresh-acquire path, verifies their stop and increments `resource_generation` before making
+the slot `available`. Failure to persist the local incident or any ambiguous ownership evidence
+leaves the slot quarantined without deletion.
+
+The root reaper starts recovery immediately after the incident is durable. Failed rebuilds retry
+after 1, 5 and 15 minutes, then hourly without an attempt limit. A temporary Incus, image, network
+or capacity failure delays recovery; it does not turn quarantine into a permanent terminal state.
+The manual command starts the same full-pair workflow immediately:
+
+```sh
+yard -Y test-yard test-vms recover --slot 2
+```
+
+## Broker diagnostics
+
+Broker and reaper lifecycle events from every `test-vms` pool on one physical owner host are
+collected in:
+
+```text
+$SUBYARD_HOME/logs/test-vms-broker.jsonl
+```
+
+Read the host-wide structured log without selecting or starting a yard:
+
+```sh
+yard test-vms logs
+yard test-vms logs -n 50 --slot 2
+yard test-vms logs -f
+```
+
+Events contain UTC time, source pool, event ID, slot generation and lease epoch, state transition,
+recovery timing and the available lease attribution. They do not contain capabilities, controller
+fingerprints, keys, guest command payloads or agent output. Full bounded evidence is stored as an
+immutable JSON artifact under `$SUBYARD_HOME/logs/test-vms-broker-incidents/` and referenced by
+`incident_id`.
+
+The broker writes its local durable spool first. The physical-host sink validates and ingests
+records idempotently by ID, then acknowledges them; sink downtime therefore delays only host-wide
+visibility and never blocks a rebuild. Unresolved incidents are retained. Resolved artifacts are
+retained for 30 days, with a 512 MiB cap across resolved artifacts. Structured events are retained
+for 90 days with a 128 MiB cap; events belonging to an incident that is still retained are protected
+from event rotation, so its complete generation timeline remains available with the artifact.
 
 ## Isolation boundary
 
@@ -168,8 +216,9 @@ The operator owns outer `start`, `stop` and teardown. Agents use only leases all
 broker. An unavailable outer yard produces the stable `test environment unavailable` error instead
 of attempting recovery.
 
-A runtime release automatically reconciles an enabled broker when its outer `test-yard` and broker
-service are active, then verifies the installed engine and facade status. A stopped, disabled or
-never-initialized broker is not started as an update side effect; its next explicit `yard init`
+A runtime release automatically installs the compatible physical-host sink before updating an
+enabled producer. When the outer `test-yard` and broker service are active, it then verifies the
+installed sink, broker engine and facade status without revoking held leases. A stopped, disabled
+or never-initialized broker is not started as an update side effect; its next explicit `yard init`
 performs the ordinary convergence. During the one-time owner migration, a running legacy fixed-VM
 backend that predates the broker service is treated as its active predecessor.

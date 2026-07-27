@@ -15,7 +15,7 @@ usage||@usage||forward|read|public|lifecycle|simple|usage [args]|show coding-age
 keys||@keys||forward|mutate|public|lifecycle|keys|keys [command]|manage the host-only encrypted and versioned credential ledger|--kind --zone --consumer --file --local-only --exclusive --dry-run --manual-only --all --now --yes --help|trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move
 shell||@shell||forward|mutate|public|lifecycle|project-shell|shell [project]|open a dev shell, optionally in a project directory|--root --yes --help|
 provision||@provision||forward|mutate|public|lifecycle|profiles|provision [profile]|install a profile toolchain into the yard|-l --list --yes --help|
-test-vms||@test-vms||forward|mutate|public|lifecycle|simple|test-vms <command>|manage leased nested VM slots inside a trusted test yard|--slot --yes --help|status revoke recover
+test-vms||@test-vms||forward|mutate|public|lifecycle|simple|test-vms <command>|manage leased nested VM slots and read the owner-wide broker log|--slot -n -f --yes --help|logs status revoke recover
 stop||@lifecycle||forward|mutate|public|lifecycle|stop|stop [--force]|stop the yard and protect active Remote-SSH sessions|--force --yes --help|
 teardown|uninstall|@teardown||forward|mutate|public|lifecycle|teardown|teardown|delete the yard; optionally keep persistent data|--keep-data --yes --help|
 sync||@project||local|mutate|public|projects|project-target|sync [path]|copy or refresh a project in the yard|--target --yes --help|

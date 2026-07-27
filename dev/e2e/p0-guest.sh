@@ -39,6 +39,7 @@ PEER_REAL_YARD_MARKER="$PEER_ROOT/.subyard-p0-real-yard"
 OWNER_BASELINE_IMAGES=''
 OWNER_BASELINE_CAPTURED=0
 OWNER_BASE_IMAGE="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
+OWNER_BASE_IMAGE_CREATED=0
 OWNER_DIAGNOSTIC_VM_MEMORY="${P0_E2E_DIAGNOSTIC_VM_MEMORY:-700MiB}"
 
 die() { printf 'p0-guest: %s\n' "$*" >&2; exit 2; }
@@ -204,6 +205,19 @@ install_owner_runtime() {
     --provenance "$artifact.tar.gz.provenance.json" >/dev/null
 }
 
+prepare_broker_recovery_update() {
+  local arch release artifact
+  arch="$(go env GOARCH)"
+  release="$ROOT/.build/p0-broker-recovery-update"
+  artifact="$release/subyard-p0-broker-recovery-update-linux-$arch"
+  dev/package-engine.sh \
+    --output-dir "$release" \
+    --version p0-broker-recovery-update \
+    --arch "$arch" >/dev/null
+  P0_BROKER_RECOVERY_UPDATE_ARTIFACT="$artifact"
+  export P0_BROKER_RECOVERY_UPDATE_ARTIFACT
+}
+
 canonical_broker_release_migration_contract() {
   local runtime_root="${SUBYARD_HOME:-$HOME/.subyard}/runtime"
   local active_old_hash active_new_hash candidate_runtime expected_hash inactive_marker
@@ -337,6 +351,47 @@ prepare_owner_image_cache_project() {
     -c features.images=false -c user.subyard.p0-image-cache="$MARKER" >/dev/null
 }
 
+ensure_owner_base_image() {
+  local source="${P0_REAL_INCUS_CONTAINER_IMAGE:-images:debian/13/cloud}"
+  if incus image info "$OWNER_BASE_IMAGE" --project default >/dev/null 2>&1; then
+    return
+  fi
+  printf '  [ .. ] caching disposable owner base image %s\n' "$source"
+  timeout --foreground "${P0_REAL_INCUS_COMMAND_TIMEOUT:-900}" \
+    incus image copy "$source" local: --alias "$OWNER_BASE_IMAGE" </dev/null >/dev/null
+  incus image info "$OWNER_BASE_IMAGE" --project default >/dev/null 2>&1 \
+    || die "failed to cache owner base image $OWNER_BASE_IMAGE"
+  OWNER_BASE_IMAGE_CREATED=1
+}
+
+reclaim_broker_recovery_capacity() {
+  local available capacity_path=/var/lib/subyard/test-vms/slots
+  local minimum=$((7 * 1024 * 1024 * 1024))
+  incus exec yard-test-yard --project subyard-test-yard -- \
+    sh -eu -c '
+      apt-get clean
+      find /var/cache/apt/archives -type f -delete
+      find /var/lib/apt/lists -type f -delete
+    '
+  if [ "$OWNER_BASE_IMAGE_CREATED" = 1 ]; then
+    incus image delete "$OWNER_BASE_IMAGE" --project default >/dev/null
+    OWNER_BASE_IMAGE_CREATED=0
+  fi
+  p0_capacity_remove_build_cache
+  p0_capacity_use_build_cache
+  while ! incus exec yard-test-yard --project subyard-test-yard -- \
+    test -e "$capacity_path"; do
+    [ "$capacity_path" != / ] || break
+    capacity_path="$(dirname "$capacity_path")"
+  done
+  available="$(incus exec yard-test-yard --project subyard-test-yard -- \
+    df -B1 --output=avail "$capacity_path" | awk 'NR == 2 {print $1}')"
+  [[ "$available" =~ ^[0-9]+$ ]] && [ "$available" -ge "$minimum" ] \
+    || die "broker recovery fixture needs at least $minimum pool bytes; have ${available:-unknown}"
+  printf '  [ ok ] broker recovery fixture pool reserve available=%s required=%s\n' \
+    "$available" "$minimum"
+}
+
 owner() (
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner lane requires VM1'
 	trap owner_cleanup EXIT
@@ -362,6 +417,7 @@ owner() (
   ! incus exec yard-test-yard --project subyard-test-yard -- id -nG dev | tr ' ' '\n' \
     | grep -Eq '^(incus-admin|yard)$' || die 'dev retained a privileged L1 group'
   SUBYARD_E2E_YARD=test-yard bash dev/e2e/p1-lease-acceptance.sh
+  SUBYARD_E2E_YARD=test-yard bash dev/e2e/p0-broker-recovery.sh
   owner_project_contract
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard --version >/dev/null
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y test-yard list >/dev/null
@@ -392,6 +448,28 @@ owner_migration() (
   printf 'ok: VM1 e2e-yard release upgrade migrated to test-yard\n'
 )
 
+broker_recovery_owner() (
+  [ "$SUBYARD_E2E_VM" = 1 ] || die 'broker recovery owner lane requires VM1'
+  trap owner_cleanup EXIT
+  prepare_owner_go_cache
+  YARD_BUILD_VERSION=p0-owner dev/build-engine.sh --force >/dev/null
+  ensure_owner_incus
+  OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
+  OWNER_BASELINE_CAPTURED=1
+  ensure_owner_base_image
+  OWNER_DIAGNOSTIC_VM_MEMORY="${P0_BROKER_RECOVERY_VM_MEMORY:-512MiB}"
+  install_owner_runtime
+  prepare_broker_recovery_update
+  prepare_owner_image_cache_project subyard-test-yard
+  write_owner_registration test-yard test-vms 2224
+  ./bin/yard -Y test-yard init --yes
+  ./bin/yard -Y test-yard start --yes
+  reclaim_broker_recovery_capacity
+  SUBYARD_E2E_YARD=test-yard bash dev/e2e/p0-broker-recovery.sh
+  ./bin/yard -Y test-yard teardown --yes
+  printf 'ok: VM1 broker logging and quarantine rebuild acceptance\n'
+)
+
 controller() (
   local temp='' rc
   [ "$SUBYARD_E2E_VM" = 2 ] || die 'controller lane requires VM2'
@@ -400,6 +478,7 @@ controller() (
   trap 'rc=$?; set +e; [ -z "$temp" ] || find "$temp" -depth -delete; p0_capacity_remove_subtree "$P0_CAPACITY_STATE_ROOT/controller"; p0_capacity_remove_build_cache; p0_capacity_remove_root_if_empty; exit "$rc"' EXIT
   shellcheck -x -S warning dev/e2e/p0-acceptance.sh dev/e2e/p0-guest.sh \
     dev/e2e/lib-p0-capacity.sh dev/e2e/p1-lease-acceptance.sh \
+    dev/e2e/p0-broker-recovery.sh \
     dev/e2e/p0-real-incus.sh dev/e2e/p0-source-upgrade.sh \
     dev/build-engine.sh tests/build-engine.sh \
     tests/agent-e2e.sh tests/real-host/incus-contract.sh
@@ -1106,11 +1185,12 @@ capacity_verify_cleanup() {
     "$SUBYARD_E2E_VM"
 }
 
-case "$MODE" in
+  case "$MODE" in
   capacity-preflight) capacity_preflight ;;
   capacity-verify-cleanup) capacity_verify_cleanup ;;
   owner) owner ;;
   owner-migration) owner_migration ;;
+  broker-recovery-owner) broker_recovery_owner ;;
   controller) controller ;;
   peer-prepare) peer_prepare ;;
   peer-prepare-resume) peer_prepare_finish ;;

@@ -202,6 +202,13 @@ func (cli *CLI) Run(ctx context.Context) int {
 	if core && definition.Handler == "@migrate" {
 		return cli.runMigration(ctx, yard, commandArguments)
 	}
+	if core && definition.Handler == "@test-vms" &&
+		testVMLogsInvocation(commandArguments) {
+		if cli.env["SUBYARD_NO_AUDIT"] == "" {
+			cli.audit(name, commandArguments, "", "")
+		}
+		return cli.runTestVMLogs(ctx, commandArguments)
+	}
 	if core && definition.Handler == "@config" {
 		configSync, check, status := configSyncInvocation(commandArguments)
 		if configSync {
@@ -386,7 +393,7 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return 0
 	case "@test-vms":
 		fmt.Fprintf(cli.options.Stdout,
-			"Usage: %s test-vms <status | revoke --slot N | recover --slot N>\n",
+			"Usage: %s test-vms <logs [-n N] [-f] [--slot N] | status | revoke --slot N | recover --slot N>\n",
 			cli.options.Program)
 		return 0
 	case "@teardown":

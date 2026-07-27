@@ -82,6 +82,8 @@ func TestBackendApplyInstallsCurrentEngineAndPublishesRoute(t *testing.T) {
 		case strings.HasPrefix(joined,
 			"config set yard-test user.subyard.test_vms_revision "):
 			return nil, nil, nil
+		case joined == "config set yard-test user.subyard.test_vms_spool_schema 1 --project subyard-test":
+			return nil, nil, nil
 		}
 		return nil, nil, fmt.Errorf("unexpected incus call: %s", joined)
 	}}
@@ -206,6 +208,8 @@ func TestDisabledBackendRemovesPublishedRoute(t *testing.T) {
 			_, _ = io.Copy(io.Discard, stdin)
 			return nil, nil, nil
 		case strings.HasPrefix(joined, "config set yard-test user.subyard.test_vms_revision "):
+			return nil, nil, nil
+		case joined == "config set yard-test user.subyard.test_vms_spool_schema 1 --project subyard-test":
 			return nil, nil, nil
 		}
 		return nil, nil, fmt.Errorf("unexpected call: %s", joined)

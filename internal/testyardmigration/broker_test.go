@@ -74,6 +74,42 @@ func TestBrokerRuntimeOperationSkipsAnAlreadyCurrentActiveBroker(t *testing.T) {
 	}
 }
 
+func TestBrokerRuntimeVerificationIncludesHostSinkForCurrentRelease(t *testing.T) {
+	options, state := brokerRuntimeFixture(t, "RUNNING", "active")
+	engine := read(t, filepath.Join(options.RepositoryRoot, "bin", "yard-engine"))
+	expected, err := fileDigest(filepath.Join(options.RepositoryRoot, "bin", "yard-engine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, state.installedHash, expected+"\n")
+	write(
+		t,
+		filepath.Join(options.RepositoryRoot, "scripts", "install-test-vms-host-sink.sh"),
+		"#!/bin/sh\n",
+	)
+	sink := filepath.Join(filepath.Dir(options.RepositoryRoot), "test-vms-host-sink")
+	write(t, sink, engine)
+	options.Environment = append(
+		options.Environment,
+		"SUBYARD_TEST_VMS_SINK_PATH="+sink,
+	)
+	if err := VerifyBrokerRuntime(
+		context.Background(),
+		options,
+		BrokerRuntimeActive,
+	); err != nil {
+		t.Fatal(err)
+	}
+	write(t, sink, "stale sink\n")
+	if err := VerifyBrokerRuntime(
+		context.Background(),
+		options,
+		BrokerRuntimeActive,
+	); err == nil {
+		t.Fatal("stale host sink passed broker runtime verification")
+	}
+}
+
 func TestBrokerRuntimeOperationLeavesStoppedBrokerUntouched(t *testing.T) {
 	options, state := brokerRuntimeFixture(t, "STOPPED", "inactive")
 	original := strings.Repeat("1", 64) + "\n"

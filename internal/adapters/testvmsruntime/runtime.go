@@ -25,6 +25,7 @@ type Runtime struct {
 	Sleep          func(context.Context, time.Duration) error
 	AvailableBytes func(string) (uint64, error)
 	ExecutablePath string
+	Events         *EventRecorder
 }
 
 func LoadRuntime(path string, stdout, stderr io.Writer) (*Runtime, error) {
@@ -33,6 +34,17 @@ func LoadRuntime(path string, stdout, stderr io.Writer) (*Runtime, error) {
 		return nil, err
 	}
 	return &Runtime{Config: cfg, ConfigPath: path, Stdout: stdout, Stderr: stderr}, nil
+}
+
+func (runtime *Runtime) eventRecorder() EventRecorder {
+	if runtime.Events != nil {
+		return *runtime.Events
+	}
+	return EventRecorder{
+		StateDir: runtime.Config.StateDir,
+		Source:   runtime.Config.BrokerSource,
+		Now:      runtime.Now,
+	}
 }
 
 func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment map[string]string) error {
@@ -50,6 +62,14 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 	}
 	if runtime.Sleep == nil {
 		runtime.Sleep = sleepContext
+	}
+	if runtime.Events == nil {
+		recorder := EventRecorder{
+			StateDir: runtime.Config.StateDir,
+			Source:   runtime.Config.BrokerSource,
+			Now:      runtime.Now,
+		}
+		runtime.Events = &recorder
 	}
 	yes := false
 	var positional []string
@@ -70,6 +90,33 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 	}
 	if err := runtime.Config.Validate(); err != nil {
 		return err
+	}
+	if action == "spool-export" {
+		batch, err := runtime.eventRecorder().Export()
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(runtime.Stdout).Encode(batch)
+	}
+	if action == "spool-ack" {
+		if !yes {
+			return errors.New("confirmation required (re-run with --yes for automation)")
+		}
+		var acknowledgement struct {
+			EventIDs    []string `json:"event_ids"`
+			IncidentIDs []string `json:"incident_ids"`
+		}
+		payload := environment["SUBYARD_SPOOL_ACK"]
+		if len(payload) > 64<<10 {
+			return errors.New("broker spool acknowledgement is too large")
+		}
+		if err := json.Unmarshal([]byte(payload), &acknowledgement); err != nil {
+			return errors.New("invalid broker spool acknowledgement")
+		}
+		return runtime.eventRecorder().Ack(
+			acknowledgement.EventIDs,
+			acknowledgement.IncidentIDs,
+		)
 	}
 	if !runtime.Config.Enabled {
 		return errors.New("nested E2E VMs are disabled; enable test-vms and run yard init")
@@ -117,7 +164,10 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 			Output: runtime.Stdout,
 		}).Run("status")
 	case "gc":
-		return runtime.gc(ctx)
+		return runtime.runGC(ctx)
+	case "broker-start":
+		_, err := runtime.eventRecorder().Record(BrokerEvent{Kind: "broker.start"})
+		return err
 	case "drain-all":
 		return runtime.DrainAll(ctx, LeaseStore{
 			Path: runtime.Config.leaseState(), SlotCount: runtime.Config.SlotCount, Now: runtime.Now,
@@ -125,6 +175,24 @@ func (runtime *Runtime) Run(ctx context.Context, arguments []string, environment
 	default:
 		return fmt.Errorf("unknown test-vms worker command %q", action)
 	}
+}
+
+func (runtime *Runtime) runGC(ctx context.Context) error {
+	if _, err := runtime.eventRecorder().Record(BrokerEvent{Kind: "reaper.start"}); err != nil {
+		return fmt.Errorf("persist reaper start: %w", err)
+	}
+	err := runtime.gc(ctx)
+	if err == nil {
+		return nil
+	}
+	_, eventErr := runtime.eventRecorder().Record(BrokerEvent{
+		Kind:  "reaper.fatal",
+		Error: err.Error(),
+	})
+	if eventErr != nil {
+		eventErr = fmt.Errorf("persist reaper fatal error: %w", eventErr)
+	}
+	return errors.Join(err, eventErr)
 }
 
 func (runtime *Runtime) provisionPair(ctx context.Context) (err error) {
@@ -202,7 +270,10 @@ func (runtime *Runtime) ensureProject(ctx context.Context) error {
 	cfg := runtime.Config
 	totalCPU := strconv.Itoa(cfg.CPU * 2)
 	totalMemory := doubleSize(cfg.Memory)
-	exists := runtime.projectExists(ctx)
+	exists, err := runtime.projectPresence(ctx)
+	if err != nil {
+		return fmt.Errorf("inventory inner Incus projects: %w", err)
+	}
 	if exists {
 		marker, err := runtime.incus(ctx, "project", "get", cfg.Project, "user.subyard.managed")
 		if err != nil {
@@ -402,7 +473,11 @@ func (runtime *Runtime) cleanupManaged(ctx context.Context, quiet bool) error {
 			return err
 		}
 	}
-	if runtime.projectExists(ctx) {
+	exists, err := runtime.projectPresence(ctx)
+	if err != nil {
+		return fmt.Errorf("inventory managed project before cleanup: %w", err)
+	}
+	if exists {
 		if err := runtime.requireProjectMarker(ctx); err != nil {
 			return err
 		}
@@ -447,6 +522,17 @@ func (runtime *Runtime) cleanupManaged(ctx context.Context, quiet bool) error {
 func (runtime *Runtime) projectExists(ctx context.Context) bool {
 	_, err := runtime.incus(ctx, "project", "show", runtime.Config.Project)
 	return err == nil
+}
+
+// projectPresence distinguishes a genuinely absent managed project from an
+// unavailable inner Incus daemon. Destructive recovery must never treat a
+// failed inventory command as proof that the disposable data is absent.
+func (runtime *Runtime) projectPresence(ctx context.Context) (bool, error) {
+	value, err := runtime.incus(ctx, "project", "list", "--format", "csv", "-c", "n")
+	if err != nil {
+		return false, err
+	}
+	return linePresent(value, runtime.Config.Project), nil
 }
 
 func (runtime *Runtime) vmExists(ctx context.Context, vm string) bool {

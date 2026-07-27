@@ -40,6 +40,7 @@ type Config struct {
 	BootTimeout         time.Duration
 	DevUser             string
 	StateDir            string
+	BrokerSource        string
 	AgentUser           string
 	AgentPublicKey      string
 	AgentHome           string
@@ -90,6 +91,7 @@ func ConfigFromValues(values map[string]string) (Config, error) {
 		CPU: cpu, Memory: value("E2E_VM_MEMORY", "4GiB"), Disk: value("E2E_VM_DISK", "20GiB"),
 		SlotCount: slots, BootTimeout: boot, DevUser: value("DEV_USER", "dev"),
 		StateDir:       value("E2E_VM_STATE_DIR", "/var/lib/subyard/test-vms"),
+		BrokerSource:   value("E2E_BROKER_SOURCE", "test-yard"),
 		AgentUser:      value("E2E_AGENT_USER", "subyard-e2e-agent"),
 		AgentPublicKey: values["E2E_AGENT_PUBLIC_KEY"],
 		AgentHome:      value("E2E_AGENT_HOME", "/var/lib/subyard/e2e-agent"),
@@ -133,6 +135,9 @@ func (cfg Config) Validate() error {
 	}
 	if !safeUser.MatchString(cfg.AgentUser) {
 		return fmt.Errorf("unsafe E2E_AGENT_USER %q", cfg.AgentUser)
+	}
+	if !safeLeaseText(cfg.BrokerSource, 96) || cfg.BrokerSource == "" {
+		return fmt.Errorf("unsafe E2E_BROKER_SOURCE %q", cfg.BrokerSource)
 	}
 	for name, path := range map[string]string{
 		"E2E_VM_STATE_DIR": cfg.StateDir, "E2E_AGENT_HOME": cfg.AgentHome,

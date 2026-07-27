@@ -1,6 +1,7 @@
 package testvmsruntime
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -257,7 +258,7 @@ func TestLeaseStoreCorruptStateRecoveryKeepsOtherSlotsQuarantined(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pool.Slots[0].State != SlotDraining ||
+	if pool.Slots[0].State != SlotQuarantined ||
 		pool.Slots[1].State != SlotQuarantined {
 		t.Fatalf("recovery pool = %#v", pool.Slots)
 	}
@@ -320,5 +321,286 @@ func TestLeaseStoreRejectsUnsafeAttributionBeforeMutation(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("invalid attribution mutated state: %v", err)
+	}
+}
+
+func TestLeaseStoreLoadsAdditiveSchemaAndPreservesAttribution(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "leases.json")
+	payload := `{
+	  "schema_version": 1,
+	  "resource_type": "agent-e2e",
+	  "resource_id": "test-vms",
+	  "slots": [{
+	    "slot_id": "slot-001",
+	    "resource_generation": 7,
+	    "lease_epoch": 11,
+	    "state": "quarantined",
+	    "project": "Subyard/Subyard",
+	    "checkout": "checkout-a",
+	    "run": "run-a",
+	    "purpose": "migration"
+	  }]
+	}`
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := LeaseStore{Path: path, SlotCount: 1}
+	pool, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := pool.Slots[0]
+	if pool.SchemaVersion != LeaseSchemaVersion ||
+		slot.ResourceGeneration != 7 ||
+		slot.LeaseEpoch != 11 ||
+		slot.Project != "Subyard/Subyard" ||
+		slot.Checkout != "checkout-a" ||
+		slot.Run != "run-a" ||
+		slot.Purpose != "migration" {
+		t.Fatalf("upgraded lease state = %#v", pool)
+	}
+}
+
+func TestLeaseRecoveryJournalSurvivesPreviousProducerRewrite(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "leases.json")
+	store := LeaseStore{
+		Path:      path,
+		SlotCount: 1,
+		Now:       func() time.Time { return now },
+	}
+	grant, err := store.Acquire("client", "SHA256:key", "", "rollback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Quarantine(grant, errors.New("stop timeout")); err != nil {
+		t.Fatal(err)
+	}
+	failureID := "00000000000000000001-0123456789abcdef"
+	incidentID := "00000000000000000002-fedcba9876543210"
+	if err := store.SetQuarantineIncident(grant.SlotID, failureID, incidentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, started, err := store.BeginScheduledRecovery(grant.SlotID, false); err != nil ||
+		!started {
+		t.Fatalf("begin recovery = %v, %v", started, err)
+	}
+	if _, err := store.FinishRecovery(
+		grant.SlotID,
+		errors.New("capacity unavailable"),
+		"",
+		"",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// The immediate previous producer accepts schema 1 but rewrites only fields
+	// known to that release. Its status/heartbeat write must not erase the
+	// current producer's recovery schedule.
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var previous map[string]any
+	if err := json.Unmarshal(payload, &previous); err != nil {
+		t.Fatal(err)
+	}
+	slots := previous["slots"].([]any)
+	slot := slots[0].(map[string]any)
+	for _, name := range []string{
+		"last_failure_event_id",
+		"incident_id",
+		"recovery_attempt",
+		"next_recovery_at",
+		"recovery_started_at",
+	} {
+		delete(slot, name)
+	}
+	previousPayload, err := json.MarshalIndent(previous, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(previousPayload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	pool, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := pool.Slots[0]
+	if recovered.State != SlotQuarantined ||
+		recovered.LastFailureEventID != failureID ||
+		recovered.IncidentID != incidentID ||
+		recovered.RecoveryAttempt != 1 ||
+		!recovered.NextRecoveryAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("rollback recovery metadata = %#v", recovered)
+	}
+}
+
+func TestLeaseStoreRecoveryScheduleGenerationAndFencing(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	store := LeaseStore{
+		Path:      filepath.Join(t.TempDir(), "leases.json"),
+		SlotCount: 1,
+		Now:       func() time.Time { return now },
+	}
+	grant, err := store.Acquire(
+		"client",
+		"SHA256:key",
+		"Subyard/Subyard@checkout-a#run-a",
+		"recovery",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Quarantine(grant, errors.New("stop timeout")); err != nil {
+		t.Fatal(err)
+	}
+	failureID := "00000000000000000001-0123456789abcdef"
+	incidentID := "00000000000000000002-fedcba9876543210"
+	if err := store.SetQuarantineIncident(
+		grant.SlotID,
+		failureID,
+		incidentID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	first, started, err := store.BeginScheduledRecovery(grant.SlotID, false)
+	if err != nil || !started || first.RecoveryAttempt != 1 ||
+		first.State != SlotRecovering {
+		t.Fatalf("first recovery = %#v, %v, %v", first, started, err)
+	}
+	failed, err := store.FinishRecovery(
+		grant.SlotID,
+		errors.New("capacity offline"),
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != SlotQuarantined ||
+		!failed.NextRecoveryAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("first retry = %#v", failed)
+	}
+	now = now.Add(30 * time.Second)
+	_, started, err = store.BeginScheduledRecovery(grant.SlotID, false)
+	if err != nil || started {
+		t.Fatalf("early retry = %v, %v", started, err)
+	}
+	now = now.Add(30 * time.Second)
+	second, started, err := store.BeginScheduledRecovery(grant.SlotID, false)
+	if err != nil || !started || second.RecoveryAttempt != 2 {
+		t.Fatalf("second recovery = %#v, %v, %v", second, started, err)
+	}
+	available, err := store.FinishRecovery(grant.SlotID, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if available.State != SlotAvailable ||
+		available.ResourceGeneration != 2 ||
+		available.LastFailureEventID != failureID ||
+		available.IncidentID != incidentID ||
+		available.Project != "" ||
+		available.Checkout != "" ||
+		available.Run != "" ||
+		available.Purpose != "" {
+		t.Fatalf("recovered slot = %#v", available)
+	}
+	if _, err := store.Renew(grant); err == nil {
+		t.Fatal("pre-rebuild capability renewed after resource generation changed")
+	}
+}
+
+func TestInterruptedRecoveryReturnsToImmediateQuarantine(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	store := LeaseStore{
+		Path:      filepath.Join(t.TempDir(), "leases.json"),
+		SlotCount: 1,
+		Now:       func() time.Time { return now },
+	}
+	grant, err := store.Acquire("client", "SHA256:key", "", "crash-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Quarantine(grant, errors.New("fixture quarantine")); err != nil {
+		t.Fatal(err)
+	}
+	startedSlot, started, err := store.BeginScheduledRecovery(grant.SlotID, false)
+	if err != nil || !started || !dueForRecovery(startedSlot, now) {
+		t.Fatalf("started recovery = %#v, %v, %v", startedSlot, started, err)
+	}
+	if err := store.InterruptRecovery(
+		grant.SlotID,
+		errors.New("previous recovery was interrupted before completion"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := pool.Slots[0]
+	if slot.State != SlotQuarantined ||
+		!slot.NextRecoveryAt.Equal(now) ||
+		!slot.RecoveryStartedAt.IsZero() ||
+		slot.RecoveryAttempt != 1 ||
+		!dueForRecovery(slot, now) {
+		t.Fatalf("interrupted recovery = %#v", slot)
+	}
+}
+
+func TestLeaseStoreRecoveryBackoffNeverBecomesTerminal(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	store := LeaseStore{
+		Path:      filepath.Join(t.TempDir(), "leases.json"),
+		SlotCount: 1,
+		Now:       func() time.Time { return now },
+	}
+	grant, err := store.Acquire("client", "SHA256:key", "", "repeated-recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Quarantine(grant, errors.New("fixture quarantine")); err != nil {
+		t.Fatal(err)
+	}
+	wantDelays := []time.Duration{
+		time.Minute,
+		5 * time.Minute,
+		15 * time.Minute,
+		time.Hour,
+		time.Hour,
+	}
+	for index, wantDelay := range wantDelays {
+		started, ok, beginErr := store.BeginScheduledRecovery(grant.SlotID, false)
+		if beginErr != nil || !ok || started.RecoveryAttempt != uint64(index+1) {
+			t.Fatalf("attempt %d start = %#v, %v, %v", index+1, started, ok, beginErr)
+		}
+		failed, finishErr := store.FinishRecovery(
+			grant.SlotID,
+			fmt.Errorf("fixture failure %d", index+1),
+			"",
+			"",
+		)
+		if finishErr != nil {
+			t.Fatal(finishErr)
+		}
+		if failed.State != SlotQuarantined ||
+			!failed.NextRecoveryAt.Equal(now.Add(wantDelay)) {
+			t.Fatalf("attempt %d schedule = %#v", index+1, failed)
+		}
+		now = failed.NextRecoveryAt
+	}
+	started, ok, err := store.BeginScheduledRecovery(grant.SlotID, false)
+	if err != nil || !ok || started.RecoveryAttempt != 6 {
+		t.Fatalf("unbounded retry = %#v, %v, %v", started, ok, err)
+	}
+	available, err := store.FinishRecovery(grant.SlotID, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if available.State != SlotAvailable || available.ResourceGeneration != 2 {
+		t.Fatalf("eventual recovery = %#v", available)
 	}
 }

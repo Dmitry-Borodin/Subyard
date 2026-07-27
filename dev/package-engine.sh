@@ -81,7 +81,12 @@ install -d "$bundle_stage/bin"
 install -m 0755 "$artifact" "$bundle_stage/bin/yard-engine"
 install -m 0755 "$REPO/bin/yard" "$bundle_stage/bin/yard"
 runtime_list="$bundle_stage/.runtime-inputs"
-runtime_extras=(scripts/lib/engine-context.sh)
+runtime_extras=(
+  scripts/lib/engine-context.sh
+  scripts/install-test-vms-host-sink.sh
+  config/systemd/subyard-test-vms-host-sink.service.in
+  config/systemd/subyard-test-vms-host-sink.timer.in
+)
 {
   git -C "$REPO" ls-files --cached -z -- scripts config completions
   for relative in "${runtime_extras[@]}"; do
@@ -103,7 +108,14 @@ done < "$runtime_list"
 rm -f -- "$runtime_list"
 install -m 0755 "$RUNTIME_INSTALLER" "$bundle_stage/scripts/install-runtime-release.sh"
 install -m 0644 "$MIGRATION_REGISTRY" "$bundle_stage/config/migrations.json"
-for required in scripts/install-runtime-release.sh config/commands.registry config/migrations.json completions/yard.bash; do
+for required in \
+  scripts/install-runtime-release.sh \
+  scripts/install-test-vms-host-sink.sh \
+  config/systemd/subyard-test-vms-host-sink.service.in \
+  config/systemd/subyard-test-vms-host-sink.timer.in \
+  config/commands.registry \
+  config/migrations.json \
+  completions/yard.bash; do
   [ -f "$bundle_stage/$required" ] \
     || { printf 'package-engine: runtime allowlist omitted %s\n' "$required" >&2; exit 1; }
 done

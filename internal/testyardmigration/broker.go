@@ -112,6 +112,19 @@ func VerifyBrokerRuntime(
 	if err != nil {
 		return fmt.Errorf("hash release test VM broker engine: %w", err)
 	}
+	if _, err := os.Stat(filepath.Join(
+		options.RepositoryRoot,
+		"scripts",
+		"install-test-vms-host-sink.sh",
+	)); err == nil {
+		hostSink, digestErr := fileDigest(hostSinkPath(options))
+		if digestErr != nil {
+			return fmt.Errorf("hash installed test VM broker host sink: %w", digestErr)
+		}
+		if hostSink != expected {
+			return errors.New("test VM broker host sink does not use the selected runtime engine")
+		}
+	}
 	payload, err := runIncus(
 		ctx,
 		options,
@@ -134,6 +147,20 @@ func VerifyBrokerRuntime(
 		return fmt.Errorf("verify updated test VM broker facade: %w", err)
 	}
 	return nil
+}
+
+func hostSinkPath(options Options) string {
+	const fallback = "/usr/local/libexec/subyard/test-vms-host-sink"
+	for index := len(options.Environment) - 1; index >= 0; index-- {
+		assignment := options.Environment[index]
+		if value, ok := strings.CutPrefix(
+			assignment,
+			"SUBYARD_TEST_VMS_SINK_PATH=",
+		); ok && value != "" {
+			return value
+		}
+	}
+	return fallback
 }
 
 // RollbackBrokerRuntime restores the engine from the retained previous release

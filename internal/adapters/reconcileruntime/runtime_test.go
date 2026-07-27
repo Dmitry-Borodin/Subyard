@@ -210,6 +210,59 @@ func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 	}
 }
 
+func TestTestVMHostSinkProbeRequiresSelectedEngineUnitAndTimer(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	engine := filepath.Join(root, "yard-engine")
+	sink := filepath.Join(root, "test-vms-host-sink")
+	service := filepath.Join(root, "subyard-test-vms-host-sink.service")
+	timer := filepath.Join(root, "subyard-test-vms-host-sink.timer")
+	for _, path := range []string{engine, sink} {
+		if err := os.WriteFile(path, []byte("selected runtime\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(service, []byte(
+		"[Service]\n"+
+			`Environment="SUBYARD_HOME=/data"`+"\n"+
+			"ExecStart="+sink+" _test-vms-host-sink sync\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(timer, []byte("[Timer]\nOnUnitActiveSec=1min\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(bin, "systemctl"),
+		[]byte("#!/bin/sh\nexit 0\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime := Runtime{
+		Yard: domain.Context{Paths: domain.RuntimePaths{DataHome: "/data"}},
+		Environment: []string{
+			"PATH=" + bin,
+			"SUBYARD_DISPATCHER_PATH=" + engine,
+			"SUBYARD_TEST_VMS_SINK_PATH=" + sink,
+			"SUBYARD_TEST_VMS_SINK_SERVICE_PATH=" + service,
+			"SUBYARD_TEST_VMS_SINK_TIMER_PATH=" + timer,
+		},
+	}
+	if !runtime.testVMHostSinkConverged(context.Background()) {
+		t.Fatal("matching test-vms host sink was not converged")
+	}
+	if err := os.WriteFile(sink, []byte("stale runtime\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.testVMHostSinkConverged(context.Background()) {
+		t.Fatal("stale test-vms host sink runtime was accepted")
+	}
+}
+
 func TestFinalizeMapsDesiredPowerToLifecycleAction(t *testing.T) {
 	for _, test := range []struct {
 		desired string

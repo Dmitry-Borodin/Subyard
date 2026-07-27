@@ -37,6 +37,7 @@ type backendState struct {
 	disk            string
 	slotCount       string
 	bootTimeout     string
+	brokerSource    string
 	engineHash      string
 	marker          string
 	clientDirectory string
@@ -135,9 +136,13 @@ func (backend *Backend) Apply(ctx context.Context) (err error) {
 	arguments := []string{"exec", backend.Instance, "--project", backend.Project}
 	for _, name := range []string{
 		"NESTED_E2E_VMS", "DEV_USER", "E2E_VM_IMAGE", "E2E_VM_CPU", "E2E_VM_MEMORY",
-		"E2E_VM_DISK", "E2E_VM_SLOT_COUNT", "E2E_VM_BOOT_TIMEOUT",
+		"E2E_VM_DISK", "E2E_VM_SLOT_COUNT", "E2E_VM_BOOT_TIMEOUT", "E2E_BROKER_SOURCE",
 	} {
-		arguments = append(arguments, "--env", name+"="+backend.Environment[name])
+		value := backend.Environment[name]
+		if name == "E2E_BROKER_SOURCE" && value == "" {
+			value = state.brokerSource
+		}
+		arguments = append(arguments, "--env", name+"="+value)
 	}
 	arguments = append(arguments, "--env", "E2E_AGENT_PUBLIC_KEY=",
 		"--", "bash", "-euo", "pipefail", "-s")
@@ -160,6 +165,12 @@ func (backend *Backend) Apply(ctx context.Context) (err error) {
 		"user.subyard.test_vms_revision", state.marker, "--project", backend.Project); err != nil {
 		return err
 	}
+	if _, err := backend.incus(ctx, "config", "set", backend.Instance,
+		"user.subyard.test_vms_spool_schema",
+		fmt.Sprint(BrokerSpoolSchemaVersion),
+		"--project", backend.Project); err != nil {
+		return err
+	}
 	fmt.Fprintf(backend.Output, "  [ ok ] nested E2E VM backend reconciled (enabled=%s)\n",
 		state.enabled)
 	return nil
@@ -179,8 +190,12 @@ func (backend *Backend) state() (backendState, error) {
 		disk:            value("E2E_VM_DISK", "20GiB"),
 		slotCount:       value("E2E_VM_SLOT_COUNT", "2"),
 		bootTimeout:     value("E2E_VM_BOOT_TIMEOUT", "300"),
+		brokerSource:    value("E2E_BROKER_SOURCE", backend.YardName),
 		provision:       filepath.Join(backend.RepositoryRoot, "scripts", "e2e-lab", "provision.sh"),
 		clientDirectory: backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"],
+	}
+	if state.brokerSource == "" {
+		state.brokerSource = "default"
 	}
 	if state.enabled != "0" && state.enabled != "1" {
 		return state, errors.New("invalid NESTED_E2E_VMS")
@@ -208,6 +223,7 @@ func (backend *Backend) state() (backendState, error) {
 	state.marker = strings.Join([]string{
 		state.enabled, hex.EncodeToString(revision[:]), state.image, state.cpu,
 		state.memory, state.disk, state.slotCount, state.bootTimeout,
+		state.brokerSource,
 	}, ":")
 	return state, nil
 }

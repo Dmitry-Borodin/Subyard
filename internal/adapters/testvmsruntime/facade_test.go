@@ -37,6 +37,15 @@ func TestFacadeContractAndRedaction(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	failureID := "00000000000000000001-0123456789abcdef"
+	incidentID := "00000000000000000002-fedcba9876543210"
+	if err := store.SetQuarantineIncident(
+		acquired.Grant.SlotID,
+		failureID,
+		incidentID,
+	); err != nil {
+		t.Fatal(err)
+	}
 	output.Reset()
 	if err := facade.Run("status"); err != nil {
 		t.Fatal(err)
@@ -53,6 +62,10 @@ func TestFacadeContractAndRedaction(t *testing.T) {
 	for _, attribution := range []string{
 		`"project":"Subyard/Subyard"`, `"checkout":"checkout-a"`,
 		`"run":"run-a"`, `"purpose":"tests"`,
+		`"last_failure_event_id":"` + failureID + `"`,
+		`"incident_id":"` + incidentID + `"`,
+		`"recovery_attempt":0`,
+		`"next_recovery_at":`,
 	} {
 		if !strings.Contains(status, attribution) {
 			t.Fatalf("status omitted %s: %s", attribution, status)

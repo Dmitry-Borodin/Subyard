@@ -403,6 +403,7 @@ reconcile_inner_incus() {
 : "${E2E_VM_SLOT_COUNT:=2}"
 : "${E2E_VM_BOOT_TIMEOUT:=300}"
 : "${E2E_VM_STATE_DIR:=/var/lib/subyard/test-vms}"
+: "${E2E_BROKER_SOURCE:=test-yard}"
 : "${E2E_AGENT_USER:=subyard-e2e-agent}"
 : "${E2E_AGENT_HOME:=/var/lib/subyard/e2e-agent}"
 : "${E2E_AGENT_PUBLIC_KEY:=}"
@@ -425,6 +426,10 @@ case "$E2E_VM_IMAGE" in '' | -* | *[!A-Za-z0-9._:/@+-]*) printf 'invalid E2E_VM_
   && [ "$E2E_VM_BOOT_TIMEOUT" -ge 30 ] && [ "$E2E_VM_BOOT_TIMEOUT" -le 1800 ] \
   || { printf 'invalid E2E_VM_BOOT_TIMEOUT\n' >&2; exit 1; }
 case "$E2E_VM_STATE_DIR" in /var/lib/subyard/*) ;; *) printf 'unsafe E2E_VM_STATE_DIR\n' >&2; exit 1 ;; esac
+case "$E2E_BROKER_SOURCE" in
+  ''|*$'\n'*|*$'\r'*|*$'\t'*) printf 'unsafe E2E_BROKER_SOURCE\n' >&2; exit 1 ;;
+esac
+[ "${#E2E_BROKER_SOURCE}" -le 96 ] || { printf 'unsafe E2E_BROKER_SOURCE\n' >&2; exit 1; }
 case "$E2E_AGENT_USER" in '' | -* | *[!a-z0-9_-]*) printf 'invalid E2E_AGENT_USER\n' >&2; exit 1 ;; esac
 case "$E2E_AGENT_HOME" in /var/lib/subyard/*) ;; *) printf 'unsafe E2E_AGENT_HOME\n' >&2; exit 1 ;; esac
 if [ -n "$E2E_AGENT_PUBLIC_KEY" ]; then
@@ -456,6 +461,7 @@ trap 'rm -f -- "$config_candidate"' EXIT
   printf 'E2E_VM_SLOT_COUNT=%q\n' "$E2E_VM_SLOT_COUNT"
   printf 'E2E_VM_BOOT_TIMEOUT=%q\n' "$E2E_VM_BOOT_TIMEOUT"
   printf 'E2E_VM_STATE_DIR=%q\n' "$E2E_VM_STATE_DIR"
+  printf 'E2E_BROKER_SOURCE=%q\n' "$E2E_BROKER_SOURCE"
   printf 'E2E_AGENT_USER=%q\n' "$E2E_AGENT_USER"
   printf 'E2E_AGENT_HOME=%q\n' "$E2E_AGENT_HOME"
   printf 'E2E_AGENT_PUBLIC_KEY=%q\n' "$E2E_AGENT_PUBLIC_KEY"
@@ -562,6 +568,7 @@ Requires=incus.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStart=/usr/local/libexec/subyard/test-vms-inner _test-vms-worker broker-start
 ExecStart=/usr/local/libexec/subyard/test-vms-inner _test-vms-worker gc
 ExecStop=/usr/local/libexec/subyard/test-vms-inner _test-vms-worker drain-all
 TimeoutStopSec=10min

@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Subyard/Subyard/internal/adapters/testvmsruntime"
 	"github.com/Subyard/Subyard/internal/command"
 	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/domain"
@@ -60,6 +62,64 @@ func TestTestVMStatusIsReadOnly(t *testing.T) {
 	if policy.Effect != domain.CommandRead {
 		t.Fatalf("policy=%#v", policy)
 	}
+}
+
+func TestTestVMLogsReadsHostWideLogWithoutYardBrokerContext(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	dataHome := environmentValue(environment, "SUBYARD_HOME")
+	recorder := testvmsruntime.EventRecorder{
+		StateDir: filepath.Join(root, "broker"),
+		Source:   "test-yard",
+		Now:      func() time.Time { return time.Unix(100, 0).UTC() },
+	}
+	if _, err := recorder.Record(testvmsruntime.BrokerEvent{
+		Kind:               "recovery.available",
+		SlotID:             "slot-002",
+		ResourceGeneration: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := recorder.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&testvmsruntime.HostSink{
+		DataHome:    dataHome,
+		Now:         func() time.Time { return time.Unix(100, 0).UTC() },
+		OperatorGID: -1,
+	}).Ingest(batch); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root,
+		Program:        "yard",
+		Arguments:      []string{"test-vms", "logs", "--slot", "2", "-n", "1"},
+		Environment:    environment,
+		WorkingDir:     root,
+		Stdout:         &stdout,
+		Stderr:         &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("logs failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"kind":"recovery.available"`) ||
+		!strings.Contains(stdout.String(), `"slot_id":"slot-002"`) {
+		t.Fatalf("host-wide log output = %q", stdout.String())
+	}
+}
+
+func environmentValue(environment []string, name string) string {
+	prefix := name + "="
+	for _, assignment := range environment {
+		if strings.HasPrefix(assignment, prefix) {
+			return strings.TrimPrefix(assignment, prefix)
+		}
+	}
+	return ""
 }
 
 func TestTeardownRejectsUnknownInputAndPublishesMode(t *testing.T) {

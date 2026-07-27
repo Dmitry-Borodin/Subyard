@@ -30,8 +30,13 @@ func main() {
 		}
 		cfg, err := testvmsruntime.LoadConfig(configPath)
 		if err == nil {
+			events := &testvmsruntime.EventRecorder{
+				StateDir: cfg.StateDir,
+				Source:   cfg.BrokerSource,
+			}
 			runtime := &testvmsruntime.Runtime{
 				Config: cfg, ConfigPath: configPath, Stdout: os.Stderr, Stderr: os.Stderr,
+				Events: events,
 			}
 			store := testvmsruntime.LeaseStore{
 				Path: cfg.LeaseStatePath(), SlotCount: cfg.SlotCount,
@@ -39,6 +44,7 @@ func main() {
 			err = (testvmsruntime.Facade{
 				Store:  store,
 				Output: os.Stdout,
+				Events: events,
 				OnAcquire: func(grant testvmsruntime.LeaseGrant, publicKey string) (
 					testvmsruntime.LeaseGrant, error,
 				) {
@@ -46,6 +52,9 @@ func main() {
 				},
 				OnRelease: func(grant testvmsruntime.LeaseGrant) error {
 					return runtime.ReleaseSlot(ctx, grant)
+				},
+				OnQuarantine: func(slotID string, cause error) error {
+					return runtime.HandleQuarantine(ctx, store, slotID, cause)
 				},
 			}).Run(os.Getenv("SSH_ORIGINAL_COMMAND"))
 		}
@@ -69,6 +78,32 @@ func main() {
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "test-vms: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "_test-vms-host-sink" {
+		if os.Geteuid() != 0 {
+			fmt.Fprintln(os.Stderr, "test-vms host sink requires root")
+			os.Exit(1)
+		}
+		if len(os.Args) != 3 || os.Args[2] != "sync" {
+			fmt.Fprintln(os.Stderr, "usage: _test-vms-host-sink sync")
+			os.Exit(2)
+		}
+		operatorGID, err := testvmsruntime.ParseOperatorGID(
+			os.Getenv("SUBYARD_OPERATOR_GID"),
+		)
+		if err == nil {
+			err = (&testvmsruntime.HostSink{
+				DataHome:    os.Getenv("SUBYARD_HOME"),
+				Incus:       os.Getenv("SUBYARD_INCUS"),
+				Output:      os.Stdout,
+				OperatorGID: operatorGID,
+			}).Sync(ctx)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "test-vms host sink: %v\n", err)
 			os.Exit(1)
 		}
 		return

@@ -2,18 +2,151 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Subyard/Subyard/internal/adapters/shelladapter"
+	"github.com/Subyard/Subyard/internal/adapters/testvmsruntime"
 	"github.com/Subyard/Subyard/internal/application"
 	"github.com/Subyard/Subyard/internal/command"
 	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/domain"
 )
+
+func testVMLogsInvocation(arguments []string) bool {
+	for _, argument := range arguments {
+		if argument == "-y" || argument == "--yes" {
+			continue
+		}
+		return argument == "logs"
+	}
+	return false
+}
+
+func (cli *CLI) runTestVMLogs(ctx context.Context, arguments []string) int {
+	lines := 200
+	follow := false
+	slotID := ""
+	actionSeen := false
+	for index := 0; index < len(arguments); index++ {
+		switch argument := arguments[index]; argument {
+		case "logs":
+			if actionSeen {
+				cli.errorf("test-vms logs: accepts one command")
+				return 2
+			}
+			actionSeen = true
+		case "-n":
+			index++
+			if index >= len(arguments) {
+				cli.errorf("test-vms logs: -n needs a positive number")
+				return 2
+			}
+			value, err := strconv.Atoi(arguments[index])
+			if err != nil || value < 1 || value > 100000 {
+				cli.errorf("test-vms logs: -n needs a number from 1 to 100000")
+				return 2
+			}
+			lines = value
+		case "-f":
+			follow = true
+		case "--slot":
+			index++
+			if index >= len(arguments) {
+				cli.errorf("test-vms logs: --slot needs a number")
+				return 2
+			}
+			value, err := strconv.Atoi(arguments[index])
+			if err != nil || value < 1 || value > 999 {
+				cli.errorf("test-vms logs: --slot needs a number from 1 to 999")
+				return 2
+			}
+			slotID = fmt.Sprintf("slot-%03d", value)
+		case "-y", "--yes":
+		case "-h", "--help":
+			fmt.Fprintf(
+				cli.options.Stdout,
+				"Usage: %s test-vms logs [-n N] [-f] [--slot N]\n",
+				cli.options.Program,
+			)
+			return 0
+		default:
+			cli.errorf("test-vms logs: unknown option %q", argument)
+			return 2
+		}
+	}
+	if !actionSeen {
+		cli.errorf("test-vms logs: logs command is required")
+		return 2
+	}
+	dataHome := cli.env["SUBYARD_HOME"]
+	if dataHome == "" {
+		operatorHome := cli.env["SUBYARD_OPERATOR_HOME"]
+		if operatorHome == "" {
+			operatorHome = cli.env["HOME"]
+		}
+		if operatorHome == "" || !filepath.IsAbs(operatorHome) {
+			cli.errorf("test-vms logs: operator home is unavailable")
+			return 1
+		}
+		dataHome = filepath.Join(operatorHome, ".subyard")
+	}
+	if !filepath.IsAbs(dataHome) {
+		cli.errorf("test-vms logs: Subyard data home must be absolute")
+		return 1
+	}
+	path := filepath.Join(dataHome, "logs", testvmsruntime.HostEventLogName)
+	seen := map[string]bool{}
+	printCurrent := func(limit int) error {
+		events, err := testvmsruntime.ReadHostBrokerEvents(path, limit, slotID)
+		if err != nil {
+			return err
+		}
+		encoder := json.NewEncoder(cli.options.Stdout)
+		encoder.SetEscapeHTML(false)
+		for _, event := range events {
+			if seen[event.EventID] {
+				continue
+			}
+			if err := encoder.Encode(event); err != nil {
+				return err
+			}
+			seen[event.EventID] = true
+		}
+		return nil
+	}
+	if err := printCurrent(lines); err != nil {
+		cli.errorf("test-vms logs: %v", err)
+		return 1
+	}
+	if !follow {
+		return 0
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return 0
+		case <-ticker.C:
+			if _, err := os.Stat(path); err != nil && !os.IsNotExist(err) {
+				cli.errorf("test-vms logs: %v", err)
+				return 1
+			}
+			if err := printCurrent(100000); err != nil {
+				cli.errorf("test-vms logs: %v", err)
+				return 1
+			}
+		}
+	}
+}
 
 type testVMExecution struct {
 	action string
@@ -90,9 +223,9 @@ func (execution *testVMExecution) policy(
 		}
 	case "recover":
 		consequences = []string{
-			fmt.Sprintf("recover quarantined lease slot %d", execution.slot),
-			"delete only marker-owned VM instances stuck in ERROR or failed first-boot state",
-			"repeat lease fencing and stop before publishing the slot as available",
+			fmt.Sprintf("immediately recover quarantined lease slot %d", execution.slot),
+			"save incident evidence, then delete both marker-owned disposable VM disks",
+			"provision and verify a clean two-VM pair before publishing the slot as available",
 		}
 	}
 	return domain.CommandPolicy{

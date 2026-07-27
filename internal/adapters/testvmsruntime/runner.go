@@ -3,6 +3,7 @@ package testvmsruntime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,22 @@ type CommandRunner interface {
 }
 
 type ProcessRunner struct{}
+
+type CommandError struct {
+	Name     string
+	Args     []string
+	ExitCode int
+	Duration time.Duration
+	Message  string
+}
+
+func (failure *CommandError) Error() string {
+	return fmt.Sprintf("%s: %s", failure.Command(), failure.Message)
+}
+
+func (failure *CommandError) Command() string {
+	return strings.TrimSpace(failure.Name + " " + strings.Join(failure.Args, " "))
+}
 
 func (ProcessRunner) Run(
 	ctx context.Context,
@@ -43,6 +60,7 @@ func (ProcessRunner) Run(
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
+	started := time.Now()
 	err := command.Run()
 	if err != nil {
 		message := strings.TrimSpace(stderr.String())
@@ -52,7 +70,15 @@ func (ProcessRunner) Run(
 		if message == "" {
 			message = err.Error()
 		}
-		err = fmt.Errorf("%s %s: %s", name, strings.Join(arguments, " "), message)
+		exitCode := -1
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			exitCode = exitError.ExitCode()
+		}
+		err = &CommandError{
+			Name: name, Args: append([]string(nil), arguments...),
+			ExitCode: exitCode, Duration: time.Since(started), Message: message,
+		}
 	}
 	return stdout.Bytes(), stderr.Bytes(), err
 }

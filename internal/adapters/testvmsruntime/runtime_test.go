@@ -182,8 +182,8 @@ func TestReleaseStopsRebootingGuestWhenKeyCleanupIsTemporarilyUnavailable(t *tes
 	) ([]byte, []byte, error) {
 		joined := strings.Join(arguments, " ")
 		switch joined {
-		case "project show " + cfg.Project:
-			return nil, nil, nil
+		case "project list --format csv -c n":
+			return []byte(cfg.Project + "\n"), nil, nil
 		case "project get " + cfg.Project + " user.subyard.managed":
 			return []byte(managedMarker + "\n"), nil, nil
 		case "info e2e-vm-1 --project " + cfg.Project:
@@ -218,24 +218,94 @@ func TestReleaseStopsRebootingGuestWhenKeyCleanupIsTemporarilyUnavailable(t *tes
 	}
 }
 
-func TestRecordedFirstBootFailureIsNarrow(t *testing.T) {
+func TestUnavailableInnerIncusIsNotTreatedAsAnAbsentProject(t *testing.T) {
 	cfg := fixtureConfig(t)
-	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+	cfg.Project += "-slot-1"
+	daemonFailure := &CommandError{
+		Name:     "incus",
+		Args:     []string{"project", "list", "--format", "csv", "-c", "n"},
+		ExitCode: 1,
+		Message:  "Error: Failed to connect to local daemon",
+	}
+	runner := &fakeRunner{handler: func(
+		_ string, arguments, _ []string, _ io.Reader,
+	) ([]byte, []byte, error) {
+		if strings.Join(arguments, " ") == "project list --format csv -c n" {
+			return nil, nil, daemonFailure
+		}
+		return nil, nil, fmt.Errorf("unexpected call: %s", strings.Join(arguments, " "))
+	}}
+	runtime := &Runtime{Config: cfg, Runner: runner}
+
+	err := runtime.stopRetained(context.Background())
+	if err == nil ||
+		!strings.Contains(err.Error(), "inventory retained slot project") ||
+		!strings.Contains(err.Error(), "Failed to connect to local daemon") {
+		t.Fatalf("release inventory error = %v", err)
+	}
+	err = runtime.deleteManagedPairForRebuild(context.Background())
+	if err == nil ||
+		!strings.Contains(err.Error(), "inventory quarantined slot project before delete") {
+		t.Fatalf("rebuild inventory error = %v", err)
+	}
+	if strings.Contains(callsText(runner.calls), "incus delete ") ||
+		strings.Contains(callsText(runner.calls), "incus init ") {
+		t.Fatalf("failed inventory allowed mutation:\n%s", callsText(runner.calls))
+	}
+}
+
+func TestQuarantineLocalSpoolFailureBlocksDestructiveRecovery(t *testing.T) {
+	root := t.TempDir()
+	stateFile := filepath.Join(root, "state-is-a-file")
+	if err := os.WriteFile(stateFile, []byte("fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg.failureLog(),
-		[]byte("incus stop e2e-vm-1: synthetic failure\n"), 0o600); err != nil {
+	cfg := fixtureConfig(t)
+	cfg.StateDir = stateFile
+	store := LeaseStore{
+		Path:      filepath.Join(root, "leases.json"),
+		SlotCount: 1,
+	}
+	grant, err := store.Acquire("client", "SHA256:key", "", "fsync-gate")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if recordedFirstBootFailure(cfg.failureLog()) {
-		t.Fatal("ordinary stop failure was treated as failed first boot")
-	}
-	if err := os.WriteFile(cfg.failureLog(),
-		[]byte("timeout 600 cloud-init status --wait: status: error\n"), 0o600); err != nil {
+	if err := store.Quarantine(grant, errors.New("stop timeout")); err != nil {
 		t.Fatal(err)
 	}
-	if !recordedFirstBootFailure(cfg.failureLog()) {
-		t.Fatal("recorded cloud-init failure was not recoverable by recreation")
+	runner := &fakeRunner{handler: func(
+		_ string,
+		arguments []string,
+		_ []string,
+		_ io.Reader,
+	) ([]byte, []byte, error) {
+		joined := strings.Join(arguments, " ")
+		if strings.Contains(joined, " delete ") || strings.HasPrefix(joined, "delete ") {
+			return nil, nil, errors.New("destructive command must not run")
+		}
+		return nil, nil, errors.New("diagnostic unavailable")
+	}}
+	runtime := &Runtime{Config: cfg, Runner: runner}
+	err = runtime.HandleQuarantine(
+		context.Background(),
+		store,
+		grant.SlotID,
+		errors.New("stop timeout"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "persist emergency incident") {
+		t.Fatalf("local spool failure = %v", err)
+	}
+	pool, statusErr := store.Status()
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	if pool.Slots[0].State != SlotQuarantined ||
+		pool.Slots[0].IncidentID != "" ||
+		pool.Slots[0].RecoveryAttempt != 0 {
+		t.Fatalf("failed local fsync changed recovery state: %#v", pool.Slots[0])
+	}
+	if strings.Contains(callsText(runner.calls), "incus delete ") {
+		t.Fatalf("local fsync failure deleted VM: %s", callsText(runner.calls))
 	}
 }
 
@@ -263,8 +333,8 @@ func TestReconcilePoolRetriesPhysicalShrinkAndRejectsForeignNetwork(t *testing.T
 			) ([]byte, []byte, error) {
 				joined := strings.Join(arguments, " ")
 				switch joined {
-				case "project show subyard-e2e-vms-slot-2":
-					return nil, nil, errors.New("not found")
+				case "project list --format csv -c n":
+					return nil, nil, nil
 				case "network show e2e-vm-net-2 --project default":
 					return nil, nil, nil
 				case "network get e2e-vm-net-2 user.subyard.managed --project default":
@@ -376,8 +446,8 @@ func TestExistingProjectRejectsUnexpectedInstances(t *testing.T) {
 	cfg := fixtureConfig(t)
 	runner := &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
 		switch strings.Join(arguments, " ") {
-		case "project show " + cfg.Project:
-			return nil, nil, nil
+		case "project list --format csv -c n":
+			return []byte(cfg.Project + "\n"), nil, nil
 		case "project get " + cfg.Project + " user.subyard.managed":
 			return []byte(managedMarker + "\n"), nil, nil
 		case "list --project " + cfg.Project + " -f csv -c n":
@@ -392,13 +462,116 @@ func TestExistingProjectRejectsUnexpectedInstances(t *testing.T) {
 	}
 }
 
+func TestRecoveryDeletesTheEntireOwnedPairAndRejectsForeignInventory(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		inventory   string
+		wantDeletes int
+		wantError   string
+	}{
+		{
+			name:        "owned full pair",
+			inventory:   "e2e-vm-1\ne2e-vm-2\n",
+			wantDeletes: 2,
+		},
+		{
+			name:        "interrupted delete with one owned VM left",
+			inventory:   "e2e-vm-2\n",
+			wantDeletes: 1,
+		},
+		{
+			name:        "interrupted delete with no VM left",
+			inventory:   "",
+			wantDeletes: 0,
+		},
+		{
+			name:      "foreign instance",
+			inventory: "e2e-vm-1\nforeign-vm\n",
+			wantError: "unexpected instance",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := fixtureConfig(t)
+			deletes := 0
+			runner := &fakeRunner{handler: func(
+				_ string,
+				arguments []string,
+				_ []string,
+				_ io.Reader,
+			) ([]byte, []byte, error) {
+				joined := strings.Join(arguments, " ")
+				switch joined {
+				case "project list --format csv -c n":
+					return []byte(cfg.Project + "\n"), nil, nil
+				case "project get " + cfg.Project + " user.subyard.managed":
+					return []byte(managedMarker + "\n"), nil, nil
+				case "list --project " + cfg.Project + " -f csv -c n":
+					return []byte(test.inventory), nil, nil
+				case "config get e2e-vm-1 user.subyard.managed --project " + cfg.Project,
+					"config get e2e-vm-2 user.subyard.managed --project " + cfg.Project:
+					return []byte(managedMarker + "\n"), nil, nil
+				case "delete --force e2e-vm-1 --project " + cfg.Project,
+					"delete --force e2e-vm-2 --project " + cfg.Project:
+					deletes++
+					return nil, nil, nil
+				default:
+					return nil, nil, fmt.Errorf("unexpected call: %s", joined)
+				}
+			}}
+			runtime := &Runtime{Config: cfg, Runner: runner}
+			err := runtime.deleteManagedPairForRebuild(context.Background())
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("foreign inventory error = %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if deletes != test.wantDeletes {
+				t.Fatalf("delete count = %d, want %d", deletes, test.wantDeletes)
+			}
+		})
+	}
+}
+
+func TestReaperFatalErrorIsDurable(t *testing.T) {
+	cfg := fixtureConfig(t)
+	cfg.BrokerSource = "test-yard"
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.leaseState(), []byte("{not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{
+		Config: cfg,
+		Runner: &fakeRunner{},
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	}
+	err := runtime.runGC(context.Background())
+	if err == nil {
+		t.Fatal("corrupt lease state did not fail the reaper")
+	}
+	batch, exportErr := runtime.eventRecorder().Export()
+	if exportErr != nil {
+		t.Fatal(exportErr)
+	}
+	if len(batch.Events) != 2 ||
+		batch.Events[0].Kind != "reaper.start" ||
+		batch.Events[1].Kind != "reaper.fatal" ||
+		batch.Events[1].Error == "" {
+		t.Fatalf("reaper failure timeline = %#v", batch.Events)
+	}
+}
+
 func TestProjectLimitsShrinkOnlyAfterVMReconciliation(t *testing.T) {
 	cfg := fixtureConfig(t)
 	cfg.Memory = "768MiB"
 	runner := &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
 		switch strings.Join(arguments, " ") {
-		case "project show " + cfg.Project:
-			return nil, nil, nil
+		case "project list --format csv -c n":
+			return []byte(cfg.Project + "\n"), nil, nil
 		case "project get " + cfg.Project + " user.subyard.managed":
 			return []byte(managedMarker + "\n"), nil, nil
 		case "list --project " + cfg.Project + " -f csv -c n":
@@ -473,8 +646,8 @@ func TestGuardedCleanupUsesNormalProjectDelete(t *testing.T) {
 	}
 	runner := &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
 		switch strings.Join(arguments, " ") {
-		case "project show " + cfg.Project:
-			return nil, nil, nil
+		case "project list --format csv -c n":
+			return []byte(cfg.Project + "\n"), nil, nil
 		case "project get " + cfg.Project + " user.subyard.managed":
 			return []byte(managedMarker + "\n"), nil, nil
 		case "list --project " + cfg.Project + " -f csv -c n":
@@ -504,8 +677,8 @@ func TestGuardedCleanupUsesNormalProjectDelete(t *testing.T) {
 func TestCleanupRejectsForeignProject(t *testing.T) {
 	cfg := fixtureConfig(t)
 	runner := &fakeRunner{handler: func(_ string, arguments, _ []string, _ io.Reader) ([]byte, []byte, error) {
-		if arguments[0] == "project" && arguments[1] == "show" {
-			return nil, nil, nil
+		if strings.Join(arguments, " ") == "project list --format csv -c n" {
+			return []byte(cfg.Project + "\n"), nil, nil
 		}
 		if arguments[0] == "project" && arguments[1] == "get" {
 			return []byte("foreign\n"), nil, nil

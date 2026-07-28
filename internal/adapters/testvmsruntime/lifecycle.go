@@ -66,10 +66,12 @@ func (runtime *Runtime) AcquireSlot(
 	if err := child.enableAgentAccess(ctx); err != nil {
 		return grant, err
 	}
-	if err := store.MarkHeld(grant); err != nil {
+	expires, err := store.MarkHeld(grant)
+	if err != nil {
 		_ = child.stopRetained(ctx)
 		return grant, err
 	}
+	grant.ExpiresAt = expires
 	return grant, nil
 }
 
@@ -119,7 +121,12 @@ func (runtime *Runtime) ReapExpired(ctx context.Context, store LeaseStore) error
 			continue
 		}
 		kind := "lease.fence"
-		if slot.FailureReason == "heartbeat expired; cleanup required" {
+		fromState := SlotHeld
+		if slot.ReadyAt.IsZero() {
+			fromState = SlotProvisioning
+		}
+		if slot.FailureReason == heartbeatExpiredReason ||
+			slot.FailureReason == provisioningExpiredReason {
 			kind = "lease.expired"
 		}
 		_, _ = runtime.eventRecorder().Record(BrokerEvent{
@@ -127,7 +134,7 @@ func (runtime *Runtime) ReapExpired(ctx context.Context, store LeaseStore) error
 			SlotID:             slot.SlotID,
 			ResourceGeneration: slot.ResourceGeneration,
 			LeaseEpoch:         slot.LeaseEpoch,
-			FromState:          SlotHeld,
+			FromState:          fromState,
 			ToState:            SlotDraining,
 			Context:            leaseContextFromSlot(slot),
 		})

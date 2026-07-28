@@ -133,7 +133,7 @@ func TestLeaseStoreConcurrentCapacityAndFencing(t *testing.T) {
 	if grants[0].SlotID == grants[1].SlotID {
 		t.Fatal("concurrent leases received the same slot")
 	}
-	if err := store.MarkHeld(grants[0]); err != nil {
+	if _, err := store.MarkHeld(grants[0]); err != nil {
 		t.Fatal(err)
 	}
 	stale := grants[0]
@@ -175,8 +175,19 @@ func TestLeaseStoreExpiryShrinkAndQuarantine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if pool.Slots[0].State != SlotProvisioning {
+		t.Fatalf("live provisioning state=%s", pool.Slots[0].State)
+	}
+	now = now.Add(ProvisioningTTL - LeaseTTL)
+	pool, err = store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if pool.Slots[0].State != SlotDraining {
 		t.Fatalf("expired state=%s", pool.Slots[0].State)
+	}
+	if pool.Slots[0].FailureReason != provisioningExpiredReason {
+		t.Fatalf("expired provisioning reason=%q", pool.Slots[0].FailureReason)
 	}
 	shrunk := LeaseStore{Path: path, SlotCount: 1, Now: store.Now}
 	retiring, err := shrunk.PrepareResize()
@@ -195,6 +206,39 @@ func TestLeaseStoreExpiryShrinkAndQuarantine(t *testing.T) {
 	}
 	if pool.Slots[0].State != SlotQuarantined || pool.Slots[0].FailureReason == "" {
 		t.Fatalf("quarantine not recorded: %#v", pool.Slots[0])
+	}
+}
+
+func TestLeaseStoreHeldDeadlineStartsAfterProvisioning(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	store := LeaseStore{
+		Path:      filepath.Join(t.TempDir(), "leases.json"),
+		SlotCount: 1,
+		Now:       func() time.Time { return now },
+	}
+	grant, err := store.Acquire("client", "SHA256:key", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(ProvisioningTTL); !grant.ExpiresAt.Equal(want) {
+		t.Fatalf("provisioning expiry=%s, want %s", grant.ExpiresAt, want)
+	}
+	now = now.Add(LeaseTTL)
+	expires, err := store.MarkHeld(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(LeaseTTL); !expires.Equal(want) {
+		t.Fatalf("held expiry=%s, want %s", expires, want)
+	}
+	now = now.Add(LeaseTTL)
+	pool, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.Slots[0].State != SlotDraining ||
+		pool.Slots[0].FailureReason != heartbeatExpiredReason {
+		t.Fatalf("expired held slot=%#v", pool.Slots[0])
 	}
 }
 

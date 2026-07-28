@@ -416,6 +416,10 @@ owner() (
     || die 'nested state permissions did not converge'
   ! incus exec yard-test-yard --project subyard-test-yard -- id -nG dev | tr ' ' '\n' \
     | grep -Eq '^(incus-admin|yard)$' || die 'dev retained a privileged L1 group'
+  # The migration fixtures have finished compiling. Drop only this run's
+  # disposable Go cache before retaining both nested VM pairs; production
+  # broker memory and capacity defaults remain unchanged.
+  p0_capacity_reset_build_cache
   SUBYARD_E2E_YARD=test-yard bash dev/e2e/p1-lease-acceptance.sh
   SUBYARD_E2E_YARD=test-yard bash dev/e2e/p0-broker-recovery.sh
   owner_project_contract
@@ -457,7 +461,7 @@ broker_recovery_owner() (
   OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
   OWNER_BASELINE_CAPTURED=1
   ensure_owner_base_image
-  OWNER_DIAGNOSTIC_VM_MEMORY="${P0_BROKER_RECOVERY_VM_MEMORY:-512MiB}"
+  OWNER_DIAGNOSTIC_VM_MEMORY="${P0_BROKER_RECOVERY_VM_MEMORY:-700MiB}"
   install_owner_runtime
   prepare_broker_recovery_update
   prepare_owner_image_cache_project subyard-test-yard

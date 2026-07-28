@@ -179,16 +179,6 @@ func (runtime *Runtime) recoverScheduledLocked(
 	if statusErr != nil {
 		return errors.Join(rebuildErr, statusErr)
 	}
-	diagnostics := runtime.slotRuntime(mustSlotNumber(slotID), "").recoveryDiagnostics(ctx)
-	artifact, incidentErr := runtime.eventRecorder().SaveIncident(current, rebuildErr, diagnostics)
-	if incidentErr != nil {
-		_, finishErr := store.FinishRecovery(slotID, rebuildErr, "", "")
-		return errors.Join(
-			rebuildErr,
-			fmt.Errorf("persist recovery failure: %w", incidentErr),
-			finishErr,
-		)
-	}
 	failureEvent, eventErr := runtime.eventRecorder().Record(BrokerEvent{
 		Kind:               "recovery.failed",
 		SlotID:             current.SlotID,
@@ -199,18 +189,18 @@ func (runtime *Runtime) recoverScheduledLocked(
 		RecoveryAttempt:    current.RecoveryAttempt,
 		DurationMS:         duration.Milliseconds(),
 		Error:              errorString(rebuildErr),
-		IncidentID:         artifact.IncidentID,
+		IncidentID:         current.IncidentID,
 		Context:            leaseContextFromSlot(current),
 	})
 	if eventErr != nil {
-		_, finishErr := store.FinishRecovery(slotID, rebuildErr, "", artifact.IncidentID)
+		_, finishErr := store.FinishRecovery(slotID, rebuildErr, "", "")
 		return errors.Join(rebuildErr, eventErr, finishErr)
 	}
 	finished, finishErr := store.FinishRecovery(
 		slotID,
 		rebuildErr,
 		failureEvent.EventID,
-		artifact.IncidentID,
+		"",
 	)
 	if finishErr != nil {
 		return errors.Join(rebuildErr, finishErr)

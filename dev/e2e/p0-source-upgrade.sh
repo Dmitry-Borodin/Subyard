@@ -30,7 +30,7 @@ MIGRATION_SOURCE="$OPERATOR_HOME/.config/subyard/migration-fixture/legacy/config
 MIGRATION_DESTINATION="$OPERATOR_HOME/.config/subyard/migration-fixture/current/config.env"
 MIGRATION_STATE="$OPERATOR_HOME/.config/subyard/migrations/state.json"
 LEGACY_INSTALLER="$ROOT/tests/fixtures/migrations/v0.1.0-install-runtime-release.sh"
-LAYOUT_THREE_REGISTRY="$ROOT/tests/fixtures/migrations/layout-3-production-prefix.json"
+LAYOUT_FOUR_REGISTRY="$ROOT/tests/fixtures/migrations/layout-4-production-prefix.json"
 
 die() { printf 'p0-source-upgrade: %s\n' "$*" >&2; exit 2; }
 [[ "$TOKEN" =~ ^[0-9]+$ ]] || die 'allocation token must be numeric'
@@ -263,7 +263,7 @@ package_candidates() {
   "$ROOT/dev/package-engine.sh" --output-dir "$RELEASE_ROOT/a" --version "$VERSION_A" \
     --runtime-installer "$LEGACY_INSTALLER" >/dev/null
   "$ROOT/dev/package-engine.sh" --output-dir "$RELEASE_ROOT/b" --version "$VERSION_B" \
-    --migration-registry "$LAYOUT_THREE_REGISTRY" >/dev/null
+    --migration-registry "$LAYOUT_FOUR_REGISTRY" >/dev/null
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;
     aarch64 | arm64) arch=arm64 ;;
@@ -382,16 +382,27 @@ seed_versioned_migration_input() {
   operator_env test ! -e "$MIGRATION_DESTINATION" \
     || die 'synthetic migration destination already exists'
   jq -e '
-    .layout == 2 and .applied == ["migrate-test-yard-owner"]
+    .layout == 3 and
+    .applied == ["migrate-test-yard-owner", "refresh-test-vm-broker"]
   ' < <(operator_env cat "$MIGRATION_STATE") >/dev/null \
     || die 'production migration history is unavailable before synthetic migration'
   state_before="$(operator_env sha256sum "$MIGRATION_STATE" | awk '{print $1}')"
   report="$(candidate_migrate check)"
-  jq -e '
-    .layout == 2 and .targetLayout == 3 and (.pending // false) == false and
-    .requiredMigrations == ["move-legacy-assignments"] and
-    .affectedResources == ["migration-fixture-assignments"]
-  ' <<<"$report" >/dev/null || die 'candidate returned the wrong live migration plan'
+  if ! jq -e '
+    .layout == 3 and .targetLayout == 4 and .pending == true and
+    .phase == "reconcile" and
+    .requiredMigrations == [
+      "refresh-test-vm-broker",
+      "move-legacy-assignments"
+    ] and
+    .affectedResources == [
+      "test-vm-broker-runtime",
+      "migration-fixture-assignments"
+    ]
+  ' <<<"$report" >/dev/null; then
+    jq -c . <<<"$report" >&2
+    die 'candidate returned the wrong live migration plan'
+  fi
   [ "$state_before" = "$(operator_env sha256sum "$MIGRATION_STATE" | awk '{print $1}')" ] \
     && operator_env test -f "$MIGRATION_SOURCE" \
     && operator_env test ! -e "$MIGRATION_DESTINATION" \
@@ -405,18 +416,21 @@ verify_prepared_versioned_migration() {
   operator_env cmp "$MIGRATION_SOURCE" "$MIGRATION_DESTINATION" \
     || die 'prepared migration did not retain matching old and new consumer inputs'
   jq -e '
-    .layout == 2 and .applied == ["migrate-test-yard-owner"]
+    .layout == 3 and
+    .applied == ["migrate-test-yard-owner", "refresh-test-vm-broker"]
   ' < <(operator_env cat "$MIGRATION_STATE") >/dev/null \
     || die 'prepared migration advanced the applied layout'
   transaction="$(migration_transaction_directory "$VERSION_B")"
   journal="$(operator_env cat "$transaction/transaction.json")"
   if ! jq -e --arg version "$VERSION_B" '
-    .phase == "prepared" and .fromLayout == 2 and .toLayout == 3 and
+    .phase == "prepared" and .fromLayout == 3 and .toLayout == 4 and
     .toRelease == $version and (.entries | length) == 1 and
     (.operations | map([.migrationId, .operationId, .kind])) == [
       ["migrate-test-yard-owner", "test-yard-owner", "test-yard-owner-v1"],
       ["migrate-test-yard-owner", "test-yard-route-consumers",
-       "test-yard-route-consumers-v1"]
+       "test-yard-route-consumers-v1"],
+      ["refresh-test-vm-broker", "test-vm-broker-runtime",
+       "test-vm-broker-runtime-v1"]
     ]
   ' <<<"$journal" >/dev/null; then
     jq -c --arg version "$VERSION_B" '{
@@ -431,7 +445,7 @@ verify_prepared_versioned_migration() {
   fi
   report="$(candidate_migrate check)"
   jq -e '
-    .layout == 2 and .targetLayout == 3 and .pending == true and .phase == "prepared"
+    .layout == 3 and .targetLayout == 4 and .pending == true and .phase == "prepared"
   ' <<<"$report" >/dev/null || die 'prepared migration does not resume deterministically'
   verify_protected_migration_state
 }
@@ -445,24 +459,30 @@ verify_committed_versioned_migration() {
     && operator_env grep -Fxq 'TOKEN=synthetic-layout' "$MIGRATION_DESTINATION" \
     || die 'committed migration retained the old active path or lost consumer data'
   jq -e '
-    .layout == 3 and
-    .applied == ["migrate-test-yard-owner", "move-legacy-assignments"]
+    .layout == 4 and
+    .applied == [
+      "migrate-test-yard-owner",
+      "refresh-test-vm-broker",
+      "move-legacy-assignments"
+    ]
   ' < <(operator_env cat "$MIGRATION_STATE") >/dev/null \
     || die 'committed migration did not advance the applied layout'
   transaction="$(migration_transaction_directory "$VERSION_B")"
   jq -e --arg version "$VERSION_B" '
-    .phase == "committed" and .fromLayout == 2 and .toLayout == 3 and
+    .phase == "committed" and .fromLayout == 3 and .toLayout == 4 and
     .toRelease == $version and (.entries | length) == 1 and
     (.operations | map([.migrationId, .operationId, .kind])) == [
       ["migrate-test-yard-owner", "test-yard-owner", "test-yard-owner-v1"],
       ["migrate-test-yard-owner", "test-yard-route-consumers",
-       "test-yard-route-consumers-v1"]
+       "test-yard-route-consumers-v1"],
+      ["refresh-test-vm-broker", "test-vm-broker-runtime",
+       "test-vm-broker-runtime-v1"]
     ]
   ' < <(operator_env cat "$transaction/transaction.json") >/dev/null \
     || die 'committed migration journal is inconsistent'
   report="$(candidate_migrate check)"
   jq -e '
-    .layout == 3 and .targetLayout == 3 and (.pending // false) == false and
+    .layout == 4 and .targetLayout == 4 and (.pending // false) == false and
     .phase == "committed"
   ' <<<"$report" >/dev/null || die 'committed migration does not resume deterministically'
   verify_protected_migration_state
@@ -477,11 +497,12 @@ verify_rolled_back_versioned_migration() {
     && operator_env test ! -L "$MIGRATION_DESTINATION" \
     || die 'runtime rollback did not restore the previous consumer path'
   jq -e '
-    .layout == 2 and .applied == ["migrate-test-yard-owner"]
+    .layout == 3 and
+    .applied == ["migrate-test-yard-owner", "refresh-test-vm-broker"]
   ' < <(operator_env cat "$MIGRATION_STATE") >/dev/null \
     || die 'runtime rollback did not restore the previous data layout'
   transaction="$(migration_transaction_directory "$VERSION_B")"
-  jq -e '.phase == "rolled-back" and .fromLayout == 2 and .toLayout == 3' \
+  jq -e '.phase == "rolled-back" and .fromLayout == 3 and .toLayout == 4' \
     < <(operator_env cat "$transaction/transaction.json") >/dev/null \
     || die 'rolled-back migration journal is inconsistent'
   verify_protected_migration_state
@@ -697,7 +718,7 @@ finish() {
   operator_yard -Y "$YARD_NAME" init --yes
   verify_committed_versioned_migration
   finalize_report="$(candidate_migrate finalize)"
-  jq -e '.changed == false and .layout == 3 and .phase == "committed"' \
+  jq -e '.changed == false and .layout == 4 and .phase == "committed"' \
     <<<"$finalize_report" >/dev/null \
     || die 'repeated committed migration command was not idempotent'
   verify_config_workflow

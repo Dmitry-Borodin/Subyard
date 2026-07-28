@@ -88,7 +88,9 @@ func TestFacadeExactSlotAcquireIsBackwardCompatible(t *testing.T) {
 		Store: store, Output: &output,
 		OnAcquire: func(grant LeaseGrant, _ string) (LeaseGrant, error) {
 			provisioned = append(provisioned, grant.SlotID)
-			return grant, store.MarkHeld(grant)
+			expires, err := store.MarkHeld(grant)
+			grant.ExpiresAt = expires
+			return grant, err
 		},
 	}
 	key := strings.Fields(fixturePublicKey(t))
@@ -137,7 +139,9 @@ func TestFacadeReleaseReplayAndWrongCredentialsReturnLeaseLost(t *testing.T) {
 	facade := Facade{
 		Store: store, Output: &output,
 		OnAcquire: func(grant LeaseGrant, _ string) (LeaseGrant, error) {
-			return grant, store.MarkHeld(grant)
+			expires, err := store.MarkHeld(grant)
+			grant.ExpiresAt = expires
+			return grant, err
 		},
 		OnRelease: func(LeaseGrant) error { return nil },
 	}

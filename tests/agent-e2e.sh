@@ -213,6 +213,33 @@ grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
 grep -Fq 'P0_E2E_MIN_PEAK_MEMORY_RESERVE_BYTES:-67108864' \
   "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 acceptance does not keep only the 64 MiB minimum peak memory reserve"
+grep -Fq 'SUBYARD_P0_SLOT must be a number from 1 to 999' \
+  "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && grep -Fq "printf -v LEASE_REQUESTED_SLOT 'slot-%03d'" \
+    "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail "P0 acceptance cannot atomically pin its outer broker lease"
+grep -Fq 'prepare_slot "$slot"' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq 'purpose acceptance-prepare' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq 'dump_broker_diagnostics' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  || fail "P1 acceptance does not prepare first-boot slots sequentially with diagnostics"
+grep -Fq 'FAULT_ROOT=/run/subyard-p0-incus-fault' \
+  "$ROOT/dev/e2e/p0-broker-recovery.sh" \
+  && grep -Fq 'outer_root systemctl mask --runtime --now \' \
+    "$ROOT/dev/e2e/p0-broker-recovery.sh" \
+  && awk '
+    /^stop_slot_pair 2$/ { stopped = NR }
+    /^rollback_candidate_update$/ { rolled_back = NR }
+    /outer_root systemctl unmask --runtime/ { unmasked = NR }
+    END {
+      exit !(stopped && rolled_back && unmasked &&
+        stopped < rolled_back && rolled_back < unmasked)
+    }
+  ' "$ROOT/dev/e2e/p0-broker-recovery.sh" \
+  || fail "P0 broker recovery does not isolate its targeted fault before rebuilding"
+if grep -Fq 'mask --runtime --now incus.service' \
+  "$ROOT/dev/e2e/p0-broker-recovery.sh"; then
+  fail "P0 broker recovery fault injection drains unrelated held leases"
+fi
 grep -Fq '> "$PEER_ROOT/config/config.env"' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'P0_PEER_YARD_TIMEOUT:-300' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer yard does not use its active config root with a bounded init"
@@ -369,6 +396,8 @@ grep -Fq 'write_owner_registration e2e-yard e2e-vms' "$ROOT/dev/e2e/p0-guest.sh"
   || fail "P0 owner lane does not exercise the retired registration"
 grep -Fq 'OWNER_DIAGNOSTIC_VM_MEMORY="${P0_E2E_DIAGNOSTIC_VM_MEMORY:-700MiB}"' \
   "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'OWNER_DIAGNOSTIC_VM_MEMORY="${P0_BROKER_RECOVERY_VM_MEMORY:-700MiB}"' \
+    "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'E2E_VM_MEMORY=%s' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq ': "${E2E_VM_MEMORY:=4GiB}"' "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "P0 memory limit is not diagnostic-only or changed the production default"
@@ -418,6 +447,8 @@ grep -Fq 'incus "$@" </dev/null; }' "$ROOT/dev/e2e/p0-real-incus.sh" \
 grep -Fq 'wait_ready p0-container container' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'wait_ready p0-vm virtual-machine' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq -- '-c security.secureboot=false' "$ROOT/dev/e2e/p0-real-incus.sh" \
+  && grep -Fq 'P0_REAL_INCUS_RESTART_GRACE_ATTEMPTS:-30' \
+    "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'stopped during first boot; replacing it once' "$ROOT/dev/e2e/p0-real-incus.sh" \
   && grep -Fq 'relaunching real Incus VM after first-boot stop' "$ROOT/dev/e2e/p0-real-incus.sh" \
   || fail "P0 real-Incus lane does not bound first-boot VM recovery with deterministic boot policy"

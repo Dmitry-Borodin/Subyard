@@ -20,6 +20,12 @@ const (
 	LeaseRecoverySchemaVersion    = 1
 	LeaseAttributionSchemaVersion = 1
 	LeaseTTL                      = 10 * time.Minute
+	ProvisioningTTL               = 20 * time.Minute
+)
+
+const (
+	heartbeatExpiredReason    = "heartbeat expired; cleanup required"
+	provisioningExpiredReason = "provisioning deadline expired; cleanup required"
 )
 
 var (
@@ -213,7 +219,7 @@ func (store LeaseStore) acquire(
 			slot.AcquiredAt = now
 			slot.ProvisioningStartedAt = now
 			slot.LastHeartbeatAt = now
-			slot.ExpiresAt = now.Add(LeaseTTL)
+			slot.ExpiresAt = now.Add(ProvisioningTTL)
 			slot.FailureReason = ""
 			slot.LastFailureEventID = ""
 			slot.IncidentID = ""
@@ -235,8 +241,9 @@ func (store LeaseStore) acquire(
 	return grant, err
 }
 
-func (store LeaseStore) MarkHeld(grant LeaseGrant) error {
-	return store.mutateOwned(grant, func(slot *LeaseSlot, now time.Time) error {
+func (store LeaseStore) MarkHeld(grant LeaseGrant) (time.Time, error) {
+	var expires time.Time
+	err := store.mutateOwned(grant, func(slot *LeaseSlot, now time.Time) error {
 		if slot.State != SlotProvisioning {
 			return fmt.Errorf("slot is %s, not provisioning", slot.State)
 		}
@@ -244,8 +251,10 @@ func (store LeaseStore) MarkHeld(grant LeaseGrant) error {
 		slot.ReadyAt = now
 		slot.LastHeartbeatAt = now
 		slot.ExpiresAt = now.Add(LeaseTTL)
+		expires = slot.ExpiresAt
 		return nil
 	})
+	return expires, err
 }
 
 func (store LeaseStore) Renew(grant LeaseGrant) (time.Time, error) {
@@ -819,10 +828,16 @@ func (store LeaseStore) CommitResize() error {
 func expireStale(pool *LeasePool, now time.Time) {
 	for index := range pool.Slots {
 		slot := &pool.Slots[index]
-		if (slot.State == SlotHeld || slot.State == SlotProvisioning) &&
-			!slot.ExpiresAt.IsZero() && !now.Before(slot.ExpiresAt) {
+		if slot.ExpiresAt.IsZero() || now.Before(slot.ExpiresAt) {
+			continue
+		}
+		switch slot.State {
+		case SlotHeld:
 			slot.State = SlotDraining
-			slot.FailureReason = "heartbeat expired; cleanup required"
+			slot.FailureReason = heartbeatExpiredReason
+		case SlotProvisioning:
+			slot.State = SlotDraining
+			slot.FailureReason = provisioningExpiredReason
 		}
 	}
 }

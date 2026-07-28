@@ -440,6 +440,46 @@ func TestShippedRegistryOrdersOwnerConsumersThenBrokerRefresh(t *testing.T) {
 	}
 }
 
+func TestSourceUpgradeFixtureExtendsExactShippedRegistry(t *testing.T) {
+	shipped, err := LoadRegistry(filepath.Join("..", "..", "config", "migrations.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := LoadRegistry(filepath.Join(
+		"..", "..", "tests", "fixtures", "migrations", "layout-4-production-prefix.json",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.CurrentLayout != shipped.CurrentLayout+1 ||
+		len(fixture.Migrations) != len(shipped.Migrations)+1 {
+		t.Fatalf(
+			"source-upgrade fixture layout=%d migrations=%d, want one beyond shipped layout=%d migrations=%d",
+			fixture.CurrentLayout,
+			len(fixture.Migrations),
+			shipped.CurrentLayout,
+			len(shipped.Migrations),
+		)
+	}
+	shippedPrefix, err := json.Marshal(shipped.Migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixturePrefix, err := json.Marshal(fixture.Migrations[:len(shipped.Migrations)])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(fixturePrefix) != string(shippedPrefix) {
+		t.Fatal("source-upgrade fixture rewrote the shipped migration prefix")
+	}
+	synthetic := fixture.Migrations[len(shipped.Migrations)]
+	if synthetic.ID != "move-legacy-assignments" ||
+		synthetic.FromLayout != shipped.CurrentLayout ||
+		synthetic.ToLayout != fixture.CurrentLayout {
+		t.Fatalf("source-upgrade synthetic migration = %#v", synthetic)
+	}
+}
+
 func TestReleaseMigrationRejectsCorruptDurableState(t *testing.T) {
 	t.Run("applied-ids", func(t *testing.T) {
 		options, _, _ := releaseMigrationFixture(t)

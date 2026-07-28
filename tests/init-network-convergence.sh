@@ -70,6 +70,15 @@ case "$*" in
     printf '%s\n' "${MOCK_INSTANCE_STATE:-STOPPED}"
     ;;
   "list yard --project subyard -c4 -fcsv")
+    if [ -n "${MOCK_INSTANCE_IP_AFTER_FILE:-}" ]; then
+      attempts=0
+      [ ! -e "$MOCK_INSTANCE_IP_AFTER_FILE" ] \
+        || attempts="$(cat "$MOCK_INSTANCE_IP_AFTER_FILE")"
+      attempts=$((attempts + 1))
+      printf '%s\n' "$attempts" > "$MOCK_INSTANCE_IP_AFTER_FILE"
+      [ "$attempts" -lt 2 ] || printf '%s\n' "${MOCK_INSTANCE_IP:-10.0.0.2}"
+      exit 0
+    fi
     printf '%s\n' "${MOCK_INSTANCE_IP:-}"
     ;;
   *) exit 90 ;;
@@ -98,8 +107,17 @@ SUBYARD_POWER_DESIRED=stopped bash "$ROOT/scripts/06-network.sh" --verify \
 MOCK_INSTANCE_STATE=RUNNING MOCK_INSTANCE_IP=10.0.0.2 \
   SUBYARD_POWER_DESIRED=running bash "$ROOT/scripts/06-network.sh" --verify \
   || fail "running instance with an address did not converge"
+address_attempts="$TMP/address-attempts"
+MOCK_INSTANCE_STATE=RUNNING MOCK_INSTANCE_IP='' \
+  MOCK_INSTANCE_IP_AFTER_FILE="$address_attempts" \
+  SUBYARD_NETWORK_ADDRESS_ATTEMPTS=2 SUBYARD_POWER_DESIRED=running \
+  bash "$ROOT/scripts/06-network.sh" --verify \
+  || fail "post-apply verify did not wait for the running instance address"
+[ "$(cat "$address_attempts")" = 2 ] \
+  || fail "post-apply verify did not retry the running instance address"
 if MOCK_INSTANCE_STATE=RUNNING MOCK_INSTANCE_IP='' \
-  SUBYARD_POWER_DESIRED=running bash "$ROOT/scripts/06-network.sh" --verify; then
+  SUBYARD_NETWORK_ADDRESS_ATTEMPTS=1 SUBYARD_POWER_DESIRED=running \
+  bash "$ROOT/scripts/06-network.sh" --verify; then
   fail "running instance without an address converged"
 fi
 

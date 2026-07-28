@@ -29,9 +29,9 @@ type brokerRuntime struct {
 	instance string
 }
 
-// PrepareBrokerRuntime records only whether the configured broker is currently
-// active. The state stays stable when an earlier operation renames e2e-yard to
-// test-yard in the same release transaction.
+// PrepareBrokerRuntime records whether the configured broker is active or is
+// desired to be active. The state stays stable when an earlier operation
+// renames or recreates e2e-yard as test-yard in the same release transaction.
 func PrepareBrokerRuntime(
 	ctx context.Context,
 	options Options,
@@ -287,8 +287,9 @@ func inspectBrokerRuntime(
 		return brokerRuntime{}, fmt.Errorf("inspect test VM broker yard: %w", err)
 	}
 	var instances []struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
+		Name   string            `json:"name"`
+		Status string            `json:"status"`
+		Config map[string]string `json:"config"`
 	}
 	if err := json.Unmarshal(instancesPayload, &instances); err != nil {
 		return brokerRuntime{}, fmt.Errorf("decode test VM broker yard: %w", err)
@@ -301,6 +302,22 @@ func inspectBrokerRuntime(
 	}
 	switch strings.ToUpper(instances[0].Status) {
 	case "STOPPED":
+		switch strings.ToLower(strings.TrimSpace(
+			instances[0].Config["user.subyard.desired_power"],
+		)) {
+		case "running":
+			// A yard stopped underneath the operator during an upgrade or
+			// reboot is still an active broker allocation when its durable
+			// activation intent is running. Owner migration may restore it
+			// before this operation commits, so retain a stable active state.
+			result.state = BrokerRuntimeActive
+		case "", "stopped":
+		default:
+			return brokerRuntime{}, fmt.Errorf(
+				"test VM broker yard has unsupported desired power %q",
+				instances[0].Config["user.subyard.desired_power"],
+			)
+		}
 		return result, nil
 	case "RUNNING":
 	default:

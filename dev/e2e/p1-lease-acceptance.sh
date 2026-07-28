@@ -39,6 +39,11 @@ status() {
   SUBYARD_E2E_STATE_DIR="$STATE_PARENT/c" "$RUNNER" --yard "$YARD" --status --json
 }
 
+dump_broker_diagnostics() {
+  status >&2 || true
+  "$ROOT/bin/yard" test-vms logs -n 200 >&2 || true
+}
+
 wait_for_state_count() {
   local state="$1" expected="$2" attempts="${3:-90}" payload count
   for _ in $(seq 1 "$attempts"); do
@@ -64,12 +69,15 @@ wait_for_ready() {
   for _ in $(seq 1 "$attempts"); do
     [ ! -s "$STATE_PARENT/$client.ready" ] || return 0
     [ ! -s "$STATE_PARENT/$client.failed" ] \
-      || { sed -n '1,240p' "$STATE_PARENT/$client.log" >&2; return 1; }
+      || { sed -n '1,240p' "$STATE_PARENT/$client.log" >&2;
+           dump_broker_diagnostics; return 1; }
     kill -0 "$pid" >/dev/null 2>&1 \
-      || { sed -n '1,240p' "$STATE_PARENT/$client.log" >&2; return 1; }
+      || { sed -n '1,240p' "$STATE_PARENT/$client.log" >&2;
+           dump_broker_diagnostics; return 1; }
     sleep 1
   done
   sed -n '1,240p' "$STATE_PARENT/$client.log" >&2
+  dump_broker_diagnostics
   return 1
 }
 
@@ -150,12 +158,35 @@ stale_renew() (
   facade_request "$(cat "$STATE_PARENT/$client.stale-renew")"
 )
 
+prepare_slot() {
+  local slot="$1" rc=0
+  SUBYARD_E2E_STATE_DIR="$STATE_PARENT/c" \
+    SUBYARD_E2E_PROJECT_LABEL=fixture/acceptance-prepare \
+    "$RUNNER" --yard "$YARD" --slot "$slot" --purpose acceptance-prepare \
+      --vm 1 -- true || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    dump_broker_diagnostics
+    return "$rc"
+  fi
+}
+
 initial="$(status)"
 jq -e '
   (.pool.slots | length) == 2 and
   all(.pool.slots[]; .state == "available")
 ' <<<"$initial" >/dev/null \
   || die 'run only against an empty two-slot candidate broker'
+
+# First boot performs package installation in both VMs. Prepare each slot
+# sequentially through an ordinary lease so a constrained diagnostic host does
+# not run four first-boot package managers at once. The isolation contract
+# below still holds both stopped-and-reused pairs concurrently.
+for slot in 1 2; do
+  prepare_slot "$slot"
+done
+prepared="$(status)"
+jq -e 'all(.pool.slots[]; .state == "available")' <<<"$prepared" >/dev/null \
+  || die 'sequential slot preparation did not release the candidate pool'
 
 hold_lease b fixture/project-b holder-b slot-002 \
   >"$STATE_PARENT/b.log" 2>&1 &

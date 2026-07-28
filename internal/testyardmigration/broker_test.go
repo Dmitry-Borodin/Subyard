@@ -133,6 +133,49 @@ func TestBrokerRuntimeOperationLeavesStoppedBrokerUntouched(t *testing.T) {
 	}
 }
 
+func TestBrokerRuntimeOperationRetainsDesiredRunningAcrossOwnerMigration(t *testing.T) {
+	for _, yard := range []string{LegacyYard, CurrentYard} {
+		t.Run(yard, func(t *testing.T) {
+			options, _ := brokerRuntimeFixtureForYardWithDesiredPower(
+				t,
+				yard,
+				"STOPPED",
+				"inactive",
+				"loaded",
+				"running",
+			)
+
+			before, err := PrepareBrokerRuntime(context.Background(), options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before != BrokerRuntimeActive {
+				t.Fatalf(
+					"stopped desired-running broker state = %q, want %q",
+					before,
+					BrokerRuntimeActive,
+				)
+			}
+		})
+	}
+}
+
+func TestBrokerRuntimeOperationRejectsUnsupportedDesiredPower(t *testing.T) {
+	options, _ := brokerRuntimeFixtureForYardWithDesiredPower(
+		t,
+		CurrentYard,
+		"STOPPED",
+		"inactive",
+		"loaded",
+		"paused",
+	)
+
+	_, err := PrepareBrokerRuntime(context.Background(), options)
+	if err == nil || !strings.Contains(err.Error(), "unsupported desired power") {
+		t.Fatalf("unsupported desired power error = %v", err)
+	}
+}
+
 func TestBrokerRuntimeOperationNormalizesRunningLegacyBackend(t *testing.T) {
 	options, _ := brokerRuntimeFixtureForYard(
 		t,
@@ -349,6 +392,24 @@ func brokerRuntimeFixtureForYard(
 	serviceState string,
 	serviceLoadState string,
 ) (Options, brokerFixtureState) {
+	return brokerRuntimeFixtureForYardWithDesiredPower(
+		t,
+		yard,
+		yardState,
+		serviceState,
+		serviceLoadState,
+		"stopped",
+	)
+}
+
+func brokerRuntimeFixtureForYardWithDesiredPower(
+	t *testing.T,
+	yard string,
+	yardState string,
+	serviceState string,
+	serviceLoadState string,
+	desiredPower string,
+) (Options, brokerFixtureState) {
 	t.Helper()
 	root := t.TempDir()
 	repository := brokerRepository(t, filepath.Join(root, "candidate"))
@@ -373,8 +434,8 @@ case "$*" in
     printf '[{"name":"%s"}]\n' "$BROKER_PROJECT"
     ;;
   "list $BROKER_INSTANCE --project $BROKER_PROJECT --format=json")
-    printf '[{"name":"%s","status":"%s"}]\n' \
-      "$BROKER_INSTANCE" "$BROKER_YARD_STATE"
+    printf '[{"name":"%s","status":"%s","config":{"user.subyard.desired_power":"%s"}}]\n' \
+      "$BROKER_INSTANCE" "$BROKER_YARD_STATE" "$BROKER_DESIRED_POWER"
     ;;
   "exec $BROKER_INSTANCE --project $BROKER_PROJECT -- systemctl is-active subyard-test-vms-broker.service")
     printf '%s\n' "$BROKER_SERVICE_STATE"
@@ -404,6 +465,7 @@ esac
 		"BROKER_YARD_STATE="+yardState,
 		"BROKER_SERVICE_STATE="+serviceState,
 		"BROKER_SERVICE_LOAD_STATE="+serviceLoadState,
+		"BROKER_DESIRED_POWER="+desiredPower,
 		"BROKER_YARD="+yard,
 		"BROKER_PROJECT=subyard-"+yard,
 		"BROKER_INSTANCE=yard-"+yard,

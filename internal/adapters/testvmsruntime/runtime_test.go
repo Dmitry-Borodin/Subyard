@@ -309,6 +309,112 @@ func TestQuarantineLocalSpoolFailureBlocksDestructiveRecovery(t *testing.T) {
 	}
 }
 
+func TestFailedRecoveryKeepsTheOriginalIncidentTimeline(t *testing.T) {
+	cfg := fixtureConfig(t)
+	cfg.SlotCount = 1
+	cfg.BrokerSource = "test-yard"
+	store := LeaseStore{Path: cfg.leaseState(), SlotCount: 1}
+	grant, err := store.Acquire("client", "SHA256:key", "", "recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Quarantine(grant, errors.New("stop timeout")); err != nil {
+		t.Fatal(err)
+	}
+	slot, err := storeSlot(store, grant.SlotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := EventRecorder{StateDir: cfg.StateDir, Source: cfg.BrokerSource}
+	incident, err := recorder.SaveIncident(slot, errors.New("stop timeout"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quarantined, err := recorder.Record(BrokerEvent{
+		Kind:               "slot.quarantined",
+		SlotID:             slot.SlotID,
+		ResourceGeneration: slot.ResourceGeneration,
+		LeaseEpoch:         slot.LeaseEpoch,
+		FromState:          slot.State,
+		ToState:            SlotQuarantined,
+		IncidentID:         incident.IncidentID,
+		Context:            leaseContextFromSlot(slot),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetQuarantineIncident(
+		slot.SlotID,
+		quarantined.EventID,
+		incident.IncidentID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	daemonFailure := &CommandError{
+		Name:     "incus",
+		Args:     []string{"project", "list", "--format", "csv", "-c", "n"},
+		ExitCode: 1,
+		Message:  "Error: Failed to connect to local daemon",
+	}
+	runner := &fakeRunner{handler: func(
+		_ string, arguments, _ []string, _ io.Reader,
+	) ([]byte, []byte, error) {
+		if strings.Join(arguments, " ") == "project list --format csv -c n" {
+			return nil, nil, daemonFailure
+		}
+		return nil, nil, nil
+	}}
+	runtime := &Runtime{
+		Config: cfg,
+		Runner: runner,
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	}
+	if err := runtime.RecoverScheduled(
+		context.Background(),
+		store,
+		slot.SlotID,
+		true,
+	); err == nil {
+		t.Fatal("synthetic recovery failure succeeded")
+	}
+	pool, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.Slots[0].IncidentID != incident.IncidentID {
+		t.Fatalf(
+			"recovery replaced incident %s with %s",
+			incident.IncidentID,
+			pool.Slots[0].IncidentID,
+		)
+	}
+	batch, err := recorder.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Incidents) != 1 ||
+		batch.Incidents[0].IncidentID != incident.IncidentID {
+		t.Fatalf("recovery incidents = %#v", batch.Incidents)
+	}
+	for _, kind := range []string{"recovery.start", "recovery.failed", "recovery.scheduled"} {
+		found := false
+		for _, event := range batch.Events {
+			if event.Kind != kind {
+				continue
+			}
+			found = true
+			if event.IncidentID != incident.IncidentID {
+				t.Fatalf("%s incident = %s", kind, event.IncidentID)
+			}
+		}
+		if !found {
+			t.Fatalf("%s event is missing", kind)
+		}
+	}
+}
+
 func TestReconcilePoolRetriesPhysicalShrinkAndRejectsForeignNetwork(t *testing.T) {
 	for _, test := range []struct {
 		name          string

@@ -10,12 +10,88 @@ OUTER_INSTANCE="yard-$YARD"
 STATE_PARENT=''
 NEIGHBOR_PID=''
 VICTIM_PID=''
-INCUS_MASKED=0
+FAULT_ROOT=/run/subyard-p0-incus-fault
+FAULT_INSTALLED=0
+REAPER_MASKED=0
 
 die() { printf 'p0-broker-recovery: %s\n' "$*" >&2; exit 2; }
 
 outer_root() {
   incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- "$@"
+}
+
+restore_targeted_incus_failure() {
+  [ "$FAULT_INSTALLED" = 1 ] || return 0
+  outer_root sh -eu -c '
+    root=$1
+    config=/etc/subyard/test-vms.env
+    backup=$root/test-vms.env.backup
+    if [ -f "$backup" ] && [ ! -L "$backup" ]; then
+      cp --preserve=mode,ownership,timestamps -- "$backup" "$config"
+    fi
+    find "$root" -depth -delete
+  ' _ "$FAULT_ROOT"
+  FAULT_INSTALLED=0
+}
+
+install_targeted_incus_failure() {
+  local real_incus
+  real_incus="$(outer_root sh -eu -c 'command -v incus')"
+  case "$real_incus" in
+    /usr/bin/incus | /usr/local/bin/incus) ;;
+    *) die "unsafe inner Incus path $real_incus" ;;
+  esac
+  FAULT_INSTALLED=1
+  outer_root sh -eu -s -- "$FAULT_ROOT" "$real_incus" <<'EOF'
+root=$1
+real_incus=$2
+config=/etc/subyard/test-vms.env
+backup=$root/test-vms.env.backup
+wrapper=$root/incus
+trigger=$root/trigger
+candidate=$root/test-vms.env.candidate
+
+[ -f "$config" ] && [ ! -L "$config" ]
+install -d -m 0700 "$root"
+cp --preserve=mode,ownership,timestamps -- "$config" "$backup"
+{
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'trigger=/run/subyard-p0-incus-fault/trigger' \
+    'if [ -e "$trigger" ] && [ "$#" -eq 6 ] &&' \
+    '  [ "$1" = project ] && [ "$2" = list ] &&' \
+    '  [ "$3" = --format ] && [ "$4" = csv ] &&' \
+    '  [ "$5" = -c ] && [ "$6" = n ]; then' \
+    '  rm -f -- "$trigger"' \
+    '  printf "%s\n" "Error: Failed to connect to local daemon: p0 targeted inventory fault" >&2' \
+    '  exit 1' \
+    'fi'
+  printf 'exec %s "$@"\n' "$real_incus"
+} > "$wrapper"
+chmod 0700 "$wrapper"
+awk -v value="SUBYARD_INNER_INCUS=$wrapper" '
+  BEGIN { replaced = 0 }
+  /^SUBYARD_INNER_INCUS=/ {
+    if (!replaced) {
+      print value
+      replaced = 1
+    }
+    next
+  }
+  { print }
+  END {
+    if (!replaced) {
+      print value
+    }
+  }
+' "$config" > "$candidate"
+chown --reference="$config" "$candidate"
+chmod --reference="$config" "$candidate"
+mv -f -- "$candidate" "$config"
+: > "$trigger"
+chmod 0600 "$trigger"
+EOF
 }
 
 stop_slot_pair() {
@@ -30,9 +106,12 @@ cleanup() {
   local rc=$?
   trap - EXIT INT TERM
   set +e
-  if [ "$INCUS_MASKED" = 1 ]; then
-    outer_root systemctl unmask --runtime incus.service incus.socket >/dev/null 2>&1
-    outer_root systemctl start incus.socket incus.service >/dev/null 2>&1
+  restore_targeted_incus_failure >/dev/null 2>&1
+  if [ "$REAPER_MASKED" = 1 ]; then
+    outer_root systemctl unmask --runtime \
+      subyard-test-vms-lease-reaper.service >/dev/null 2>&1
+    outer_root systemctl start \
+      subyard-test-vms-lease-reaper.service >/dev/null 2>&1
   fi
   for client in victim neighbor; do
     [ -z "$STATE_PARENT" ] || : > "$STATE_PARENT/$client.release"
@@ -59,15 +138,18 @@ status() {
 
 wait_for_ready() {
   local client="$1" pid="$2"
-  for _ in $(seq 1 360); do
+  # A cold remote image import can consume more than five minutes before the
+  # retained pair reaches its separately bounded 300-second boot and SSH
+  # checks. Keep this outer acceptance watchdog large enough for both phases.
+  for _ in $(seq 1 900); do
     [ ! -s "$STATE_PARENT/$client.ready" ] || return 0
     if [ -s "$STATE_PARENT/$client.failed" ] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      sed -n '1,240p' "$STATE_PARENT/$client.log" >&2
+      tail -n 240 "$STATE_PARENT/$client.log" >&2
       return 1
     fi
     sleep 1
   done
-  sed -n '1,240p' "$STATE_PARENT/$client.log" >&2
+  tail -n 240 "$STATE_PARENT/$client.log" >&2
   return 1
 }
 
@@ -190,7 +272,10 @@ report_slot_diagnostics() {
     fi
   fi
   outer_root journalctl \
-    -u subyard-test-vms-broker.service -n 80 --no-pager >&2 || true
+    -u subyard-test-vms-broker.service \
+    -u subyard-test-vms-lease-reaper.service \
+    -u "subyard-test-vms-recover@$slot.service" \
+    -n 160 --no-pager >&2 || true
 }
 
 [ "${SUBYARD_E2E_VM:-}" = 1 ] \
@@ -217,7 +302,9 @@ initial_generation="$(jq -r '
 hold_lease victim quarantine-victim slot-001 \
   >"$STATE_PARENT/victim.log" 2>&1 &
 VICTIM_PID=$!
-wait_for_ready victim "$VICTIM_PID" || die 'victim lease did not become ready'
+wait_for_ready victim "$VICTIM_PID" \
+  || { report_slot_diagnostics slot-001 'victim provisioning failed';
+       die 'victim lease did not become ready'; }
 
 IFS=$'\t' read -r VICTIM_SLOT VICTIM_CONFIG _ < "$STATE_PARENT/victim.ready"
 [ "$VICTIM_SLOT" = slot-001 ] || die "victim received $VICTIM_SLOT"
@@ -253,19 +340,22 @@ while true; do
   neighbor_attempt=$((neighbor_attempt + 1))
 done
 
-# A runtime mask makes the failure deterministic: HandleQuarantine cannot
-# immediately restart the required daemon before status and incident evidence
-# have been observed.
-outer_root systemctl mask --runtime --now incus.service incus.socket >/dev/null
-INCUS_MASKED=1
-if outer_root incus project list --format csv -c n >/dev/null 2>&1; then
-  die 'inner Incus API remained available after deterministic failure injection'
-fi
+# Mask only the recovery worker while the quarantine evidence is inspected.
+# Masking Incus itself would stop the broker through Requires=incus.service and
+# run its drain-all ExecStop, changing the held neighbor before the targeted
+# release can exercise its failure boundary.
+outer_root systemctl mask --runtime --now \
+  subyard-test-vms-lease-reaper.service >/dev/null
+REAPER_MASKED=1
+install_targeted_incus_failure
 : > "$STATE_PARENT/victim.release"
-if wait "$VICTIM_PID"; then
-  die 'victim release unexpectedly succeeded while inner Incus was unavailable'
-fi
+victim_release_rc=0
+wait "$VICTIM_PID" || victim_release_rc=$?
 VICTIM_PID=''
+restore_targeted_incus_failure
+[ "$victim_release_rc" -ne 0 ] || {
+  die 'victim release unexpectedly succeeded while inner Incus was unavailable'
+}
 
 quarantined="$(wait_for_slot_state slot-001 quarantined 30)" \
   || { report_slot_diagnostics slot-001 'failed release did not quarantine';
@@ -289,11 +379,10 @@ neighbor_heartbeat="$(jq -r '
   .pool.slots[] | select(.slot_id == "slot-002") | .last_heartbeat_at
 ' <<<"$quarantined")"
 
-outer_root systemctl unmask --runtime incus.service incus.socket >/dev/null
-outer_root systemctl start incus.socket incus.service
-INCUS_MASKED=0
-outer_root systemctl is-active --quiet incus.service \
-  || die 'inner Incus did not restart'
+# Keep recovery paused until the held neighbor's guests are stopped. Otherwise
+# the constrained acceptance host can start a doomed first rebuild attempt,
+# consume the diagnostic recovery attempt before the deterministic failure
+# boundary is fully staged. The lease and its heartbeat remain held throughout.
 stop_slot_pair 2
 
 # Exercise the release owner while the neighbor remains held and the incident
@@ -312,8 +401,17 @@ kill -0 "$NEIGHBOR_PID" >/dev/null 2>&1 \
   || { sed -n '1,240p' "$STATE_PARENT/neighbor.log" >&2;
        die 'held neighbor lost its heartbeat process during update/rollback'; }
 
+# Start recovery only after release maintenance has finished. Running the
+# worker concurrently with broker replacement can turn one deterministic
+# incident into a failed attempt followed by a second incident.
+outer_root systemctl unmask --runtime \
+  subyard-test-vms-lease-reaper.service >/dev/null
+outer_root systemctl start subyard-test-vms-lease-reaper.service
+REAPER_MASKED=0
+
 available="$(wait_for_slot_state slot-001 available 180)" \
-  || die 'root reaper did not automatically rebuild slot-001'
+  || { report_slot_diagnostics slot-001 'automatic rebuild timed out';
+       die 'root reaper did not automatically rebuild slot-001'; }
 new_generation="$(jq -r '
   .pool.slots[] | select(.slot_id == "slot-001") | .resource_generation
 ' <<<"$available")"
@@ -335,15 +433,22 @@ jq -s -e --arg incident "$incident_id" '
   any(.[]; .kind == "rebuild.delete" and .incident_id == $incident) and
   any(.[]; .kind == "rebuild.create" and .incident_id == $incident) and
   any(.[]; .kind == "recovery.available" and .incident_id == $incident)
-' <<<"$global_log" >/dev/null \
-  || die 'global broker log omitted the quarantine/rebuild timeline'
+' <<<"$global_log" >/dev/null || {
+  jq -s '
+    [.[] |
+      select(.slot_id == "slot-001") |
+      {kind, incident_id, recovery_attempt}]
+  ' <<<"$global_log" >&2
+  die 'global broker log omitted the quarantine/rebuild timeline'
+}
 
 incident="$SUBYARD_HOME/logs/test-vms-broker-incidents/$incident_id.json"
 [ -f "$incident" ] && [ ! -L "$incident" ] \
   || die 'host-wide immutable incident artifact is missing'
-jq -e '
+jq -e --arg command \
+  "$FAULT_ROOT/incus project list --format csv -c n" '
   (.failure_reason | contains("Failed to connect to local daemon")) and
-  .command.command == "incus project list --format csv -c n" and
+  .command.command == $command and
   .command.exit_code != 0 and
   (.diagnostics | type == "object")
 ' "$incident" >/dev/null \

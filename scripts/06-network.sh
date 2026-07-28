@@ -48,6 +48,21 @@ if [ "$mode" != apply ]; then
     RUNNING) ;;
     *) exit 1 ;;
   esac
+  if [ "$mode" = verify ]; then
+    address_attempts="${SUBYARD_NETWORK_ADDRESS_ATTEMPTS:-60}"
+    case "$address_attempts" in
+      '' | *[!0-9]*) exit 1 ;;
+    esac
+    [ "$address_attempts" -ge 1 ] || exit 1
+    address_attempt=1
+    while [ "$address_attempt" -le "$address_attempts" ]; do
+      [ -z "$(incus list "$INSTANCE_NAME" --project "$INCUS_PROJECT" -c4 -fcsv 2>/dev/null)" ] \
+        || exit 0
+      [ "$address_attempt" -eq "$address_attempts" ] || sleep 1
+      address_attempt=$((address_attempt + 1))
+    done
+    exit 1
+  fi
   [ -n "$(incus list "$INSTANCE_NAME" --project "$INCUS_PROJECT" -c4 -fcsv 2>/dev/null)" ]
   exit
 fi

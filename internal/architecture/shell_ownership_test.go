@@ -340,6 +340,7 @@ func productionShellContracts() map[string]shellContract {
 		"scripts/lib-power.sh":                 {"library", "scripts/lifecycle-guard.sh", `lib-power.sh`},
 		"scripts/lib-service.sh":               {"library", "config/profiles/android/resources/emulator/handler.sh", `lib-service.sh`},
 		"scripts/lib/engine-context.sh":        {"library", "scripts/01-install-incus.sh", `lib/engine-context.sh`},
+		"scripts/lib/download.sh":              {"library", "scripts/lib/host.sh", `lib/download.sh`},
 		"scripts/lib/host.sh":                  {"library", "scripts/01-install-incus.sh", `lib/host.sh`},
 		"scripts/lib/runtime.sh":               {"library", "scripts/01-install-incus.sh", `lib/runtime.sh`},
 		"scripts/lib/ssh-config.sh":            {"library", "scripts/07-ssh-access.sh", `lib/ssh-config.sh`},

@@ -95,7 +95,7 @@ install -m 0644 "$ROOT/config/commands.registry" "$fixture_repo/config/commands.
 for config in incus.project.env subyard.env host.env agents.env ports.env; do
   install -m 0644 /dev/null "$fixture_repo/config/$config"
 done
-for library in runtime.sh engine-context.sh ui.sh host.sh; do
+for library in runtime.sh engine-context.sh ui.sh download.sh host.sh; do
   install -m 0644 "$ROOT/scripts/lib/$library" "$fixture_repo/scripts/lib/$library"
 done
 

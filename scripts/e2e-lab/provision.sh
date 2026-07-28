@@ -2,6 +2,13 @@
 # Root provisioner for the inner VM backend.
 set -euo pipefail
 
+if ! declare -F subyard_download_https_atomic >/dev/null; then
+  _subyard_e2e_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
+  # shellcheck source=scripts/lib/download.sh
+  . "$_subyard_e2e_lib_dir/download.sh"
+  unset _subyard_e2e_lib_dir
+fi
+
 run_with_progress() {
   local label="$1" ticker rc started=$SECONDS
   shift
@@ -389,6 +396,28 @@ reconcile_inner_incus() {
   fi
 }
 
+reconcile_inner_zabbly_repo() {
+  local suite arch
+  suite="$(. /etc/os-release && printf '%s' "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")"
+  [ -n "$suite" ] || { printf 'cannot resolve apt suite for the Incus LTS repository\n' >&2; return 1; }
+  arch="$(dpkg --print-architecture)"
+  install -d -m 0755 /etc/apt/keyrings
+  if [ ! -s /etc/apt/keyrings/zabbly.asc ]; then
+    subyard_download_https_atomic \
+      https://pkgs.zabbly.com/key.asc /etc/apt/keyrings/zabbly.asc 0644 root root
+  fi
+  cat > /etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources <<EOF
+Enabled: yes
+Types: deb
+URIs: https://pkgs.zabbly.com/incus/lts-6.0
+Suites: $suite
+Components: main
+Architectures: $arch
+Signed-By: /etc/apt/keyrings/zabbly.asc
+EOF
+  chmod 0644 /etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources
+}
+
 # Production streams this file into L1 with `bash -s`, where BASH_SOURCE has no element 0. Treat
 # that as execution; return early only when a test explicitly sources the file from another script.
 [ "${BASH_SOURCE[0]:-$0}" = "$0" ] || return 0
@@ -491,21 +520,7 @@ version_ok() {
 }
 
 if ! version_ok; then
-  suite="$(. /etc/os-release && printf '%s' "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")"
-  [ -n "$suite" ] || { printf 'cannot resolve apt suite for the Incus LTS repository\n' >&2; exit 1; }
-  arch="$(dpkg --print-architecture)"
-  install -d -m 0755 /etc/apt/keyrings
-  curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc
-  chmod 0644 /etc/apt/keyrings/zabbly.asc
-  cat > /etc/apt/sources.list.d/zabbly-incus-lts-6.0.sources <<EOF
-Enabled: yes
-Types: deb
-URIs: https://pkgs.zabbly.com/incus/lts-6.0
-Suites: $suite
-Components: main
-Architectures: $arch
-Signed-By: /etc/apt/keyrings/zabbly.asc
-EOF
+  reconcile_inner_zabbly_repo
 fi
 
 export DEBIAN_FRONTEND=noninteractive

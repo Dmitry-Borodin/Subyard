@@ -4,6 +4,11 @@
 [ -n "${SUBYARD_HOST_SOURCED:-}" ] && return 0
 SUBYARD_HOST_SOURCED=1
 
+_subyard_host_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/download.sh
+. "$_subyard_host_lib_dir/download.sh"
+unset _subyard_host_lib_dir
+
 require_root() {
   [ "$(id -u)" -eq 0 ] && return 0
   local why="${1:-it changes the host system}" operator_user
@@ -180,9 +185,8 @@ add_zabbly_lts_repo() {
   arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
   install -d -m 0755 /etc/apt/keyrings
   if [ ! -s "$key" ]; then
-    curl -fsSL https://pkgs.zabbly.com/key.asc -o "$key" \
+    subyard_download_https_atomic https://pkgs.zabbly.com/key.asc "$key" 0644 root root \
       || { warn "failed to download the Zabbly signing key"; return 1; }
-    chmod 0644 "$key"
     ok "installed Zabbly signing key ($key)"
   else
     ok "Zabbly signing key already present"

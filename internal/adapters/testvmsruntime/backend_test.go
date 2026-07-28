@@ -16,12 +16,19 @@ func fixtureBackend(t *testing.T) *Backend {
 	if err := os.MkdirAll(filepath.Join(root, "scripts", "e2e-lab"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "scripts", "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	dispatcher := filepath.Join(root, "yard-engine")
 	if err := os.WriteFile(dispatcher, []byte("fixture-engine"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "scripts", "e2e-lab", "provision.sh"),
 		[]byte("fixture-provision\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "scripts", "lib", "download.sh"),
+		[]byte("fixture-download\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	client := filepath.Join(root, "client")
@@ -66,7 +73,7 @@ func TestBackendApplyInstallsCurrentEngineAndPublishesRoute(t *testing.T) {
 			return nil, nil, nil
 		case strings.HasSuffix(joined, "-- bash -euo pipefail -s"):
 			payload, err := io.ReadAll(stdin)
-			if err != nil || string(payload) != "fixture-provision\n" {
+			if err != nil || string(payload) != "fixture-download\nfixture-provision\n" {
 				return nil, nil, fmt.Errorf("wrong provision payload: %q", payload)
 			}
 			if !strings.Contains(joined, "--env E2E_AGENT_PUBLIC_KEY= --") {
@@ -168,6 +175,21 @@ func TestStoppedBackendConvergenceUsesExactBundleMarker(t *testing.T) {
 		t.Fatal("engine drift was accepted")
 	}
 	if err := os.WriteFile(backend.Dispatcher, []byte("fixture-engine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backend.RepositoryRoot, "scripts", "lib", "download.sh"),
+		[]byte("drift"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	converged, err = backend.Converged(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converged {
+		t.Fatal("download helper drift was accepted")
+	}
+	if err := os.WriteFile(filepath.Join(backend.RepositoryRoot, "scripts", "lib", "download.sh"),
+		[]byte("fixture-download\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	backend.Environment["E2E_VM_MEMORY"] = "2GiB"

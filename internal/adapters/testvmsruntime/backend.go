@@ -42,6 +42,7 @@ type backendState struct {
 	marker          string
 	clientDirectory string
 	provision       string
+	downloadHelper  string
 }
 
 func (backend *Backend) Converged(ctx context.Context) (bool, error) {
@@ -128,6 +129,11 @@ func (backend *Backend) Apply(ctx context.Context) (err error) {
 		"--", "mv", "-f", "--", installCandidate, DefaultInstalledPath); err != nil {
 		return err
 	}
+	downloadHelper, err := os.Open(state.downloadHelper)
+	if err != nil {
+		return err
+	}
+	defer downloadHelper.Close()
 	provision, err := os.Open(state.provision)
 	if err != nil {
 		return err
@@ -147,7 +153,8 @@ func (backend *Backend) Apply(ctx context.Context) (err error) {
 	arguments = append(arguments, "--env", "E2E_AGENT_PUBLIC_KEY=",
 		"--", "bash", "-euo", "pipefail", "-s")
 	fmt.Fprintln(backend.Output, "  [ .. ] reconciling nested VM physical backend")
-	_, stderr, runErr := backend.Runner.Run(ctx, "incus", arguments, nil, provision)
+	payload := io.MultiReader(downloadHelper, provision)
+	_, stderr, runErr := backend.Runner.Run(ctx, "incus", arguments, nil, payload)
 	if runErr != nil {
 		if len(stderr) != 0 {
 			fmt.Fprint(backend.Output, string(stderr))
@@ -192,6 +199,7 @@ func (backend *Backend) state() (backendState, error) {
 		bootTimeout:     value("E2E_VM_BOOT_TIMEOUT", "300"),
 		brokerSource:    value("E2E_BROKER_SOURCE", backend.YardName),
 		provision:       filepath.Join(backend.RepositoryRoot, "scripts", "e2e-lab", "provision.sh"),
+		downloadHelper:  filepath.Join(backend.RepositoryRoot, "scripts", "lib", "download.sh"),
 		clientDirectory: backend.Environment["SUBYARD_E2E_CLIENT_EXPORT_DIR"],
 	}
 	if state.brokerSource == "" {
@@ -218,8 +226,12 @@ func (backend *Backend) state() (backendState, error) {
 	if err != nil {
 		return state, err
 	}
+	downloadHash, err := fileSHA256(state.downloadHelper)
+	if err != nil {
+		return state, err
+	}
 	state.engineHash = engineHash
-	revision := sha256.Sum256([]byte(engineHash + "\n" + provisionHash + "\n"))
+	revision := sha256.Sum256([]byte(engineHash + "\n" + provisionHash + "\n" + downloadHash + "\n"))
 	state.marker = strings.Join([]string{
 		state.enabled, hex.EncodeToString(revision[:]), state.image, state.cpu,
 		state.memory, state.disk, state.slotCount, state.bootTimeout,

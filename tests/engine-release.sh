@@ -400,10 +400,24 @@ installed_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
   || fail 'roll-forward through the same release pair was not idempotent'
 same_current_target="$(readlink "$runtime_root/current")"
 same_previous_target="$(readlink "$runtime_root/previous")"
-installed_update --runtime-root "$runtime_root" --version 1.1.0-test >/dev/null
+same_version_output="$(installed_update --runtime-root "$runtime_root" --version 1.1.0-test)"
 [ "$(readlink "$runtime_root/current")" = "$same_current_target" ] \
   && [ "$(readlink "$runtime_root/previous")" = "$same_previous_target" ] \
   || fail 'same-version update changed the current/previous rollback pair'
+grep -Fxq 'runtime yard-engine 1.1.0-test and migrations are current' \
+  <<<"$same_version_output" \
+  && ! grep -Fq 'installed runtime' <<<"$same_version_output" \
+  && ! grep -Fq '{"schema_version"' <<<"$same_version_output" \
+  || fail "clean same-version update was noisy or misleading: $same_version_output"
+
+chmod 0664 "$legacy_state"
+same_reconcile_output="$(installed_update --runtime-root "$runtime_root" --version 1.1.0-test)"
+grep -Fxq 'reconciled runtime yard-engine 1.1.0-test' <<<"$same_reconcile_output" \
+  && [ "$(stat -c '%a' "$legacy_state")" = 600 ] \
+  || fail "same-version update did not report its real repair: $same_reconcile_output"
+[ "$(readlink "$runtime_root/current")" = "$same_current_target" ] \
+  && [ "$(readlink "$runtime_root/previous")" = "$same_previous_target" ] \
+  || fail 'same-version reconcile changed the current/previous rollback pair'
 
 artifact_three="$("$ROOT/dev/package-engine.sh" --output-dir "$release" --version 1.2.0-test \
   --migration-registry "$ROOT/tests/fixtures/migrations/layout-3.json")"

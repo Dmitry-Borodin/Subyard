@@ -143,8 +143,8 @@ func TestExecuteDownloadsAssetsAndPassesValidatedEnvironment(t *testing.T) {
 		t.Fatal("same-version update skipped the installer")
 	}
 	if slices.Contains(strings.Fields(string(arguments)), "--check") ||
-		!strings.Contains(output.String(), "runtime is already current; reconciling migrations") {
-		t.Fatalf("same-version update did not reconcile migrations: args=%q output=%q",
+		!strings.Contains(output.String(), "runtime is already current; checking migrations") {
+		t.Fatalf("same-version update did not check migrations: args=%q output=%q",
 			arguments, output.String())
 	}
 }

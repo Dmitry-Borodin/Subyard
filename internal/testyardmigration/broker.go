@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,7 +144,7 @@ func VerifyBrokerRuntime(
 	if len(fields) != 2 || fields[0] != expected {
 		return errors.New("active test VM broker does not use the selected runtime engine")
 	}
-	if err := run(ctx, options, observed.yard, nil, "test-vms", "status"); err != nil {
+	if err := run(ctx, options, observed.yard, io.Discard, "test-vms", "status"); err != nil {
 		return fmt.Errorf("verify updated test VM broker facade: %w", err)
 	}
 	return nil

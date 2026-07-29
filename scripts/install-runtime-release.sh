@@ -209,18 +209,6 @@ if [ "$CHECK_ONLY" = 1 ]; then
   printf 'verified runtime yard %s\n' "$version"
   exit 0
 fi
-migration_report="$(SUBYARD_REPOSITORY_ROOT="$candidate" \
-  "$candidate/bin/yard-engine" _migrate apply)" \
-  || { printf 'install-runtime-release: state migration failed\n' >&2; exit 1; }
-jq -e --argjson target "$target_layout" '.targetLayout == $target' \
-  <<<"$migration_report" >/dev/null \
-  || { printf 'install-runtime-release: migration registry does not match release manifest\n' >&2; exit 1; }
-
-if [ ! -e "$destination" ]; then
-  mv "$candidate" "$destination"; published=1
-else
-  rm -rf -- "$candidate"; published=1
-fi
 old_target=''
 old_previous_target=''
 if [ -e "$current" ] || [ -L "$current" ]; then
@@ -234,11 +222,15 @@ if [ -e "$previous" ] || [ -L "$previous" ]; then
   old_previous_target="$(readlink "$previous")"
 fi
 if [ "$old_target" = "releases/$release_id" ]; then
+  rm -rf -- "$candidate"; published=1
   migration_report="$(SUBYARD_REPOSITORY_ROOT="$destination" \
     "$destination/bin/yard-engine" _migrate apply)" \
     || { printf 'install-runtime-release: current runtime migration resume failed\n' >&2; exit 1; }
-  jq -e --argjson target "$target_layout" '.targetLayout == $target' \
-    <<<"$migration_report" >/dev/null \
+  read -r migration_changed migration_pending < <(jq -er --argjson target "$target_layout" '
+    select(.targetLayout == $target) |
+    [(.changed == true), (.pending == true or ((.requiredMigrations // []) | length) > 0)] |
+    @tsv
+  ' <<<"$migration_report") \
     || { printf 'install-runtime-release: migration registry does not match release manifest\n' >&2; exit 1; }
   SUBYARD_REPOSITORY_ROOT="$destination" \
     "$destination/bin/yard-engine" _migrate finalize >/dev/null \
@@ -247,9 +239,26 @@ if [ "$old_target" = "releases/$release_id" ]; then
     "$destination/bin/yard-engine" _migrate cleanup >/dev/null \
     || { printf 'install-runtime-release: stale migration recovery cleanup failed\n' >&2; exit 1; }
   trap - EXIT
-  printf 'installed runtime %s\n' \
-    "$(SUBYARD_REPOSITORY_ROOT="$destination" "$destination/bin/yard-engine" --version)"
+  current_version="$(SUBYARD_REPOSITORY_ROOT="$destination" \
+    "$destination/bin/yard-engine" --version)"
+  if [ "$migration_changed" = true ] || [ "$migration_pending" = true ]; then
+    printf 'reconciled runtime %s\n' "$current_version"
+  else
+    printf 'runtime %s and migrations are current\n' "$current_version"
+  fi
   exit 0
+fi
+migration_report="$(SUBYARD_REPOSITORY_ROOT="$candidate" \
+  "$candidate/bin/yard-engine" _migrate apply)" \
+  || { printf 'install-runtime-release: state migration failed\n' >&2; exit 1; }
+jq -e --argjson target "$target_layout" '.targetLayout == $target' \
+  <<<"$migration_report" >/dev/null \
+  || { printf 'install-runtime-release: migration registry does not match release manifest\n' >&2; exit 1; }
+
+if [ ! -e "$destination" ]; then
+  mv "$candidate" "$destination"; published=1
+else
+  rm -rf -- "$candidate"; published=1
 fi
 if [ -n "$old_target" ] && ! activate_link "$previous" "$old_target"; then
   SUBYARD_REPOSITORY_ROOT="$destination" \

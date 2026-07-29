@@ -189,7 +189,7 @@ func (runtime *Runtime) execute(ctx context.Context, options options) error {
 	if options.check {
 		arguments = append(arguments, "--check")
 	} else if !options.force && current == options.version {
-		fmt.Fprintln(runtime.config.Stdout, "runtime is already current; reconciling migrations")
+		fmt.Fprintln(runtime.config.Stdout, "runtime is already current; checking migrations")
 	}
 	return runtime.install(ctx, arguments...)
 }

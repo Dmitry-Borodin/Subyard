@@ -52,6 +52,8 @@ func TestBrokerRuntimeOperationRefreshesOnlyAnActiveBroker(t *testing.T) {
 
 func TestBrokerRuntimeOperationSkipsAnAlreadyCurrentActiveBroker(t *testing.T) {
 	options, state := brokerRuntimeFixture(t, "RUNNING", "active")
+	var output strings.Builder
+	options.Stdout = &output
 	expected, err := fileDigest(filepath.Join(options.RepositoryRoot, "bin", "yard-engine"))
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +73,9 @@ func TestBrokerRuntimeOperationSkipsAnAlreadyCurrentActiveBroker(t *testing.T) {
 	}
 	if !strings.Contains(calls, "-Y test-yard test-vms status\n") {
 		t.Fatalf("already current broker skipped verification:\n%s", calls)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("broker verification leaked internal status: %q", output.String())
 	}
 }
 
@@ -489,6 +494,9 @@ if [ "$*" = "-Y $BROKER_YARD _migrate reconcile-test-vm-broker" ]; then
     sha256sum "$0" | awk '{print $1}' > "$BROKER_INSTALLED_HASH"
   fi
   exit "${BROKER_INIT_RC:-0}"
+fi
+if [ "$*" = "-Y $BROKER_YARD test-vms status" ]; then
+  printf '{"schema_version":1,"status":"ok"}\n'
 fi
 `
 	if current, err := os.ReadFile(path); err == nil {

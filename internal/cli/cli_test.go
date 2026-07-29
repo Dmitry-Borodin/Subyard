@@ -228,7 +228,7 @@ func TestOldYardTeardownRequiresCanonicalTemplateMigration(t *testing.T) {
 		runner.Requests[0].Context["YARD_NAME"] != "e2e-yard" ||
 		runner.Requests[0].Context["INCUS_PROJECT"] != "subyard-e2e-yard" ||
 		runner.Requests[0].Context["YARD_TEMPLATE"] != "test-vms" ||
-		runner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
+		runner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "" {
 		t.Fatalf("teardown lost the migrated old-yard identity: %#v", runner.Requests)
 	}
 }
@@ -307,6 +307,7 @@ func TestMigrationEnvironmentDropsPreviousRuntimeContext(t *testing.T) {
 		"SUBYARD_YARD",
 		"E2E_VM_DISK",
 		"E2E_VM_TTL_MINUTES",
+		"SUBYARD_SUDO_PREAUTHORIZED",
 	} {
 		if _, exists := environment[name]; exists {
 			t.Fatalf("migration inherited stale runtime field %s", name)
@@ -316,7 +317,6 @@ func TestMigrationEnvironmentDropsPreviousRuntimeContext(t *testing.T) {
 		environment["SUBYARD_CONFIG_HOME"] != "/operator/.config/subyard" ||
 		environment["SUBYARD_HOME"] != "/operator/.subyard" ||
 		environment["SUBYARD_STATE_DIR"] != "/operator/custom-projects" ||
-		environment["SUBYARD_SUDO_PREAUTHORIZED"] != "1" ||
 		environment["SUBYARD_INTERNAL_TEST_SENTINEL"] != "preserved" {
 		t.Fatalf("migration lost bootstrap process inputs: %#v", environment)
 	}

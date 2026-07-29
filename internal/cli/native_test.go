@@ -221,8 +221,9 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard", Arguments: []string{"start"},
-		Environment: append(environment, "SUBYARD_OPERATION_ID=operation-cli"), WorkingDir: root,
-		Stdout: &stdout, Stderr: &stderr, AdapterRunner: cliRunner, Prompt: prompt, Clock: clock,
+		Environment: append(environment, "SUBYARD_OPERATION_ID=operation-cli"),
+		WorkingDir:  root,
+		Stdout:      &stdout, Stderr: &stderr, AdapterRunner: cliRunner, Prompt: prompt, Clock: clock,
 		Incus: lifecycleIncus(),
 	})
 	if err != nil {
@@ -235,7 +236,7 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 		cliRunner.Requests[0].Adapter != "lifecycle" || cliRunner.Requests[0].Action != "start" ||
 		!slices.Equal(cliRunner.Requests[0].Arguments, []string{"start"}) ||
 		cliRunner.Requests[0].Context["SUBYARD_CONFIG_LOADED"] != "1" ||
-		cliRunner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
+		cliRunner.Requests[0].Context["SUBYARD_SUDO_PREAUTHORIZED"] != "" {
 		t.Fatalf("CLI bypassed the structured operation: prompt=%#v requests=%#v", prompt.Seen, cliRunner.Requests)
 	}
 
@@ -414,6 +415,21 @@ fi
 	}
 }
 
+func TestSudoPreauthorizationIsProcessLocal(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	program, err := New(Options{
+		RepositoryRoot: root,
+		Environment:    append(environment, "SUBYARD_SUDO_PREAUTHORIZED=1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if program.env["SUBYARD_SUDO_PREAUTHORIZED"] != "" ||
+		program.baseEnv["SUBYARD_SUDO_PREAUTHORIZED"] != "" {
+		t.Fatal("CLI inherited sudo preauthorization from another process")
+	}
+}
+
 func TestRootStepPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
 	root, environment, _ := nativeFixture(t)
 	bin := filepath.Join(root, "bin")
@@ -458,6 +474,9 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 		t.Fatalf("root-step sudo authorization did not retain operator stdio: log=%q diagnostics=%q",
 			payload, diagnostics.String())
 	}
+	if program.env["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
+		t.Fatal("successful sudo authorization did not record its preauthorized context")
+	}
 
 	if err := os.Remove(logPath); err != nil {
 		t.Fatal(err)
@@ -487,6 +506,9 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 	if string(payload) != "-n true\n" {
 		t.Fatalf("passwordless sudo unexpectedly fell back to terminal authorization: %q", payload)
 	}
+	if noninteractive.env["SUBYARD_SUDO_PREAUTHORIZED"] != "1" {
+		t.Fatal("passwordless sudo did not record its preauthorized context")
+	}
 
 	if err := os.Remove(logPath); err != nil {
 		t.Fatal(err)
@@ -506,8 +528,15 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 	if err := os.Remove(logPath + ".auth"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
 	}
-	program.operatorTerminal = func() bool { return false }
-	if err := program.prepareSudoPrivileges(
+	blocked, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Environment: environment, WorkingDir: root,
+		Stdin: strings.NewReader("must-not-be-read\n"), Stdout: &diagnostics, Stderr: &diagnostics,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked.operatorTerminal = func() bool { return false }
+	if err := blocked.prepareSudoPrivileges(
 		context.Background(), &diagnostics, 1000, "teardown",
 	); err == nil || !strings.Contains(err.Error(), "operator terminal") {
 		t.Fatalf("no-TTY sudo did not fail with an actionable diagnostic: %v", err)
@@ -518,6 +547,9 @@ printf 'input=%s\n' "$input" >> "$SUDO_LOG"
 	}
 	if string(payload) != "-n true\n" {
 		t.Fatalf("no-TTY sudo attempted an interactive authorization: %q", payload)
+	}
+	if blocked.env["SUBYARD_SUDO_PREAUTHORIZED"] == "1" {
+		t.Fatal("failed sudo authorization recorded a false preauthorized context")
 	}
 }
 

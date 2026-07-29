@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,7 +42,7 @@ func TestPowerYardContextsAreDiscoveredWithoutChangingSelection(t *testing.T) {
 	}
 }
 
-func TestRealInitPlatformCarriesPreauthorizedTypedContext(t *testing.T) {
+func TestRealInitPlatformCarriesOnlyPreparedSudoContext(t *testing.T) {
 	root, environment, _ := nativeFixture(t)
 	program, err := New(Options{RepositoryRoot: root, Program: "yard", Environment: environment})
 	if err != nil {
@@ -51,16 +52,25 @@ func TestRealInitPlatformCarriesPreauthorizedTypedContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	platform, ok := program.initPlatform(loaded, []domain.Context{loaded.Context}).(reconcileruntime.Runtime)
-	if !ok {
-		t.Fatalf("unexpected real init platform %T", platform)
+	hasMarker := func() bool {
+		platform, ok := program.initPlatform(
+			loaded, []domain.Context{loaded.Context},
+		).(reconcileruntime.Runtime)
+		if !ok {
+			t.Fatalf("unexpected real init platform %T", platform)
+		}
+		return slices.Contains(platform.Environment, "SUBYARD_SUDO_PREAUTHORIZED=1")
 	}
-	found := false
-	for _, value := range platform.Environment {
-		found = found || value == "SUBYARD_SUDO_PREAUTHORIZED=1"
+	if hasMarker() {
+		t.Fatal("real init platform fabricated the preauthorized sudo marker")
 	}
-	if !found {
-		t.Fatal("real init platform omitted the preauthorized sudo marker")
+	if err := program.prepareSudoPrivileges(
+		context.Background(), io.Discard, 0, "init",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !hasMarker() {
+		t.Fatal("real init platform omitted the successfully prepared sudo marker")
 	}
 }
 
@@ -142,6 +152,59 @@ func TestMigrationBrokerReconcileIsBoundedToTestVMStage(t *testing.T) {
 		!strings.Contains(stderr.String(), "migration child is required") {
 		t.Fatalf("broker reconcile accepted a public invocation: code=%d stderr=%q",
 			code, stderr.String())
+	}
+
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sudoLog := filepath.Join(home, "sudo.log")
+	writeCLIFile(t, filepath.Join(bin, "sudo"), `#!/bin/sh
+printf '%s\n' "$*" >> "$SUDO_LOG"
+case "$*" in
+  "-n true")
+    [ -f "$SUDO_LOG.auth" ]
+    ;;
+  "-v")
+    IFS= read -r input
+    printf 'input=%s\n' "$input" >> "$SUDO_LOG"
+    : > "$SUDO_LOG.auth"
+    ;;
+  *) exit 90 ;;
+esac
+`, 0o700)
+	t.Setenv("PATH", bin)
+	terminalPath := filepath.Join(home, "terminal")
+	writeCLIFile(t, terminalPath, "migration-password\n", 0o600)
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{"-Y", "test-yard", "_migrate", "reconcile-test-vm-broker"},
+		Environment: append(
+			environment,
+			"PATH="+bin,
+			"SUDO_LOG="+sudoLog,
+			"SUBYARD_INTERNAL_MIGRATION_CHILD=1",
+		),
+		WorkingDir: home, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	program.operatorTerminal = func() bool { return false }
+	program.openTerminal = func() (*os.File, error) {
+		return os.OpenFile(terminalPath, os.O_RDWR, 0)
+	}
+	program.effectiveUID = func() int { return 1000 }
+	_ = program.Run(context.Background())
+	sudoCalls, err := os.ReadFile(sudoLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(sudoCalls) != "-n true\n-v\ninput=migration-password\n-n true\n" ||
+		strings.Contains(stderr.String(), "sudo authorization expired") {
+		t.Fatalf("migration did not authorize sudo before its real platform: calls=%q stderr=%q",
+			sudoCalls, stderr.String())
 	}
 
 	platform := newInitPlatformFixture()

@@ -516,6 +516,8 @@ grep -Fq 'clean published 0.4.0 -> 0.4.3 hotfix lane passed' \
     "$ROOT/dev/e2e/release-migration-catch-up.sh" \
   && grep -Fq 'operator unexpectedly retained passwordless sudo' \
     "$ROOT/dev/e2e/release-migration-catch-up.sh" \
+  && [ "$(grep -Fc '  upgrade_candidate present' \
+    "$ROOT/dev/e2e/release-migration-catch-up.sh")" -eq 4 ] \
   || fail "release hotfix lanes do not exercise ordinary updates with cold password-required sudo"
 grep -Fq 'FAILED_HOTFIX_VERSION=0.4.2' \
   "$ROOT/dev/e2e/release-migration-catch-up.sh" \

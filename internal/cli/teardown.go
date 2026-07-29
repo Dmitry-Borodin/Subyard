@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/Subyard/Subyard/internal/adapters/shelladapter"
 	"github.com/Subyard/Subyard/internal/application"
@@ -66,12 +65,14 @@ func (cli *CLI) executeTeardown(
 	contextValues := structuredCommandContext(loaded)
 	if cli.options.AdapterRunner == nil {
 		if err := cli.prepareSudoPrivileges(
-			ctx, diagnostics, os.Geteuid(), "teardown",
+			ctx, diagnostics, cli.effectiveUID(), "teardown",
 		); err != nil {
 			return domain.AdapterResult{}, err
 		}
 	}
-	contextValues["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
+	if cli.env["SUBYARD_SUDO_PREAUTHORIZED"] == "1" {
+		contextValues["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
+	}
 	if execution.keepData {
 		contextValues["SUBYARD_TEARDOWN_KEEP_DATA"] = "1"
 	} else {

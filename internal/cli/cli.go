@@ -87,6 +87,7 @@ type CLI struct {
 	inventoryRoutes  map[string]config.Loaded
 	operatorTerminal func() bool
 	openTerminal     func() (*os.File, error)
+	effectiveUID     func() int
 }
 
 func New(options Options) (*CLI, error) {
@@ -132,6 +133,7 @@ func New(options Options) (*CLI, error) {
 		}
 	}
 	baseEnvironment := environmentMap(options.Environment)
+	delete(baseEnvironment, "SUBYARD_SUDO_PREAUTHORIZED")
 	activeEnvironment := make(map[string]string, len(baseEnvironment))
 	for name, value := range baseEnvironment {
 		activeEnvironment[name] = value
@@ -148,6 +150,7 @@ func New(options Options) (*CLI, error) {
 	cli.openTerminal = func() (*os.File, error) {
 		return os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	}
+	cli.effectiveUID = os.Geteuid
 	return cli, nil
 }
 
@@ -1608,6 +1611,12 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		}
 		platform := cli.options.InitPlatform
 		if platform == nil {
+			if err := cli.prepareSudoPrivileges(
+				ctx, cli.options.Stderr, cli.effectiveUID(), "update",
+			); err != nil {
+				cli.errorf("state migration test VM broker privileges: %v", err)
+				return 1
+			}
 			platform = cli.initPlatform(loaded, []domain.Context{loaded.Context})
 		}
 		if err := reconcileMigrationTestVMs(ctx, platform); err != nil {
@@ -1699,6 +1708,7 @@ func freshMigrationEnvironment(
 			"SUBYARD_ENGINE_CONTEXT",
 			"SUBYARD_ENGINE_CONTEXT_SCHEMA",
 			"SUBYARD_ENGINE_CONTEXT_SOURCED",
+			"SUBYARD_SUDO_PREAUTHORIZED",
 			"SUBYARD_YARD":
 			continue
 		}
@@ -2375,10 +2385,11 @@ func (cli *CLI) executeStructuredCommand(
 	if initRun != nil && definition.Handler == "@init" {
 		if cli.options.InitPlatform == nil && initRun.mode != initConfigs {
 			if err := cli.prepareSudoPrivileges(
-				ctx, diagnostics, os.Geteuid(), definition.Name,
+				ctx, diagnostics, cli.effectiveUID(), definition.Name,
 			); err != nil {
 				return domain.AdapterResult{}, err
 			}
+			initRun.platform = cli.initPlatform(initRun.loaded, initRun.powerYards)
 		}
 		orchestrator.Runner = initAdapter{
 			execution: initRun, cli: cli, output: diagnostics,
@@ -2454,12 +2465,14 @@ func (cli *CLI) executeStructuredCommand(
 	if structuredCommandNeedsSudo(definition.Name) {
 		if cli.options.AdapterRunner == nil {
 			if err := cli.prepareSudoPrivileges(
-				ctx, diagnostics, os.Geteuid(), definition.Name,
+				ctx, diagnostics, cli.effectiveUID(), definition.Name,
 			); err != nil {
 				return domain.AdapterResult{}, err
 			}
 		}
-		contextValues["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
+		if cli.env["SUBYARD_SUDO_PREAUTHORIZED"] == "1" {
+			contextValues["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
+		}
 	}
 	if definition.Name == "provision" {
 		desired, err := cli.preparePowerIntent(ctx, loaded.Context)
@@ -2493,9 +2506,11 @@ func (cli *CLI) prepareSudoPrivileges(
 	operation string,
 ) error {
 	if effectiveUID == 0 {
+		cli.env["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
 		return nil
 	}
 	if cli.sudoAvailableWithoutPrompt(ctx) {
+		cli.env["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -2537,6 +2552,7 @@ func (cli *CLI) prepareSudoPrivileges(
 			operation,
 		)
 	}
+	cli.env["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
 	return nil
 }
 

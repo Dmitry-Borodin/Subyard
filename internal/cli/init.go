@@ -28,6 +28,7 @@ type initExecution struct {
 	mode          initMode
 	plan          application.ReconcilePlan
 	platform      ports.InitPlatform
+	powerYards    []domain.Context
 	hostID        string
 	hostIDPending bool
 }
@@ -71,7 +72,6 @@ func (cli *CLI) initPlatform(loaded config.Loaded, powerYards []domain.Context) 
 	environment := structuredCommandContext(loaded)
 	environment["SUBYARD_DISPATCHER_PATH"] = cli.options.DispatcherPath
 	environment["SUBYARD_POWER_ENGINE_SOURCE"] = cli.options.DispatcherPath
-	environment["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
 	incusPort, executor := cli.statusPorts()
 	configWriter, _ := incusPort.(ports.InstanceConfigWriter)
 	return reconcileruntime.Runtime{
@@ -131,16 +131,19 @@ func (cli *CLI) prepareInitExecution(
 		return nil, err
 	}
 	var platform ports.InitPlatform
+	var powerYards []domain.Context
 	if cli.options.InitPlatform != nil {
 		platform = cli.options.InitPlatform
 	} else {
-		powerYards, err := cli.powerYardContexts(loaded)
+		powerYards, err = cli.powerYardContexts(loaded)
 		if err != nil {
 			return nil, err
 		}
 		platform = cli.initPlatform(loaded, powerYards)
 	}
-	execution := &initExecution{loaded: loaded, mode: mode, platform: platform}
+	execution := &initExecution{
+		loaded: loaded, mode: mode, platform: platform, powerYards: powerYards,
+	}
 	execution.hostID, execution.hostIDPending, err = configsync.ResolveHostID(
 		loaded.Context.Paths.ConfigHome, loaded.Environment,
 	)

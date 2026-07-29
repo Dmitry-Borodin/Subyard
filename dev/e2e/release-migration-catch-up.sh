@@ -1054,7 +1054,7 @@ EXPECT
       ;;
     present)
       [ "$(grep -Fc '[sudo] password' "$transcript")" = 1 ] \
-        || die "legacy owner migration did not request sudo exactly once"
+        || die "root-bearing candidate migration did not request sudo exactly once"
       ;;
     *) die "invalid candidate sudo prompt expectation" ;;
   esac
@@ -1171,7 +1171,7 @@ if [ "$MODE" = hotfix ]; then
   reproduce_broken_update
   repair_broken_update
   require_operator_password_sudo
-  upgrade_candidate
+  upgrade_candidate present
   verify_control_plane
   verify_hotfix_boundary
   info "reinstalling the same hotfix candidate"
@@ -1186,7 +1186,7 @@ if [ "$MODE" = hotfix-clean ]; then
   prepare_hotfix_current_owner
   assert_hotfix_route_ready
   require_operator_password_sudo
-  upgrade_candidate
+  upgrade_candidate present
   verify_control_plane
   verify_hotfix_boundary
   info "reinstalling the same hotfix candidate"
@@ -1225,7 +1225,7 @@ if [ "$MODE" = hotfix-broken-042 ]; then
   require_operator_password_sudo
   reproduce_failed_hotfix_update
   repair_failed_hotfix_update
-  upgrade_candidate
+  upgrade_candidate present
   verify_control_plane
   verify_hotfix_boundary
   operator_env test ! -e \

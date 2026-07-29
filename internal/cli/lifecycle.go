@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/Subyard/Subyard/internal/adapters/shelladapter"
 	"github.com/Subyard/Subyard/internal/application"
@@ -87,7 +86,7 @@ func (cli *CLI) executeLifecycle(
 	}
 	if execution.action == "start" && cli.options.AdapterRunner == nil {
 		if err := cli.prepareNetworkManagerPrivileges(
-			ctx, diagnostics, os.Geteuid(), execution.action,
+			ctx, diagnostics, cli.effectiveUID(), execution.action,
 		); err != nil {
 			return domain.AdapterResult{}, err
 		}
@@ -101,7 +100,7 @@ func (cli *CLI) executeLifecycle(
 	if execution.force {
 		arguments = append(arguments, "--force")
 	}
-	if execution.action == "start" {
+	if execution.action == "start" && cli.env["SUBYARD_SUDO_PREAUTHORIZED"] == "1" {
 		contextValues["SUBYARD_SUDO_PREAUTHORIZED"] = "1"
 	}
 	orchestrator.Runner = application.LifecycleRunner{

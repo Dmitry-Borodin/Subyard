@@ -31,6 +31,105 @@ func (stub statusFactsStub) ReadStatusFacts(context.Context, domain.Context, boo
 	return stub.value, nil
 }
 
+type nativeVSCodeStub struct{ calls [][]string }
+
+func (stub *nativeVSCodeStub) Run(_ context.Context, arguments ...string) ([]byte, error) {
+	stub.calls = append(stub.calls, append([]string(nil), arguments...))
+	return nil, nil
+}
+
+func TestNativeCodeAndShellDoNotStartCredentialAutoSync(t *testing.T) {
+	root, environment, stateDirectory := nativeFixture(t)
+	store, err := state.NewFileStore(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(context.Background(), domain.ProjectRecord{
+		Schema: 1, ProjectID: "demo-12345678", Name: "Demo", HostPath: "/host/Demo",
+		YardPath: "/srv/workspaces/demo-12345678/src", Mode: domain.ProjectSync,
+		SSHHost: "yard", Target: "yard",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configHome := environmentValue(environment, "SUBYARD_CONFIG_HOME")
+	if err := os.MkdirAll(filepath.Join(configHome, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(configHome, "keys", "identity.json"), "{}\n", 0o600)
+	dispatchLog := filepath.Join(root, "credential-dispatch.log")
+	dispatcher := filepath.Join(root, "dispatcher")
+	writeCLIFile(t, dispatcher, `#!/bin/sh
+printf '%s\n' "$*" >> "$DISPATCH_LOG"
+exit 97
+`, 0o700)
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	incusLog := filepath.Join(root, "incus.log")
+	writeCLIFile(t, filepath.Join(bin, "incus"), `#!/bin/sh
+case "$1" in
+  list) printf 'RUNNING\n' ;;
+  exec) printf '%s\n' "$*" > "$INCUS_LOG" ;;
+esac
+`, 0o700)
+	path := bin + string(os.PathListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", path)
+	environment = append(environment,
+		"PATH="+path,
+		"DISPATCH_LOG="+dispatchLog,
+		"INCUS_LOG="+incusLog,
+	)
+
+	incus := &testkit.Incus{
+		Instances: map[string]ports.InstanceInfo{"subyard/yard": {
+			Status: "Running", Devices: map[string]map[string]string{"ssh": {"type": "proxy"}},
+		}},
+		ExecSteps: []testkit.IncusExecStep{{}, {}},
+	}
+	codeClient := &nativeVSCodeStub{}
+	var codeStderr bytes.Buffer
+	codeProgram, err := New(Options{
+		RepositoryRoot: root, DispatcherPath: dispatcher, Program: "yard",
+		Arguments: []string{"code", "Demo", "--yes"}, Environment: environment, WorkingDir: root,
+		Incus: incus, Executor: incus, ProjectVSCode: codeClient, Stderr: &codeStderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := codeProgram.Run(context.Background()); code != 0 {
+		t.Fatalf("code failed: code=%d stderr=%q", code, codeStderr.String())
+	}
+	if len(codeClient.calls) != 1 || len(incus.ExecCalls) != 2 {
+		t.Fatalf("code launch drifted: vscode=%#v exec=%#v", codeClient.calls, incus.ExecCalls)
+	}
+
+	var shellStderr bytes.Buffer
+	shellProgram, err := New(Options{
+		RepositoryRoot: root, DispatcherPath: dispatcher, Program: "yard",
+		Arguments: []string{"shell", "--", "true"}, Environment: environment, WorkingDir: root,
+		Stderr: &shellStderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := shellProgram.Run(context.Background()); code != 0 {
+		t.Fatalf("shell failed: code=%d stderr=%q", code, shellStderr.String())
+	}
+	if payload, err := os.ReadFile(incusLog); err != nil ||
+		!strings.Contains(string(payload), "exec yard --project subyard") {
+		t.Fatalf("shell launch drifted: log=%q err=%v", payload, err)
+	}
+	if payload, err := os.ReadFile(dispatchLog); err == nil {
+		t.Fatalf("session launch dispatched credential sync: %q", payload)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if output := codeStderr.String() + shellStderr.String(); strings.Contains(output, "credential sync") {
+		t.Fatalf("session launch emitted a credential warning: %q", output)
+	}
+}
+
 func TestRPCResyncReturnsFullSnapshotAndContinuesMonotonicSessionEvents(t *testing.T) {
 	root, environment, stateDirectory := nativeFixture(t)
 	store, err := state.NewFileStore(stateDirectory)
@@ -1495,6 +1594,7 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		"usage||@usage||forward|read|public|lifecycle|simple|usage|usage|--help|",
 		"shell||@shell||forward|mutate|public|lifecycle|project-shell|shell|shell|--root --yes --help|",
 		"clone||@project||local|mutate|public|projects|clone|clone <url>|clone|--target --yes --help|",
+		"code||@project||local|mutate|public|projects|project|code [project]|code|--yes --help|",
 		"remove||@project||local|mutate|public|projects|remove|remove [project]|remove|--soft --yes --help|",
 		"yards||@yards||local|read|public|lifecycle|simple|yards|yards|--help|",
 		"remote||@remote||local|mutate|public|remote|remote|remote|remote|--yard --yes --help|add repair-key remove list",

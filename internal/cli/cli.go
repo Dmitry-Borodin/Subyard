@@ -1061,7 +1061,6 @@ func (cli *CLI) runShell(
 		cli.errorf("shell: yard is not running - start it: %s start", cli.yardHint(yard))
 		return 1
 	}
-	cli.autoSyncCredentials(ctx, loaded)
 	return cli.runExternal(ctx, "incus", shellExecArguments(yard, root, cwd, guestCommand))
 }
 
@@ -1115,36 +1114,6 @@ func parseShellArguments(arguments []string) (root bool, selector string, comman
 		}
 	}
 	return root, selector, nil, false, nil
-}
-
-func (cli *CLI) autoSyncCredentials(ctx context.Context, loaded config.Loaded) {
-	identity := filepath.Join(cli.env["SUBYARD_CONFIG_HOME"], "keys", "identity.json")
-	if root := cli.env["SUBYARD_KEYS_ROOT"]; root != "" {
-		identity = filepath.Join(root, "identity.json")
-	}
-	if info, err := os.Stat(identity); err != nil || !info.Mode().IsRegular() {
-		return
-	}
-	timeout := 8 * time.Second
-	if raw := cli.env["SUBYARD_KEYS_CONNECT_TIMEOUT"]; raw != "" {
-		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
-			timeout = time.Duration(seconds) * time.Second
-		}
-	}
-	syncContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	arguments := make([]string, 0, 5)
-	if loaded.Context.YardName != "default" {
-		arguments = append(arguments, "-Y", loaded.Context.YardName)
-	}
-	arguments = append(arguments, "_keys-auto-sync", "--if-due")
-	command := exec.CommandContext(syncContext, cli.options.DispatcherPath, arguments...)
-	command.Dir = cli.options.WorkingDir
-	command.Env = environmentList(cli.env, nil)
-	if err := command.Run(); err != nil {
-		fmt.Fprintln(cli.options.Stderr,
-			"warning: opportunistic encrypted-credential sync did not complete; the periodic timer will retry")
-	}
 }
 
 func (cli *CLI) yardHint(yard domain.Context) string {
@@ -2414,9 +2383,6 @@ func (cli *CLI) executeStructuredCommand(
 		return cli.executeTeardown(ctx, orchestrator, loaded, plan, teardownRun, diagnostics)
 	}
 	if project != nil && definition.Handler == "@project" {
-		if definition.Name == "code" {
-			cli.autoSyncCredentials(ctx, loaded)
-		}
 		incusPort, _ := cli.statusPorts()
 		orchestrator.Runner = application.ProjectActionRunner{
 			Data: cli.projectDataPlane(), Devices: cli.projectDeviceManager(), Archive: cli.projectArchiver(),

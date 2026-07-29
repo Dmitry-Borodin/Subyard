@@ -66,12 +66,13 @@ revoke the real upstream credential.
 
 ## Automatic synchronization
 
-The user timer runs at least every six hours with boot catch-up and jitter. `yard code` and `yard shell`
-also run a short, best-effort catch-up when sync is due. `yard keys status` is read-only and reports each
-peer as `role=active` or `role=passive`, together with policy, last attempt/success, errors, staleness,
-and unresolved heads. Only active peers initiate sync; passive peers accept the active side's exchange.
-A reachable automatic peer should not remain unsynchronized for 24 hours. Use `auto-sync pause|resume`
-for an active route's explicit policy change and `sync --now` for an immediate active attempt.
+The user timer runs at least every six hours with boot catch-up and jitter. `yard keys status` is
+read-only and reports each peer as `role=active` or `role=passive`, together with policy, last
+attempt/success, errors, staleness, and unresolved heads. Only active peers initiate sync; passive
+peers accept the active side's exchange. A reachable automatic peer should not remain unsynchronized
+for 24 hours. Use `auto-sync pause|resume` for an active route's explicit policy change and
+`yard keys sync --now` for an immediate explicit attempt. Opening VS Code or a shell never starts
+credential synchronization.
 
 Exclusive credentials have an authority host and a `host-id/yard-context` assignment epoch.
 `move <id> @peer` first verifies the old supported staging consumer stopped, publishes the new assignment,

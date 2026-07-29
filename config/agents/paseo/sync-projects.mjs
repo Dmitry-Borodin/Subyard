@@ -101,6 +101,30 @@ export async function readInventory(workspaceRoot, warn = diagnostic) {
       continue;
     }
     inventory.push({ projectId: entry.name, path: checkout });
+
+    const children = await readdir(checkout, { withFileTypes: true });
+    for (const child of children.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!child.isDirectory()) continue;
+      const nested = path.join(checkout, child.name);
+      try {
+        const [nestedInfo, gitInfo, physicalNested] = await Promise.all([
+          lstat(nested),
+          lstat(path.join(nested, ".git")),
+          realpath(nested),
+        ]);
+        if (
+          nestedInfo.isDirectory() &&
+          !nestedInfo.isSymbolicLink() &&
+          gitInfo.isDirectory() &&
+          !gitInfo.isSymbolicLink() &&
+          within(physicalCheckout, physicalNested)
+        ) {
+          inventory.push({ projectId: entry.name, path: nested });
+        }
+      } catch {
+        // Ordinary child directory, not an independent Git repository.
+      }
+    }
   }
   return inventory;
 }
@@ -127,19 +151,18 @@ async function readText(file) {
 export async function readSeenProjects(file, warn = diagnostic) {
   try {
     const parsed = JSON.parse(await readFile(file, "utf8"));
-    if (parsed?.schemaVersion !== 1 || typeof parsed.projects !== "object" || !parsed.projects) {
+    let roots;
+    if (parsed?.schemaVersion === 1 && typeof parsed.projects === "object" && parsed.projects) {
+      roots = Object.values(parsed.projects);
+    } else if (parsed?.schemaVersion === 2 && Array.isArray(parsed.roots)) {
+      roots = parsed.roots;
+    } else {
       throw new Error("invalid cache schema");
     }
-    const projects = new Map();
-    for (const [projectId, checkout] of Object.entries(parsed.projects)) {
-      if (SAFE_PROJECT_ID.test(projectId) && typeof checkout === "string" && path.isAbsolute(checkout)) {
-        projects.set(projectId, checkout);
-      }
-    }
-    return projects;
+    return new Set(roots.filter((root) => typeof root === "string" && path.isAbsolute(root)));
   } catch (error) {
     if (error?.code !== "ENOENT") warn("ignored missing or corrupt seen-projects cache");
-    return new Map();
+    return new Set();
   }
 }
 
@@ -157,8 +180,8 @@ async function atomicWrite(file, payload, mode = 0o600) {
 }
 
 export async function writeSeenProjects(file, seen) {
-  const projects = Object.fromEntries([...seen.entries()].sort(([left], [right]) => left.localeCompare(right)));
-  await atomicWrite(file, `${JSON.stringify({ schemaVersion: 1, projects }, null, 2)}\n`);
+  const roots = [...seen].sort((left, right) => left.localeCompare(right));
+  await atomicWrite(file, `${JSON.stringify({ schemaVersion: 2, roots }, null, 2)}\n`);
 }
 
 export async function fetchActivePaths(client) {
@@ -199,22 +222,22 @@ export async function fetchActivePaths(client) {
 export async function reconcileProjects({ client, inventory, seenFile }) {
   const activePaths = await fetchActivePaths(client);
   const priorSeen = await readSeenProjects(seenFile);
-  const nextSeen = new Map();
+  const nextSeen = new Set();
 
   for (const project of inventory) {
     if (activePaths.has(project.path)) {
-      nextSeen.set(project.projectId, project.path);
+      nextSeen.add(project.path);
       continue;
     }
-    if (priorSeen.get(project.projectId) === project.path) {
-      nextSeen.set(project.projectId, project.path);
+    if (priorSeen.has(project.path)) {
+      nextSeen.add(project.path);
       continue;
     }
     const opened = await client.workspaces.open({ cwd: project.path });
     if (opened?.error || !opened?.workspace) {
-      throw new Error(`openProject failed for ${project.projectId}`);
+      throw new Error(`openProject failed for ${JSON.stringify(project.path)}`);
     }
-    nextSeen.set(project.projectId, project.path);
+    nextSeen.add(project.path);
   }
   await writeSeenProjects(seenFile, nextSeen);
 }

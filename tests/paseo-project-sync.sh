@@ -34,6 +34,12 @@ write_project() {
 write_project alpha
 write_project beta
 write_project gamma
+mkdir -p "$workspace_root/alpha/src/nested-repo/.git"
+mkdir -p "$workspace_root/beta/src/submodule"
+printf 'gitdir: elsewhere\n' >"$workspace_root/beta/src/submodule/.git"
+mkdir -p "$workspace_root/gamma/src/packages/deep-repo/.git"
+mkdir -p "$TEMP/outside-repo/.git"
+ln -s "$TEMP/outside-repo" "$workspace_root/beta/src/escaped-repo"
 mkdir -p "$workspace_root/escape"
 printf '{"schema":1,"projectId":"escape","name":"escape","mode":"sync"}\n' \
   >"$workspace_root/escape/.subyard-meta.json"
@@ -105,19 +111,38 @@ run_sync() {
 }
 
 run_sync --force
-[ "$(jq -r 'select(.event == "open") | .cwd' "$log")" = "$workspace_root/gamma/src" ] \
-  || fail "fresh sync did not open only the missing exact root"
+jq -s --arg nested "$workspace_root/alpha/src/nested-repo" \
+  --arg gamma "$workspace_root/gamma/src" '
+    [.[] | select(.event == "open") | .cwd] == [$nested, $gamma]
+  ' "$log" >/dev/null || fail "fresh sync did not open the missing exact roots"
 [ "$(jq -s '[.[] | select(.event == "list")] | length' "$log")" -eq 2 ] \
   || fail "workspace pagination was not consumed"
 jq -e --arg alpha "$workspace_root/alpha/src" --arg beta "$workspace_root/beta/src" \
-  --arg gamma "$workspace_root/gamma/src" '
-    .schemaVersion == 1 and
-    .projects == {alpha: $alpha, beta: $beta, gamma: $gamma}
+  --arg gamma "$workspace_root/gamma/src" \
+  --arg nested "$workspace_root/alpha/src/nested-repo" '
+    .schemaVersion == 2 and
+    .roots == [$alpha, $nested, $beta, $gamma]
   ' "$paseo_home/seen-projects.json" >/dev/null || fail "seen-projects cache is wrong"
 
 before="$(wc -l <"$log")"
 PASEO_FAKE_FAIL_ON_LOAD=1 run_sync
 [ "$(wc -l <"$log")" -eq "$before" ] || fail "unchanged fingerprint opened a WebSocket"
+
+jq -n --arg alpha "$workspace_root/alpha/src" --arg beta "$workspace_root/beta/src" \
+  --arg gamma "$workspace_root/gamma/src" \
+  --arg nested "$workspace_root/alpha/src/nested-repo" '
+    {schemaVersion: 1, projects: {alpha: $alpha, beta: $beta, gamma: $gamma, nested: $nested}}
+  ' >"$paseo_home/seen-projects.json"
+: >"$log"
+run_sync --force
+[ "$(jq -s '[.[] | select(.event == "open")] | length' "$log")" -eq 0 ] \
+  || fail "schema 1 cache migration reopened a seen archived workspace"
+
+mkdir -p "$workspace_root/gamma/src/late-repo/.git"
+: >"$log"
+run_sync
+[ "$(jq -r 'select(.event == "open") | .cwd' "$log")" = "$workspace_root/gamma/src/late-repo" ] \
+  || fail "changed inventory did not open the new nested repository"
 
 : >"$log"
 run_sync --force
@@ -127,9 +152,11 @@ run_sync --force
 rm -rf -- "$workspace_root/alpha"
 : >"$log"
 run_sync --force
-jq -e '(.projects | has("alpha") | not) and
-  (.projects | keys == ["beta", "gamma"])' "$paseo_home/seen-projects.json" >/dev/null \
-  || fail "removed inventory entry was not pruned from the disposable cache"
+jq -e --arg beta "$workspace_root/beta/src" --arg gamma "$workspace_root/gamma/src" \
+  --arg late "$workspace_root/gamma/src/late-repo" '
+    .schemaVersion == 2 and .roots == [$beta, $gamma, $late]
+  ' "$paseo_home/seen-projects.json" >/dev/null \
+  || fail "removed inventory roots were not pruned from the disposable cache"
 [ "$(jq -s '[.[] | select(.event == "archive" or .event == "delete")] | length' "$log")" -eq 0 ] \
   || fail "sync performed destructive cleanup"
 
@@ -137,7 +164,7 @@ printf '{broken\n' >"$paseo_home/seen-projects.json"
 printf 'broken\n' >"$paseo_home/subyard-projects.fingerprint"
 : >"$log"
 run_sync
-[ "$(jq -s '[.[] | select(.event == "open")] | length' "$log")" -eq 1 ] \
+[ "$(jq -s '[.[] | select(.event == "open")] | length' "$log")" -eq 2 ] \
   || fail "corrupt disposable cache did not recover additively"
 
 rm -f "$paseo_home/subyard-projects.fingerprint"
@@ -148,4 +175,4 @@ fi
 [ ! -e "$paseo_home/subyard-projects.fingerprint" ] \
   || fail "failed sync advanced the fingerprint"
 
-printf 'PASS: Paseo project discovery is exact-root, additive and cache-safe\n'
+printf 'PASS: Paseo project discovery includes safe nested Git roots and remains additive\n'

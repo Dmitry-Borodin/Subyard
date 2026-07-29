@@ -41,9 +41,10 @@ Desktop therefore depends on that hosted service. The relay can observe connecti
 IP addresses, timing, message sizes, session identifiers, and public handshake frames, while Paseo's
 application channel uses its upstream end-to-end handshake.
 
-Valid checkouts under `/srv/workspaces` are registered automatically. Successful `yard sync`,
-`bind`, `clone`, and `remove` operations trigger an event-driven additive reconcile; daemon startup
-and `yard init` also retry it. Subyard does not rename, archive, or delete Paseo-only projects.
+Valid checkouts under `/srv/workspaces` and their immediate child directories with an independent
+`.git` directory are registered automatically. Successful `yard sync`, `bind`, `clone`, and `remove`
+operations trigger an event-driven additive reconcile; daemon startup and `yard init` also retry it.
+Subyard does not rename, archive, or delete Paseo-only projects.
 
 ## Recovery and troubleshooting
 

@@ -89,8 +89,8 @@ func TestOwnerIdentityOutputsKeepFullHostID(t *testing.T) {
 	}
 	var completions bytes.Buffer
 	printOwnerCompletions(&completions, results[:1], "projects")
-	if !strings.Contains(completions.String(), ownerA+"/dev/Demo") ||
-		strings.Contains(completions.String(), compactProjectListOwner(ownerA)+"/dev/Demo") {
+	if !strings.Contains(completions.String(), "Demo/dev/"+ownerA) ||
+		strings.Contains(completions.String(), "Demo/dev/"+compactProjectListOwner(ownerA)) {
 		t.Fatalf("completion truncated owner identity:\n%s", completions.String())
 	}
 	if _, _, err := selectOwnerYards(results, "dev"); err == nil ||
@@ -118,8 +118,24 @@ func TestOwnerCompletionPrintsFullAndOnlyUniqueShortSelectors(t *testing.T) {
 	printOwnerCompletions(&projects, results, "projects")
 	projectLines := "\n" + projects.String()
 	if strings.Contains(projectLines, "\nDemo\n") ||
-		!strings.Contains(projects.String(), "owner-a/dev/Demo") ||
+		!strings.Contains(projects.String(), "Demo/dev/owner-a") ||
 		!strings.Contains(projectLines, "\nUnique\n") {
 		t.Fatalf("project completion drifted:\n%s", projects.String())
+	}
+}
+
+func TestCanonicalProjectSelectorKeepsProjectPrefix(t *testing.T) {
+	if got := canonicalProjectSelector("Demo", "default", "owner-a"); got != "Demo/owner-a" {
+		t.Fatalf("default selector = %q", got)
+	}
+	if got := canonicalProjectSelector("Demo", "dev", "owner-a"); got != "Demo/dev/owner-a" {
+		t.Fatalf("named-yard selector = %q", got)
+	}
+	for _, selector := range []string{
+		"Demo/dev/owner-a", "dev/Demo", "owner-a/dev/Demo",
+	} {
+		if !projectSelectorMatches(selector, "Demo", "dev", "owner-a", true) {
+			t.Fatalf("compatible selector %q did not match", selector)
+		}
 	}
 }

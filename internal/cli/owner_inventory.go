@@ -430,7 +430,9 @@ func printOwnerCompletions(output io.Writer, results []ownerInventoryResult, kin
 				continue
 			}
 			for _, project := range yard.Projects {
-				values[result.inventory.HostID+"/"+yard.Name+"/"+project.Name] = struct{}{}
+				values[canonicalProjectSelector(
+					project.Name, yard.Name, result.inventory.HostID,
+				)] = struct{}{}
 				if projectCounts[strings.ToLower(project.Name)] == 1 {
 					values[project.Name] = struct{}{}
 				}
@@ -445,6 +447,27 @@ func printOwnerCompletions(output io.Writer, results []ownerInventoryResult, kin
 	for _, value := range sorted {
 		fmt.Fprintln(output, value)
 	}
+}
+
+func canonicalProjectSelector(project, yard, hostID string) string {
+	if yard == "default" {
+		return project + "/" + hostID
+	}
+	return project + "/" + yard + "/" + hostID
+}
+
+func projectSelectorMatches(selector, project, yard, hostID string, fold bool) bool {
+	equal := func(left, right string) bool {
+		if fold {
+			return strings.EqualFold(left, right)
+		}
+		return left == right
+	}
+	return equal(selector, project) ||
+		equal(selector, canonicalProjectSelector(project, yard, hostID)) ||
+		equal(selector, project+"/"+yard+"/"+hostID) ||
+		equal(selector, yard+"/"+project) ||
+		equal(selector, hostID+"/"+yard+"/"+project)
 }
 
 func (cli *CLI) resolveOwnerProject(
@@ -481,19 +504,10 @@ func (cli *CLI) resolveOwnerProject(
 			}
 		}
 	}
-	parts := strings.Split(selector, "/")
-	wantedHost, wantedYard, wantedProject := "", "", selector
-	switch len(parts) {
-	case 2:
-		wantedYard, wantedProject = parts[0], parts[1]
-	case 3:
-		wantedHost, wantedYard, wantedProject = parts[0], parts[1], parts[2]
-	default:
-		if len(parts) > 3 {
-			return state.Match{}, fmt.Errorf(
-				"invalid project selector %q; use <HostID>/<yard>/<project>", selector,
-			)
-		}
+	if strings.Count(selector, "/") > 2 {
+		return state.Match{}, fmt.Errorf(
+			"invalid project selector %q; use <project>/<yard>/<HostID>", selector,
+		)
 	}
 	type match struct {
 		hostID  string
@@ -506,18 +520,16 @@ func (cli *CLI) resolveOwnerProject(
 			if scopeHost != "" && (result.inventory.HostID != scopeHost || yard.Name != scopeYard) {
 				continue
 			}
-			if wantedHost != "" && result.inventory.HostID != wantedHost {
-				continue
-			}
-			if wantedYard != "" && yard.Name != wantedYard {
-				continue
-			}
 			for _, project := range yard.Projects {
 				candidate := match{hostID: result.inventory.HostID, yard: yard, project: project}
-				if project.ProjectID == wantedProject {
+				if projectSelectorMatches(
+					selector, project.ProjectID, yard.Name, result.inventory.HostID, false,
+				) {
 					exact = append(exact, candidate)
 				}
-				if strings.EqualFold(project.Name, wantedProject) {
+				if projectSelectorMatches(
+					selector, project.Name, yard.Name, result.inventory.HostID, true,
+				) {
 					named = append(named, candidate)
 				}
 			}
@@ -533,8 +545,9 @@ func (cli *CLI) resolveOwnerProject(
 	if len(matches) > 1 {
 		candidates := make([]string, 0, len(matches))
 		for _, match := range matches {
-			candidates = append(candidates,
-				match.hostID+"/"+match.yard.Name+"/"+match.project.Name)
+			candidates = append(candidates, canonicalProjectSelector(
+				match.project.Name, match.yard.Name, match.hostID,
+			))
 		}
 		sort.Strings(candidates)
 		return state.Match{}, fmt.Errorf("%w: use one of: %s",

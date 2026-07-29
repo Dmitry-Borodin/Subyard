@@ -46,6 +46,28 @@ grep -qx -- '--resources' <<<"$completion_words" || fail 'Bash completion omitte
 grep -qx -- 'sync' <<<"$completion_words" || fail 'Bash completion omitted config sync'
 grep -qx -- 'pull' <<<"$completion_words" || fail 'Bash completion omitted config sync pull'
 grep -qx -- '--apply' <<<"$completion_words" || fail 'Bash completion omitted config sync push --apply'
+
+# Ambiguous project names complete to canonical project-first selectors. Host-first selectors do
+# not match an already typed project-name prefix and made `yard code Subyard<Tab>` return nothing.
+project_selectors="$({
+  yard() {
+    case "$1" in
+      --command-completion) printf '%s\n' project ;;
+      --command-options) ;;
+      list)
+        [ "${2:-}" = --complete-projects ] &&
+          printf '%s\n' 'Subyard/owner-a' 'Subyard/owner-b'
+        ;;
+    esac
+  }
+  # shellcheck source=completions/yard.bash
+  . "$ROOT/completions/yard.bash"
+  COMP_WORDS=(yard code Subyard); COMP_CWORD=2; _yard
+  printf '%s\n' "${COMPREPLY[@]}"
+} | sort)"
+[ "$project_selectors" = $'Subyard/owner-a\nSubyard/owner-b' ] ||
+  fail 'Bash completion lost ambiguous project selectors after a typed name prefix'
+
 grep -Fq -- '--command-options' "$ROOT/completions/yard.zsh" \
   && grep -Fq -- '--command-verbs' "$ROOT/completions/yard.zsh" \
   || fail 'Zsh completion does not consume manifest options and verbs'

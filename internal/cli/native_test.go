@@ -1259,7 +1259,7 @@ func TestNativeListBoundsOnlyOwnerDisplay(t *testing.T) {
 	if code := program.Run(context.Background()); code != 0 {
 		t.Fatalf("project completion failed: code=%d stderr=%q", code, stderr.String())
 	}
-	if want := hostID + "/default/Demo\nDemo\n"; stdout.String() != want {
+	if want := "Demo\nDemo/" + hostID + "\n"; stdout.String() != want {
 		t.Fatalf("completion changed owner identity: got %q, want %q", stdout.String(), want)
 	}
 }

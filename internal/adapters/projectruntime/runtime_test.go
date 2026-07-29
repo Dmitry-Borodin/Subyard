@@ -8,11 +8,12 @@ import (
 
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/shellquote"
 	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 func TestRemoteCommandQuotingKeepsEveryArgumentLiteral(t *testing.T) {
-	got := quoteCommand([]string{"git", "clone", "--", "x'; touch /tmp/escaped", "/srv/workspaces/id/src"})
+	got := shellquote.Command([]string{"git", "clone", "--", "x'; touch /tmp/escaped", "/srv/workspaces/id/src"})
 	want := "'git' 'clone' '--' 'x'\\''; touch /tmp/escaped' '/srv/workspaces/id/src'"
 	if got != want {
 		t.Fatalf("quoted command = %q, want %q", got, want)

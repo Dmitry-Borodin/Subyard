@@ -206,7 +206,6 @@ type RemoteControl interface {
 	Lookup(context.Context, string) (domain.RemoteRecord, bool, error)
 	List(context.Context) ([]domain.RemoteRecord, error)
 	ProbeOwner(context.Context, domain.RemoteSpec) (domain.RemoteInfo, error)
-	ObserveOwner(context.Context, domain.RemoteSpec) (domain.RemoteInfo, time.Time, error)
 	ScanYardKeys(context.Context, domain.RemoteSpec, int) ([]domain.RemoteKey, error)
 	RecordedYardKeys(context.Context, string) ([]domain.RemoteKey, error)
 	Apply(context.Context, domain.RemotePrepared) (domain.RemoteResult, error)

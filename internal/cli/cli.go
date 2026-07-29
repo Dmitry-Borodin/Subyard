@@ -41,6 +41,7 @@ import (
 	"github.com/Subyard/Subyard/internal/ports"
 	"github.com/Subyard/Subyard/internal/resource"
 	"github.com/Subyard/Subyard/internal/rpc"
+	"github.com/Subyard/Subyard/internal/shellquote"
 	"github.com/Subyard/Subyard/internal/state"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
@@ -1121,37 +1122,6 @@ func (cli *CLI) yardHint(yard domain.Context) string {
 		return cli.options.Program
 	}
 	return fmt.Sprintf("%s -Y %s", cli.options.Program, yard.YardName)
-}
-
-func (cli *CLI) printRemoteStatus(ctx context.Context, yard domain.Context) error {
-	info, age, err := cli.observeRemoteInfo(ctx, yard)
-	if err != nil {
-		return err
-	}
-	stateValue := info.State
-	if stateValue == "" {
-		stateValue = "?"
-	}
-	projects := "?"
-	if info.Projects != nil {
-		projects = strconv.Itoa(*info.Projects)
-	}
-	marker := ""
-	if age != "" {
-		marker = ", seen " + age + " ago"
-	}
-	fmt.Fprintf(cli.options.Stdout, "%s  %s  (remote %s, %s projects%s)\n",
-		yard.YardName, stateValue, yard.RemoteDest, projects, marker)
-	return nil
-}
-
-func (cli *CLI) observeRemoteInfo(ctx context.Context, yard domain.Context) (domain.RemoteInfo, string, error) {
-	info, cachedAt, err := cli.remoteControl(config.Loaded{Context: yard}, 2*time.Second).ObserveOwner(ctx,
-		domain.RemoteSpec{Name: yard.YardName, Destination: yard.RemoteDest, OwnerYard: yard.RemoteYard})
-	if err != nil || cachedAt.IsZero() {
-		return info, "", err
-	}
-	return info, ageHuman(time.Since(cachedAt)), nil
 }
 
 func ageHuman(age time.Duration) string {
@@ -2730,14 +2700,14 @@ func (cli *CLI) forwardRemote(ctx context.Context, yardContext domain.Context, n
 	remote = append(remote, arguments...)
 	parts := make([]string, len(remote))
 	for index, argument := range remote {
-		parts[index] = shellQuote(argument)
+		parts[index] = shellquote.Word(argument)
 	}
-	remoteLine := "SUBYARD_OPERATION_ID=" + shellQuote(cli.env["SUBYARD_OPERATION_ID"]) + " " + strings.Join(parts, " ")
+	remoteLine := "SUBYARD_OPERATION_ID=" + shellquote.Word(cli.env["SUBYARD_OPERATION_ID"]) + " " + strings.Join(parts, " ")
 	if name == "usage" {
 		hint := "yard -Y " + cli.env["SUBYARD_YARD"] + " init"
-		remoteLine = "SUBYARD_USAGE_REPAIR_HINT=" + shellQuote(hint) + " " + remoteLine
+		remoteLine = "SUBYARD_USAGE_REPAIR_HINT=" + shellquote.Word(hint) + " " + remoteLine
 	}
-	return cli.runExternal(ctx, "ssh", []string{"-t", yardContext.RemoteDest, "--", "bash", "-lc", shellQuote(remoteLine)})
+	return cli.runExternal(ctx, "ssh", []string{"-t", yardContext.RemoteDest, "--", "bash", "-lc", shellquote.Word(remoteLine)})
 }
 
 func (cli *CLI) runExternal(ctx context.Context, program string, arguments []string) int {
@@ -2847,13 +2817,6 @@ func environmentList(values map[string]string, extra map[string]string) []string
 		environment = append(environment, key+"="+merged[key])
 	}
 	return environment
-}
-
-func shellQuote(value string) string {
-	if value == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func (cli *CLI) serveRPC(ctx context.Context, yard string, arguments []string) int {

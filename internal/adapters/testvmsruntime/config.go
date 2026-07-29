@@ -161,13 +161,7 @@ func (cfg Config) Validate() error {
 	return nil
 }
 
-func (cfg Config) vm(index int) string { return cfg.Prefix + "-" + strconv.Itoa(index) }
-func (cfg Config) slotProject(slot int) string {
-	return cfg.Project + "-slot-" + strconv.Itoa(slot)
-}
-func (cfg Config) slotVM(slot, index int) string {
-	return cfg.Prefix + "-slot-" + strconv.Itoa(slot) + "-" + strconv.Itoa(index)
-}
+func (cfg Config) vm(index int) string    { return cfg.Prefix + "-" + strconv.Itoa(index) }
 func (cfg Config) keyPath() string        { return filepath.Join(cfg.StateDir, "id_ed25519") }
 func (cfg Config) knownHosts() string     { return filepath.Join(cfg.StateDir, "known_hosts") }
 func (cfg Config) failureLog() string     { return filepath.Join(cfg.StateDir, "last-failure.log") }
@@ -183,14 +177,6 @@ func positiveInt(value, name string) (int, error) {
 		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return number, nil
-}
-
-func boundedMinutes(value string, minimum, maximum int, name string) (time.Duration, error) {
-	number, err := strconv.Atoi(value)
-	if err != nil || number < minimum || number > maximum {
-		return 0, fmt.Errorf("%s must be from %d to %d", name, minimum, maximum)
-	}
-	return time.Duration(number) * time.Minute, nil
 }
 
 func boundedSeconds(value string, minimum, maximum int, name string) (time.Duration, error) {

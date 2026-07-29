@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/rpc"
@@ -21,9 +20,6 @@ func (control *remoteControlStub) List(context.Context) ([]domain.RemoteRecord, 
 }
 func (control *remoteControlStub) ProbeOwner(context.Context, domain.RemoteSpec) (domain.RemoteInfo, error) {
 	return domain.RemoteInfo{State: "RUNNING", SSHPort: 2222, DevUser: "dev"}, nil
-}
-func (control *remoteControlStub) ObserveOwner(context.Context, domain.RemoteSpec) (domain.RemoteInfo, time.Time, error) {
-	return domain.RemoteInfo{}, time.Time{}, nil
 }
 func (control *remoteControlStub) ScanYardKeys(context.Context, domain.RemoteSpec, int) ([]domain.RemoteKey, error) {
 	return []domain.RemoteKey{{Material: "ssh-ed25519 fixture", Fingerprint: "SHA256:new"}}, nil

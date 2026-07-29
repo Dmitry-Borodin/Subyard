@@ -18,6 +18,7 @@ import (
 	"github.com/Subyard/Subyard/internal/credential"
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/shellquote"
 )
 
 func (runtime *Runtime) peerPath(name string) (string, error) {
@@ -261,10 +262,10 @@ func (runtime *Runtime) callTarget(
 			remote = append(remote, "-Y", target.RemoteYard)
 		}
 		remote = append(remote, arguments...)
-		command := shellCommand(remote)
+		command := shellquote.Command(remote)
 		args := []string{
 			"-o", "BatchMode=yes", "-o", "ConnectTimeout=" + strconv.Itoa(runtime.sshTimeout),
-			target.Destination, "--", "bash", "-lc", shellQuote(command),
+			target.Destination, "--", "bash", "-lc", shellquote.Word(command),
 		}
 		return runtime.runWithEnvironment(
 			ctx, "ssh", args, stdin, runtime.config.TargetEnvironment, nil,
@@ -272,18 +273,6 @@ func (runtime *Runtime) callTarget(
 	default:
 		return nil, fmt.Errorf("unknown credential transport %q", target.Transport)
 	}
-}
-
-func shellCommand(arguments []string) string {
-	quoted := make([]string, len(arguments))
-	for index, argument := range arguments {
-		quoted[index] = shellQuote(argument)
-	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (runtime *Runtime) callPeer(

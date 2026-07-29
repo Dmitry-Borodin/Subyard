@@ -16,6 +16,7 @@ import (
 	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/shellquote"
 )
 
 var metadataCommand = []string{
@@ -103,7 +104,7 @@ func (runtime Runtime) executeSSHReader(
 		Program: binary, Env: runtime.Environment, Timeout: runtime.Timeout, MaxBytes: runtime.MaxBytes,
 		Arguments: []string{
 			"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=yes",
-			host, "--", quoteCommand(command),
+			host, "--", shellquote.Command(command),
 		},
 	}
 	stdout, err := process.CallReader(ctx, stdin)
@@ -116,14 +117,6 @@ func (runtime Runtime) executeSSHReader(
 		}
 	}
 	return result, err
-}
-
-func quoteCommand(arguments []string) string {
-	quoted := make([]string, len(arguments))
-	for index, argument := range arguments {
-		quoted[index] = "'" + strings.ReplaceAll(argument, "'", "'\\''") + "'"
-	}
-	return strings.Join(quoted, " ")
 }
 
 func (runtime Runtime) Observe(

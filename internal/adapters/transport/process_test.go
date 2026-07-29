@@ -175,7 +175,7 @@ func TestSSHYardUsesLoginShellForUserInstalledCLI(t *testing.T) {
 	want := []string{
 		"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
 		"dev@owner.example", "--", "bash", "-lc",
-		"'exec '\"'\"'yard'\"'\"' '\"'\"'-Y'\"'\"' '\"'\"'test-yard'\"'\"' '\"'\"'rpc'\"'\"' '\"'\"'--stdio'\"'\"''",
+		"'exec '\\''yard'\\'' '\\''-Y'\\'' '\\''test-yard'\\'' '\\''rpc'\\'' '\\''--stdio'\\'''",
 	}
 	if !reflect.DeepEqual(process.Arguments, want) {
 		t.Fatalf("unexpected SSH arguments:\n got: %#v\nwant: %#v", process.Arguments, want)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
 )
@@ -48,13 +47,6 @@ func (fixture *remoteControlFixture) ProbeOwner(
 ) (domain.RemoteInfo, error) {
 	fixture.probeCalls++
 	return fixture.owner, fixture.probeErr
-}
-
-func (fixture *remoteControlFixture) ObserveOwner(
-	context.Context,
-	domain.RemoteSpec,
-) (domain.RemoteInfo, time.Time, error) {
-	return fixture.owner, time.Time{}, fixture.probeErr
 }
 
 func (fixture *remoteControlFixture) ScanYardKeys(

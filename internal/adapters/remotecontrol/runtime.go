@@ -18,6 +18,7 @@ import (
 	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ownerinventory"
+	"github.com/Subyard/Subyard/internal/shellquote"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -105,19 +106,6 @@ func (runtime Runtime) ProbeOwner(ctx context.Context, spec domain.RemoteSpec) (
 	return domain.RemoteInfo{}, fmt.Errorf(
 		"owner HostID %q has no yard %q", inventory.HostID, yardName,
 	)
-}
-
-func (runtime Runtime) ObserveOwner(ctx context.Context, spec domain.RemoteSpec) (domain.RemoteInfo, time.Time, error) {
-	cached, cachedAt, _ := runtime.readCache(spec.Name)
-	info, err := runtime.ProbeOwner(ctx, spec)
-	if err != nil || info.State == "" {
-		return cached, cachedAt, nil
-	}
-	if info.Projects == nil {
-		info.Projects = cached.Projects
-	}
-	_ = runtime.writeCache(runtime.cachePath(spec.Name), info)
-	return info, time.Time{}, nil
 }
 
 func (runtime Runtime) ScanYardKeys(ctx context.Context, spec domain.RemoteSpec, port int) ([]domain.RemoteKey, error) {
@@ -291,8 +279,8 @@ func (runtime Runtime) ownerCall(ctx context.Context, spec domain.RemoteSpec, st
 		owner = append(owner, "-Y", spec.OwnerYard)
 	}
 	owner = append(owner, arguments...)
-	command := shellCommand(owner)
-	return runtime.hostCall(ctx, spec.Destination, stdin, "bash", "-lc", shellQuote(command))
+	command := shellquote.Command(owner)
+	return runtime.hostCall(ctx, spec.Destination, stdin, "bash", "-lc", shellquote.Word(command))
 }
 
 func (runtime Runtime) hostCall(ctx context.Context, destination string, stdin []byte, arguments ...string) ([]byte, error) {
@@ -314,18 +302,6 @@ func (runtime Runtime) call(ctx context.Context, arguments []string, stdin []byt
 		return runtime.processCall(ctx, program, arguments, stdin)
 	}
 	return (transport.Process{Program: program, Arguments: arguments, Env: runtime.Environment, Timeout: runtime.timeout()}).Call(ctx, "", stdin)
-}
-
-func shellCommand(arguments []string) string {
-	quoted := make([]string, len(arguments))
-	for index, argument := range arguments {
-		quoted[index] = shellQuote(argument)
-	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (runtime Runtime) ensureIdentity(ctx context.Context) ([]byte, string, error) {

@@ -441,12 +441,6 @@ func storeSlot(store LeaseStore, slotID string) (LeaseSlot, error) {
 	return LeaseSlot{}, fmt.Errorf("unknown slot %q", slotID)
 }
 
-func mustSlotNumber(slotID string) int {
-	var number int
-	_, _ = fmt.Sscanf(slotID, "slot-%03d", &number)
-	return number
-}
-
 func dueForRecovery(slot LeaseSlot, now time.Time) bool {
 	return slot.State == SlotRecovering ||
 		(slot.State == SlotQuarantined &&

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/shellquote"
 )
 
 const defaultLimit = 4 * 1024 * 1024
@@ -64,26 +65,14 @@ func SSHYard(program, target, yard string, connectTimeout time.Duration) (Proces
 		remote = append(remote, "-Y", yard)
 	}
 	remote = append(remote, "rpc", "--stdio")
-	command := "exec " + shellCommand(remote)
+	command := "exec " + shellquote.Command(remote)
 	return Process{
 		Program: program,
 		Arguments: []string{
 			"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + strconv.Itoa(seconds),
-			target, "--", "bash", "-lc", shellQuote(command),
+			target, "--", "bash", "-lc", shellquote.Word(command),
 		},
 	}, nil
-}
-
-func shellCommand(arguments []string) string {
-	quoted := make([]string, len(arguments))
-	for index, argument := range arguments {
-		quoted[index] = shellQuote(argument)
-	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (transport Process) Call(ctx context.Context, _ string, request []byte) ([]byte, error) {

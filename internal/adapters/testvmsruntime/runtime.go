@@ -824,18 +824,6 @@ func nonemptyLines(value string) []string {
 	return result
 }
 
-func readEpoch(path string) (time.Time, bool) {
-	payload, err := os.ReadFile(path)
-	if err != nil {
-		return time.Time{}, false
-	}
-	value, err := strconv.ParseInt(strings.TrimSpace(string(payload)), 10, 64)
-	if err != nil || value < 1 {
-		return time.Time{}, false
-	}
-	return time.Unix(value, 0), true
-}
-
 func userGroup(name string) (int, error) {
 	account, err := user.Lookup(name)
 	if err != nil {

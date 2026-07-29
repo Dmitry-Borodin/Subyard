@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 
@@ -121,8 +122,8 @@ func (store Connections) Write(connection Connection) error {
 			)
 		}
 	}
-	sort.Strings(connection.LegacyNames)
-	connection.LegacyNames = compact(connection.LegacyNames)
+	slices.Sort(connection.LegacyNames)
+	connection.LegacyNames = slices.Compact(connection.LegacyNames)
 	payload, err := json.Marshal(connection)
 	if err != nil {
 		return err
@@ -154,14 +155,4 @@ func (store Connections) Write(connection Connection) error {
 		return err
 	}
 	return os.Rename(tempPath, path)
-}
-
-func compact(values []string) []string {
-	result := values[:0]
-	for _, value := range values {
-		if len(result) == 0 || result[len(result)-1] != value {
-			result = append(result, value)
-		}
-	}
-	return result
 }

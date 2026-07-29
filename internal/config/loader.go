@@ -699,16 +699,6 @@ func environmentFrom(explicit map[string]string) environment {
 	return values
 }
 
-func applyOptional(path string, values environment) error {
-	if _, err := os.Stat(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	return applyEnvFile(path, values)
-}
-
 func findYardFile(root, name string, values environment, explicit []string) (string, error) {
 	var candidates []string
 	if len(explicit) != 0 {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/shellquote"
 )
 
 const fixturePublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA fixture"
@@ -283,8 +284,8 @@ func TestProbeDiagnosticsAndShellQuoting(t *testing.T) {
 			t.Fatalf("classifyProbe(%q) = %q, want %q", message, got, expected)
 		}
 	}
-	command := shellCommand([]string{"yard", "-Y", "owner's-yard", "_info"})
-	if command != "'yard' '-Y' 'owner'\"'\"'s-yard' '_info'" {
+	command := shellquote.Command([]string{"yard", "-Y", "owner's-yard", "_info"})
+	if command != "'yard' '-Y' 'owner'\\''s-yard' '_info'" {
 		t.Fatalf("unsafe shell command: %q", command)
 	}
 }

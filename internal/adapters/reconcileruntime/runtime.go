@@ -21,6 +21,7 @@ import (
 	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/shellquote"
 )
 
 type Runtime struct {
@@ -461,16 +462,12 @@ func (runtime Runtime) installIncus(ctx context.Context) error {
 	arguments = append(arguments, "init", "--yes")
 	words := []string{"env", "SUBYARD_SG_REEXEC=1", "ASSUME_YES=1"}
 	for _, argument := range arguments {
-		words = append(words, shellWord(argument))
+		words = append(words, shellquote.Word(argument))
 	}
 	command := strings.Join(words, " ")
 	environment := append([]string(nil), runtime.Environment...)
 	environment = append(environment, "SUBYARD_SG_REEXEC=1", "ASSUME_YES=1")
 	return syscall.Exec(sg, []string{"sg", "incus-admin", "-c", command}, environment)
-}
-
-func shellWord(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func charDeviceMatches(device map[string]string, path string) bool {
@@ -581,21 +578,6 @@ func (runtime Runtime) applyInstanceStage(ctx context.Context) error {
 		return err
 	}
 	return runtime.powerService().Set(ctx, runtime.Yard, desired, false)
-}
-
-func (runtime Runtime) runPreparedPowerScript(
-	ctx context.Context,
-	output io.Writer,
-	name string,
-	arguments ...string,
-) error {
-	intent, err := runtime.powerService().Ensure(ctx, runtime.Yard)
-	if err != nil {
-		return err
-	}
-	return runtime.runScriptEnvironment(ctx, output, map[string]string{
-		"SUBYARD_POWER_DESIRED": intent.Desired,
-	}, name, arguments...)
 }
 
 func (runtime Runtime) testVMsConverged(ctx context.Context) (bool, error) {

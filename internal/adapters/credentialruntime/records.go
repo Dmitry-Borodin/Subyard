@@ -14,8 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/Subyard/Subyard/internal/credential"
@@ -359,11 +359,11 @@ func (runtime *Runtime) verifyRecord(ctx context.Context, root, path string) err
 	for _, item := range sops.Age {
 		actual = append(actual, item.Recipient)
 	}
-	sort.Strings(actual)
-	actual = compact(actual)
-	sort.Strings(expected)
-	expected = compact(expected)
-	if !equalStrings(actual, expected) {
+	slices.Sort(actual)
+	actual = slices.Compact(actual)
+	slices.Sort(expected)
+	expected = slices.Compact(expected)
+	if !slices.Equal(actual, expected) {
 		return errors.New("encrypted record recipients do not match signed metadata")
 	}
 	signature := path + ".sig"
@@ -604,39 +604,6 @@ func directoryExists(path string) bool {
 }
 
 func compactSorted(values []string) []string {
-	sort.Strings(values)
-	return compact(values)
-}
-
-func compact(values []string) []string {
-	if len(values) == 0 {
-		return values
-	}
-	result := values[:1]
-	for _, value := range values[1:] {
-		if value != result[len(result)-1] {
-			result = append(result, value)
-		}
-	}
-	return result
-}
-
-func equalStrings(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
-}
-
-func parseEpoch(value string, fallback int64) int64 {
-	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || parsed < 0 {
-		return fallback
-	}
-	return parsed
+	slices.Sort(values)
+	return slices.Compact(values)
 }

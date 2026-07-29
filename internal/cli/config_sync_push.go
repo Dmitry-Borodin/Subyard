@@ -14,6 +14,7 @@ import (
 	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/configsync"
 	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/shellquote"
 )
 
 type configSyncPushOptions struct {
@@ -499,7 +500,7 @@ func exportConfigScalarFile(
 	for _, name := range names {
 		content.WriteString(name)
 		content.WriteByte('=')
-		content.WriteString(shellQuote(values[name]))
+		content.WriteString(shellquote.Word(values[name]))
 		content.WriteByte('\n')
 	}
 	return writeExportedConfigFile(destination, []byte(content.String()), 0o600)

@@ -2,12 +2,14 @@ package rpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -179,7 +181,7 @@ func containsSensitiveJSON(raw json.RawMessage) bool {
 		return false
 	}
 	var value any
-	decoder := json.NewDecoder(bytesReader(raw))
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
 		return false
@@ -194,8 +196,8 @@ func containsSensitive(value any) bool {
 			normalized := normalizeKey(key)
 			if normalized == "secret" || normalized == "password" || normalized == "token" ||
 				normalized == "payload" || normalized == "privatekey" ||
-				stringsContains(normalized, "secret") || stringsContains(normalized, "password") ||
-				stringsContains(normalized, "token") || stringsContains(normalized, "privatekey") {
+				strings.Contains(normalized, "secret") || strings.Contains(normalized, "password") ||
+				strings.Contains(normalized, "token") || strings.Contains(normalized, "privatekey") {
 				return true
 			}
 			if containsSensitive(child) {
@@ -212,19 +214,6 @@ func containsSensitive(value any) bool {
 	return false
 }
 
-func bytesReader(value []byte) io.Reader { return &sliceReader{value: value} }
-
-type sliceReader struct{ value []byte }
-
-func (reader *sliceReader) Read(target []byte) (int, error) {
-	if len(reader.value) == 0 {
-		return 0, io.EOF
-	}
-	count := copy(target, reader.value)
-	reader.value = reader.value[count:]
-	return count, nil
-}
-
 func normalizeKey(value string) string {
 	result := make([]byte, 0, len(value))
 	for index := 0; index < len(value); index++ {
@@ -238,15 +227,6 @@ func normalizeKey(value string) string {
 		result = append(result, char)
 	}
 	return string(result)
-}
-
-func stringsContains(value, fragment string) bool {
-	for index := 0; index+len(fragment) <= len(value); index++ {
-		if value[index:index+len(fragment)] == fragment {
-			return true
-		}
-	}
-	return false
 }
 
 func asFault(err error) *Error {

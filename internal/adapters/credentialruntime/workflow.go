@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1156,7 +1157,7 @@ func (runtime *Runtime) rekeyShared(ctx context.Context, actor string, trust boo
 		}
 		head := heads[0]
 		recipients, err := credential.RekeyRecipients(head.RecipientActors, actor, trust)
-		if err != nil || equalStrings(recipients, compactSorted(append([]string(nil), head.RecipientActors...))) {
+		if err != nil || slices.Equal(recipients, compactSorted(append([]string(nil), head.RecipientActors...))) {
 			continue
 		}
 		var payload []byte

@@ -2,6 +2,9 @@
 ccusage-provision.sh
 emulator-process-control.sh
 engine-release.sh
+hermes-backup.sh
+hermes-provision.sh
+hermes-restic.sh
 key-tools-install.sh
 init-project-convergence.sh
 opencode-agent-provision.sh

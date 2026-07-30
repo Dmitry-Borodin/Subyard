@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime_env="${HERMES_RUNTIME_ENV:-/etc/subyard/hermes-runtime.env}"
+[ -r "$runtime_env" ] || { printf 'hermes pin check: missing %s\n' "$runtime_env" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$runtime_env"
+
+marker="$HERMES_INSTALL_ROOT/.subyard-commit"
+[ -r "$marker" ] && [ "$(<"$marker")" = "$HERMES_COMMIT" ] \
+  || { printf 'hermes pin check: runtime commit mismatch\n' >&2; exit 1; }
+[ -x "$HERMES_VENV/bin/hermes" ] \
+  || { printf 'hermes pin check: runtime entrypoint missing\n' >&2; exit 1; }
+[ -r "$HERMES_SOURCE/uv.lock" ] \
+  || { printf 'hermes pin check: locked source missing\n' >&2; exit 1; }
+
+actual_version="$("$HERMES_VENV/bin/python" -c \
+  'from hermes_cli import __version__; print(__version__)' 2>/dev/null)"
+[ "$actual_version" = "$HERMES_VERSION" ] \
+  || { printf 'hermes pin check: version mismatch\n' >&2; exit 1; }
+
+if [ "${1:-}" != "--runtime-only" ]; then
+  ready="$HERMES_HOME/.provider-ready"
+  [ -r "$ready" ] && [ "$(<"$ready")" = "$HERMES_COMMIT" ] \
+    || { printf 'hermes pin check: provider is not approved for this commit\n' >&2; exit 1; }
+fi

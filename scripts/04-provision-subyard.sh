@@ -192,9 +192,8 @@ for _agent in ${AGENTS:-}; do
 done
 unset _agent _agent_env _check_var _check _provision_var _provision
 
-# Install one generic guest-side project lifecycle dispatcher. It contains only the enabled
-# package commands and executes them without a shell/eval. Project actions invoke this path
-# through their already-resolved local or remote yard data plane.
+# Install one generic guest-side project lifecycle dispatcher. Enabled agents stay in the
+# generated list; opt-in shared resources own executable hooks in projects-changed.d.
 _project_hooks=()
 for _agent in ${AGENTS:-}; do
   _hook_var="AGENT_${_agent}_PROJECTS_CHANGED"
@@ -204,11 +203,15 @@ for _agent in ${AGENTS:-}; do
   _project_hooks+=("$_hook")
 done
 incus exec "$INSTANCE_NAME" "${PROJ[@]}" -- bash -euo pipefail -s <<'EOS'
-install -d -m 0755 /etc/subyard /usr/local/libexec/subyard
+install -d -m 0755 /etc/subyard /usr/local/libexec/subyard/projects-changed.d
 cat > /usr/local/libexec/subyard/projects-changed <<'DISPATCH'
 #!/usr/bin/env bash
 set -euo pipefail
 status=0
+for hook in /usr/local/libexec/subyard/projects-changed.d/*; do
+  [ -x "$hook" ] || continue
+  "$hook" || status=1
+done
 while IFS= read -r hook; do
   [ -n "$hook" ] || continue
   "$hook" || status=1

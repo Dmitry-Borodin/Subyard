@@ -359,6 +359,7 @@ func productionShellContracts() map[string]shellContract {
 		"config/profiles/openclaw/resources/qa-bot-broker/handler.sh":    {"profile", "config/profiles/openclaw/resources/qa-bot-broker.res", `HANDLER=resources/qa-bot-broker/handler.sh`},
 		"config/profiles/openclaw/resources/staging-gateway/handler.sh":  {"profile", "config/profiles/openclaw/resources/staging-gateway.res", `HANDLER=resources/staging-gateway/handler.sh`},
 		"config/profiles/openclaw/resources/staging-gateway/sy-stage.sh": {"embedded", "config/profiles/openclaw/resources/staging-gateway/handler.sh", `sy-stage.sh`},
+		"config/profiles/orca/resources/orca/handler.sh":                 {"profile", "config/profiles/orca/resources/orca.res", `HANDLER=resources/orca/handler.sh`},
 		"config/profiles/subyard-dev/provision.sh":                       {"profile", "internal/cli/provision.go", `"provision.sh"`},
 	}
 }

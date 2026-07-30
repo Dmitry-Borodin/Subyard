@@ -45,7 +45,7 @@ chmod 755 "$TMP/bin/incus"
 export RESOURCE_TEST_LOG="$TMP/incus.log"
 export RESOURCE_TEST_LEGACY_STOPPED_FILE="$TMP/legacy-stopped"
 
-for command in emu staging qa-pool; do
+for command in emu staging qa-pool orca; do
   output="$("$ROOT/bin/yard" "$command" is-up)"
   [ -z "$output" ] || fail "$command is-up probe was not silent"
 done
@@ -55,7 +55,7 @@ done
 
 RESOURCE_TEST_UP=0
 export RESOURCE_TEST_UP
-for command in emu staging qa-pool; do
+for command in emu staging qa-pool orca; do
   if "$ROOT/bin/yard" "$command" is-up >"$TMP/$command.out" 2>&1; then
     fail "$command probe accepted a down resource"
   fi
@@ -82,6 +82,7 @@ if ! "$ROOT/bin/yard" emu down --yes >"$TMP/emu-down.out" 2>&1; then
 fi
 "$ROOT/bin/yard" staging stop --yes >/dev/null
 "$ROOT/bin/yard" qa-pool down --yes >/dev/null
+"$ROOT/bin/yard" orca down --yes >/dev/null
 grep -Fq 'config device remove' "$RESOURCE_TEST_LOG" || fail 'emulator down did not remove its bridge'
 grep -Fq 'emulator-control.sh stop' "$RESOURCE_TEST_LOG" \
   || fail 'emulator stop did not target its owned process group'
@@ -92,6 +93,8 @@ grep -Fq 'docker exec subyard-staging-canonical' "$RESOURCE_TEST_LOG" \
   || fail 'staging stop did not reach its profile mechanic'
 grep -Fq 'docker stop subyard-qa-broker' "$RESOURCE_TEST_LOG" \
   || fail 'qa-pool down did not reach its profile mechanic'
+grep -Fq 'systemctl disable --now subyard-orca.service' "$RESOURCE_TEST_LOG" \
+  || fail 'Orca down did not reach its profile-owned service'
 
 # Before the controller's first launch, an already-running pre-upgrade emulator remains manageable.
 : > "$RESOURCE_TEST_LOG"

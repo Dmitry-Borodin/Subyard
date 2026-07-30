@@ -49,7 +49,8 @@ runtime.
 Run `yard --help` or `yard <command> --help` for complete command usage.
 See the [control-plane architecture](docs/control-plane.md) for module ownership, stable extension
 contracts, test topology, and the real-host acceptance lane. Paseo Desktop support is available as
-an [opt-in agent package](docs/paseo.md).
+an [opt-in agent package](docs/paseo.md). A pinned
+[Orca remote server](docs/orca.md) is available as an opt-in profile resource.
 
 ## Everyday commands
 

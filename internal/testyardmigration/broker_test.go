@@ -199,6 +199,32 @@ func TestBrokerRuntimeOperationNormalizesRunningLegacyBackend(t *testing.T) {
 	}
 }
 
+func TestBrokerRuntimeOperationAdoptsCanonicalBackendAfterSourceRecovery(t *testing.T) {
+	options, _ := brokerRuntimeFixtureForYard(
+		t,
+		CurrentYard,
+		"RUNNING",
+		"active",
+		"loaded",
+	)
+	current := filepath.Join(options.ConfigHome, "yards", CurrentYard, "config.env")
+	legacy := filepath.Join(options.ConfigHome, "yards", LegacyYard, "config.env")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(current, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := PrepareBrokerRuntime(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != BrokerRuntimeActive {
+		t.Fatalf("adopted canonical broker state = %q, want %q", before, BrokerRuntimeActive)
+	}
+}
+
 func TestBrokerRuntimeOperationKeepsStoppedLegacyServiceInactive(t *testing.T) {
 	options, _ := brokerRuntimeFixtureForYard(
 		t,
@@ -214,6 +240,18 @@ func TestBrokerRuntimeOperationKeepsStoppedLegacyServiceInactive(t *testing.T) {
 	}
 	if before != BrokerRuntimeInactive {
 		t.Fatalf("stopped legacy broker state = %q, want %q", before, BrokerRuntimeInactive)
+	}
+}
+
+func TestBrokerRuntimeOperationTreatsActivatingServiceAsActive(t *testing.T) {
+	options, _ := brokerRuntimeFixture(t, "RUNNING", "activating")
+
+	before, err := PrepareBrokerRuntime(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != BrokerRuntimeActive {
+		t.Fatalf("activating broker state = %q, want %q", before, BrokerRuntimeActive)
 	}
 }
 

@@ -246,32 +246,29 @@ func inspectBrokerRuntime(
 	if err != nil {
 		return brokerRuntime{}, err
 	}
+	projects, err := inspectProjects(ctx, options)
+	if err != nil {
+		return brokerRuntime{}, err
+	}
+	backendYard := yard
+	if yard == LegacyYard && projects.current && !projects.legacy {
+		backendYard = CurrentYard
+	}
 	result := brokerRuntime{
 		state:    BrokerRuntimeInactive,
-		yard:     yard,
+		yard:     backendYard,
 		project:  loaded.Context.IncusProject,
 		instance: loaded.Context.InstanceName,
+	}
+	if backendYard != yard {
+		result.project = "subyard-" + backendYard
+		result.instance = "yard-" + backendYard
 	}
 	if !loaded.Context.NestedE2EVMs {
 		return result, nil
 	}
-	projectsPayload, err := runIncus(ctx, options, "project", "list", "--format=json")
-	if err != nil {
-		return brokerRuntime{}, fmt.Errorf("list projects for test VM broker: %w", err)
-	}
-	var projects []struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(projectsPayload, &projects); err != nil {
-		return brokerRuntime{}, fmt.Errorf("decode projects for test VM broker: %w", err)
-	}
-	projectExists := false
-	for _, project := range projects {
-		if project.Name == result.project {
-			projectExists = true
-			break
-		}
-	}
+	projectExists := backendYard == LegacyYard && projects.legacy ||
+		backendYard == CurrentYard && projects.current
 	if !projectExists {
 		return result, nil
 	}
@@ -340,10 +337,7 @@ func inspectBrokerRuntime(
 		"subyard-test-vms-broker.service",
 	)
 	switch strings.TrimSpace(string(service)) {
-	case "active":
-		if serviceErr != nil {
-			return brokerRuntime{}, fmt.Errorf("inspect test VM broker service: %w", serviceErr)
-		}
+	case "active", "activating", "reloading":
 		result.state = BrokerRuntimeActive
 		return result, nil
 	case "inactive", "failed", "deactivating", "unknown":

@@ -79,6 +79,10 @@ func (store *FileStore) List(ctx context.Context) ([]domain.ProjectRecord, error
 	if lock != nil {
 		defer unlock(lock)
 	}
+	return store.listUnlocked()
+}
+
+func (store *FileStore) listUnlocked() ([]domain.ProjectRecord, error) {
 	entries, err := os.ReadDir(store.directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return []domain.ProjectRecord{}, nil
@@ -132,7 +136,56 @@ func (store *FileStore) Put(ctx context.Context, record domain.ProjectRecord) er
 		return err
 	}
 	defer unlock(lock)
+	if err := store.validateProjectNameUnlocked(record, ""); err != nil {
+		return err
+	}
+	return store.putUnlocked(record)
+}
 
+func (store *FileStore) validateProjectNameUnlocked(
+	record domain.ProjectRecord,
+	ignoredOperation string,
+) error {
+	if !domain.SafeProjectName(record.Name) {
+		return fmt.Errorf("invalid project name %q", record.Name)
+	}
+	records, err := store.listUnlocked()
+	if err != nil {
+		return err
+	}
+	for _, candidate := range records {
+		if candidate.ProjectID == record.ProjectID {
+			continue
+		}
+		if domain.ProjectNamesEqual(candidate.ProjectID, record.Name) ||
+			domain.ProjectNamesEqual(candidate.Name, record.Name) ||
+			domain.ProjectNamesEqual(candidate.Name, record.ProjectID) {
+			return fmt.Errorf(
+				"project name %q conflicts with project %q",
+				record.Name, candidate.ProjectID,
+			)
+		}
+	}
+	reservations, err := store.readReservations(time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	for _, reservation := range reservations {
+		if reservation.OperationID == ignoredOperation {
+			continue
+		}
+		if domain.ProjectNamesEqual(reservation.Name, record.Name) ||
+			domain.ProjectNamesEqual(reservation.Name, record.ProjectID) {
+			return fmt.Errorf(
+				"project name %q conflicts with pending operation %q",
+				record.Name, reservation.OperationID,
+			)
+		}
+	}
+	return nil
+}
+
+func (store *FileStore) putUnlocked(record domain.ProjectRecord) error {
 	temporary, err := os.CreateTemp(store.directory, "."+record.ProjectID+".json.tmp.*")
 	if err != nil {
 		return fmt.Errorf("create state candidate: %w", err)

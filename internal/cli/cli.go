@@ -318,6 +318,11 @@ func (cli *CLI) Run(ctx context.Context) int {
 		}
 	}
 	if projectRun != nil {
+		defer cli.abortProjectExecution(context.Background(), projectRun)
+		if err := cli.reserveRemoteProject(ctx, projectRun); err != nil {
+			cli.errorf("%s: %v", definition.Name, err)
+			return 1
+		}
 		loaded = projectRun.Loaded
 		loadedContext = loaded.Context
 		commandArguments = projectRun.Arguments
@@ -534,6 +539,9 @@ func openProjectStore(ctx context.Context, directory string) (*state.FileStore, 
 		return nil, err
 	}
 	if _, err := store.RepairLegacyPermissions(ctx); err != nil {
+		return nil, err
+	}
+	if _, err := store.MigrateLegacyNames(ctx); err != nil {
 		return nil, err
 	}
 	return store, nil
@@ -1347,11 +1355,27 @@ func (cli *CLI) runProjectState(
 		if !filepath.IsAbs(path) && cli.options.WorkingDir != "" {
 			path = filepath.Join(cli.options.WorkingDir, path)
 		}
-		id, err := state.ProjectID(path)
+		realPath, err := filepath.EvalSymlinks(path)
 		if err != nil {
 			return fail(err)
 		}
-		fmt.Fprintln(cli.options.Stdout, id)
+		realPath, err = filepath.Abs(realPath)
+		if err != nil {
+			return fail(err)
+		}
+		records, err := store.List(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		matches := recordsBySource(records, realPath)
+		if len(matches) != 1 {
+			if len(matches) == 0 {
+				return fail(fmt.Errorf("project path %q is not registered", arguments[0]))
+			}
+			return fail(fmt.Errorf("%w: project path %q has %d records",
+				state.ErrAmbiguous, arguments[0], len(matches)))
+		}
+		fmt.Fprintln(cli.options.Stdout, matches[0].ProjectID)
 	case "yard-path":
 		if len(arguments) != 1 || !domain.SafeID(arguments[0]) {
 			return fail(errors.New("yard-path needs a valid project ID"))
@@ -1361,7 +1385,11 @@ func (cli *CLI) runProjectState(
 		if len(arguments) != 1 || !domain.SafeID(arguments[0]) {
 			return fail(errors.New("device needs a valid project ID"))
 		}
-		fmt.Fprintln(cli.options.Stdout, state.WorkspaceDevice(arguments[0]))
+		record, err := store.Get(ctx, arguments[0])
+		if err != nil {
+			return fail(err)
+		}
+		fmt.Fprintln(cli.options.Stdout, state.WorkspaceDeviceFor(record))
 	case "valid":
 		if len(arguments) != 2 || !validStateValue(arguments[0], arguments[1]) {
 			return 1
@@ -1388,10 +1416,10 @@ func (cli *CLI) runProjectState(
 		}
 		fmt.Fprintf(cli.options.Stdout, "%s\t%s\n", match.Yard, match.Record.ProjectID)
 	case "route-sync":
-		if len(arguments) != 2 || !domain.SafeID(arguments[0]) {
-			return fail(errors.New("route-sync needs a valid project ID and target yard"))
+		if len(arguments) != 2 {
+			return fail(errors.New("route-sync needs a canonical source and target yard"))
 		}
-		target, err := cli.routeSyncProject(ctx, yard, arguments[0], arguments[1])
+		target, err := cli.routeProjectSource(ctx, yard, arguments[0], arguments[1])
 		if err != nil {
 			return fail(err)
 		}
@@ -1726,7 +1754,7 @@ func validStateValue(kind, value string) bool {
 	case "target":
 		return value == "" || value == "yard" || domain.SafeName(value)
 	case "name":
-		return value != "" && !strings.ContainsAny(value, "\n\t")
+		return domain.SafeProjectName(value)
 	default:
 		return false
 	}
@@ -1744,18 +1772,27 @@ func (cli *CLI) resolveLocalProject(
 		}).Resolve(ctx, selector)
 	}
 	path := cli.projectSelectorPath(selector)
-	id, err := state.ProjectID(path)
+	realPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return state.Match{}, err
 	}
-	record, err := store.Get(ctx, id)
-	if errors.Is(err, state.ErrNotFound) {
+	realPath, err = filepath.Abs(realPath)
+	if err != nil {
+		return state.Match{}, err
+	}
+	records, err := store.List(ctx)
+	if err != nil {
+		return state.Match{}, err
+	}
+	matches := recordsBySource(records, realPath)
+	if len(matches) == 0 {
 		return state.Match{}, fmt.Errorf("project path %q is not in yard %s", selector, yard.YardName)
 	}
-	if err != nil {
-		return state.Match{}, err
+	if len(matches) > 1 {
+		return state.Match{}, fmt.Errorf("%w: project path %q has %d records in yard %s",
+			state.ErrAmbiguous, selector, len(matches), yard.YardName)
 	}
-	return state.Match{Yard: yard.YardName, Record: record}, nil
+	return state.Match{Yard: yard.YardName, Record: matches[0]}, nil
 }
 
 func (cli *CLI) projectStores(ctx context.Context, yard domain.Context) (map[string]ports.ProjectStore, error) {
@@ -1795,19 +1832,32 @@ func (cli *CLI) resolveGlobalProject(
 	if !isExplicitProjectPath(selector) {
 		return resolver.Resolve(ctx, selector)
 	}
-	id, err := state.ProjectID(cli.projectSelectorPath(selector))
+	path, err := filepath.EvalSymlinks(cli.projectSelectorPath(selector))
 	if err != nil {
 		return state.Match{}, err
 	}
-	match, err := resolver.Resolve(ctx, id)
-	if errors.Is(err, state.ErrAmbiguous) {
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return state.Match{}, err
+	}
+	matches := make([]state.Match, 0)
+	for yardName, store := range stores {
+		records, listErr := store.List(ctx)
+		if listErr != nil {
+			return state.Match{}, listErr
+		}
+		for _, record := range recordsBySource(records, path) {
+			matches = append(matches, state.Match{Yard: yardName, Record: record})
+		}
+	}
+	if len(matches) > 1 {
 		return state.Match{}, fmt.Errorf("%w: project path %q is registered in multiple yards",
 			state.ErrAmbiguous, selector)
 	}
-	if err != nil {
+	if len(matches) == 0 {
 		return state.Match{}, fmt.Errorf("project path %q is not in any yard", selector)
 	}
-	return match, nil
+	return matches[0], nil
 }
 
 func isExplicitProjectPath(selector string) bool {
@@ -1824,10 +1874,10 @@ func (cli *CLI) projectSelectorPath(selector string) string {
 	return filepath.Join(cli.options.WorkingDir, selector)
 }
 
-func (cli *CLI) routeSyncProject(
+func (cli *CLI) routeProjectSource(
 	ctx context.Context,
 	yard domain.Context,
-	id string,
+	source string,
 	explicitTarget string,
 ) (string, error) {
 	stores, err := cli.projectStores(ctx, yard)
@@ -1848,10 +1898,12 @@ func (cli *CLI) routeSyncProject(
 	}
 	matches := make([]string, 0)
 	for name, store := range stores {
-		if _, err := store.Get(ctx, id); err == nil {
-			matches = append(matches, name)
-		} else if !errors.Is(err, state.ErrNotFound) {
+		records, err := store.List(ctx)
+		if err != nil {
 			return "", err
+		}
+		if len(recordsBySource(records, source)) != 0 {
+			matches = append(matches, name)
 		}
 	}
 	sort.Strings(matches)
@@ -1866,6 +1918,20 @@ func (cli *CLI) routeSyncProject(
 	}
 }
 
+func recordsBySource(
+	records []domain.ProjectRecord,
+	source string,
+) []domain.ProjectRecord {
+	result := make([]domain.ProjectRecord, 0)
+	for _, record := range records {
+		if record.SourceKey == state.SourceKey(source) ||
+			record.SourceKey == "" && record.HostPath == source {
+			result = append(result, record)
+		}
+	}
+	return result
+}
+
 func (cli *CLI) runOwnerProjectState(
 	ctx context.Context,
 	service state.Service,
@@ -1873,18 +1939,111 @@ func (cli *CLI) runOwnerProjectState(
 	arguments []string,
 ) int {
 	if len(arguments) == 0 {
-		cli.errorf("internal: _project-state expects upsert or unregister")
+		cli.errorf("internal: _project-state expects reserve, finalize, abort, upsert, remove or unregister")
 		return 2
 	}
 	switch arguments[0] {
-	case "upsert":
-		if len(arguments) != 5 {
-			cli.errorf("internal: _project-state upsert needs <id> <name> <mode> <target>")
+	case "reserve":
+		if len(arguments) != 6 {
+			cli.errorf("internal: _project-state reserve needs <operation> <source> <mode> <name> <explicit>")
 			return 2
 		}
-		if err := service.UpsertYard(ctx, arguments[1], arguments[2], domain.ProjectMode(arguments[3]),
-			arguments[4], yard.SSHHost); err != nil {
+		store, ok := service.Store.(*state.FileStore)
+		if !ok {
+			cli.errorf("internal: owner project reservation requires the file store")
+			return 1
+		}
+		admission, err := store.Admit(
+			ctx, arguments[1], arguments[2], domain.ProjectMode(arguments[3]),
+			arguments[4], arguments[5] == "1",
+		)
+		if err != nil {
+			cli.errorf("reserve owner project identity: %v", err)
+			return 1
+		}
+		response := map[string]any{
+			"projectId": admission.ProjectID,
+			"name":      admission.Name,
+			"reserved":  admission.Reservation != nil,
+			"existing":  admission.Existing,
+		}
+		if err := json.NewEncoder(cli.options.Stdout).Encode(response); err != nil {
+			cli.errorf("encode owner project reservation: %v", err)
+			return 1
+		}
+	case "finalize":
+		if len(arguments) != 9 {
+			cli.errorf("internal: _project-state finalize needs <operation> <id> <name> <mode> <target> <source> <imported-at> <identity-version>")
+			return 2
+		}
+		store, ok := service.Store.(*state.FileStore)
+		if !ok {
+			cli.errorf("internal: owner project finalize requires the file store")
+			return 1
+		}
+		identityVersion, err := strconv.Atoi(arguments[8])
+		if err != nil {
+			cli.errorf("internal: invalid project identity version")
+			return 2
+		}
+		record := domain.ProjectRecord{
+			Schema: 1, IdentityVersion: identityVersion,
+			ProjectID: arguments[2], Name: arguments[3],
+			Mode: domain.ProjectMode(arguments[4]), Target: arguments[5],
+			HostPath: arguments[6], SourceKey: state.SourceKey(arguments[6]),
+			ImportedAt: arguments[7], YardPath: state.YardPath(arguments[2]),
+			SSHHost: yard.SSHHost,
+		}
+		if record.Target != "" && record.Target != "yard" {
+			record.Profile = record.Target
+		}
+		if err := store.FinalizeOperation(ctx, arguments[1], record); err != nil {
+			cli.errorf("finalize owner project identity: %v", err)
+			return 1
+		}
+	case "abort":
+		if len(arguments) != 2 {
+			cli.errorf("internal: _project-state abort needs <operation>")
+			return 2
+		}
+		store, ok := service.Store.(*state.FileStore)
+		if !ok {
+			cli.errorf("internal: owner project abort requires the file store")
+			return 1
+		}
+		if err := store.AbortAdmission(ctx, arguments[1]); err != nil {
+			cli.errorf("abort owner project identity: %v", err)
+			return 1
+		}
+	case "upsert":
+		if len(arguments) != 5 && len(arguments) != 8 {
+			cli.errorf("internal: _project-state upsert needs <id> <name> <mode> <target> [<source> <imported-at> <identity-version>]")
+			return 2
+		}
+		hostPath, importedAt, identityVersion := "", "", 0
+		if len(arguments) == 8 {
+			hostPath, importedAt = arguments[5], arguments[6]
+			parsedVersion, parseErr := strconv.Atoi(arguments[7])
+			if parseErr != nil {
+				cli.errorf("internal: invalid project identity version")
+				return 2
+			}
+			identityVersion = parsedVersion
+		}
+		if err := service.UpsertProject(
+			ctx, arguments[1], arguments[2], domain.ProjectMode(arguments[3]),
+			arguments[4], yard.SSHHost, hostPath, importedAt, identityVersion,
+		); err != nil {
 			cli.errorf("converge owner project state: %v", err)
+			return 1
+		}
+	case "remove":
+		if len(arguments) != 3 {
+			cli.errorf("internal: _project-state remove needs <id> <source-key>")
+			return 2
+		}
+		if err := service.RemoveProject(ctx, arguments[1], arguments[2]); err != nil {
+			cli.errorf("remove owner project state: %v", err)
 			return 1
 		}
 	case "unregister":
@@ -1897,7 +2056,7 @@ func (cli *CLI) runOwnerProjectState(
 			return 1
 		}
 	default:
-		cli.errorf("internal: _project-state expects upsert or unregister")
+		cli.errorf("internal: _project-state expects reserve, finalize, abort, upsert, remove or unregister")
 		return 2
 	}
 	return 0
@@ -2924,11 +3083,23 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		if definition.Name != "update" && !structuredCommandSupported(definition.Name) {
 			return nil, &rpc.Error{Code: "interactive_or_payload_command", Message: params.Command}
 		}
+		previousOperationID := handler.cli.env["SUBYARD_OPERATION_ID"]
+		handler.cli.env["SUBYARD_OPERATION_ID"] = call.OperationID
 		project, err := handler.cli.prepareProjectExecution(
 			ctx, handler.loaded, definition, params.Arguments, true,
 		)
+		handler.cli.env["SUBYARD_OPERATION_ID"] = previousOperationID
 		if err != nil {
 			return nil, &rpc.Error{Code: "invalid_params", Message: err.Error()}
+		}
+		keepProjectReservation := false
+		defer func() {
+			if !keepProjectReservation {
+				handler.cli.abortProjectExecution(context.Background(), project)
+			}
+		}()
+		if err := handler.cli.reserveRemoteProject(ctx, project); err != nil {
+			return nil, &rpc.Error{Code: "project_reservation_failed", Message: err.Error()}
 		}
 		loaded := handler.loaded
 		arguments := append([]string(nil), params.Arguments...)
@@ -3027,6 +3198,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 			TestVMs: testVMRun, Teardown: teardownRun, Release: releaseRun,
 		}
 		handler.plansMu.Unlock()
+		keepProjectReservation = true
 		return plan, nil
 	case "operation.execute":
 		var params struct {
@@ -3047,6 +3219,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		if !ok {
 			return nil, &rpc.Error{Code: "plan_not_found", Message: call.OperationID}
 		}
+		defer handler.cli.abortProjectExecution(context.Background(), planned.Project)
 		if planned.Plan.Target == domain.TargetRemoteOwner {
 			return nil, &rpc.Error{Code: "remote_owner_required", Message: "execute this plan through owner-host SSH stdio"}
 		}

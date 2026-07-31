@@ -123,6 +123,10 @@ type ProjectObserver interface {
 	Observe(context.Context, domain.Context, []domain.ProjectRecord, bool) (domain.ProjectObservation, error)
 }
 
+type ProjectMetadataConverger interface {
+	ConvergeMetadata(context.Context, domain.Context, []domain.ProjectRecord) error
+}
+
 type StatusFactsReader interface {
 	ReadStatusFacts(context.Context, domain.Context, bool) (domain.StatusFacts, error)
 }

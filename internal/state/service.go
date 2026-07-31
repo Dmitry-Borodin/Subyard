@@ -67,23 +67,90 @@ func (service Service) UpsertYard(
 	target string,
 	sshHost string,
 ) error {
-	if strings.ContainsAny(name, "\n\t") || name == "" {
+	return service.UpsertProject(ctx, id, name, mode, target, sshHost, "", "", 0)
+}
+
+func (service Service) UpsertObserved(
+	ctx context.Context,
+	record domain.ProjectRecord,
+	sshHost string,
+) error {
+	if store, ok := service.Store.(*FileStore); ok {
+		return store.ConvergeObserved(ctx, record, sshHost)
+	}
+	if _, err := service.Store.Get(ctx, record.ProjectID); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	return service.UpsertProject(
+		ctx, record.ProjectID, record.Name, record.Mode, record.Target,
+		sshHost, "", record.ImportedAt, record.IdentityVersion,
+	)
+}
+
+func (service Service) UpsertProject(
+	ctx context.Context,
+	id string,
+	name string,
+	mode domain.ProjectMode,
+	target string,
+	sshHost string,
+	hostPath string,
+	importedAt string,
+	identityVersion int,
+) error {
+	if !domain.SafeProjectName(name) {
 		return errors.New("invalid project name")
+	}
+	records, err := service.Store.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range records {
+		if candidate.ProjectID == id {
+			continue
+		}
+		if domain.ProjectNamesEqual(candidate.Name, name) ||
+			domain.ProjectNamesEqual(candidate.ProjectID, name) ||
+			domain.ProjectNamesEqual(candidate.Name, id) {
+			return fmt.Errorf("project name %q conflicts with project %q", name, candidate.ProjectID)
+		}
 	}
 	record, err := service.Store.Get(ctx, id)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	if errors.Is(err, ErrNotFound) {
+	isNew := errors.Is(err, ErrNotFound)
+	if isNew {
 		record = domain.ProjectRecord{
 			Schema: 1, ProjectID: id, HostPath: "", RegistrySource: "yard",
 		}
+	} else if record.Name != name {
+		return fmt.Errorf(
+			"owner project %q is already named %q; refusing stale rename to %q",
+			id, record.Name, name,
+		)
 	}
 	record.Name = name
+	if identityVersion != 0 {
+		record.IdentityVersion = identityVersion
+	}
 	record.Mode = mode
 	record.Target = target
+	record.Profile = ""
+	if target != "" && target != "yard" {
+		record.Profile = target
+	}
 	record.YardPath = YardPath(id)
 	record.SSHHost = sshHost
+	if hostPath != "" {
+		record.HostPath = hostPath
+		record.SourceKey = SourceKey(hostPath)
+	}
+	if importedAt != "" {
+		record.ImportedAt = importedAt
+	}
 	if record.HostPath == "" {
 		record.RegistrySource = "yard"
 	} else {
@@ -102,6 +169,27 @@ func (service Service) UnregisterYard(ctx context.Context, id string) error {
 	}
 	if record.HostPath != "" {
 		return nil
+	}
+	return service.Store.Delete(ctx, id)
+}
+
+func (service Service) RemoveProject(ctx context.Context, id, sourceKey string) error {
+	if len(sourceKey) != 64 || strings.Trim(sourceKey, "0123456789abcdef") != "" {
+		return errors.New("valid project source key is required")
+	}
+	record, err := service.Store.Get(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	recordSourceKey := record.SourceKey
+	if recordSourceKey == "" && record.HostPath != "" {
+		recordSourceKey = SourceKey(record.HostPath)
+	}
+	if recordSourceKey != sourceKey {
+		return errors.New("project source changed before owner removal")
 	}
 	return service.Store.Delete(ctx, id)
 }
@@ -135,24 +223,9 @@ func Field(record domain.ProjectRecord, name string) (string, error) {
 
 func YardPath(id string) string { return filepath.Join("/srv/workspaces", id, "src") }
 
-func ProjectID(path string) (string, error) {
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", err
-	}
-	realPath, err = filepath.Abs(realPath)
-	if err != nil {
-		return "", err
-	}
-	base := strings.Map(func(char rune) rune {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-' {
-			return char
-		}
-		return '-'
-	}, filepath.Base(realPath))
-	digest := sha256.Sum256([]byte(realPath))
-	return fmt.Sprintf("%s-%x", base, digest[:4]), nil
+func SourceKey(source string) string {
+	digest := sha256.Sum256([]byte(source))
+	return fmt.Sprintf("%x", digest[:])
 }
 
 func WorkspaceDevice(id string) string {
@@ -163,4 +236,50 @@ func WorkspaceDevice(id string) string {
 		}
 		return '-'
 	}, id)
+}
+
+func TechnicalID(id string) string {
+	var result strings.Builder
+	for index := 0; index < len(id); index++ {
+		value := id[index]
+		if value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+			value >= '0' && value <= '9' || value == '-' {
+			result.WriteByte(value)
+			continue
+		}
+		fmt.Fprintf(&result, "_%02x", value)
+	}
+	return result.String()
+}
+
+func DockerImageID(id string) string {
+	var result strings.Builder
+	result.WriteByte('p')
+	for index := 0; index < len(id); index++ {
+		value := id[index]
+		if value >= 'a' && value <= 'z' || value >= '0' && value <= '9' {
+			result.WriteByte(value)
+			continue
+		}
+		fmt.Fprintf(&result, "_%02x", value)
+	}
+	return result.String()
+}
+
+func ProjectTechnicalID(record domain.ProjectRecord) string {
+	if record.IdentityVersion == 2 {
+		return TechnicalID(record.ProjectID)
+	}
+	return strings.TrimPrefix(WorkspaceDevice(record.ProjectID), "ws-")
+}
+
+func ProjectDockerImageID(record domain.ProjectRecord) string {
+	if record.IdentityVersion == 2 {
+		return DockerImageID(record.ProjectID)
+	}
+	return record.ProjectID
+}
+
+func WorkspaceDeviceFor(record domain.ProjectRecord) string {
+	return "ws-" + ProjectTechnicalID(record)
 }

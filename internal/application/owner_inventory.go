@@ -63,7 +63,9 @@ func (builder OwnerInventoryBuilder) Read(ctx context.Context) (domain.OwnerInve
 		}
 		for _, record := range records {
 			entry.Projects = append(entry.Projects, domain.OwnerProject{
-				ProjectID: record.ProjectID, Name: record.Name, Mode: string(record.Mode), Target: record.Target,
+				ProjectID: record.ProjectID, IdentityVersion: record.IdentityVersion,
+				Name: record.Name, Mode: string(record.Mode), Target: record.Target,
+				SourceKey: record.SourceKey,
 			})
 		}
 		sort.Slice(entry.Projects, func(i, j int) bool {

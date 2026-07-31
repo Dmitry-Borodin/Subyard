@@ -15,7 +15,9 @@ exposes the workflow through one `yard` CLI.
 
 `yard sync` copies a project into yard-owned storage. `yard bind` may instead
 mount any host directory explicitly; the CLI warns because this weakens the
-yard's encapsulation.
+yard's encapsulation. A new project's safe name is also its ID and workspace
+directory; basename collisions become `Name-2`, `Name-3`, and so on. Use
+`--name NAME` with `sync`, `bind`, or `clone` to choose an explicit name.
 
 ## Quick start
 

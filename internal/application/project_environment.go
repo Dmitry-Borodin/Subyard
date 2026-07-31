@@ -12,6 +12,7 @@ import (
 
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/state"
 )
 
 type ProjectEnvironmentProfile struct {
@@ -69,7 +70,8 @@ func (runner ProjectEnvironmentRunner) Run(
 }
 
 func (runner ProjectEnvironmentRunner) run(ctx context.Context, action string, protected io.Reader) (string, error) {
-	box := "subyard-box-" + runner.Project.ProjectID
+	technicalID := state.ProjectTechnicalID(runner.Project)
+	box := "subyard-box-" + technicalID
 	manifest := "/srv/env-meta/" + runner.Project.ProjectID + "/profile.json"
 	switch action {
 	case "down":
@@ -126,7 +128,7 @@ func (runner ProjectEnvironmentRunner) up(
 
 	image := runner.Profile.Image
 	if image == "" {
-		image = "subyard-env-" + runner.Project.ProjectID
+		image = "subyard-env-" + state.ProjectDockerImageID(runner.Project)
 	}
 	if runner.Profile.Dockerfile == "" {
 		image = runner.Profile.BaseImage
@@ -162,7 +164,7 @@ func (runner ProjectEnvironmentRunner) up(
 		return "", fmt.Errorf("stage project environment manifest: %w", err)
 	}
 
-	arguments := []string{"docker", "run", "-d", "--name", box, "--hostname", "box-" + runner.Project.ProjectID,
+	arguments := []string{"docker", "run", "-d", "--name", box,
 		"--restart", "unless-stopped", "--label", "subyard.env=1", "--label", "subyard.project=" + runner.Project.ProjectID,
 		"--label", "subyard.profile=" + runner.Project.Target, "-v", runner.Project.YardPath + ":/workspace", "-w", "/workspace"}
 	for _, cache := range runner.Profile.Caches {

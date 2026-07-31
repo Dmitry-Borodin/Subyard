@@ -11,6 +11,8 @@ import (
 	"github.com/Subyard/Subyard/internal/state"
 )
 
+const projectNameMigrationID = "normalize-project-names"
+
 type Report struct {
 	SchemaVersion          int      `json:"schemaVersion"`
 	ProjectStateSchema     int      `json:"projectStateSchema"`
@@ -37,8 +39,7 @@ func Check(
 }
 
 // Apply performs registered, backwards-compatible repairs before validating
-// every store. It currently tightens project records created by the legacy
-// shell writer to mode 0600; schema and payload compatibility remain fail-closed.
+// every store.
 func Apply(
 	ctx context.Context,
 	projectDirectories []string,
@@ -76,6 +77,25 @@ func run(
 				return Report{}, err
 			}
 			report.Changed = report.Changed || changed
+			changed, err = store.MigrateLegacyNames(ctx)
+			if err != nil {
+				return Report{}, err
+			}
+			report.Changed = report.Changed || changed
+		} else {
+			pending, err := store.LegacyNameMigrationPending(ctx)
+			if err != nil {
+				return Report{}, err
+			}
+			if pending {
+				report.Pending = true
+				if !contains(report.RequiredMigrations, projectNameMigrationID) {
+					report.RequiredMigrations = append(
+						report.RequiredMigrations, projectNameMigrationID,
+					)
+				}
+				report.AffectedResources = append(report.AffectedResources, directory)
+			}
 		}
 		if _, err := store.List(ctx); err != nil {
 			return Report{}, err
@@ -90,6 +110,15 @@ func run(
 		report.CredentialRevisions = len(metadata)
 	}
 	return report, nil
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func uniquePaths(paths []string) []string {

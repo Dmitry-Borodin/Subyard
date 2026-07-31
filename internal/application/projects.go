@@ -39,8 +39,7 @@ func (inventory ProjectInventory) Read(
 	if live {
 		service := state.Service{Store: inventory.Store}
 		for _, discovered := range observation.Live {
-			if err := service.UpsertYard(ctx, discovered.ProjectID, discovered.Name, discovered.Mode,
-				discovered.Target, yard.SSHHost); err != nil {
+			if err := service.UpsertObserved(ctx, discovered, yard.SSHHost); err != nil {
 				observation.Warnings = append(observation.Warnings,
 					fmt.Sprintf("ignored invalid yard project metadata: %v", err))
 			}
@@ -48,6 +47,14 @@ func (inventory ProjectInventory) Read(
 		records, err = inventory.Store.List(ctx)
 		if err != nil {
 			return nil, domain.ProjectObservation{}, err
+		}
+		if converger, ok := inventory.Observer.(ports.ProjectMetadataConverger); ok {
+			if convergeErr := converger.ConvergeMetadata(ctx, yard, records); convergeErr != nil {
+				observation.Warnings = append(
+					observation.Warnings,
+					fmt.Sprintf("project metadata convergence is pending: %v", convergeErr),
+				)
+			}
 		}
 	}
 	return records, observation, nil

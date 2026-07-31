@@ -167,7 +167,10 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 	uri := "vscode-remote://ssh-remote+" + runner.Project.SSHHost + workspace
 	message := ""
 	if runner.Project.Target != "" && runner.Project.Target != "yard" {
-		message = fmt.Sprintf("attach Dev Containers to subyard-box-%s at /workspace\n", runner.Project.ProjectID)
+		message = fmt.Sprintf(
+			"attach Dev Containers to subyard-box-%s at /workspace\n",
+			state.ProjectTechnicalID(runner.Project),
+		)
 	}
 	if runner.VSCode == nil {
 		return message + "VS Code CLI is unavailable; open manually:\n  code --file-uri " + uri + "\n", nil
@@ -284,14 +287,19 @@ func (runner ProjectActionRunner) clone(ctx context.Context) error {
 func (runner ProjectActionRunner) writeMetadata(ctx context.Context) error {
 	dev := uint32(runner.Yard.DevUID)
 	metadata, err := json.Marshal(struct {
-		Schema     int                `json:"schema"`
-		ProjectID  string             `json:"projectId"`
-		Name       string             `json:"name"`
-		Mode       domain.ProjectMode `json:"mode"`
-		Target     string             `json:"target,omitempty"`
-		ImportedAt string             `json:"importedAt,omitempty"`
-	}{1, runner.Project.ProjectID, runner.Project.Name, runner.Project.Mode,
-		runner.Project.Target, runner.Project.ImportedAt})
+		Schema          int                `json:"schema"`
+		IdentityVersion int                `json:"identityVersion,omitempty"`
+		Yard            string             `json:"yard,omitempty"`
+		ProjectID       string             `json:"projectId"`
+		Name            string             `json:"name"`
+		Mode            domain.ProjectMode `json:"mode"`
+		Target          string             `json:"target,omitempty"`
+		ImportedAt      string             `json:"importedAt,omitempty"`
+	}{
+		1, runner.Project.IdentityVersion, runner.Yard.YardName,
+		runner.Project.ProjectID, runner.Project.Name, runner.Project.Mode,
+		runner.Project.Target, runner.Project.ImportedAt,
+	})
 	if err != nil {
 		return err
 	}
@@ -354,7 +362,7 @@ func (runner ProjectActionRunner) bind(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	device := state.WorkspaceDevice(runner.Project.ProjectID)
+	device := state.WorkspaceDeviceFor(runner.Project)
 	changed, err := runner.Devices.EnsureDiskDevice(ctx, runner.Yard.IncusProject,
 		runner.Yard.InstanceName, device, runner.Project.HostPath, runner.Project.YardPath)
 	if err != nil {
@@ -391,7 +399,7 @@ func (runner ProjectActionRunner) remove(ctx context.Context) error {
 			return errors.New("Incus device manager is required for bind removal")
 		}
 		_, err := runner.Devices.RemoveDevice(ctx, runner.Yard.IncusProject,
-			runner.Yard.InstanceName, state.WorkspaceDevice(runner.Project.ProjectID))
+			runner.Yard.InstanceName, state.WorkspaceDeviceFor(runner.Project))
 		return err
 	}
 	if runner.SoftRemove {
@@ -406,7 +414,7 @@ func (runner ProjectActionRunner) removeEnvironment(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	box := "subyard-box-" + runner.Project.ProjectID
+	box := "subyard-box-" + state.ProjectTechnicalID(runner.Project)
 	if _, err := runner.Data.Execute(ctx, runner.Yard, ports.InstanceExecRequest{
 		Command: []string{"docker", "inspect", box},
 	}); err == nil {

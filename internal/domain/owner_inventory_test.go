@@ -31,4 +31,23 @@ func TestOwnerInventoryValidationRejectsIdentityCollisions(t *testing.T) {
 	if err := duplicateProject.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate project") {
 		t.Fatalf("duplicate project accepted: %v", err)
 	}
+	duplicateName := base
+	duplicateName.Yards = append([]OwnerYard(nil), base.Yards...)
+	duplicateName.Yards[0].Projects = append(
+		append([]OwnerProject(nil), base.Yards[0].Projects...),
+		OwnerProject{ProjectID: "p-2", Name: "demo", Mode: "git", Target: "yard"},
+	)
+	if err := duplicateName.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "duplicate project name") {
+		t.Fatalf("duplicate project name accepted: %v", err)
+	}
+	shadowedID := base
+	shadowedID.Yards = append([]OwnerYard(nil), base.Yards...)
+	shadowedID.Yards[0].Projects = append(
+		append([]OwnerProject(nil), base.Yards[0].Projects...),
+		OwnerProject{ProjectID: "Demo", Name: "Other", Mode: "git", Target: "yard"},
+	)
+	if err := shadowedID.Validate(); err == nil || !strings.Contains(err.Error(), "shadows") {
+		t.Fatalf("foreign project ID shadow accepted: %v", err)
+	}
 }

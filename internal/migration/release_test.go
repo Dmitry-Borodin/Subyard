@@ -95,6 +95,75 @@ func TestReleaseMigrationPrepareCommitRollbackAndRollForward(t *testing.T) {
 	assertFileContents(t, destination, "TOKEN=legacy\n")
 }
 
+func TestCleanupRetainsRolledBackTransactionAcrossOlderRuntimePair(t *testing.T) {
+	options, _, _ := releaseMigrationFixture(t)
+	olderRepository := filepath.Join(
+		options.RuntimeRoot,
+		"releases",
+		"1.0.0-test-release",
+	)
+	olderRegistryPath := filepath.Join(olderRepository, "config", "migrations.json")
+	if err := os.MkdirAll(filepath.Dir(olderRegistryPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRegistryFixture(t, olderRegistryPath, Registry{
+		SchemaVersion: 1,
+		MinimumLayout: 1,
+		CurrentLayout: 1,
+	})
+
+	if _, err := ApplyRelease(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	activateFixtureRelease(t, options)
+	if changed, err := FinalizeActive(context.Background(), options); err != nil || !changed {
+		t.Fatalf("finalize: changed=%v err=%v", changed, err)
+	}
+	if _, err := RollbackRelease(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	swapFixtureRuntimeLinks(t, options.RuntimeRoot)
+
+	olderOptions := options
+	olderOptions.RegistryPath = olderRegistryPath
+	olderOptions.RepositoryRoot = olderRepository
+	olderOptions.Version = "1.0.0-test"
+	if removed, err := CleanupRelease(olderOptions); err != nil || removed != 0 {
+		t.Fatalf("cleanup retained rollback pair: removed=%d err=%v", removed, err)
+	}
+	if _, err := os.Stat(filepath.Join(
+		transactionDirectory(options.ConfigHome, options.Version),
+		"transaction.json",
+	)); err != nil {
+		t.Fatalf("cleanup removed the retained rollback transaction: %v", err)
+	}
+}
+
+func TestReleaseCheckKeepsProjectAndRegistryMigrations(t *testing.T) {
+	options, _, _ := releaseMigrationFixture(t)
+	projects := filepath.Join(t.TempDir(), "projects")
+	writeMigrationFixture(
+		t, filepath.Join(projects, "legacy-a.json"),
+		`{"schema":1,"projectId":"legacy-a","name":"Demo","hostPath":"/one/Demo","yardPath":"/srv/workspaces/legacy-a/src","mode":"sync","sshHost":"yard"}`+"\n",
+	)
+	writeMigrationFixture(
+		t, filepath.Join(projects, "legacy-b.json"),
+		`{"schema":1,"projectId":"legacy-b","name":"demo","hostPath":"/two/Demo","yardPath":"/srv/workspaces/legacy-b/src","mode":"sync","sshHost":"yard"}`+"\n",
+	)
+	options.ProjectDirectories = []string{projects}
+	report, err := CheckRelease(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Pending ||
+		!slices.Contains(report.RequiredMigrations, projectNameMigrationID) ||
+		!slices.Contains(report.RequiredMigrations, "move-legacy-assignments") ||
+		!slices.Contains(report.AffectedResources, projects) ||
+		!slices.Contains(report.AffectedResources, "fixture-assignments") {
+		t.Fatalf("release check dropped a required migration: %#v", report)
+	}
+}
+
 func TestReleaseMigrationResumesInterruptedPrepare(t *testing.T) {
 	options, source, destination := releaseMigrationFixture(t)
 	registry, err := LoadRegistry(options.RegistryPath)

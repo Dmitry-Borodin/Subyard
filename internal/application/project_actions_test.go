@@ -95,8 +95,10 @@ func (stub projectArchiveStub) Open(context.Context, string) (io.ReadCloser, err
 func TestProjectCloneOwnsSequenceAndMetadata(t *testing.T) {
 	data := &projectDataStub{}
 	runner := ProjectActionRunner{
-		Data:    data,
-		Yard:    domain.Context{YardType: domain.YardLocal, DevUser: "dev", DevUID: 1000},
+		Data: data,
+		Yard: domain.Context{
+			YardName: "default", YardType: domain.YardLocal, DevUser: "dev", DevUID: 1000,
+		},
 		Project: cloneRecord(),
 	}
 	result, _, err := runner.Run(context.Background(), domain.AdapterRequest{
@@ -111,7 +113,8 @@ func TestProjectCloneOwnsSequenceAndMetadata(t *testing.T) {
 	}
 	var metadata map[string]any
 	if err := json.Unmarshal(data.requests[3].Stdin, &metadata); err != nil ||
-		metadata["projectId"] != cloneRecord().ProjectID || metadata["target"] != "openclaw" {
+		metadata["projectId"] != cloneRecord().ProjectID || metadata["target"] != "openclaw" ||
+		metadata["yard"] != "default" {
 		t.Fatalf("invalid portable metadata: %q err=%v", data.requests[3].Stdin, err)
 	}
 }

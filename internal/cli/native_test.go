@@ -1393,7 +1393,10 @@ func TestProjectAdaptersReceiveGoResolvedSnapshotAndGoCommitsState(t *testing.T)
 	}
 	if execution.Commit != projectCommitPut || execution.Environment["SUBYARD_PROJECT_SNAPSHOT"] != "1" ||
 		execution.Environment["SUBYARD_PROJECT_HOST_PATH"] != projectPath ||
-		execution.Environment["SUBYARD_PROJECT_YARD_PATH"] != state.YardPath(execution.Record.ProjectID) {
+		execution.Environment["SUBYARD_PROJECT_YARD_PATH"] != state.YardPath(execution.Record.ProjectID) ||
+		execution.Record.ProjectID != "Demo" || execution.Record.Name != "Demo" ||
+		execution.Record.IdentityVersion != 2 || execution.Reservation == nil ||
+		execution.OperationID != execution.Reservation.OperationID {
 		t.Fatalf("unexpected project adapter snapshot: %#v", execution)
 	}
 	store, err := state.NewFileStore(stateDirectory)
@@ -1409,6 +1412,119 @@ func TestProjectAdaptersReceiveGoResolvedSnapshotAndGoCommitsState(t *testing.T)
 	record, err := store.Get(context.Background(), execution.Record.ProjectID)
 	if err != nil || record.HostPath != projectPath || record.Target != "yard" {
 		t.Fatalf("Go did not publish the adapter result atomically: %#v %v", record, err)
+	}
+	secondPath := filepath.Join(root, "other", "Demo")
+	if err := os.MkdirAll(secondPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	program.env["SUBYARD_OPERATION_ID"] = "op-second"
+	second, err := program.prepareProjectImport(
+		context.Background(), loaded, "sync", []string{secondPath, "--target", "yard"},
+	)
+	if err != nil || second.Record.ProjectID != "Demo-2" ||
+		second.Record.YardPath != state.YardPath("Demo-2") ||
+		second.OperationID != "op-second" {
+		t.Fatalf("second basename admission = %#v, %v", second, err)
+	}
+	program.abortProjectExecution(context.Background(), second)
+	program.env["SUBYARD_OPERATION_ID"] = "op-explicit"
+	if _, err := program.prepareProjectImport(
+		context.Background(), loaded, "sync",
+		[]string{secondPath, "--name", "Demo", "--target", "yard"},
+	); err == nil {
+		t.Fatal("explicit colliding project name was accepted")
+	}
+}
+
+func TestProjectParsersRejectEmptyExplicitName(t *testing.T) {
+	if _, _, _, _, err := parseProjectImportArguments([]string{"--name="}); err == nil {
+		t.Fatal("import accepted an empty explicit project name")
+	}
+	if _, _, _, _, _, err := parseProjectCloneArguments(
+		[]string{"https://example.invalid/demo.git", "--name="},
+	); err == nil {
+		t.Fatal("clone accepted an empty explicit project name")
+	}
+}
+
+func TestProjectImportAndCloneAllocateSameBasenameInEitherOrder(t *testing.T) {
+	for _, first := range []string{"bind", "clone"} {
+		t.Run(first+"-first", func(t *testing.T) {
+			root, environment, _ := nativeFixture(t)
+			projectPath := filepath.Join(root, "sources", "Demo")
+			if err := os.MkdirAll(projectPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			program, err := New(Options{
+				RepositoryRoot: root, Program: "yard",
+				Environment: environment, WorkingDir: root,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := program.loadContext("default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			program.env["SUBYARD_OPERATION_ID"] = "op-first"
+			var firstRun *projectExecution
+			if first == "bind" {
+				firstRun, err = program.prepareProjectImport(
+					context.Background(), loaded, "bind", []string{projectPath},
+				)
+			} else {
+				firstRun, err = program.prepareProjectClone(
+					context.Background(), loaded,
+					[]string{"https://example.invalid/Demo.git"},
+				)
+			}
+			if err != nil || firstRun.Record.ProjectID != "Demo" {
+				t.Fatalf("first admission = %#v, %v", firstRun, err)
+			}
+			if err := program.commitProjectExecution(context.Background(), firstRun); err != nil {
+				t.Fatal(err)
+			}
+
+			program.env["SUBYARD_OPERATION_ID"] = "op-second"
+			var secondRun *projectExecution
+			if first == "bind" {
+				secondRun, err = program.prepareProjectClone(
+					context.Background(), loaded,
+					[]string{"https://example.invalid/Demo.git"},
+				)
+			} else {
+				secondRun, err = program.prepareProjectImport(
+					context.Background(), loaded, "bind", []string{projectPath},
+				)
+			}
+			if err != nil || secondRun.Record.ProjectID != "Demo-2" {
+				t.Fatalf("second admission = %#v, %v", secondRun, err)
+			}
+			if err := program.commitProjectExecution(context.Background(), secondRun); err != nil {
+				t.Fatal(err)
+			}
+
+			thirdPath := filepath.Join(root, "third", "Demo")
+			if err := os.MkdirAll(thirdPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			program.env["SUBYARD_OPERATION_ID"] = "op-third"
+			thirdRun, err := program.prepareProjectImport(
+				context.Background(), loaded, "sync", []string{thirdPath},
+			)
+			if err != nil || thirdRun.Record.ProjectID != "Demo-3" {
+				t.Fatalf("third admission = %#v, %v", thirdRun, err)
+			}
+			program.abortProjectExecution(context.Background(), thirdRun)
+
+			program.env["SUBYARD_OPERATION_ID"] = "op-repeat"
+			if _, err := program.prepareProjectClone(
+				context.Background(), loaded,
+				[]string{"https://example.invalid/Demo.git"},
+			); err == nil || !strings.Contains(err.Error(), "already in the yard") {
+				t.Fatalf("repeat clone = %v", err)
+			}
+		})
 	}
 }
 
@@ -1443,7 +1559,7 @@ func TestBindAcceptsExplicitPathAndPlansExposure(t *testing.T) {
 }
 
 func TestProjectSelectionRoutesAcrossYardsBeforeAdapter(t *testing.T) {
-	root, environment, _ := nativeFixture(t)
+	root, environment, stateDirectory := nativeFixture(t)
 	configHome := ""
 	for _, pair := range environment {
 		if strings.HasPrefix(pair, "SUBYARD_CONFIG_HOME=") {
@@ -1492,6 +1608,38 @@ func TestProjectSelectionRoutesAcrossYardsBeforeAdapter(t *testing.T) {
 		execution.Environment["SUBYARD_PROJECT_SSH_HOST"] != "yard-other" {
 		t.Fatalf("project was not routed before adapter launch: %#v", execution)
 	}
+	if selected, err := program.routeProjectSource(
+		context.Background(), loaded.Context, "/host/Unknown", "",
+	); err != nil || selected != "default" {
+		t.Fatalf("zero source matches routed to %q: %v", selected, err)
+	}
+	if selected, err := program.routeProjectSource(
+		context.Background(), loaded.Context, record.HostPath, "",
+	); err != nil || selected != "other" {
+		t.Fatalf("one source match routed to %q: %v", selected, err)
+	}
+	defaultStore, err := state.NewFileStore(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultRecord := record
+	defaultRecord.ProjectID = "default-demo"
+	defaultRecord.Name = "DefaultDemo"
+	defaultRecord.YardPath = state.YardPath(defaultRecord.ProjectID)
+	defaultRecord.SSHHost = "yard"
+	if err := defaultStore.Put(context.Background(), defaultRecord); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := program.routeProjectSource(
+		context.Background(), loaded.Context, record.HostPath, "",
+	); err == nil || !strings.Contains(err.Error(), "default other") {
+		t.Fatalf("multiple source matches were not rejected: %v", err)
+	}
+	if selected, err := program.routeProjectSource(
+		context.Background(), loaded.Context, record.HostPath, "other",
+	); err != nil || selected != "other" {
+		t.Fatalf("explicit source route = %q, %v", selected, err)
+	}
 }
 
 func TestProjectSelectorsDoNotLetBareNamesBeShadowedByHostPaths(t *testing.T) {
@@ -1500,10 +1648,7 @@ func TestProjectSelectorsDoNotLetBareNamesBeShadowedByHostPaths(t *testing.T) {
 	if err := os.MkdirAll(collidingPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	pathID, err := state.ProjectID(collidingPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pathID := "LegacySource"
 	store, err := state.NewFileStore(stateDirectory)
 	if err != nil {
 		t.Fatal(err)

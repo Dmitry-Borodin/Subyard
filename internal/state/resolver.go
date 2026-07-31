@@ -46,7 +46,7 @@ func (resolver Resolver) resolveAcross(ctx context.Context, selector string) (Ma
 			if record.ProjectID == selector {
 				exact = append(exact, match)
 			}
-			if strings.EqualFold(record.Name, selector) {
+			if domain.ProjectNamesEqual(record.Name, selector) {
 				named = append(named, match)
 			}
 		}
@@ -71,7 +71,7 @@ func resolveOne(ctx context.Context, yard string, store ports.ProjectStore, sele
 	}
 	matches := make([]Match, 0)
 	for _, record := range records {
-		if strings.EqualFold(record.Name, selector) {
+		if domain.ProjectNamesEqual(record.Name, selector) {
 			matches = append(matches, Match{Yard: yard, Record: record})
 		}
 	}

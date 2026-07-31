@@ -175,6 +175,44 @@ func (runtime Runtime) Observe(
 	return result, nil
 }
 
+func (runtime Runtime) ConvergeMetadata(
+	ctx context.Context,
+	yard domain.Context,
+	records []domain.ProjectRecord,
+) error {
+	var failures []error
+	for _, record := range records {
+		payload, err := json.Marshal(struct {
+			Schema          int                `json:"schema"`
+			IdentityVersion int                `json:"identityVersion,omitempty"`
+			Yard            string             `json:"yard"`
+			ProjectID       string             `json:"projectId"`
+			Name            string             `json:"name"`
+			Mode            domain.ProjectMode `json:"mode"`
+			Target          string             `json:"target,omitempty"`
+			ImportedAt      string             `json:"importedAt,omitempty"`
+		}{
+			1, record.IdentityVersion, yard.YardName, record.ProjectID,
+			record.Name, record.Mode, record.Target, record.ImportedAt,
+		})
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", record.ProjectID, err))
+			continue
+		}
+		request := ports.InstanceExecRequest{
+			Command: []string{
+				"tee", filepath.Join(filepath.Dir(record.YardPath), ".subyard-meta.json"),
+			},
+			Stdin: append(payload, '\n'),
+			User:  uint32(yard.DevUID), Group: uint32(yard.DevUID),
+		}
+		if _, err := runtime.Execute(ctx, yard, request); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", record.ProjectID, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
 func observeProjects(
 	ctx context.Context,
 	executor ports.InstanceExecutor,
@@ -238,11 +276,13 @@ func parseMetadata(payload []byte) ([]domain.ProjectRecord, []string) {
 	var warnings []string
 	for {
 		var wire struct {
-			Schema    int                `json:"schema"`
-			ProjectID string             `json:"projectId"`
-			Name      string             `json:"name"`
-			Mode      domain.ProjectMode `json:"mode"`
-			Target    string             `json:"target"`
+			Schema          int                `json:"schema"`
+			IdentityVersion int                `json:"identityVersion"`
+			ProjectID       string             `json:"projectId"`
+			Name            string             `json:"name"`
+			Mode            domain.ProjectMode `json:"mode"`
+			Target          string             `json:"target"`
+			ImportedAt      string             `json:"importedAt"`
 		}
 		if err := decoder.Decode(&wire); err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -251,8 +291,10 @@ func parseMetadata(payload []byte) ([]domain.ProjectRecord, []string) {
 			break
 		}
 		record := domain.ProjectRecord{
-			Schema: 1, ProjectID: wire.ProjectID, Name: wire.Name, Mode: wire.Mode,
+			Schema: 1, IdentityVersion: wire.IdentityVersion,
+			ProjectID: wire.ProjectID, Name: wire.Name, Mode: wire.Mode,
 			YardPath: "/srv/workspaces/" + wire.ProjectID + "/src", SSHHost: "yard", Target: wire.Target,
+			ImportedAt: wire.ImportedAt,
 		}
 		if wire.Schema != 1 || record.Validate(record.ProjectID) != nil {
 			warnings = append(warnings, "ignored invalid yard project metadata")

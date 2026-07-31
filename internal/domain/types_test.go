@@ -31,3 +31,14 @@ func TestContextRejectsUnsafeBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectNamePolicy(t *testing.T) {
+	if !SafeProjectName("Demo_2.0") || SafeProjectName("-Demo") ||
+		SafeProjectName("Демо") || SafeProjectName("123456789012345678901234567890123456789012345678901") {
+		t.Fatal("project name safety policy changed")
+	}
+	if !ProjectNamesEqual("Demo", "demo") ||
+		ProjectNameKey("Demo") != ProjectNameKey("demo") {
+		t.Fatal("project name equivalence policy changed")
+	}
+}

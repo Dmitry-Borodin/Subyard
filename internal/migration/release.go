@@ -867,10 +867,31 @@ func CleanupRelease(options ReleaseOptions) (int, error) {
 		if transactionDirectory(options.ConfigHome, old.ToRelease) != path {
 			return removed, errors.New("retained migration transaction directory has an invalid identity")
 		}
-		if err := validateTransaction(oldOptions, registry, old); err != nil {
+		transactionRegistry := registry
+		retainedRollbackPair := old.Phase == "rolled-back" &&
+			old.ToRuntime == previousTarget && old.FromRuntime == currentTarget
+		if retainedRollbackPair {
+			if !safeReleaseIdentity(previousTarget) {
+				return removed, errors.New("previous runtime target is unsafe")
+			}
+			transactionRegistry, err = LoadRegistry(filepath.Join(
+				options.RuntimeRoot,
+				previousTarget,
+				"config",
+				"migrations.json",
+			))
+			if err != nil {
+				return removed, fmt.Errorf(
+					"load retained rollback runtime migration registry: %w",
+					err,
+				)
+			}
+		}
+		if err := validateTransaction(oldOptions, transactionRegistry, old); err != nil {
 			return removed, err
 		}
-		if old.ToRuntime == currentTarget && old.FromRuntime == previousTarget {
+		if old.ToRuntime == currentTarget && old.FromRuntime == previousTarget ||
+			retainedRollbackPair {
 			continue
 		}
 		if old.Phase != "committed" && old.Phase != "rolled-back" {
@@ -952,10 +973,10 @@ func enrichReport(
 ) {
 	report.Layout = state.Layout
 	report.TargetLayout = registry.CurrentLayout
-	report.RequiredMigrations = report.RequiredMigrations[:0]
-	report.AffectedResources = report.AffectedResources[:0]
 	for _, definition := range path {
-		report.RequiredMigrations = append(report.RequiredMigrations, definition.ID)
+		if !slices.Contains(report.RequiredMigrations, definition.ID) {
+			report.RequiredMigrations = append(report.RequiredMigrations, definition.ID)
+		}
 		for _, resource := range definition.Resources {
 			if !slices.Contains(report.AffectedResources, resource) {
 				report.AffectedResources = append(report.AffectedResources, resource)
@@ -964,7 +985,8 @@ func enrichReport(
 	}
 	if tx != nil {
 		report.Phase = tx.Phase
-		report.Pending = tx.Phase == "preparing" || tx.Phase == "prepared" || tx.Phase == "committing"
+		report.Pending = report.Pending ||
+			tx.Phase == "preparing" || tx.Phase == "prepared" || tx.Phase == "committing"
 	}
 }
 

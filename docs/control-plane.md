@@ -119,12 +119,22 @@ cancellation.
 The native `internal/state` store is the only project-state implementation. Project state is one
 owner-only JSON file per project ID. Schema 1 requires typed identity, name,
 host/yard paths, mode, and SSH host; target/profile and yard-origin markers are optional compatible
-fields. Reads reject corrupt JSON, filename/identity mismatch, invalid targets, and unknown schema
-versions. Writes use a mode-0600 candidate in the same directory, validate it, then atomically
-rename it over the prior record. When a store is opened, valid owner-owned schema-1 records whose
-mode matches the original Bash writer's `0666 & umask` output are tightened in place to `0600`
-through a no-follow file descriptor; symlinks, malformed records and anomalous modes remain
-fail-closed. The same repair is registered in `_migrate apply` for release upgrades.
+fields. New records use identity version 2: the canonical safe name is also the project ID and the
+workspace is `/srv/workspaces/<name>/src`. Name admission is case-insensitive and serialized by
+durable operation reservations; automatic basename collisions receive `-2`, `-3`, and so on, while
+an explicit `--name` collision fails before physical mutation. Existing project IDs and workspace
+paths are never renamed. A source fingerprint is stored separately for repeat admission and path
+routing; it is not part of project identity. Reads reject corrupt JSON, filename/identity mismatch,
+invalid targets, and unknown schema versions. Writes use a mode-0600 candidate in the same
+directory, validate it, then atomically rename it over the prior record. When a store is opened,
+valid owner-owned schema-1 records whose mode matches the original Bash writer's `0666 & umask`
+output are tightened in place to `0600` through a no-follow file descriptor; symlinks, malformed
+records and anomalous modes remain fail-closed. The same repair is registered in `_migrate apply`
+for release upgrades.
+Store open also converges legacy duplicate display names deterministically without changing their
+IDs or paths. Incus and Docker consumers derive collision-free technical names with byte-wise
+`_hh` escaping; Docker image suffixes add a leading `p` and escape uppercase and punctuation so
+the repository name stays lowercase-safe. These encodings are not project identities or selectors.
 
 ### Release migrations
 

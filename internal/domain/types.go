@@ -142,17 +142,19 @@ const (
 )
 
 type ProjectRecord struct {
-	Schema         int         `json:"schema"`
-	ProjectID      string      `json:"projectId"`
-	Name           string      `json:"name"`
-	HostPath       string      `json:"hostPath"`
-	YardPath       string      `json:"yardPath"`
-	Mode           ProjectMode `json:"mode"`
-	SSHHost        string      `json:"sshHost"`
-	ImportedAt     string      `json:"importedAt,omitempty"`
-	Target         string      `json:"target,omitempty"`
-	Profile        string      `json:"profile,omitempty"`
-	RegistrySource string      `json:"registrySource,omitempty"`
+	Schema          int         `json:"schema"`
+	IdentityVersion int         `json:"identityVersion,omitempty"`
+	ProjectID       string      `json:"projectId"`
+	Name            string      `json:"name"`
+	HostPath        string      `json:"hostPath"`
+	SourceKey       string      `json:"sourceKey,omitempty"`
+	YardPath        string      `json:"yardPath"`
+	Mode            ProjectMode `json:"mode"`
+	SSHHost         string      `json:"sshHost"`
+	ImportedAt      string      `json:"importedAt,omitempty"`
+	Target          string      `json:"target,omitempty"`
+	Profile         string      `json:"profile,omitempty"`
+	RegistrySource  string      `json:"registrySource,omitempty"`
 }
 
 func (record ProjectRecord) Validate(expectedID string) error {
@@ -162,11 +164,28 @@ func (record ProjectRecord) Validate(expectedID string) error {
 	if !SafeID(record.ProjectID) {
 		return fmt.Errorf("invalid project ID %q", record.ProjectID)
 	}
+	if record.IdentityVersion != 0 && record.IdentityVersion != 2 {
+		return fmt.Errorf("unsupported project identity version %d", record.IdentityVersion)
+	}
+	if record.IdentityVersion == 2 &&
+		(record.ProjectID != record.Name || !SafeProjectName(record.Name)) {
+		return errors.New("canonical project identity requires ProjectID == Name and a safe name")
+	}
 	if expectedID != "" && record.ProjectID != expectedID {
 		return fmt.Errorf("project ID %q does not match filename %q", record.ProjectID, expectedID)
 	}
 	if record.Name == "" || record.YardPath == "" || record.SSHHost == "" {
 		return errors.New("project name, yard path and SSH host are required")
+	}
+	if record.SourceKey != "" {
+		if len(record.SourceKey) != 64 {
+			return errors.New("project source key must be a SHA-256 hex digest")
+		}
+		for _, character := range record.SourceKey {
+			if !strings.ContainsRune("0123456789abcdef", character) {
+				return errors.New("project source key must be a SHA-256 hex digest")
+			}
+		}
 	}
 	expectedPath := filepath.Join("/srv/workspaces", record.ProjectID, "src")
 	if record.YardPath != expectedPath {
@@ -198,6 +217,18 @@ func SafeID(value string) bool {
 		}
 	}
 	return true
+}
+
+func SafeProjectName(value string) bool {
+	return len(value) <= 50 && SafeID(value)
+}
+
+func ProjectNameKey(value string) string {
+	return strings.ToLower(value)
+}
+
+func ProjectNamesEqual(left, right string) bool {
+	return ProjectNameKey(left) == ProjectNameKey(right)
 }
 
 func SafeName(value string) bool {

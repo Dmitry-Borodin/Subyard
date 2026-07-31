@@ -415,7 +415,7 @@ func printOwnerCompletions(output io.Writer, results []ownerInventoryResult, kin
 		for _, yard := range result.inventory.Yards {
 			yardCounts[yard.Name]++
 			for _, project := range yard.Projects {
-				projectCounts[strings.ToLower(project.Name)]++
+				projectCounts[domain.ProjectNameKey(project.Name)]++
 			}
 		}
 	}
@@ -433,7 +433,7 @@ func printOwnerCompletions(output io.Writer, results []ownerInventoryResult, kin
 				values[canonicalProjectSelector(
 					project.Name, yard.Name, result.inventory.HostID,
 				)] = struct{}{}
-				if projectCounts[strings.ToLower(project.Name)] == 1 {
+				if projectCounts[domain.ProjectNameKey(project.Name)] == 1 {
 					values[project.Name] = struct{}{}
 				}
 			}
@@ -459,7 +459,7 @@ func canonicalProjectSelector(project, yard, hostID string) string {
 func projectSelectorMatches(selector, project, yard, hostID string, fold bool) bool {
 	equal := func(left, right string) bool {
 		if fold {
-			return strings.EqualFold(left, right)
+			return domain.ProjectNamesEqual(left, right)
 		}
 		return left == right
 	}
@@ -568,9 +568,11 @@ func (cli *CLI) resolveOwnerProject(
 	}
 	if errors.Is(err, state.ErrNotFound) {
 		record = domain.ProjectRecord{
-			Schema: 1, ProjectID: selected.project.ProjectID, Name: selected.project.Name,
-			YardPath: state.YardPath(selected.project.ProjectID),
-			Mode:     domain.ProjectMode(selected.project.Mode), SSHHost: contextValue.SSHHost,
+			Schema: 1, IdentityVersion: selected.project.IdentityVersion,
+			ProjectID: selected.project.ProjectID, Name: selected.project.Name,
+			SourceKey: selected.project.SourceKey,
+			YardPath:  state.YardPath(selected.project.ProjectID),
+			Mode:      domain.ProjectMode(selected.project.Mode), SSHHost: contextValue.SSHHost,
 			Target: selected.project.Target, RegistrySource: "yard",
 		}
 	}

@@ -27,6 +27,13 @@ fi
 if [[ "$joined" == *'_project-state'* ]]; then
   printf '%s\n' "$joined" >> "$REGISTRY_TEST_STATE/owner-calls"
   [ ! -e "$REGISTRY_TEST_STATE/fail-owner" ]
+  if [[ "$joined" == *reserve* && "$joined" == *RemoteDemo* ]]; then
+    printf '%s\n' '{"projectId":"RemoteDemo","name":"RemoteDemo","reserved":true}'
+  elif [[ "$joined" == *reserve* && "$joined" == *StaleDemo* ]]; then
+    printf '%s\n' '{"projectId":"StaleDemo-3","name":"StaleDemo-3","reserved":true}'
+  elif [[ "$joined" == *reserve* && "$joined" == *ForeignClone* ]]; then
+    printf '%s\n' '{"projectId":"ForeignClone","name":"ForeignClone","reserved":true}'
+  fi
   exit
 fi
 if [[ "$joined" == *'.subyard-meta.json'* ]] && [[ "$joined" == *"'tee'"* || "$joined" == *'cat >'* ]]; then
@@ -78,10 +85,17 @@ assert_json "$owner_state" \
    (has("registrySource") | not)'
 "$ROOT/bin/yard" _project-state unregister "$owner_id"
 [ -e "$owner_state" ] || fail 'foreign unregister removed a full owner-local record'
+wrong_source_key="$(printf %s /wrong/source | sha256sum | cut -d' ' -f1)"
+if "$ROOT/bin/yard" _project-state remove "$owner_id" "$wrong_source_key" >/dev/null 2>&1; then
+  fail 'owner removal accepted a mismatched source'
+fi
+[ -e "$owner_state" ] || fail 'mismatched owner removal changed project state'
+owner_source_key="$(printf %s /owner/Demo | sha256sum | cut -d' ' -f1)"
+"$ROOT/bin/yard" _project-state remove "$owner_id" "$owner_source_key"
+[ ! -e "$owner_state" ] || fail 'matching owner removal retained project state'
 
 # Synthetic records are removed symmetrically, and validation cannot escape the state directory.
-jq '.hostPath="" | .registrySource="yard"' "$owner_state" > "$owner_state.tmp" \
-  && chmod 600 "$owner_state.tmp" && mv "$owner_state.tmp" "$owner_state"
+"$ROOT/bin/yard" _project-state upsert "$owner_id" Demo sync yard
 "$ROOT/bin/yard" _project-state unregister "$owner_id"
 [ ! -e "$owner_state" ] || fail 'foreign unregister kept its synthetic owner record'
 if "$ROOT/bin/yard" _project-state upsert ../escape Bad sync yard >/dev/null 2>&1; then
@@ -120,7 +134,7 @@ SSH_PORT=2222
 ENV
 mkdir -p "$TMP/projects/RemoteDemo"
 printf 'demo\n' > "$TMP/projects/RemoteDemo/file.txt"
-remote_id="$(basename "$TMP/projects/RemoteDemo")-$(printf '%s' "$(realpath "$TMP/projects/RemoteDemo")" | sha256sum | cut -c1-8)"
+remote_id=RemoteDemo
 "$ROOT/bin/yard" -Y remote sync "$TMP/projects/RemoteDemo" --target yard --yes >/dev/null
 remote_state="$SUBYARD_CONFIG_HOME/yards/remote/projects/$remote_id.json"
 [ ! -e "$remote_state" ] || fail 'native sync published obsolete controller project state'
@@ -133,9 +147,31 @@ rm -f "$REGISTRY_TEST_STATE/tar-stream"
 "$ROOT/bin/yard" -Y remote sync "$TMP/projects/RemoteDemo" --target yard --yes >/dev/null
 [ -e "$REGISTRY_TEST_STATE/tar-stream" ] || fail 'native sync refresh did not stream the project archive'
 
+# A stale controller allocation is discarded before planning; the owner-returned
+# identity drives the physical operation and metadata on the first attempt.
+stale_controller_state="$SUBYARD_CONFIG_HOME/yards/remote/projects/StaleDemo.json"
+jq -n '{
+  schema:1, identityVersion:2, projectId:"StaleDemo", name:"StaleDemo",
+  hostPath:"/stale/controller/StaleDemo", sourceKey:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  yardPath:"/srv/workspaces/StaleDemo/src", mode:"sync", sshHost:"yard-remote",
+  importedAt:"2026-01-01T00:00:00Z", target:"yard"
+}' > "$stale_controller_state"
+chmod 0600 "$stale_controller_state"
+mkdir -p "$TMP/other/StaleDemo"
+printf 'stale\n' > "$TMP/other/StaleDemo/file.txt"
+"$ROOT/bin/yard" -Y remote sync "$TMP/other/StaleDemo" --target yard --yes >/dev/null
+if ! jq -e '.projectId == "StaleDemo-3" and .name == "StaleDemo-3" and
+  .target == "yard"' \
+  "$REGISTRY_TEST_STATE/yard-meta.json" >/dev/null; then
+  sed -n '1,20p' "$REGISTRY_TEST_STATE/yard-meta.json" >&2
+  fail 'remote sync did not use the owner-returned canonical identity'
+fi
+[ ! -e "$SUBYARD_CONFIG_HOME/yards/remote/projects/StaleDemo-3.json" ] \
+  || fail 'remote sync published owner identity into controller project state'
+
 # Native remote clone owns the data-plane sequence and then converges both registries.
 : > "$REGISTRY_TEST_STATE/owner-calls"
-clone_id="ForeignClone-$(printf '%s' https://example.invalid/repo.git | sha256sum | cut -c1-8)"
+clone_id=ForeignClone
 "$ROOT/bin/yard" -Y remote clone https://example.invalid/repo.git ForeignClone \
   --target openclaw --yes >/dev/null
 clone_state="$SUBYARD_CONFIG_HOME/yards/remote/projects/$clone_id.json"

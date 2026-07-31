@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,7 +16,7 @@ import (
 	"github.com/Subyard/Subyard/internal/command"
 	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/domain"
-	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/shellquote"
 	"github.com/Subyard/Subyard/internal/state"
 )
 
@@ -27,15 +29,20 @@ const (
 )
 
 type projectExecution struct {
-	Loaded      config.Loaded
-	Arguments   []string
-	Environment map[string]string
-	Record      domain.ProjectRecord
-	Store       ports.ProjectStore
-	Commit      projectCommit
-	Profile     application.ProjectEnvironmentProfile
-	SecretPath  string
-	HostLinks   []string
+	Loaded         config.Loaded
+	Arguments      []string
+	Environment    map[string]string
+	Record         domain.ProjectRecord
+	Store          *state.FileStore
+	Commit         projectCommit
+	Profile        application.ProjectEnvironmentProfile
+	SecretPath     string
+	HostLinks      []string
+	Reservation    *state.ProjectReservation
+	OperationID    string
+	ExplicitName   bool
+	RequestedName  string
+	RemoteReserved bool
 }
 
 func (cli *CLI) prepareProjectExecution(
@@ -96,7 +103,7 @@ func (cli *CLI) prepareProjectImport(
 	name string,
 	arguments []string,
 ) (*projectExecution, error) {
-	path, requestedTarget, targetYard, err := parseProjectImportArguments(arguments)
+	path, requestedTarget, targetYard, requestedName, err := parseProjectImportArguments(arguments)
 	if err != nil {
 		return nil, err
 	}
@@ -119,11 +126,17 @@ func (cli *CLI) prepareProjectImport(
 	if err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("not a directory: %s", path)
 	}
-	id, err := state.ProjectID(hostPath)
-	if err != nil {
-		return nil, err
+	projectName := filepath.Base(hostPath)
+	explicitName := requestedName != ""
+	if explicitName {
+		projectName = requestedName
 	}
-	selected, err := cli.routeSyncProject(ctx, loaded.Context, id, targetYard)
+	if !domain.SafeProjectName(projectName) {
+		return nil, fmt.Errorf(
+			"invalid project name %q; choose a safe name with --name", projectName,
+		)
+	}
+	selected, err := cli.routeProjectSource(ctx, loaded.Context, hostPath, targetYard)
 	if err != nil {
 		return nil, err
 	}
@@ -138,30 +151,39 @@ func (cli *CLI) prepareProjectImport(
 	if err != nil {
 		return nil, err
 	}
-	existing, getErr := store.Get(ctx, id)
-	exists := getErr == nil
-	if getErr != nil && !errors.Is(getErr, state.ErrNotFound) {
-		return nil, getErr
-	}
 	mode := domain.ProjectMode(name)
-	if exists && existing.Mode != mode {
-		return nil, fmt.Errorf("%q is already in the yard as %q; remove it before re-adding as %s",
-			filepath.Base(hostPath), existing.Mode, name)
+	operationID := cli.projectOperationID()
+	admission, err := store.Admit(
+		ctx, operationID, hostPath, mode, projectName, explicitName,
+	)
+	if err != nil {
+		return nil, err
 	}
+	exists := admission.Existing != nil
 	target := requestedTarget
 	if target == "" && exists {
-		target = existing.Target
+		target = admission.Existing.Target
 	}
 	if target == "" {
 		target = "yard"
 	}
 	if err := validateProjectTarget(cli.options.RepositoryRoot, target); err != nil {
+		if admission.Reservation != nil {
+			_ = store.AbortAdmission(ctx, admission.Reservation.OperationID)
+		}
 		return nil, err
 	}
 	record := domain.ProjectRecord{
-		Schema: 1, ProjectID: id, Name: filepath.Base(hostPath), HostPath: hostPath,
-		YardPath: state.YardPath(id), Mode: mode, SSHHost: selectedLoaded.Context.SSHHost,
+		Schema: 1, IdentityVersion: 2, ProjectID: admission.ProjectID, Name: admission.Name,
+		HostPath: hostPath, SourceKey: state.SourceKey(hostPath),
+		YardPath: state.YardPath(admission.ProjectID),
+		Mode:     mode, SSHHost: selectedLoaded.Context.SSHHost,
 		ImportedAt: time.Now().UTC().Format(time.RFC3339), Target: target,
+	}
+	if exists {
+		record.IdentityVersion = admission.Existing.IdentityVersion
+		record.ImportedAt = admission.Existing.ImportedAt
+		record.RegistrySource = admission.Existing.RegistrySource
 	}
 	if target != "yard" {
 		record.Profile = target
@@ -169,6 +191,8 @@ func (cli *CLI) prepareProjectImport(
 	return &projectExecution{
 		Loaded: selectedLoaded, Arguments: arguments, Environment: projectSnapshot(record, exists),
 		Record: record, Store: store, Commit: projectCommitPut,
+		Reservation: admission.Reservation, OperationID: operationID,
+		ExplicitName: explicitName, RequestedName: projectName,
 	}, nil
 }
 
@@ -177,23 +201,17 @@ func (cli *CLI) prepareProjectClone(
 	loaded config.Loaded,
 	arguments []string,
 ) (*projectExecution, error) {
-	url, name, target, targetYard, err := parseProjectCloneArguments(arguments)
+	url, name, target, targetYard, explicitName, err := parseProjectCloneArguments(arguments)
 	if err != nil {
 		return nil, err
 	}
 	if name == "" {
 		name = strings.TrimSuffix(filepath.Base(url), ".git")
 	}
-	safeName := strings.Map(func(char rune) rune {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-' {
-			return char
-		}
-		return '-'
-	}, name)
-	digest := sha256.Sum256([]byte(url))
-	id := fmt.Sprintf("%s-%x", safeName, digest[:4])
-	selected, err := cli.routeSyncProject(ctx, loaded.Context, id, targetYard)
+	if !domain.SafeProjectName(name) {
+		return nil, fmt.Errorf("invalid project name %q; choose a safe name with --name", name)
+	}
+	selected, err := cli.routeProjectSource(ctx, loaded.Context, url, targetYard)
 	if err != nil {
 		return nil, err
 	}
@@ -205,17 +223,27 @@ func (cli *CLI) prepareProjectClone(
 	if err != nil {
 		return nil, err
 	}
-	if _, err := store.Get(ctx, id); err == nil {
-		return nil, fmt.Errorf("%q is already in the yard (id %s); remove it first", name, id)
-	} else if !errors.Is(err, state.ErrNotFound) {
-		return nil, err
-	}
 	if err := validateProjectTarget(cli.options.RepositoryRoot, target); err != nil {
 		return nil, err
 	}
+	operationID := cli.projectOperationID()
+	admission, err := store.Admit(
+		ctx, operationID, url, domain.ProjectGit, name, explicitName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if admission.Existing != nil {
+		return nil, fmt.Errorf(
+			"%q is already in the yard (id %s); remove it first",
+			admission.Existing.Name, admission.Existing.ProjectID,
+		)
+	}
 	record := domain.ProjectRecord{
-		Schema: 1, ProjectID: id, Name: name, HostPath: url, YardPath: state.YardPath(id),
-		Mode: domain.ProjectGit, SSHHost: selectedLoaded.Context.SSHHost,
+		Schema: 1, IdentityVersion: 2, ProjectID: admission.ProjectID, Name: admission.Name,
+		HostPath: url, SourceKey: state.SourceKey(url),
+		YardPath: state.YardPath(admission.ProjectID),
+		Mode:     domain.ProjectGit, SSHHost: selectedLoaded.Context.SSHHost,
 		ImportedAt: time.Now().UTC().Format(time.RFC3339), Target: target,
 	}
 	if target != "yard" {
@@ -224,7 +252,16 @@ func (cli *CLI) prepareProjectClone(
 	return &projectExecution{
 		Loaded: selectedLoaded, Arguments: arguments, Environment: projectSnapshot(record, false),
 		Record: record, Store: store, Commit: projectCommitPut,
+		Reservation: admission.Reservation, OperationID: operationID,
+		ExplicitName: explicitName, RequestedName: name,
 	}, nil
+}
+
+func (cli *CLI) projectOperationID() string {
+	if cli.env["SUBYARD_OPERATION_ID"] == "" {
+		cli.env["SUBYARD_OPERATION_ID"] = newOperationID()
+	}
+	return cli.env["SUBYARD_OPERATION_ID"]
 }
 
 func (cli *CLI) prepareExistingProject(
@@ -415,18 +452,40 @@ func (cli *CLI) commitProjectExecution(ctx context.Context, execution *projectEx
 		return nil
 	case projectCommitPut:
 		if execution.Loaded.Context.YardType == domain.YardRemote {
-			if code := cli.forwardRemote(ctx, execution.Loaded.Context, "_project-state", []string{
-				"upsert", execution.Record.ProjectID, execution.Record.Name,
+			action := "upsert"
+			arguments := []string{
+				action, execution.Record.ProjectID, execution.Record.Name,
 				string(execution.Record.Mode), execution.Record.Target,
-			}); code != 0 {
+				execution.Record.HostPath, execution.Record.ImportedAt,
+				fmt.Sprint(execution.Record.IdentityVersion),
+			}
+			if execution.RemoteReserved {
+				arguments[0] = "finalize"
+				arguments = append(
+					[]string{"finalize", execution.OperationID},
+					arguments[1:]...,
+				)
+			}
+			if _, err := cli.remoteProjectStateCall(
+				ctx, execution.Loaded.Context, arguments,
+			); err != nil {
 				return errors.New("physical operation completed, but owner project state was not updated; re-run the command")
 			}
+			execution.RemoteReserved = false
 			if err := cli.invalidateOwnerInventory(execution.Loaded); err != nil {
 				return fmt.Errorf("owner state updated, but inventory invalidation failed: %w", err)
 			}
 			if err := execution.Store.Delete(ctx, execution.Record.ProjectID); err != nil &&
 				!errors.Is(err, state.ErrNotFound) {
 				return fmt.Errorf("owner state updated, but obsolete controller state cleanup failed: %w", err)
+			}
+			if execution.Reservation != nil {
+				if err := execution.Store.AbortAdmission(
+					ctx, execution.Reservation.OperationID,
+				); err != nil {
+					return fmt.Errorf("owner state updated, but controller reservation cleanup failed: %w", err)
+				}
+				execution.Reservation = nil
 			}
 			if err := cli.cleanupObsoleteRemoteProjectState(
 				ctx, execution.Loaded, execution.Record.ProjectID,
@@ -435,11 +494,26 @@ func (cli *CLI) commitProjectExecution(ctx context.Context, execution *projectEx
 			}
 			return nil
 		}
+		if execution.Reservation != nil {
+			if err := execution.Store.FinalizeOperation(
+				ctx, execution.Reservation.OperationID, execution.Record,
+			); err != nil {
+				return err
+			}
+			execution.Reservation = nil
+			return nil
+		}
 		return execution.Store.Put(ctx, execution.Record)
 	case projectCommitDelete:
 		if execution.Loaded.Context.YardType == domain.YardRemote {
+			sourceKey := execution.Record.SourceKey
+			if sourceKey == "" && execution.Record.HostPath != "" {
+				sourceKey = state.SourceKey(execution.Record.HostPath)
+			}
 			if code := cli.forwardRemote(ctx, execution.Loaded.Context, "_project-state",
-				[]string{"unregister", execution.Record.ProjectID}); code != 0 {
+				[]string{
+					"remove", execution.Record.ProjectID, sourceKey,
+				}); code != 0 {
 				return errors.New("physical removal completed, but owner project state was not updated; re-run the command")
 			}
 			if err := cli.invalidateOwnerInventory(execution.Loaded); err != nil {
@@ -462,6 +536,131 @@ func (cli *CLI) commitProjectExecution(ctx context.Context, execution *projectEx
 	}
 }
 
+func (cli *CLI) abortProjectExecution(ctx context.Context, execution *projectExecution) {
+	if execution == nil {
+		return
+	}
+	if execution.RemoteReserved {
+		_, _ = cli.remoteProjectStateCall(
+			ctx, execution.Loaded.Context,
+			[]string{"abort", execution.OperationID},
+		)
+		execution.RemoteReserved = false
+	}
+	if execution.Reservation != nil && execution.Store != nil {
+		_ = execution.Store.AbortAdmission(ctx, execution.Reservation.OperationID)
+		execution.Reservation = nil
+	}
+}
+
+func (cli *CLI) reserveRemoteProject(
+	ctx context.Context,
+	execution *projectExecution,
+) error {
+	if execution == nil || execution.Commit != projectCommitPut ||
+		execution.Loaded.Context.YardType != domain.YardRemote {
+		return nil
+	}
+	explicit := "0"
+	if execution.ExplicitName {
+		explicit = "1"
+	}
+	output, err := cli.remoteProjectStateCall(ctx, execution.Loaded.Context, []string{
+		"reserve", execution.OperationID, execution.Record.HostPath,
+		string(execution.Record.Mode), execution.RequestedName, explicit,
+	})
+	if err != nil {
+		return fmt.Errorf("reserve project identity on owner: %w", err)
+	}
+	var response struct {
+		ProjectID string                `json:"projectId"`
+		Name      string                `json:"name"`
+		Reserved  bool                  `json:"reserved"`
+		Existing  *domain.ProjectRecord `json:"existing"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(output), &response); err != nil {
+		return fmt.Errorf("decode owner project reservation: %w", err)
+	}
+	if response.Existing == nil && !response.Reserved {
+		return errors.New("owner returned neither an existing project nor a reservation")
+	}
+	if response.Existing != nil {
+		if err := response.Existing.Validate(response.ProjectID); err != nil ||
+			response.Existing.ProjectID != response.ProjectID ||
+			response.Existing.Name != response.Name {
+			if err == nil {
+				err = errors.New("owner project identity does not match its admission")
+			}
+			return fmt.Errorf("validate owner project admission: %w", err)
+		}
+		if response.Existing.Mode != execution.Record.Mode {
+			return errors.New("owner project admission returned a different mode")
+		}
+		execution.Record.IdentityVersion = response.Existing.IdentityVersion
+		execution.Record.ImportedAt = response.Existing.ImportedAt
+		execution.Record.RegistrySource = response.Existing.RegistrySource
+	} else if !domain.SafeProjectName(response.ProjectID) ||
+		response.ProjectID != response.Name {
+		_, _ = cli.remoteProjectStateCall(ctx, execution.Loaded.Context, []string{
+			"abort", execution.OperationID,
+		})
+		return errors.New("owner returned an invalid canonical project identity")
+	} else {
+		execution.Record.IdentityVersion = 2
+	}
+	if execution.Reservation != nil {
+		if err := execution.Store.AbortAdmission(
+			ctx, execution.Reservation.OperationID,
+		); err != nil {
+			if response.Reserved {
+				_, _ = cli.remoteProjectStateCall(ctx, execution.Loaded.Context, []string{
+					"abort", execution.OperationID,
+				})
+			}
+			return fmt.Errorf("release controller project reservation: %w", err)
+		}
+		execution.Reservation = nil
+	}
+	execution.Record.ProjectID = response.ProjectID
+	execution.Record.Name = response.Name
+	execution.Record.YardPath = state.YardPath(response.ProjectID)
+	execution.Environment = projectSnapshot(
+		execution.Record, response.Existing != nil,
+	)
+	execution.RemoteReserved = response.Reserved
+	return nil
+}
+
+func (cli *CLI) remoteProjectStateCall(
+	ctx context.Context,
+	yard domain.Context,
+	arguments []string,
+) ([]byte, error) {
+	remote := []string{"yard"}
+	if yard.RemoteYard != "" {
+		remote = append(remote, "-Y", yard.RemoteYard)
+	}
+	remote = append(remote, "_project-state")
+	remote = append(remote, arguments...)
+	parts := make([]string, len(remote))
+	for index, argument := range remote {
+		parts[index] = shellquote.Word(argument)
+	}
+	line := "SUBYARD_OPERATION_ID=" + shellquote.Word(cli.env["SUBYARD_OPERATION_ID"]) +
+		" " + strings.Join(parts, " ")
+	command := exec.CommandContext(
+		ctx, "ssh", "-T", yard.RemoteDest, "--", "bash", "-lc", shellquote.Word(line),
+	)
+	command.Dir = cli.options.WorkingDir
+	command.Env = environmentList(cli.env, nil)
+	command.Stderr = cli.options.Stderr
+	output, err := command.Output()
+	if err != nil {
+		return nil, err
+	}
+	return output, nil
+}
+
 func projectSnapshot(record domain.ProjectRecord, exists bool) map[string]string {
 	existsValue := "0"
 	if exists {
@@ -477,42 +676,14 @@ func projectSnapshot(record domain.ProjectRecord, exists bool) map[string]string
 		"SUBYARD_PROJECT_SSH_HOST":  record.SSHHost,
 		"SUBYARD_PROJECT_TARGET":    record.Target,
 		"SUBYARD_PROJECT_PROFILE":   record.Profile,
-		"SUBYARD_PROJECT_DEVICE":    state.WorkspaceDevice(record.ProjectID),
+		"SUBYARD_PROJECT_DEVICE":    state.WorkspaceDeviceFor(record),
 		"SUBYARD_PROJECT_EXISTS":    existsValue,
 	}
 }
 
-func parseProjectImportArguments(arguments []string) (path, target, yard string, err error) {
+func parseProjectImportArguments(arguments []string) (path, target, yard, name string, err error) {
 	path = "."
 	positional := false
-	for index := 0; index < len(arguments); index++ {
-		argument := arguments[index]
-		switch {
-		case argument == "-y" || argument == "--yes":
-		case argument == "--target":
-			index++
-			if index >= len(arguments) {
-				return "", "", "", errors.New("--target needs yard or a profile")
-			}
-			target = arguments[index]
-		case strings.HasPrefix(argument, "--target="):
-			target = strings.TrimPrefix(argument, "--target=")
-		case strings.HasPrefix(argument, "@") && len(argument) > 1:
-			yard = strings.TrimPrefix(argument, "@")
-		case strings.HasPrefix(argument, "-"):
-			return "", "", "", fmt.Errorf("unknown option %q", argument)
-		default:
-			if positional {
-				return "", "", "", errors.New("only one project path may be selected")
-			}
-			path, positional = argument, true
-		}
-	}
-	return path, target, yard, nil
-}
-
-func parseProjectCloneArguments(arguments []string) (url, name, target, yard string, err error) {
-	target = "yard"
 	for index := 0; index < len(arguments); index++ {
 		argument := arguments[index]
 		switch {
@@ -525,22 +696,80 @@ func parseProjectCloneArguments(arguments []string) (url, name, target, yard str
 			target = arguments[index]
 		case strings.HasPrefix(argument, "--target="):
 			target = strings.TrimPrefix(argument, "--target=")
+		case argument == "--name":
+			index++
+			if index >= len(arguments) {
+				return "", "", "", "", errors.New("--name needs a project name")
+			}
+			name = arguments[index]
+			if name == "" {
+				return "", "", "", "", errors.New("--name needs a project name")
+			}
+		case strings.HasPrefix(argument, "--name="):
+			name = strings.TrimPrefix(argument, "--name=")
+			if name == "" {
+				return "", "", "", "", errors.New("--name needs a project name")
+			}
 		case strings.HasPrefix(argument, "@") && len(argument) > 1:
 			yard = strings.TrimPrefix(argument, "@")
 		case strings.HasPrefix(argument, "-"):
 			return "", "", "", "", fmt.Errorf("unknown option %q", argument)
+		default:
+			if positional {
+				return "", "", "", "", errors.New("only one project path may be selected")
+			}
+			path, positional = argument, true
+		}
+	}
+	return path, target, yard, name, nil
+}
+
+func parseProjectCloneArguments(arguments []string) (
+	url, name, target, yard string, explicitName bool, err error,
+) {
+	target = "yard"
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		switch {
+		case argument == "-y" || argument == "--yes":
+		case argument == "--target":
+			index++
+			if index >= len(arguments) {
+				return "", "", "", "", false, errors.New("--target needs yard or a profile")
+			}
+			target = arguments[index]
+		case strings.HasPrefix(argument, "--target="):
+			target = strings.TrimPrefix(argument, "--target=")
+		case argument == "--name":
+			index++
+			if index >= len(arguments) {
+				return "", "", "", "", false, errors.New("--name needs a project name")
+			}
+			name, explicitName = arguments[index], true
+			if name == "" {
+				return "", "", "", "", false, errors.New("--name needs a project name")
+			}
+		case strings.HasPrefix(argument, "--name="):
+			name, explicitName = strings.TrimPrefix(argument, "--name="), true
+			if name == "" {
+				return "", "", "", "", false, errors.New("--name needs a project name")
+			}
+		case strings.HasPrefix(argument, "@") && len(argument) > 1:
+			yard = strings.TrimPrefix(argument, "@")
+		case strings.HasPrefix(argument, "-"):
+			return "", "", "", "", false, fmt.Errorf("unknown option %q", argument)
 		case url == "":
 			url = argument
 		case name == "":
-			name = argument
+			name, explicitName = argument, true
 		default:
-			return "", "", "", "", errors.New("too many clone arguments")
+			return "", "", "", "", false, errors.New("too many clone arguments")
 		}
 	}
 	if url == "" {
-		return "", "", "", "", errors.New("clone needs a git URL")
+		return "", "", "", "", false, errors.New("clone needs a git URL")
 	}
-	return url, name, target, yard, nil
+	return url, name, target, yard, explicitName, nil
 }
 
 func parseProjectSelector(name string, arguments []string) (string, bool, error) {

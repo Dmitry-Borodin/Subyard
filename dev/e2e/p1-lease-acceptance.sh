@@ -40,8 +40,19 @@ status() {
 }
 
 dump_broker_diagnostics() {
-  status >&2 || true
+  local incident payload
+  sudo -n systemctl start subyard-test-vms-host-sink.service >/dev/null 2>&1 || true
+  payload="$(status 2>/dev/null)" || payload=''
+  [ -z "$payload" ] || printf '%s\n' "$payload" >&2
   "$ROOT/bin/yard" test-vms logs -n 200 >&2 || true
+  incident="$(jq -r '
+    [.pool.slots[] | select(.incident_id != null) | .incident_id] | last // empty
+  ' <<<"$payload" 2>/dev/null)"
+  [ -z "$incident" ] || {
+    printf 'p1-lease-acceptance: incident %s\n' "$incident" >&2
+    jq . "${SUBYARD_HOME:-$HOME/.subyard}/logs/test-vms-broker-incidents/$incident.json" \
+      >&2 2>/dev/null || true
+  }
 }
 
 wait_for_state_count() {
@@ -65,7 +76,7 @@ wait_for_state_count() {
 }
 
 wait_for_ready() {
-  local client="$1" pid="$2" attempts="${P1_LEASE_READY_ATTEMPTS:-360}"
+  local client="$1" pid="$2" attempts="${P1_LEASE_READY_ATTEMPTS:-900}"
   for _ in $(seq 1 "$attempts"); do
     [ ! -s "$STATE_PARENT/$client.ready" ] || return 0
     [ ! -s "$STATE_PARENT/$client.failed" ] \
@@ -78,6 +89,23 @@ wait_for_ready() {
   done
   sed -n '1,240p' "$STATE_PARENT/$client.log" >&2
   dump_broker_diagnostics
+  return 1
+}
+
+wait_for_slot_available() {
+  local slot="$1" attempts="${2:-180}" payload state
+  for _ in $(seq 1 "$attempts"); do
+    payload="$(status)"
+    state="$(jq -r --arg slot "$slot" '
+      .pool.slots[] | select(.slot_id == $slot) | .state
+    ' <<<"$payload")"
+    [ "$state" != available ] || return 0
+    case "$state" in quarantined | recovering | provisioning) ;;
+      *) printf '%s\n' "$payload" >&2; return 1 ;;
+    esac
+    sleep 2
+  done
+  printf '%s\n' "$payload" >&2
   return 1
 }
 
@@ -97,9 +125,8 @@ wait_for_guest_access() {
 }
 
 hold_lease() (
-  local client="$1" project="$2" purpose="$3" requested_slot="$4" ready_temp
+  local client="$1" purpose="$2" requested_slot="$3" ready_temp
   export SUBYARD_E2E_STATE_DIR="$STATE_PARENT/$client"
-  export SUBYARD_E2E_PROJECT_LABEL="$project"
   export SUBYARD_E2E_YARD="$YARD"
   # shellcheck source=dev/agent-e2e.sh
   . "$RUNNER"
@@ -127,27 +154,71 @@ hold_lease() (
   start_lease_keeper
   printf '%s\n' \
     'set -eu' \
-    'jq -e --arg project "$1" --arg checkout "$2" --arg run "$3" --arg purpose "$4" '\''.schema_version == 1 and .project == $project and .checkout == $checkout and .run == $run and .purpose == $purpose'\'' /run/subyard-e2e-lease.json >/dev/null' \
-    | guest 1 sh -s -- "$LEASE_PROJECT" "$LEASE_CHECKOUT" "$LEASE_RUN" "$LEASE_PURPOSE"
+    'jq -e --arg yard "$1" --arg project "$2" --arg run "$3" --arg purpose "$4" '\''.schema_version == 2 and .yard == $yard and .project == $project and (has("checkout") | not) and .run == $run and .purpose == $purpose'\'' /run/subyard-e2e-lease.json >/dev/null' \
+    | guest 1 sh -s -- "$LEASE_YARD" "$LEASE_PROJECT" "$LEASE_RUN" "$LEASE_PURPOSE"
   guest 2 jq -e \
+    --arg yard "$LEASE_YARD" \
     --arg project "$LEASE_PROJECT" \
-    --arg checkout "$LEASE_CHECKOUT" \
     --arg run "$LEASE_RUN" \
     --arg purpose "$LEASE_PURPOSE" \
-    '.schema_version == 1 and .project == $project and .checkout == $checkout and
-      .run == $run and .purpose == $purpose' \
+    '.schema_version == 2 and .yard == $yard and .project == $project and
+      (has("checkout") | not) and .run == $run and .purpose == $purpose' \
     /run/subyard-e2e-lease.json >/dev/null
 
   umask 077
   printf '%s\n' "$(lease_command renew)" > "$STATE_PARENT/$client.stale-renew"
   ready_temp="$(mktemp "$STATE_PARENT/.$client.ready.XXXXXX")"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$LEASE_SLOT" "$LEASE_PROJECT" "$LEASE_CHECKOUT" "$LEASE_RUN" "$LEASE_PURPOSE" \
+    "$LEASE_SLOT" "$LEASE_YARD" "$LEASE_PROJECT" "$LEASE_RUN" "$LEASE_PURPOSE" \
     "$CLIENT_CONFIG" "$GUEST_IDENTITY" "$GUEST_KNOWN_HOSTS" "${VM_IP[1]}" "${VM_IP[2]}" \
     > "$ready_temp"
   mv -f "$ready_temp" "$STATE_PARENT/$client.ready"
   while [ ! -e "$STATE_PARENT/$client.release" ]; do sleep 1; done
 )
+
+start_holder_with_recovery() {
+  local client="$1" purpose="$2" requested_slot="$3"
+  local attempt=1 pid payload state marker
+  while true; do
+    hold_lease "$client" "$purpose" "$requested_slot" \
+      >"$STATE_PARENT/$client.log" 2>&1 &
+    pid=$!
+    case "$client" in
+      a) HOLDER_A="$pid" ;;
+      b) HOLDER_B="$pid" ;;
+      *) die "unknown holder client $client" ;;
+    esac
+    if wait_for_ready "$client" "$pid"; then
+      return 0
+    fi
+    wait "$pid" >/dev/null 2>&1 || true
+    case "$client" in
+      a) HOLDER_A='' ;;
+      b) HOLDER_B='' ;;
+    esac
+    grep -Fq 'lease acquire failed (quarantined: slot provisioning failed)' \
+      "$STATE_PARENT/$client.log" || return 1
+    payload="$(status)"
+    state="$(jq -r --arg slot "$requested_slot" '
+      .pool.slots[] | select(.slot_id == $slot) | .state
+    ' <<<"$payload")"
+    case "$state" in available | quarantined | recovering | provisioning) ;;
+      *) printf '%s\n' "$payload" >&2; return 1 ;;
+    esac
+    printf 'p1-lease-acceptance: %s provisioning attempt %s entered %s; waiting for automatic rebuild\n' \
+      "$requested_slot" "$attempt" "$state" >&2
+    [ "$attempt" -lt 3 ] || { printf '%s\n' "$payload" >&2; return 1; }
+    wait_for_slot_available "$requested_slot" \
+      || return 1
+    for marker in \
+      "$STATE_PARENT/$client.ready" \
+      "$STATE_PARENT/$client.failed" \
+      "$STATE_PARENT/$client.release"; do
+      [ ! -e "$marker" ] || find "$marker" -delete
+    done
+    attempt=$((attempt + 1))
+  done
+}
 
 stale_renew() (
   local client="$1"
@@ -158,12 +229,46 @@ stale_renew() (
   facade_request "$(cat "$STATE_PARENT/$client.stale-renew")"
 )
 
+prepare_slot_lease() (
+  local slot="$1" vm release_failed=0
+  export SUBYARD_E2E_STATE_DIR="$STATE_PARENT/c"
+  export SUBYARD_E2E_YARD="$YARD"
+  # shellcheck source=dev/agent-e2e.sh
+  . "$RUNNER"
+
+  LOCAL_TEMP="$(mktemp -d "$STATE_PARENT/prepare-runtime.XXXXXX")"
+  LEASE_PURPOSE=acceptance-prepare
+  printf -v LEASE_REQUESTED_SLOT 'slot-%03d' "$slot"
+  prepare_cleanup() {
+    local rc=$?
+    trap - EXIT INT TERM
+    set +e
+    if [ -n "$LEASE_KEEPER_PID" ]; then
+      kill "$LEASE_KEEPER_PID" >/dev/null 2>&1 || true
+      wait "$LEASE_KEEPER_PID" >/dev/null 2>&1 || true
+      LEASE_KEEPER_PID=''
+    fi
+    release_lease || release_failed=1
+    [ "$release_failed" = 0 ] || rc=1
+    exit "$rc"
+  }
+  trap prepare_cleanup EXIT INT TERM
+
+  acquire_lease
+  start_lease_keeper
+  for vm in 1 2; do
+    guest "$vm" sh -eu -c \
+      'apt-get clean
+       find /var/cache/apt/archives -type f -delete
+       find /var/lib/apt/lists -type f -delete
+       sync
+       fstrim -av >/dev/null 2>&1 || true'
+  done
+)
+
 prepare_slot() {
   local slot="$1" rc=0
-  SUBYARD_E2E_STATE_DIR="$STATE_PARENT/c" \
-    SUBYARD_E2E_PROJECT_LABEL=fixture/acceptance-prepare \
-    "$RUNNER" --yard "$YARD" --slot "$slot" --purpose acceptance-prepare \
-      --vm 1 -- true || rc=$?
+  prepare_slot_lease "$slot" || rc=$?
   if [ "$rc" -ne 0 ]; then
     dump_broker_diagnostics
     return "$rc"
@@ -188,10 +293,8 @@ prepared="$(status)"
 jq -e 'all(.pool.slots[]; .state == "available")' <<<"$prepared" >/dev/null \
   || die 'sequential slot preparation did not release the candidate pool'
 
-hold_lease b fixture/project-b holder-b slot-002 \
-  >"$STATE_PARENT/b.log" 2>&1 &
-HOLDER_B=$!
-wait_for_ready b "$HOLDER_B" || die 'second holder did not become ready'
+start_holder_with_recovery b holder-b slot-002 \
+  || die 'second holder did not become ready'
 wait_for_state_count held 1 >/dev/null \
   || { sed -n '1,240p' "$STATE_PARENT/b.log" >&2; die 'second holder was not published'; }
 IFS=$'\t' read -r -a B_READY < "$STATE_PARENT/b.ready"
@@ -202,7 +305,7 @@ B_IP1="${B_READY[8]}"
 [ "$B_SLOT" = slot-002 ] || die "exact holder B received $B_SLOT"
 
 set +e
-SUBYARD_E2E_STATE_DIR="$STATE_PARENT/c" SUBYARD_E2E_PROJECT_LABEL=fixture/project-c \
+SUBYARD_E2E_STATE_DIR="$STATE_PARENT/c" \
   "$RUNNER" --yard "$YARD" --slot 2 --purpose exact-slot-busy --ssh 1 -- true \
   >"$STATE_PARENT/exact-busy.log" 2>&1
 exact_busy_rc=$?
@@ -219,14 +322,14 @@ jq -e '
 ' <<<"$exact_busy_state" >/dev/null \
   || die 'occupied exact-slot acquire fell back or changed its neighbor'
 
-hold_lease a fixture/project-a holder-a slot-001 \
-  >"$STATE_PARENT/a.log" 2>&1 &
-HOLDER_A=$!
-wait_for_ready a "$HOLDER_A" || die 'first holder did not become ready'
+start_holder_with_recovery a holder-a slot-001 \
+  || die 'first holder did not become ready'
 held="$(wait_for_state_count held 2)" \
   || { sed -n '1,240p' "$STATE_PARENT/a.log" >&2; die 'first holder was not published'; }
 IFS=$'\t' read -r -a A_READY < "$STATE_PARENT/a.ready"
 A_SLOT="${A_READY[0]}"
+A_YARD="${A_READY[1]}"
+A_PROJECT="${A_READY[2]}"
 A_CONFIG="${A_READY[5]}"
 A_KEY="${A_READY[6]}"
 [ "$A_SLOT" = slot-001 ] || die "exact holder A received $A_SLOT"
@@ -234,21 +337,21 @@ A_KEY="${A_READY[6]}"
 jq -e '
   ([.pool.slots[] | select(.state == "held") | .slot_id] | sort) ==
     ["slot-001", "slot-002"] and
-  ([.pool.slots[] | select(.state == "held") | .project] | sort) ==
-    ["fixture/project-a", "fixture/project-b"] and
+  ([.pool.slots[] | select(.state == "held") | .project] | unique | length) == 1 and
   ([.pool.slots[] | select(.state == "held") | .purpose] | sort) ==
     ["holder-a", "holder-b"] and
   all(.pool.slots[] | select(.state == "held");
-    (.checkout | test("^[0-9a-f]{8}$")) and (.run | test("^[0-9a-f]{8}$"))) and
+    (.yard | length > 0) and (has("checkout") | not) and
+    (.run | test("^[0-9a-f]{8}$"))) and
   all(.pool.slots[];
     (has("client_id") or has("controller_fingerprint") or has("lease_id") or
      has("capability_hash") or has("targets") or has("address") or
      has("host_key_blob")) | not)
 ' <<<"$held" >/dev/null || die 'held pool is not distinct and redacted'
-grep -Eq "^E2E lease: project=fixture/project-a .* purpose=holder-a slot=$A_SLOT$" \
+grep -Eq "^E2E lease: yard=$A_YARD project=$A_PROJECT .* purpose=holder-a slot=$A_SLOT$" \
   "$STATE_PARENT/a.log" \
-  || die 'first holder did not print its attributed cross-project reuse'
-grep -Eq '^E2E lease: project=fixture/project-b .* purpose=holder-b slot=slot-[0-9]{3}$' \
+  || die 'first holder did not print canonical project attribution'
+grep -Eq "^E2E lease: yard=$A_YARD project=$A_PROJECT .* purpose=holder-b slot=slot-[0-9]{3}$" \
   "$STATE_PARENT/b.log" || die 'second holder did not print its attributed assignment'
 for log in "$STATE_PARENT/a.log" "$STATE_PARENT/b.log"; do
   ! grep '^E2E lease:' "$log" | grep -Eq \
@@ -285,7 +388,7 @@ else
 fi
 
 set +e
-SUBYARD_E2E_STATE_DIR="$STATE_PARENT/c" SUBYARD_E2E_PROJECT_LABEL=fixture/project-c \
+SUBYARD_E2E_STATE_DIR="$STATE_PARENT/c" \
   "$RUNNER" --yard "$YARD" --purpose holder-c --ssh 1 -- true \
   >"$STATE_PARENT/c.log" 2>&1
 busy_rc=$?
@@ -293,8 +396,9 @@ set -e
 [ "$busy_rc" = 4 ] \
   || { sed -n '1,120p' "$STATE_PARENT/c.log" >&2; die "third acquire returned $busy_rc, want 4"; }
 grep -Fq 'agent-e2e: pool busy' "$STATE_PARENT/c.log" \
-  && grep -Fq 'fixture/project-a' "$STATE_PARENT/c.log" \
-  && grep -Fq 'fixture/project-b' "$STATE_PARENT/c.log" \
+  && grep -Fq "$A_PROJECT" "$STATE_PARENT/c.log" \
+  && grep -Fq 'holder-a' "$STATE_PARENT/c.log" \
+  && grep -Fq 'holder-b' "$STATE_PARENT/c.log" \
   || { sed -n '1,120p' "$STATE_PARENT/c.log" >&2; die 'busy output omitted holders'; }
 
 : > "$STATE_PARENT/b.release"

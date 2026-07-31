@@ -52,6 +52,18 @@ run_with_progress() {
   return "$rc"
 }
 
+launch_with_retry() {
+  local name="$1" label="$2" attempt=1
+  shift 2
+  while ! run_with_progress "$label" "$@"; do
+    [ "$attempt" -lt 3 ] || return 1
+    printf '  [warn] %s failed; cleaning the marked instance and retrying (%s/3)\n' \
+      "$label" "$((attempt + 1))"
+    delete_marked_instance "$name"
+    attempt=$((attempt + 1))
+  done
+}
+
 cleanup() {
   local name
   if project_exists; then
@@ -95,9 +107,12 @@ fi
 real_incus project create "$PROJECT" \
   -c features.images=false -c features.profiles=false -c features.storage.volumes=false >/dev/null
 real_incus project set "$PROJECT" user.subyard.p0="$MARKER"
-run_with_progress "launching real Incus container (first use may download an image)" \
+launch_real_container() {
   real_incus_quiet launch "$CONTAINER_IMAGE" p0-container --project "$PROJECT" --storage default \
-  -c user.subyard.p0="$MARKER"
+    -c user.subyard.p0="$MARKER"
+}
+launch_with_retry p0-container "launching real Incus container (first use may download an image)" \
+  launch_real_container
 if ! real_incus image info "$CONTAINER_CACHE_ALIAS" --project default >/dev/null 2>&1; then
   container_fingerprint="$(real_incus config get p0-container volatile.base_image --project "$PROJECT")"
   [[ "$container_fingerprint" =~ ^[0-9a-f]{64}$ ]] \
@@ -112,7 +127,7 @@ launch_real_vm() {
     -c user.subyard.p0="$MARKER" \
     -d root,size=5GiB
 }
-run_with_progress "launching real Incus VM (a clean allocation may download an image)" \
+launch_with_retry p0-vm "launching real Incus VM (a clean allocation may download an image)" \
   launch_real_vm
 
 wait_ready() {

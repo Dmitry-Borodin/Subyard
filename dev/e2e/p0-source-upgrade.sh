@@ -192,8 +192,11 @@ prepare_operator() {
     "$SOURCE_ROOT/config/profiles/openclaw" "$SOURCE_ROOT/config/staging" \
     "$SOURCE_ROOT/config/qa-pool" \
     "$OPERATOR_HOME/.local/bin"
+  # This fixture verifies the private Codex asset migration. Keep the legacy
+  # ten-minute init budget for that contract instead of downloading unrelated
+  # agent CLIs from the network.
   operator_env bash -c 'printf "%s" "$2" > "$1"' _ "$SOURCE_ROOT/private/config.env" \
-    $'DEV_SUDO=1\nAGENT_codex_RULES="$SUBYARD_CONFIG_DIR/../private/agents/codex/repo.rules"\n'
+    $'DEV_SUDO=1\nAGENTS=codex\nAGENT_codex_RULES="$SUBYARD_CONFIG_DIR/../private/agents/codex/repo.rules"\n'
   operator_env bash -c \
     'printf "YARD_TEMPLATE=e2e-vms\nSSH_PORT=2223\nDEV_UID=1001\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n" "$2" "$2" > "$1"' \
     _ "$SOURCE_ROOT/private/yards/e2e-yard.env" "$BASE_IMAGE"

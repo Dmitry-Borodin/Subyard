@@ -5,6 +5,8 @@ two-VM slot from the operator-owned running `test-yard`:
 
 ```sh
 dev/e2e/p0-acceptance.sh
+# For a coordinated exact-slot run:
+SUBYARD_P0_SLOT=1 dev/e2e/p0-acceptance.sh
 ```
 
 The broker owns inner pair start/stop and the runner releases in a trap. The agent does not change

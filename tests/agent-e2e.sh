@@ -49,8 +49,18 @@ fi
 if "$ROOT/dev/agent-e2e.sh" --slot 0 --prepare >/dev/null 2>&1; then
   fail "agent runner accepted an invalid exact slot"
 fi
+LEASE_REQUESTED_SLOT=''
+set_requested_slot 1 SUBYARD_P0_SLOT
+[ "$LEASE_REQUESTED_SLOT" = slot-001 ] \
+  || fail "P0 exact-slot environment did not resolve slot-001"
+if (set_requested_slot 0 SUBYARD_P0_SLOT) >/dev/null 2>&1; then
+  fail "P0 exact-slot environment accepted slot zero"
+fi
+LEASE_REQUESTED_SLOT=''
 
-fixture="$TMP/worktree"
+export SUBYARD_E2E_TEST_MODE=1
+export SUBYARD_E2E_WORKSPACES_ROOT="$TMP/workspaces"
+fixture="$SUBYARD_E2E_WORKSPACES_ROOT/Subyard-2-05398f45/src"
 mkdir -p "$fixture/private" "$fixture/temp"
 git -C "$fixture" init -q
 git -C "$fixture" remote add origin \
@@ -66,32 +76,22 @@ git -C "$fixture" add .gitignore tracked.txt removed.txt
 printf 'changed\n' >> "$fixture/tracked.txt"
 rm "$fixture/removed.txt"
 
-project_label="$(derive_project_label "$fixture")"
-[ "$project_label" = Subyard/Attribution ] \
-  || fail "safe project label was not derived from origin: $project_label"
-case "$project_label" in *token* | *private-value*) fail "project label disclosed Git credentials" ;; esac
-for remote_case in \
-  'git@github.com:Subyard/Attribution.git' \
-  'ssh://git@github.com/Subyard/Attribution.git'; do
-  git -C "$fixture" remote set-url origin "$remote_case"
-  [ "$(derive_project_label "$fixture")" = Subyard/Attribution ] \
-    || fail "safe project label was not derived from $remote_case"
-done
-git -C "$fixture" remote remove origin
-[[ "$(derive_project_label "$fixture")" =~ ^local-[0-9a-f]{8}$ ]] \
-  || fail "repo without origin did not receive an opaque local project label"
-SUBYARD_E2E_PROJECT_LABEL="$(printf ' unsafe\tproject/with unicode \342\230\203')"
-[ "$(derive_project_label "$fixture")" = unsafe-project/with-unicode ] \
-  || fail "unsafe project override was not normalized"
-unset SUBYARD_E2E_PROJECT_LABEL
-checkout_id="$(ensure_checkout_id "$fixture")"
-[ "$(ensure_checkout_id "$fixture")" = "$checkout_id" ] \
-  || fail "checkout identity was not stable"
-other_checkout="$TMP/other-checkout"
-mkdir -p "$other_checkout"
-git -C "$other_checkout" init -q
-[ "$(ensure_checkout_id "$other_checkout")" != "$checkout_id" ] \
-  || fail "different worktrees received the same checkout identity"
+fallback_context="$(resolve_workspace_attribution "$fixture")"
+[ "$fallback_context" = $'unknown\tSubyard-2-05398f45' ] \
+  || fail "safe legacy workspace fallback changed: $fallback_context"
+printf '%s\n' \
+  '{"schema":1,"projectId":"Subyard-2-05398f45","name":"Subyard-2","yard":"default","mode":"sync"}' \
+  > "$SUBYARD_E2E_WORKSPACES_ROOT/Subyard-2-05398f45/.subyard-meta.json"
+[ "$(resolve_workspace_attribution "$fixture")" = $'default\tSubyard-2' ] \
+  || fail "runner did not use canonical workspace metadata"
+cp "$SUBYARD_E2E_WORKSPACES_ROOT/Subyard-2-05398f45/.subyard-meta.json" "$TMP/valid-meta"
+printf '%s\n' \
+  '{"schema":1,"projectId":"foreign","name":"Subyard-2","yard":"default"}' \
+  > "$SUBYARD_E2E_WORKSPACES_ROOT/Subyard-2-05398f45/.subyard-meta.json"
+if (resolve_workspace_attribution "$fixture") >/dev/null 2>&1; then
+  fail "runner accepted mismatched project metadata"
+fi
+mv "$TMP/valid-meta" "$SUBYARD_E2E_WORKSPACES_ROOT/Subyard-2-05398f45/.subyard-meta.json"
 run_a="$(new_run_id)"
 run_b="$(new_run_id)"
 [[ "$run_a" =~ ^[0-9a-f]{8}$ && "$run_b" =~ ^[0-9a-f]{8}$ && "$run_a" != "$run_b" ]] \
@@ -101,19 +101,29 @@ run_b="$(new_run_id)"
   || fail "runner did not derive a bounded script purpose"
 [ "$(derive_purpose ssh 'manual diagnostic')" = manual-diagnostic ] \
   || fail "explicit purpose was not normalized"
-LEASE_PROJECT=Subyard/Attribution
-LEASE_CHECKOUT="$checkout_id"
+LEASE_YARD=default
+LEASE_PROJECT=Subyard-2
+LEASE_CHECKOUT=
 LEASE_RUN="$run_a"
 LEASE_PURPOSE=contract-tests
+BROKER_ATTRIBUTION_V2=1
 lease_request="$(lease_acquire_request client SHA256:key ssh-ed25519 keyblob)"
 [ "$lease_request" = \
-    "acquire client SHA256:key Subyard/Attribution@$checkout_id#$run_a contract-tests ssh-ed25519 keyblob" ] \
-  || fail "runner did not carry attribution through the compatible acquire protocol"
+    "acquire-v2 client SHA256:key default Subyard-2 $run_a contract-tests ssh-ed25519 keyblob" ] \
+  || fail "runner did not carry canonical attribution through acquire-v2"
 LEASE_REQUESTED_SLOT='slot-002'
 exact_request="$(lease_acquire_request client SHA256:key ssh-ed25519 keyblob)"
 [ "$exact_request" = \
-  "acquire client SHA256:key Subyard/Attribution@$checkout_id#$run_a contract-tests ssh-ed25519 keyblob slot-002" ] \
+  "acquire-v2 client SHA256:key default Subyard-2 $run_a contract-tests ssh-ed25519 keyblob slot-002" ] \
   || fail "runner did not retain the existing exact-slot acquire protocol"
+BROKER_ATTRIBUTION_V2=0
+LEASE_REQUESTED_SLOT=
+legacy_request="$(lease_acquire_request client SHA256:key ssh-ed25519 keyblob)"
+[ "$legacy_request" = \
+  "acquire client SHA256:key Subyard-2+$run_a contract-tests ssh-ed25519 keyblob" ] \
+  || fail "old-broker fallback did not use an opaque no-checkout label"
+BROKER_ATTRIBUTION_V2=1
+LEASE_REQUESTED_SLOT='slot-002'
 LEASE_SLOT='slot-002'
 lease_grant_matches_request || fail "matching exact-slot grant was rejected"
 LEASE_SLOT='slot-001'
@@ -151,8 +161,8 @@ write_guest_command 2 "$command_root" sh -c \
   'test "$SUBYARD_E2E_VM" = 2 && test "$1" = "argument with spaces"' fixture 'argument with spaces' \
   > "$TMP/run.sh"
 bash "$TMP/run.sh" || fail "guest command did not preserve its argv or VM selector"
-grep -Fxq 'export SUBYARD_E2E_PROJECT=Subyard/Attribution' "$TMP/run.sh" \
-  && grep -Fxq "export SUBYARD_E2E_CHECKOUT=$checkout_id" "$TMP/run.sh" \
+grep -Fxq 'export SUBYARD_E2E_YARD=test-yard' "$TMP/run.sh" \
+  && grep -Fxq 'export SUBYARD_E2E_PROJECT=Subyard-2' "$TMP/run.sh" \
   && grep -Fxq "export SUBYARD_E2E_RUN_ID=$run_a" "$TMP/run.sh" \
   && grep -Fxq 'export SUBYARD_E2E_PURPOSE=contract-tests' "$TMP/run.sh" \
   || fail "guest command omitted public lease context"
@@ -206,6 +216,9 @@ printf '%s\n' "$direct_ssh_stdin" | grep -Fq -- '-T e2e-vm-1 --' \
 grep -Fq 'guest 1 \' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'dd of="$1" status=none' "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 source archive does not use the lease-local stdin transport"
+grep -Fq 'set_requested_slot "$SUBYARD_P0_SLOT" SUBYARD_P0_SLOT' \
+  "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail "P0 exact-slot environment does not reach the atomic lease request"
 grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity-verify-cleanup' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity_report' "$ROOT/dev/e2e/p0-acceptance.sh" \
@@ -213,17 +226,33 @@ grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
 grep -Fq 'P0_E2E_MIN_PEAK_MEMORY_RESERVE_BYTES:-67108864' \
   "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 acceptance does not keep only the 64 MiB minimum peak memory reserve"
-grep -Fq 'SUBYARD_P0_SLOT must be a number from 1 to 999' \
-  "$ROOT/dev/e2e/p0-acceptance.sh" \
-  && grep -Fq "printf -v LEASE_REQUESTED_SLOT 'slot-%03d'" \
-    "$ROOT/dev/e2e/p0-acceptance.sh" \
-  || fail "P0 acceptance cannot atomically pin its outer broker lease"
 grep -Fq 'prepare_slot "$slot"' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
-  && grep -Fq 'purpose acceptance-prepare' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq 'LEASE_PURPOSE=acceptance-prepare' \
+    "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq 'acquire_lease' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq 'guest "$vm" sh -eu -c' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq 'fstrim -av' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
   && grep -Fq 'dump_broker_diagnostics' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
   || fail "P1 acceptance does not prepare first-boot slots sequentially with diagnostics"
+grep -Fq 'reclaim_owner_lease_capacity' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'owner lease fixture pool reserve' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'OWNER_BASELINE_IMAGES' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not reclaim only test-owned migration capacity"
+grep -Fq 'OWNER_DIAGNOSTIC_DEV_UID="${P0_E2E_DIAGNOSTIC_DEV_UID:-1001}"' \
+  "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'chown -R "$OWNER_DIAGNOSTIC_DEV_UID:$OWNER_DIAGNOSTIC_DEV_UID" "$bound"' \
+    "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 bind fixture is not owned by its configured diagnostic yard UID"
+grep -Fq 'systemctl start subyard-test-vms-host-sink.service' \
+  "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq 'test-vms-broker-incidents' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  || fail "P1 diagnostics do not flush and print the immutable broker incident"
 grep -Fq 'FAULT_ROOT=/run/subyard-p0-incus-fault' \
   "$ROOT/dev/e2e/p0-broker-recovery.sh" \
+  && grep -Fq 'reclaim_held_pair_capacity "$VICTIM_CONFIG" victim' \
+    "$ROOT/dev/e2e/p0-broker-recovery.sh" \
+  && grep -Fq 'reclaim_held_pair_capacity "$NEIGHBOR_CONFIG" neighbor' \
+    "$ROOT/dev/e2e/p0-broker-recovery.sh" \
   && grep -Fq 'outer_root systemctl mask --runtime --now \' \
     "$ROOT/dev/e2e/p0-broker-recovery.sh" \
   && awk '
@@ -241,7 +270,7 @@ if grep -Fq 'mask --runtime --now incus.service' \
   fail "P0 broker recovery fault injection drains unrelated held leases"
 fi
 grep -Fq '> "$PEER_ROOT/config/config.env"' "$ROOT/dev/e2e/p0-guest.sh" \
-  && grep -Fq 'P0_PEER_YARD_TIMEOUT:-300' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'P0_PEER_YARD_TIMEOUT:-600' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 peer yard does not use its active config root with a bounded init"
 grep -Fq '"$candidate_yard" _migrate finalize' \
   "$ROOT/scripts/migrate-source-install.sh" \
@@ -329,14 +358,14 @@ resolve_bastion_route
 [ "$BASTION_KNOWN_HOSTS" = "$route_registry/test-yard/current/known_hosts" ] \
   || fail "product-owned bastion route lost its pinned host key"
 
-status_fixture='{"schema_version":1,"status":"ok","pool":{"schema_version":1,"resource_type":"agent-e2e","resource_id":"test-vms","slots":[{"slot_id":"slot-001","resource_generation":1,"lease_epoch":3,"state":"held","project":"Subyard/Attribution","checkout":"checkout-a","run":"run-a","purpose":"contract-tests","acquired_at":"2026-07-26T20:00:00Z","expires_at":"2026-07-26T20:20:00Z"},{"slot_id":"slot-002","resource_generation":1,"lease_epoch":2,"state":"available"},{"slot_id":"slot-003","resource_generation":1,"lease_epoch":0,"state":"available","acquired_at":"0001-01-01T00:00:00Z","expires_at":"0001-01-01T00:00:00Z"}]}}'
+status_fixture='{"schema_version":1,"status":"ok","capabilities":["attribution-v2"],"pool":{"schema_version":1,"resource_type":"agent-e2e","resource_id":"test-vms","slots":[{"slot_id":"slot-001","resource_generation":1,"lease_epoch":3,"state":"held","yard":"default","project":"Subyard-2","run":"run-a","purpose":"contract-tests","acquired_at":"2026-07-26T20:00:00Z","expires_at":"2026-07-26T20:20:00Z"},{"slot_id":"slot-002","resource_generation":1,"lease_epoch":2,"state":"available"},{"slot_id":"slot-003","resource_generation":1,"lease_epoch":0,"state":"available","acquired_at":"0001-01-01T00:00:00Z","expires_at":"0001-01-01T00:00:00Z"}]}}'
 rendered_status="$(render_pool_status "$status_fixture")"
 printf '%s\n' "$rendered_status" | grep -Fq 'SLOT     STATE' \
-  && printf '%s\n' "$rendered_status" | grep -Fq 'Subyard/Attribution' \
+  && printf '%s\n' "$rendered_status" | grep -Fq 'Subyard-2' \
   || fail "human pool status omitted active-holder attribution"
 ! printf '%s\n' "$rendered_status" | grep -Fq '0001-01-01' \
   || fail "human pool status exposed zero timestamps"
-long_project=project/abcdefghijklmnopqrstuvwxyz0123456789
+long_project=Project-abcdefghijklmnopqrstuvwxyz0123456789
 long_status="$(jq -c --arg project "$long_project" \
   '.pool.slots[0].project = $project' <<<"$status_fixture")"
 long_rendered_status="$(render_pool_status "$long_status")"
@@ -385,6 +414,7 @@ grep -Fq 'trap owner_cleanup EXIT' "$ROOT/dev/e2e/p0-guest.sh" \
 grep -Fq 'prepare_owner_go_cache' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'p0_capacity_reset_build_cache' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'p0_capacity_remove_build_cache' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'env -u GOCACHE go clean -cache' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane leaves candidate Go caches on the disposable VM"
 grep -Fq 'dev/build-engine.sh --force' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not build an explicit source candidate"
@@ -392,6 +422,10 @@ grep -Fq 'scripts/install-runtime-release.sh' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not install an immutable candidate runtime"
 grep -Fq 'RENAME_BASE_REVISION=' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not install the real pre-rename runtime"
+grep -Fq "grep -Fc 'Timeout:        10 * time.Minute,'" "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq "sed -i 's/Timeout:        10 \\* time.Minute,/Timeout:        20 * time.Minute,/'" \
+    "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail "P0 owner lane does not bound its synthetic legacy timeout override"
 grep -Fq 'write_owner_registration e2e-yard e2e-vms' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not exercise the retired registration"
 grep -Fq 'OWNER_DIAGNOSTIC_VM_MEMORY="${P0_E2E_DIAGNOSTIC_VM_MEMORY:-700MiB}"' \
@@ -401,6 +435,11 @@ grep -Fq 'OWNER_DIAGNOSTIC_VM_MEMORY="${P0_E2E_DIAGNOSTIC_VM_MEMORY:-700MiB}"' \
   && grep -Fq 'E2E_VM_MEMORY=%s' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq ': "${E2E_VM_MEMORY:=4GiB}"' "$ROOT/scripts/e2e-lab/provision.sh" \
   || fail "P0 memory limit is not diagnostic-only or changed the production default"
+grep -Fq 'OWNER_DIAGNOSTIC_VM_BOOT_TIMEOUT="${P0_E2E_DIAGNOSTIC_VM_BOOT_TIMEOUT:-600}"' \
+  "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'E2E_VM_BOOT_TIMEOUT=%s' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq ': "${E2E_VM_BOOT_TIMEOUT:=300}"' "$ROOT/scripts/e2e-lab/provision.sh" \
+  || fail "P0 boot timeout is not diagnostic-only or changed the production default"
 grep -Fq 'runtime activation retained the old e2e-yard registration' \
   "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not verify automatic retirement of the old yard"
@@ -467,6 +506,8 @@ grep -Fq '. "$ROOT/tests/helpers/test-context.sh"' "$ROOT/dev/e2e/p0-source-upgr
   || fail "P0 source-upgrade bootstrap bypasses the typed test engine context"
 ! grep -Fq '"$SOURCE_ROOT/config/qa-pool/"*' "$ROOT/dev/e2e/p0-source-upgrade.sh" \
   || fail "P0 source-upgrade fixture expands operator-private paths as the outer user"
+grep -Fq 'AGENTS=codex\nAGENT_codex_RULES=' "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  || fail "P0 source-upgrade spends its legacy init deadline on unrelated agent downloads"
 grep -Fq 's/^YARD_TEMPLATE=e2e-vms$/YARD_TEMPLATE=test-vms/' \
   "$ROOT/dev/e2e/p0-source-upgrade.sh" \
   || fail "P0 source-upgrade lane does not verify the retired template migration"

@@ -418,14 +418,12 @@ run_lanes() {
   [ "$owner_rc" = 0 ] && [ "$controller_rc" = 0 ] || return 1
 }
 
+if [ -n "${SUBYARD_P0_SLOT:-}" ]; then
+  set_requested_slot "$SUBYARD_P0_SLOT" SUBYARD_P0_SLOT
+fi
 LOCAL_TEMP="$(mktemp -d "${TMPDIR:-/tmp}/subyard-agent-e2e.XXXXXX")"
 LEASE_PURPOSE=p0-acceptance
 [ "$BROKER_RECOVERY_ONLY" = 0 ] || LEASE_PURPOSE=p0-broker-recovery
-if [ -n "${SUBYARD_P0_SLOT:-}" ]; then
-  [[ "$SUBYARD_P0_SLOT" =~ ^[1-9][0-9]{0,2}$ ]] \
-    || die 'SUBYARD_P0_SLOT must be a number from 1 to 999'
-  printf -v LEASE_REQUESTED_SLOT 'slot-%03d' "$((10#$SUBYARD_P0_SLOT))"
-fi
 acquire_lease
 start_lease_keeper
 CONFIG="$CLIENT_CONFIG"

@@ -13,6 +13,7 @@ VICTIM_PID=''
 FAULT_ROOT=/run/subyard-p0-incus-fault
 FAULT_INSTALLED=0
 REAPER_MASKED=0
+REAPER_TIMER_STOPPED=0
 
 die() { printf 'p0-broker-recovery: %s\n' "$*" >&2; exit 2; }
 
@@ -110,8 +111,12 @@ cleanup() {
   if [ "$REAPER_MASKED" = 1 ]; then
     outer_root systemctl unmask --runtime \
       subyard-test-vms-lease-reaper.service >/dev/null 2>&1
-    outer_root systemctl start \
+    outer_root systemctl start --no-block \
       subyard-test-vms-lease-reaper.service >/dev/null 2>&1
+  fi
+  if [ "$REAPER_TIMER_STOPPED" = 1 ]; then
+    outer_root systemctl start \
+      subyard-test-vms-lease-reaper.timer >/dev/null 2>&1
   fi
   for client in victim neighbor; do
     [ -z "$STATE_PARENT" ] || : > "$STATE_PARENT/$client.release"
@@ -137,11 +142,11 @@ status() {
 }
 
 wait_for_ready() {
-  local client="$1" pid="$2"
+  local client="$1" pid="$2" attempts="${P0_BROKER_READY_ATTEMPTS:-1200}"
   # A cold remote image import can consume more than five minutes before the
-  # retained pair reaches its separately bounded 300-second boot and SSH
-  # checks. Keep this outer acceptance watchdog large enough for both phases.
-  for _ in $(seq 1 900); do
+  # retained pair reaches its separately bounded P0 boot and SSH checks. Keep
+  # this outer acceptance watchdog large enough for both phases.
+  for _ in $(seq 1 "$attempts"); do
     [ ! -s "$STATE_PARENT/$client.ready" ] || return 0
     if [ -s "$STATE_PARENT/$client.failed" ] || ! kill -0 "$pid" >/dev/null 2>&1; then
       tail -n 240 "$STATE_PARENT/$client.log" >&2
@@ -156,7 +161,6 @@ wait_for_ready() {
 hold_lease() (
   local client="$1" purpose="$2" requested_slot="$3" ready_temp
   export SUBYARD_E2E_STATE_DIR="$STATE_PARENT/$client"
-  export SUBYARD_E2E_PROJECT_LABEL="fixture/broker-recovery-$client"
   export SUBYARD_E2E_YARD="$YARD"
   # shellcheck source=dev/agent-e2e.sh
   . "$RUNNER"
@@ -187,6 +191,25 @@ hold_lease() (
   mv -f "$ready_temp" "$STATE_PARENT/$client.ready"
   while [ ! -e "$STATE_PARENT/$client.release" ]; do sleep 1; done
 )
+
+reclaim_held_pair_capacity() {
+  local config="$1" label="$2" vm available
+  for vm in 1 2; do
+    ssh -F "$config" -T "e2e-vm-$vm" -- \
+      "sh -eu -c 'apt-get clean; find /var/cache/apt/archives -type f -delete; find /var/lib/apt/lists -type f -delete; sync; fstrim -av >/dev/null 2>&1 || true'"
+  done
+  available="$(outer_root \
+    df -B1 --output=avail /var/lib/subyard/test-vms/slots \
+    | awk 'NR == 2 {print $1}')"
+  [[ "$available" =~ ^[0-9]+$ ]] \
+    || die "could not measure nested pool reserve after trimming held $label pair"
+  # A full two-slot pool can legitimately sit below the create headroom while
+  # all four retained disks exist. Recovery deletes the quarantined pair before
+  # its authoritative capacity preflight, so record the reserve here without
+  # rejecting the healthy held neighbor prematurely.
+  printf '  [ ok ] held %s pair trimmed; nested pool reserve=%s\n' \
+    "$label" "$available"
+}
 
 install_candidate_update() {
   local arch release artifact runtime_root
@@ -299,19 +322,40 @@ initial_generation="$(jq -r '
   .pool.slots[] | select(.slot_id == "slot-001") | .resource_generation
 ' <<<"$initial")"
 
-hold_lease victim quarantine-victim slot-001 \
-  >"$STATE_PARENT/victim.log" 2>&1 &
-VICTIM_PID=$!
-wait_for_ready victim "$VICTIM_PID" \
-  || { report_slot_diagnostics slot-001 'victim provisioning failed';
-       die 'victim lease did not become ready'; }
+victim_attempt=1
+while true; do
+  hold_lease victim quarantine-victim slot-001 \
+    >"$STATE_PARENT/victim.log" 2>&1 &
+  VICTIM_PID=$!
+  if wait_for_ready victim "$VICTIM_PID"; then
+    break
+  fi
+  wait "$VICTIM_PID" >/dev/null 2>&1 || true
+  VICTIM_PID=''
+  report_slot_diagnostics slot-001 \
+    "victim provisioning attempt $victim_attempt failed"
+  [ "$victim_attempt" -lt 3 ] \
+    || die 'victim lease did not become ready after 3 automatic rebuilds'
+  wait_for_slot_state slot-001 available 450 >/dev/null \
+    || { report_slot_diagnostics slot-001 'victim automatic rebuild timed out';
+         die 'victim provisioning quarantine did not recover'; }
+  for marker in \
+    "$STATE_PARENT/victim.ready" \
+    "$STATE_PARENT/victim.failed" \
+    "$STATE_PARENT/victim.release"; do
+    [ ! -e "$marker" ] || find "$marker" -delete
+  done
+  victim_attempt=$((victim_attempt + 1))
+done
 
-IFS=$'\t' read -r VICTIM_SLOT VICTIM_CONFIG _ < "$STATE_PARENT/victim.ready"
+IFS=$'\t' read -r VICTIM_SLOT VICTIM_CONFIG VICTIM_PROJECT _victim_run _victim_purpose \
+  < "$STATE_PARENT/victim.ready"
 [ "$VICTIM_SLOT" = slot-001 ] || die "victim received $VICTIM_SLOT"
 for vm in 1 2; do
   ssh -F "$VICTIM_CONFIG" -T "e2e-vm-$vm" -- \
     touch /var/tmp/subyard-quarantine-sentinel
 done
+reclaim_held_pair_capacity "$VICTIM_CONFIG" victim
 stop_slot_pair 1
 
 neighbor_attempt=1
@@ -328,7 +372,7 @@ while true; do
     "neighbor provisioning attempt $neighbor_attempt failed"
   [ "$neighbor_attempt" -lt 3 ] \
     || die 'neighbor lease did not become ready after 3 automatic rebuilds'
-  wait_for_slot_state slot-002 available 180 >/dev/null \
+  wait_for_slot_state slot-002 available 450 >/dev/null \
     || { report_slot_diagnostics slot-002 'neighbor automatic rebuild timed out';
          die 'neighbor provisioning quarantine did not recover'; }
   for marker in \
@@ -339,11 +383,20 @@ while true; do
   done
   neighbor_attempt=$((neighbor_attempt + 1))
 done
+IFS=$'\t' read -r NEIGHBOR_SLOT NEIGHBOR_CONFIG NEIGHBOR_PROJECT \
+  _neighbor_run _neighbor_purpose \
+  < "$STATE_PARENT/neighbor.ready"
+[ "$NEIGHBOR_SLOT" = slot-002 ] || die "neighbor received $NEIGHBOR_SLOT"
+[ -n "$NEIGHBOR_PROJECT" ] && [ "$NEIGHBOR_PROJECT" = "$VICTIM_PROJECT" ] \
+  || die 'nested broker holders did not use one canonical candidate project'
+reclaim_held_pair_capacity "$NEIGHBOR_CONFIG" neighbor
 
 # Mask only the recovery worker while the quarantine evidence is inspected.
 # Masking Incus itself would stop the broker through Requires=incus.service and
 # run its drain-all ExecStop, changing the held neighbor before the targeted
 # release can exercise its failure boundary.
+outer_root systemctl stop subyard-test-vms-lease-reaper.timer
+REAPER_TIMER_STOPPED=1
 outer_root systemctl mask --runtime --now \
   subyard-test-vms-lease-reaper.service >/dev/null
 REAPER_MASKED=1
@@ -360,7 +413,7 @@ restore_targeted_incus_failure
 quarantined="$(wait_for_slot_state slot-001 quarantined 30)" \
   || { report_slot_diagnostics slot-001 'failed release did not quarantine';
        die 'failed release did not quarantine slot-001'; }
-jq -e '
+jq -e --arg project "$NEIGHBOR_PROJECT" '
   (.pool.slots[] | select(.slot_id == "slot-001")) as $victim |
   (.pool.slots[] | select(.slot_id == "slot-002")) as $neighbor |
   $victim.state == "quarantined" and
@@ -368,7 +421,7 @@ jq -e '
   ($victim.last_failure_event_id | test("^[0-9]{20}-[0-9a-f]{16}$")) and
   ($victim | has("failure_reason") | not) and
   $neighbor.state == "held" and
-  $neighbor.project == "fixture/broker-recovery-neighbor" and
+  $neighbor.project == $project and
   $neighbor.purpose == "held-neighbor"
 ' <<<"$quarantined" >/dev/null \
   || die 'quarantine status was not bounded or changed the held neighbor'
@@ -390,10 +443,10 @@ stop_slot_pair 2
 install_candidate_update
 rollback_candidate_update
 after_rollback="$(status)"
-jq -e '
+jq -e --arg project "$NEIGHBOR_PROJECT" '
   (.pool.slots[] | select(.slot_id == "slot-002")) as $neighbor |
   $neighbor.state == "held" and
-  $neighbor.project == "fixture/broker-recovery-neighbor" and
+  $neighbor.project == $project and
   $neighbor.purpose == "held-neighbor"
 ' <<<"$after_rollback" >/dev/null \
   || die 'active broker update/rollback revoked or unattributed the held neighbor'
@@ -406,10 +459,12 @@ kill -0 "$NEIGHBOR_PID" >/dev/null 2>&1 \
 # incident into a failed attempt followed by a second incident.
 outer_root systemctl unmask --runtime \
   subyard-test-vms-lease-reaper.service >/dev/null
-outer_root systemctl start subyard-test-vms-lease-reaper.service
 REAPER_MASKED=0
+outer_root systemctl start subyard-test-vms-lease-reaper.timer
+REAPER_TIMER_STOPPED=0
+outer_root systemctl start --no-block subyard-test-vms-lease-reaper.service
 
-available="$(wait_for_slot_state slot-001 available 180)" \
+available="$(wait_for_slot_state slot-001 available 450)" \
   || { report_slot_diagnostics slot-001 'automatic rebuild timed out';
        die 'root reaper did not automatically rebuild slot-001'; }
 new_generation="$(jq -r '
@@ -417,10 +472,10 @@ new_generation="$(jq -r '
 ' <<<"$available")"
 [ "$new_generation" -eq "$((initial_generation + 1))" ] \
   || die "resource generation changed from $initial_generation to $new_generation"
-jq -e '
+jq -e --arg project "$NEIGHBOR_PROJECT" '
   (.pool.slots[] | select(.slot_id == "slot-002")) as $neighbor |
   $neighbor.state == "held" and
-  $neighbor.project == "fixture/broker-recovery-neighbor"
+  $neighbor.project == $project
 ' <<<"$available" >/dev/null \
   || die 'automatic rebuild changed the held neighbor'
 
@@ -445,9 +500,14 @@ jq -s -e --arg incident "$incident_id" '
 incident="$SUBYARD_HOME/logs/test-vms-broker-incidents/$incident_id.json"
 [ -f "$incident" ] && [ ! -L "$incident" ] \
   || die 'host-wide immutable incident artifact is missing'
-jq -e --arg command \
-  "$FAULT_ROOT/incus project list --format csv -c n" '
+jq -e \
+  --arg command "$FAULT_ROOT/incus project list --format csv -c n" \
+  --arg project "$VICTIM_PROJECT" '
   (.failure_reason | contains("Failed to connect to local daemon")) and
+  .context.schema_version == 2 and
+  .context.yard == "test-yard" and
+  .context.project == $project and
+  (.context | has("checkout") | not) and
   .command.command == $command and
   .command.exit_code != 0 and
   (.diagnostics | type == "object")
@@ -459,7 +519,6 @@ sudo -n systemctl start subyard-test-vms-host-sink.service
   || die 'replayed sink delivery overwrote the immutable incident'
 
 SUBYARD_E2E_STATE_DIR="$STATE_PARENT/next" \
-  SUBYARD_E2E_PROJECT_LABEL=fixture/broker-recovery-next \
   "$RUNNER" --yard "$YARD" --slot 1 --purpose clean-next-lease --vm both -- \
   test ! -e /var/tmp/subyard-quarantine-sentinel
 
@@ -472,11 +531,13 @@ new_neighbor_heartbeat="$(jq -r '
   || die 'held neighbor heartbeat did not advance across update/recovery'
 : > "$STATE_PARENT/neighbor.release"
 wait "$NEIGHBOR_PID" \
-  || { sed -n '1,240p' "$STATE_PARENT/neighbor.log" >&2;
+  || { report_slot_diagnostics slot-002 'held neighbor release failed';
+       sed -n '1,240p' "$STATE_PARENT/neighbor.log" >&2;
        die 'held neighbor did not release cleanly'; }
 NEIGHBOR_PID=''
 final="$(wait_for_slot_state slot-002 available 60)" \
-  || die 'held neighbor did not return to the pool'
+  || { report_slot_diagnostics slot-002 'held neighbor did not return to the pool';
+       die 'held neighbor did not return to the pool'; }
 jq -e 'all(.pool.slots[]; .state == "available")' <<<"$final" >/dev/null \
   || die 'candidate pool was not fully reusable after acceptance'
 

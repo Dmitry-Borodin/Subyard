@@ -41,6 +41,8 @@ OWNER_BASELINE_CAPTURED=0
 OWNER_BASE_IMAGE="${P0_REAL_INCUS_CONTAINER_CACHE_ALIAS:-subyard-e2e-debian-13-cloud-container}"
 OWNER_BASE_IMAGE_CREATED=0
 OWNER_DIAGNOSTIC_VM_MEMORY="${P0_E2E_DIAGNOSTIC_VM_MEMORY:-700MiB}"
+OWNER_DIAGNOSTIC_VM_BOOT_TIMEOUT="${P0_E2E_DIAGNOSTIC_VM_BOOT_TIMEOUT:-600}"
+OWNER_DIAGNOSTIC_DEV_UID="${P0_E2E_DIAGNOSTIC_DEV_UID:-1001}"
 
 die() { printf 'p0-guest: %s\n' "$*" >&2; exit 2; }
 valid_token() { [[ "$1" =~ ^[0-9]+$ ]]; }
@@ -70,12 +72,87 @@ clean_peer_data() {
 }
 
 owner_project_contract() {
-  local source="/tmp/subyard-p0-project-$TOKEN" patch
-  clean_tree "$source" "$MARKER"
-  install -d -m 0700 "$source"
-  printf '%s\n' "$MARKER" > "$source/.subyard-p0-marker"
+  local root="/tmp/subyard-p0-project-$TOKEN"
+  local source="$root/one/P0Project"
+  local bound="$root/two/P0Project"
+  local rejected="$root/three/P0Project"
+  local git_url='file:///tmp/P0Project.git'
+  local completions patch projects reservation replay retried
+  clean_tree "$root" "$MARKER"
+  install -d -m 0700 "$source" "$bound" "$rejected"
+  printf '%s\n' "$MARKER" > "$root/.subyard-p0-marker"
   printf '%s\nbase\n' "$MARKER" > "$source/result.txt"
+  printf 'bound\n' > "$bound/result.txt"
+  printf 'rejected\n' > "$rejected/result.txt"
+  # The disposable outer VM has dev=1000, while its Debian cloud image reserves
+  # 1000 and the nested diagnostic yard therefore uses dev=1001. A real bind
+  # source must belong to the configured yard UID for shift=true to preserve
+  # private permissions; stage this test-owned tree the same way.
+  sudo -n chown -R "$OWNER_DIAGNOSTIC_DEV_UID:$OWNER_DIAGNOSTIC_DEV_UID" "$bound"
+  incus exec yard-test-yard --project subyard-test-yard -- \
+    runuser -u dev -- git init --bare /tmp/P0Project.git >/dev/null
+  ./bin/yard -Y test-yard bind "$bound" --yes >/dev/null
+  ./bin/yard -Y test-yard clone "$git_url" --yes >/dev/null
   ./bin/yard -Y test-yard sync "$source" --target openclaw --yes >/dev/null
+  projects="$(./bin/yard -Y test-yard list)"
+  [ "$(awk '$1 == "P0Project" { count++ } END { print count+0 }' <<<"$projects")" = 1 ] \
+    && [ "$(awk '$1 == "P0Project-2" { count++ } END { print count+0 }' <<<"$projects")" = 1 ] \
+    && [ "$(awk '$1 == "P0Project-3" { count++ } END { print count+0 }' <<<"$projects")" = 1 ] \
+    || die 'same-basename bind, clone and sync did not receive three canonical names'
+  completions="$(./bin/yard -Y test-yard list --complete-projects)"
+  for project in P0Project P0Project-2 P0Project-3; do
+    grep -Fxq "$project" <<<"$completions" \
+      || die "project completion omitted $project"
+  done
+  incus exec yard-test-yard --project subyard-test-yard -- \
+    jq -e '
+      .identityVersion == 2 and .projectId == "P0Project-3" and
+      .name == "P0Project-3" and .yard == "test-yard"
+    ' /srv/workspaces/P0Project-3/.subyard-meta.json >/dev/null \
+    || die 'canonical project metadata was not published'
+  if ./bin/yard -Y test-yard sync "$rejected" --name P0Project --yes \
+    >/dev/null 2>&1; then
+    die 'explicit colliding project name reached physical mutation'
+  fi
+  [ "$(./bin/yard -Y test-yard list | awk '
+    $1 == "P0Project" || $1 == "P0Project-2" || $1 == "P0Project-3" { count++ }
+    END { print count+0 }
+  ')" = 3 ] \
+    || die 'explicit collision changed the project inventory'
+  ./bin/yard -Y test-yard bind "$bound" --yes >/dev/null
+  ./bin/yard -Y test-yard sync "$source" --target openclaw --yes >/dev/null
+  if ./bin/yard -Y test-yard clone "$git_url" --yes >/dev/null 2>&1; then
+    die 'repeat clone of the same source created another identity'
+  fi
+  if ./bin/yard -Y test-yard sync "$bound" --yes >/dev/null 2>&1; then
+    die 'same source changed mode from bind to sync'
+  fi
+  [ "$(./bin/yard -Y test-yard list | awk '
+    $1 == "P0Project" || $1 == "P0Project-2" || $1 == "P0Project-3" { count++ }
+    END { print count+0 }
+  ')" = 3 ] \
+    || die 'same-source retries changed the project inventory'
+  reservation="$(./bin/yard -Y test-yard _project-state reserve \
+    "p0-interrupted-$TOKEN" "/tmp/p0-interrupted-$TOKEN" sync P0Interrupted 0)"
+  replay="$(./bin/yard -Y test-yard _project-state reserve \
+    "p0-interrupted-$TOKEN" "/tmp/p0-interrupted-$TOKEN" sync P0Interrupted 0)"
+  [ "$reservation" = "$replay" ] \
+    && jq -e '.projectId == "P0Interrupted" and .reserved == true' <<<"$reservation" >/dev/null \
+    || die 'owner reservation replay changed canonical identity'
+  ./bin/yard -Y test-yard _project-state abort "p0-interrupted-$TOKEN"
+  retried="$(./bin/yard -Y test-yard _project-state reserve \
+    "p0-retried-$TOKEN" "/tmp/p0-interrupted-$TOKEN" sync P0Interrupted 0)"
+  jq -e '.projectId == "P0Interrupted" and .reserved == true' <<<"$retried" >/dev/null \
+    || die 'owner reservation abort did not release canonical identity'
+  ./bin/yard -Y test-yard _project-state abort "p0-retried-$TOKEN"
+  ./bin/yard -Y test-yard shell P0Project --yes -- \
+    grep -Fxq bound result.txt
+  ./bin/yard -Y test-yard remove P0Project --yes >/dev/null
+  ./bin/yard -Y test-yard shell P0Project-2 --yes -- \
+    test -d .git
+  ./bin/yard -Y test-yard remove P0Project-2 --yes >/dev/null
+  ./bin/yard -Y test-yard shell P0Project-3 --yes -- \
+    grep -Fxq base result.txt
   ./bin/yard -Y test-yard up "$source" --yes >/dev/null
   ./bin/yard -Y test-yard info "$source" | grep -Fq '"profile": "openclaw"'
   ./bin/yard -Y test-yard down "$source" --yes >/dev/null
@@ -86,7 +163,7 @@ owner_project_contract() {
   [ -n "$patch" ] || die 'project export did not contain the guest change'
   ./bin/yard -Y test-yard remove "$source" --yes >/dev/null
   find "$patch" -delete
-  clean_tree "$source" "$MARKER"
+  clean_tree "$root" "$MARKER"
 }
 
 owner_cleanup() {
@@ -114,6 +191,9 @@ owner_cleanup() {
       fi
     fi
     find "$registration" -delete || cleanup_failed=1
+  done
+  for project in subyard-e2e-yard subyard-test-yard; do
+    reclaim_owner_project_if_present "$project" || cleanup_failed=1
   done
   if [ "$OWNER_BASELINE_CAPTURED" = 1 ]; then
     while IFS= read -r fingerprint; do
@@ -145,14 +225,15 @@ write_owner_registration() { # <yard> <template> <ssh-port>
     grep -Fqx "# $MARKER" "$registration" \
       || die "refusing to replace unrelated registration $registration"
   fi
-  printf '# %s\nYARD_TEMPLATE=%s\nSSH_PORT=%s\nAGENTS=none\nDEV_UID=1001\nE2E_VM_CPU=1\nE2E_VM_MEMORY=%s\nE2E_VM_DISK=10GiB\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n' \
-    "$MARKER" "$template" "$port" "$OWNER_DIAGNOSTIC_VM_MEMORY" \
+  printf '# %s\nYARD_TEMPLATE=%s\nSSH_PORT=%s\nAGENTS=none\nDEV_UID=%s\nE2E_VM_CPU=1\nE2E_VM_MEMORY=%s\nE2E_VM_DISK=10GiB\nE2E_VM_BOOT_TIMEOUT=%s\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n' \
+    "$MARKER" "$template" "$port" "$OWNER_DIAGNOSTIC_DEV_UID" "$OWNER_DIAGNOSTIC_VM_MEMORY" \
+    "$OWNER_DIAGNOSTIC_VM_BOOT_TIMEOUT" \
     "$OWNER_BASE_IMAGE" "$OWNER_BASE_IMAGE" \
     > "$registration"
 }
 
 install_rename_base_runtime() {
-  local arch release bundle
+  local arch release bundle timeout_file
   [ ! -e "$RENAME_BASE_ROOT" ] \
     || { p0_capacity_assert_root_marker; sudo -n find "$RENAME_BASE_ROOT" -depth -delete; }
   install -d -m 0700 "$RENAME_BASE_ROOT"
@@ -162,6 +243,17 @@ install_rename_base_runtime() {
   git -C "$RENAME_BASE_ROOT" checkout -q --detach FETCH_HEAD
   [ "$(git -C "$RENAME_BASE_ROOT" rev-parse HEAD)" = "$RENAME_BASE_REVISION" ] \
     || die 'rename-base checkout resolved to the wrong revision'
+  # Clean network provisioning can exceed the retired runtime's fixed adapter
+  # deadline. Relax only that synthetic build; HEAD still identifies the exact
+  # pre-rename source under migration test.
+  timeout_file="$RENAME_BASE_ROOT/internal/cli/cli.go"
+  [ "$(grep -Fc 'Timeout:        10 * time.Minute,' "$timeout_file")" -eq 1 ] \
+    || die 'rename-base adapter timeout fixture no longer matches its source'
+  sed -i 's/Timeout:        10 \* time.Minute,/Timeout:        20 * time.Minute,/' \
+    "$timeout_file"
+  grep -Fqx $'\t\t\tTimeout:        20 * time.Minute,' "$timeout_file" \
+    || die 'rename-base adapter timeout fixture was not applied'
+  git -C "$RENAME_BASE_ROOT" diff --check
   arch="$(go env GOARCH)"
   release="$RENAME_BASE_ROOT/.build/p0-rename-base-release"
   bundle="$release/subyard-p0-rename-base-linux-$arch.tar.gz"
@@ -335,16 +427,65 @@ owner_profile_migration_contract() {
   printf 'ok: runtime upgrade recreated e2e-yard as test-yard automatically\n'
 }
 
+reclaim_owner_project_residue() {
+  local project="$1" instance volume marker unexpected
+  case "$project" in
+    subyard-e2e-yard)
+      instance='yard-e2e-yard'
+      volume='yard-srv-e2e-yard'
+      ;;
+    subyard-test-yard)
+      instance='yard-test-yard'
+      volume='yard-srv-test-yard'
+      ;;
+    *) die "unsafe owner residue project $project" ;;
+  esac
+  marker="$(incus project get "$project" user.subyard.p0-image-cache 2>/dev/null)"
+  [[ "$marker" =~ ^subyard-p0-[0-9]+$ ]] \
+    || die "refusing non-P0 owner project $project"
+  unexpected="$(incus list --project "$project" --format csv -c n \
+    | awk -v expected="$instance" '$0 != expected { print }')"
+  [ -z "$unexpected" ] \
+    || die "refusing owner project $project with an unexpected instance"
+  unexpected="$(incus storage volume list default --project "$project" \
+    --format csv -c t,n | awk -F, -v expected_instance="$instance" \
+    -v expected_volume="$volume" '
+      ! (($1 == "container" && $2 == expected_instance) ||
+         ($1 == "custom" && $2 == expected_volume)) { print }
+    ')"
+  [ -z "$unexpected" ] \
+    || die "refusing owner project $project with an unexpected storage volume"
+  if incus config show "$instance" --project "$project" >/dev/null 2>&1; then
+    incus delete "$instance" --project "$project" --force >/dev/null
+  fi
+  if incus storage volume show default "$volume" --project "$project" \
+    >/dev/null 2>&1; then
+    incus storage volume delete default "$volume" --project "$project" >/dev/null
+  fi
+  incus project delete "$project" >/dev/null
+  printf '  [ ok ] removed interrupted P0 owner project %s (%s)\n' \
+    "$project" "$marker"
+}
+
+reclaim_owner_project_if_present() {
+  local project="$1"
+  incus project show "$project" >/dev/null 2>&1 || return 0
+  if incus project delete "$project" >/dev/null 2>&1; then
+    printf '  [ ok ] removed empty owner project residue %s\n' "$project"
+    return
+  fi
+  reclaim_owner_project_residue "$project"
+}
+
 prepare_owner_image_cache_project() {
-  local project="${1:?owner image-cache project is required}"
-  case "$project" in subyard-e2e-yard | subyard-test-yard) ;;
+  local project="${1:?owner image-cache project is required}" sibling
+  case "$project" in
+    subyard-e2e-yard) sibling=subyard-test-yard ;;
+    subyard-test-yard) sibling=subyard-e2e-yard ;;
     *) die "unsafe owner image-cache project $project" ;;
   esac
-  if incus project show "$project" >/dev/null 2>&1; then
-    incus project delete "$project" >/dev/null 2>&1 \
-      || die "refusing to replace non-empty owner project $project"
-    printf '  [ ok ] removed empty owner project residue %s\n' "$project"
-  fi
+  reclaim_owner_project_if_present "$sibling"
+  reclaim_owner_project_if_present "$project"
   incus image info "$OWNER_BASE_IMAGE" --project default >/dev/null 2>&1 \
     || die "test-owned base image alias $OWNER_BASE_IMAGE is unavailable"
   incus project create "$project" \
@@ -392,6 +533,69 @@ reclaim_broker_recovery_capacity() {
     "$available" "$minimum"
 }
 
+reclaim_owner_lease_capacity() {
+  local available capacity_path=/var/lib/subyard/test-vms/slots fingerprint path
+  local default_build_before default_build_after
+  local minimum=$((7 * 1024 * 1024 * 1024))
+
+  # The migration and real-Incus contracts have completed. Reclaim only their
+  # marker-owned source/release outputs and images that were absent from the
+  # pre-lane baseline before retaining four nested VM disks concurrently.
+  incus exec yard-test-yard --project subyard-test-yard -- \
+    sh -eu -c '
+      apt-get clean
+      find /var/cache/apt/archives -type f -delete
+      find /var/lib/apt/lists -type f -delete
+    '
+  for path in \
+    "$RENAME_BASE_ROOT" \
+    "$ROOT/.build/p0-current-base-release" \
+    "$ROOT/.build/p0-owner-release"; do
+    [ ! -e "$path" ] || {
+      case "$path" in
+        "$P0_CAPACITY_STATE_ROOT"/* | "$ROOT"/.build/p0-*-release) ;;
+        *) die "unsafe owner lease-capacity cleanup path $path" ;;
+      esac
+      p0_capacity_delete_tree "$path"
+    }
+  done
+  while IFS= read -r fingerprint; do
+    [ -n "$fingerprint" ] || continue
+    printf '%s\n' "$OWNER_BASELINE_IMAGES" | grep -Fxq "$fingerprint" \
+      || incus image delete "$fingerprint" --project default >/dev/null
+  done < <(incus image list --project default --format csv -c f)
+  # P0 builds use the marker-owned cache above. The outer VM is a disposable
+  # lease, so its reproducible default build cache need not compete with the
+  # four retained nested VM disks used by the isolation contract.
+  default_build_before="$(p0_capacity_cache_bytes "$P0_CAPACITY_DEFAULT_BUILD_CACHE")"
+  env -u GOCACHE go clean -cache
+  default_build_after="$(p0_capacity_cache_bytes "$P0_CAPACITY_DEFAULT_BUILD_CACHE")"
+  p0_capacity_remove_build_cache
+  p0_capacity_use_build_cache
+  while ! incus exec yard-test-yard --project subyard-test-yard -- \
+    test -e "$capacity_path"; do
+    [ "$capacity_path" != / ] || break
+    capacity_path="$(dirname "$capacity_path")"
+  done
+  available="$(incus exec yard-test-yard --project subyard-test-yard -- \
+    df -B1 --output=avail "$capacity_path" | awk 'NR == 2 {print $1}')"
+  [[ "$available" =~ ^[0-9]+$ ]] && [ "$available" -ge "$minimum" ] \
+    || die "owner lease fixture needs at least $minimum pool bytes; have ${available:-unknown}"
+  printf '  [ ok ] owner lease fixture pool reserve available=%s required=%s default_build=%s->%s\n' \
+    "$available" "$minimum" "$default_build_before" "$default_build_after"
+}
+
+run_nested_broker_acceptance() {
+  local script="$1"
+  env \
+    SUBYARD_E2E_TEST_MODE=1 \
+    SUBYARD_E2E_WORKSPACES_ROOT="$(dirname "$(dirname "$ROOT")")" \
+    SUBYARD_E2E_PROJECT_LABEL=Subyard-2 \
+    SUBYARD_E2E_PROJECT_YARD=test-yard \
+    SUBYARD_E2E_YARD=test-yard \
+    bash "$ROOT/$script"
+}
+
 owner() (
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'owner lane requires VM1'
 	trap owner_cleanup EXIT
@@ -416,12 +620,14 @@ owner() (
     || die 'nested state permissions did not converge'
   ! incus exec yard-test-yard --project subyard-test-yard -- id -nG dev | tr ' ' '\n' \
     | grep -Eq '^(incus-admin|yard)$' || die 'dev retained a privileged L1 group'
-  # The migration fixtures have finished compiling. Drop only this run's
-  # disposable Go cache before retaining both nested VM pairs; production
-  # broker memory and capacity defaults remain unchanged.
+  # All migration and recovery fixtures have finished compiling. Drop only
+  # this run's disposable Go cache before retaining both nested VM pairs;
+  # production broker memory and capacity defaults remain unchanged.
+  prepare_broker_recovery_update
   p0_capacity_reset_build_cache
-  SUBYARD_E2E_YARD=test-yard bash dev/e2e/p1-lease-acceptance.sh
-  SUBYARD_E2E_YARD=test-yard bash dev/e2e/p0-broker-recovery.sh
+  reclaim_owner_lease_capacity
+  run_nested_broker_acceptance dev/e2e/p1-lease-acceptance.sh
+  run_nested_broker_acceptance dev/e2e/p0-broker-recovery.sh
   owner_project_contract
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard --version >/dev/null
   env PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin ./bin/yard -Y test-yard list >/dev/null
@@ -469,7 +675,7 @@ broker_recovery_owner() (
   ./bin/yard -Y test-yard init --yes
   ./bin/yard -Y test-yard start --yes
   reclaim_broker_recovery_capacity
-  SUBYARD_E2E_YARD=test-yard bash dev/e2e/p0-broker-recovery.sh
+  run_nested_broker_acceptance dev/e2e/p0-broker-recovery.sh
   ./bin/yard -Y test-yard teardown --yes
   printf 'ok: VM1 broker logging and quarantine rebuild acceptance\n'
 )
@@ -708,18 +914,21 @@ cleanup_peer_incus() {
     || die 'refusing to clean unmarked peer Incus state'
   [ -z "$(incus list --all-projects --format csv -c n)" ] \
     || die 'peer Incus still has instances'
-  if incus profile device list default --project default 2>/dev/null | grep -qx eth0; then
-    incus profile device remove default eth0 --project default >/dev/null
-  fi
-  if incus profile device list default --project default 2>/dev/null | grep -qx root; then
-    incus profile device remove default root --project default >/dev/null
-  fi
 	if incus storage show default --project default >/dev/null 2>&1; then
 		source="$(incus storage get default source --project default)"
 		case "$source" in
 			"$PEER_STATE_ROOT/incus-home/storage"|"$PEER_STATE_ROOT/incus-home/incus/storage") ;;
-			*) die "refusing to clean non-peer storage pool at $source" ;;
+			*)
+				p0_capacity_require_persistent_path "$source" incus-default-pool
+				return
+				;;
 		esac
+		if incus profile device list default --project default 2>/dev/null | grep -qx eth0; then
+			incus profile device remove default eth0 --project default >/dev/null
+		fi
+		if incus profile device list default --project default 2>/dev/null | grep -qx root; then
+			incus profile device remove default root --project default >/dev/null
+		fi
 		while IFS= read -r fingerprint; do
 			[ -n "$fingerprint" ] || continue
 			incus image delete "$fingerprint" --project default >/dev/null
@@ -814,7 +1023,7 @@ peer_yard_start() {
   install -d -m 0700 "$PEER_ROOT/config"
   printf 'SSH_PORT=3222\nDEV_UID=1001\nBASE_IMAGE=%s\nBASE_IMAGE_FALLBACK=%s\n' \
     "$base_image" "$base_image" > "$PEER_ROOT/config/config.env"
-  timeout --foreground "${P0_PEER_YARD_TIMEOUT:-300}" "$PEER_YARD_ENTRY" init --yes
+  timeout --foreground "${P0_PEER_YARD_TIMEOUT:-600}" "$PEER_YARD_ENTRY" init --yes
   "$PEER_YARD_ENTRY" start --yes
   printf 'ok: VM2 release-installed remote yard is running\n'
 }
@@ -1028,17 +1237,20 @@ peer_projects() {
   chmod 0600 "$ssh_config"
   grep -Fqx "$include" "$ssh_config" || printf '%s\n' "$include" >> "$ssh_config"
   "$PEER_YARD_ENTRY" remote add peer "dev@$PEER_IP" --yes >/dev/null
+  "$PEER_YARD_ENTRY" -Y peer _project-state upsert project project sync yard >/dev/null
   "$PEER_YARD_ENTRY" -Y peer sync "$source" --yes >/dev/null
   inventory="$("$PEER_YARD_ENTRY" list)"
-  grep -Eq '(^|[[:space:]])project([[:space:]]|$)' <<<"$inventory" \
-    || die 'ordinary list did not refresh the remote owner inventory'
-  remote_pwd="$("$PEER_YARD_ENTRY" -Y "$owner_selector" shell project --yes -- pwd)"
+  grep -Eq '(^|[[:space:]])project-2([[:space:]]|$)' <<<"$inventory" \
+    || die 'owner allocation did not override the stale controller inventory'
+  remote_pwd="$("$PEER_YARD_ENTRY" -Y "$owner_selector" shell project-2 --yes -- pwd)"
   case "$remote_pwd" in /srv/workspaces/*/src) ;; *) die 'remote shell did not enter the synced project' ;; esac
-  "$PEER_YARD_ENTRY" -Y "$owner_selector" shell project --yes -- \
+  [ "$remote_pwd" = /srv/workspaces/project-2/src ] \
+    || die "remote shell entered unexpected canonical path $remote_pwd"
+  "$PEER_YARD_ENTRY" -Y "$owner_selector" shell project-2 --yes -- \
     sh -c 'printf "remote-mutated\n" >> result.txt'
-  "$PEER_YARD_ENTRY" -Y "$owner_selector" shell project --yes -- \
+  "$PEER_YARD_ENTRY" -Y "$owner_selector" shell project-2 --yes -- \
     grep -Fqx remote-mutated result.txt
-  printf 'ok: ordinary list refreshed authoritative cross-owner inventory\n'
+  printf 'ok: owner allocation overrode stale controller inventory\n'
 }
 
 peer_projects_offline() {
@@ -1060,20 +1272,21 @@ peer_projects_offline() {
   [ "$rc" = 0 ] || die "aggregate list returned $rc for an offline owner"
   grep -Fqi stale <<<"$inventory" \
     || die "offline owner did not expose its last snapshot as stale: $inventory"
-  grep -Eq '(^|[[:space:]])project([[:space:]]|$)' <<<"$inventory" \
+  grep -Eq '(^|[[:space:]])project-2([[:space:]]|$)' <<<"$inventory" \
     || die 'offline owner lost its explicit stale project snapshot'
   printf 'ok: offline owner returned zero with an explicit stale snapshot\n'
 }
 
 peer_projects_finish() {
-  local source="$PEER_ROOT/project" inventory owner_selector="e2e-vm-2/default"
+  local inventory owner_selector="e2e-vm-2/default"
   [ "$SUBYARD_E2E_VM" = 1 ] || die 'remote project controller requires VM1'
   inventory="$("$PEER_YARD_ENTRY" list --live)"
-  grep -Eq '(^|[[:space:]])project([[:space:]]|$)' <<<"$inventory" \
+  grep -Eq '(^|[[:space:]])project-2([[:space:]]|$)' <<<"$inventory" \
     || die 'force refresh did not recover the remote owner inventory'
-  "$PEER_YARD_ENTRY" -Y "$owner_selector" remove project --yes >/dev/null
+  "$PEER_YARD_ENTRY" -Y "$owner_selector" remove project-2 --yes >/dev/null
+  "$PEER_YARD_ENTRY" -Y peer _project-state unregister project
   inventory="$("$PEER_YARD_ENTRY" list --live)"
-  ! grep -Eq '(^|[[:space:]])project([[:space:]]|$)' <<<"$inventory" \
+  ! grep -Eq '(^|[[:space:]])project(-2)?([[:space:]]|$)' <<<"$inventory" \
     || die 'authoritative replacement retained a removed ghost project'
   printf 'ok: force refresh recovered and authoritative deletion left no ghost project\n'
   printf 'ok: release-installed remote add, sync and two project shells\n'

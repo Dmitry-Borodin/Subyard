@@ -54,12 +54,18 @@ for command in commit push; do
   grep -Fq "pattern = [\"git\", \"$command\"]" "$ROOT/config/agents/codex/rules/repo.rules" \
     || fail "Codex $command gate missing"
 done
-grep -Fq 'default_permissions = ":danger-full-access"' \
+grep -Fq 'approval_policy = "on-request"' \
+  "$ROOT/config/agents/codex/config.toml" \
+  || fail "Codex yard approvals are not interactive"
+grep -Fq 'approvals_reviewer = "user"' \
+  "$ROOT/config/agents/codex/config.toml" \
+  || fail "Codex yard approvals are not routed to the operator"
+grep -Fq 'sandbox_mode = "danger-full-access"' \
   "$ROOT/config/agents/codex/config.toml" \
   || fail "Codex yard permissions are not unrestricted"
-if grep -Eq '^[[:space:]]*(sandbox_mode|\[sandbox_workspace_write\])' \
+if grep -Eq '^[[:space:]]*(default_permissions|\[permissions\.|\[sandbox_workspace_write\])' \
   "$ROOT/config/agents/codex/config.toml"; then
-  fail "Codex yard config mixes permission profiles with legacy sandbox settings"
+  fail "Codex yard config mixes legacy sandbox settings with permission profiles"
 fi
 grep -Fq 'HOST_OPENCODE_AGENTS_MD=' "$ROOT/config/host.env" \
   || fail "OpenCode host instructions are not configurable"

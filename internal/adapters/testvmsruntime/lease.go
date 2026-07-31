@@ -23,7 +23,7 @@ const (
 	LeaseAttributionSchemaVersion = 2
 	LeaseAttributionSchemaV1      = 1
 	LeaseTTL                      = 10 * time.Minute
-	ProvisioningTTL               = 20 * time.Minute
+	ProvisioningTTL               = 30 * time.Minute
 )
 
 const (

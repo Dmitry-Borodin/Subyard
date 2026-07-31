@@ -9,7 +9,7 @@ check||@check||forward|read|public|lifecycle|simple|check|verify the host can ru
 security||@security||forward|read|public|lifecycle|simple|security|validate static and live Incus host-boundary invariants|--quiet --require-live --help|
 init|setup|@init||forward|mutate|public|lifecycle|simple|init|install or reconcile Incus, the yard and its core configuration|--configs --reset --yes --help|
 start||@lifecycle||forward|mutate|public|lifecycle|simple|start|start the yard|--yes --help|
-status||@status||local|read|public|lifecycle|status|status|show yard, SSH, mounts, services, projects, security and size|--all --yes --help|
+status||@status||local|read|public|lifecycle|status|status|summarize all yards or show one selected yard in detail|--all --yes --help|
 logs||@logs||forward|read|public|lifecycle|simple|logs|tail the yard runtime logs|-f -n --yes --help|
 usage||@usage||forward|read|public|lifecycle|simple|usage [args]|show coding-agent token usage|--help|
 keys||@keys||forward|mutate|public|lifecycle|keys|keys [command]|manage the host-only encrypted and versioned credential ledger|--kind --zone --consumer --file --local-only --exclusive --dry-run --manual-only --all --now --yes --help|trust untrust add import list status history sync auto-sync materialize rotate rollback revoke delete resolve move

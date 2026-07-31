@@ -361,7 +361,7 @@ func (cli *CLI) Run(ctx context.Context) int {
 	case "@config":
 		return cli.runConfig(ctx, loaded, commandArguments)
 	case "@status":
-		return cli.runStatus(ctx, loaded, commandArguments)
+		return cli.runStatus(ctx, loaded, explicit, commandArguments)
 	case "@info":
 		return cli.runOwnerInfo(ctx, loaded)
 	case "@yards":
@@ -573,10 +573,9 @@ func (cli *CLI) statusFacts(loaded config.Loaded) ports.StatusFactsReader {
 			return !slices.Contains(profiles, definition.Profile)
 		})
 	}
-	incusPort, executor := cli.statusPorts()
+	incusPort, _ := cli.statusPorts()
 	return statusruntime.Runtime{
-		Environment: environment,
-		Resources:   definitions, Program: cli.options.Program, Executor: executor,
+		Environment: environment, Resources: definitions, Program: cli.options.Program,
 		Security: securityruntime.Runtime{
 			RepositoryRoot: cli.options.RepositoryRoot, Environment: loaded.Environment,
 			Yard: loaded.Context, Incus: incusPort, Stdout: io.Discard, Stderr: io.Discard,
@@ -584,14 +583,24 @@ func (cli *CLI) statusFacts(loaded config.Loaded) ports.StatusFactsReader {
 	}
 }
 
-func (cli *CLI) runStatus(ctx context.Context, loaded config.Loaded, arguments []string) int {
-	all := false
+func (cli *CLI) runStatus(
+	ctx context.Context,
+	loaded config.Loaded,
+	explicit bool,
+	arguments []string,
+) int {
+	all := !cli.yardSelectionExplicit(loaded, explicit)
 	for _, argument := range arguments {
 		switch argument {
 		case "--all":
 			all = true
 		case "-h", "--help":
-			fmt.Fprintf(cli.options.Stdout, "Usage: %s status [--all]\n", cli.options.Program)
+			fmt.Fprintf(cli.options.Stdout, `Usage: %s status [--all]
+
+Without a yard selector, show the owner-inventory summary for all known yards.
+With -Y/--yard or @<yard>, show detailed status for that one yard.
+--all explicitly requests the summary and overrides a yard selector.
+`, cli.options.Program)
 			return 0
 		case "--yes":
 		default:
@@ -1141,6 +1150,11 @@ func ageHuman(age time.Duration) string {
 	}
 }
 
+func (cli *CLI) yardSelectionExplicit(loaded config.Loaded, explicit bool) bool {
+	return explicit || cli.env["SUBYARD_YARD_EXPLICIT"] != "" ||
+		loaded.Context.YardName != "default"
+}
+
 func (cli *CLI) runProjectList(
 	ctx context.Context,
 	loaded config.Loaded,
@@ -1172,7 +1186,7 @@ func (cli *CLI) runProjectList(
 		return 0
 	}
 	selector := cli.env["SUBYARD_INVENTORY_SELECTOR"]
-	explicit = explicit || cli.env["SUBYARD_YARD_EXPLICIT"] != "" || loaded.Context.YardName != "default"
+	explicit = cli.yardSelectionExplicit(loaded, explicit)
 	if selector == "" && explicit {
 		selector = loaded.Context.YardName
 		if loaded.Context.YardType == domain.YardRemote && loaded.Context.RemoteYard != "" {
@@ -2607,8 +2621,10 @@ func (cli *CLI) usage() {
 	fmt.Fprintf(cli.options.Stdout, `Named yards:
   Run several independent yards on one host, each with its own instance, /srv, ssh port,
   personal-data mount root and projects. Pick one for a command with -Y/--yard (or the
-  sugar '@<name>' as the first token); no selection = the default yard, unchanged. Define a
-  installed yard in ~/.config/subyard/yards/<name>/config.env; source checkouts may also use
+  sugar '@<name>' as the first token). Most commands still use the default yard without a
+  selector; 'yard status' instead summarizes all known yards, while '-Y default status'
+  shows its details. Define an installed yard in ~/.config/subyard/yards/<name>/config.env;
+  source checkouts may also use
   private/yards/<name>.env (SSH_PORT required).
   '%s yards' lists them all.
 

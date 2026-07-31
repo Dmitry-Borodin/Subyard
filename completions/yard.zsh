@@ -133,7 +133,11 @@ _yard() {
           ;;
         project) _arguments ${registry_options[@]} '*:project:_yard_code_target' ;;
         project-shell) _arguments ${registry_options[@]} '1:project:_yard_code_target' '*::command: _normal' ;;
-        stop|status|simple|teardown) _arguments ${registry_options[@]} ;;
+        status)
+          _arguments '--all[summarize all yards even when a selector is present]' \
+            '--yes[accept the compatible global option]' '--help[show help]'
+          ;;
+        stop|simple|teardown) _arguments ${registry_options[@]} ;;
         remote)
           if (( CURRENT == 2 )); then
             local -a sub; sub=( ${=command_verbs} )

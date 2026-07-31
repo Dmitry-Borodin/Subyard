@@ -1108,13 +1108,14 @@ func TestNativeStatusUsesTypedPortsAndRendersParityFields(t *testing.T) {
 		}},
 		ExecSteps: []testkit.IncusExecStep{
 			{Result: ports.InstanceExecResult{Stdout: []byte("10.0.0.2\n")}},
-			{Result: ports.InstanceExecResult{Stdout: []byte("active/active/\n")}},
-			{Result: ports.InstanceExecResult{Stdout: []byte("key=yes server=yes git-id=yes")}},
+			{Result: ports.InstanceExecResult{Stdout: []byte(
+				"services=active/active\nvscode=key=yes server=yes git-id=yes\n",
+			)}},
 		},
 	}
 	var stdout, stderr bytes.Buffer
 	program, err := New(Options{
-		RepositoryRoot: root, Program: "yard", Arguments: []string{"status"}, Environment: environment,
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"-Y", "default", "status"}, Environment: environment,
 		WorkingDir: root, Stdout: &stdout, Stderr: &stderr, Incus: fakeIncus, Executor: fakeIncus,
 		StatusFacts: statusFactsStub{value: domain.StatusFacts{
 			Shared:   []domain.SharedResourceStatus{{Profile: "android", Name: "emulator", State: "up", Hint: "yard emu down"}},
@@ -1129,11 +1130,115 @@ func TestNativeStatusUsesTypedPortsAndRendersParityFields(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"yard  RUNNING", "desired  running", "ip       10.0.0.2", "host-demo",
+		"services ssh/docker = active/active", "vscode   key=yes server=yes git-id=yes",
 		"projects 1", "android   emulator", "security static-only", "space    1G",
 	} {
 		if !strings.Contains(stdout.String(), expected) {
 			t.Fatalf("status omitted %q:\n%s", expected, stdout.String())
 		}
+	}
+}
+
+func TestStatusRoutesSummaryAndExplicitYardSelectors(t *testing.T) {
+	tests := []struct {
+		name        string
+		arguments   []string
+		environment []string
+		summary     bool
+		instance    string
+	}{
+		{name: "implicit default", arguments: []string{"status"}, summary: true},
+		{
+			name: "inherited default", arguments: []string{"status"},
+			environment: []string{"SUBYARD_YARD=default"}, summary: true,
+		},
+		{
+			name: "explicit default", arguments: []string{"-Y", "default", "status"},
+			instance: "yard",
+		},
+		{
+			name: "explicit marker default", arguments: []string{"status"},
+			environment: []string{"SUBYARD_YARD=default", "SUBYARD_YARD_EXPLICIT=1"},
+			instance:    "yard",
+		},
+		{
+			name: "explicit named", arguments: []string{"-Y", "demo", "status"},
+			instance: "yard-demo",
+		},
+		{
+			name: "at named", arguments: []string{"@demo", "status"},
+			instance: "yard-demo",
+		},
+		{
+			name: "canonical selector", arguments: []string{"-Y", "owner-a/demo", "status"},
+			instance: "yard-demo",
+		},
+		{
+			name: "at canonical selector", arguments: []string{"@owner-a/demo", "status"},
+			instance: "yard-demo",
+		},
+		{
+			name: "inherited named", arguments: []string{"status"},
+			environment: []string{"SUBYARD_YARD=demo"}, instance: "yard-demo",
+		},
+		{
+			name: "all overrides selector", arguments: []string{"-Y", "demo", "status", "--all"},
+			summary: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, environment, _ := nativeFixture(t)
+			configHome := environmentValue(environment, "SUBYARD_CONFIG_HOME")
+			if err := os.MkdirAll(filepath.Join(configHome, "yards"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeCLIFile(t, filepath.Join(configHome, "yards", "demo.env"), "SSH_PORT=3333\n", 0o600)
+			environment = append(environment, "SUBYARD_HOST_ID=owner-a")
+			environment = append(environment, test.environment...)
+			incus := &testkit.Incus{
+				Instances: map[string]ports.InstanceInfo{
+					"subyard/yard": {
+						Name: "yard", Project: "subyard", Type: domain.InstanceContainer,
+						Status: "Running", Config: map[string]string{}, Devices: map[string]map[string]string{},
+					},
+					"subyard-demo/yard-demo": {
+						Name: "yard-demo", Project: "subyard-demo", Type: domain.InstanceContainer,
+						Status: "Running", Config: map[string]string{}, Devices: map[string]map[string]string{},
+					},
+				},
+				ExecSteps: make([]testkit.IncusExecStep, 8),
+			}
+			var stdout, stderr bytes.Buffer
+			program, err := New(Options{
+				RepositoryRoot: root, Program: "yard", Arguments: test.arguments,
+				Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+				Incus: incus, Executor: incus,
+				StatusFacts: statusFactsStub{value: domain.StatusFacts{Security: "live", Space: "unknown"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code := program.Run(context.Background()); code != 0 {
+				t.Fatalf("status failed: code=%d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+			}
+			if test.summary {
+				if !strings.Contains(stdout.String(), "owner-a/default") ||
+					!strings.Contains(stdout.String(), "owner-a/demo") ||
+					len(incus.ExecCalls) != 0 {
+					t.Fatalf("status did not use inventory summary:\n%s\nexec=%#v", stdout.String(), incus.ExecCalls)
+				}
+				return
+			}
+			if strings.Contains(stdout.String(), "owner-a/") || len(incus.ExecCalls) == 0 {
+				t.Fatalf("status did not use detailed path:\n%s\nexec=%#v", stdout.String(), incus.ExecCalls)
+			}
+			for _, call := range incus.ExecCalls {
+				if call.Name != test.instance {
+					t.Fatalf("status probed %q, want %q: %#v", call.Name, test.instance, incus.ExecCalls)
+				}
+			}
+		})
 	}
 }
 

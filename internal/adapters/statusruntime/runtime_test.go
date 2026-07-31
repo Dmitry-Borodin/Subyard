@@ -4,13 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
-	"github.com/Subyard/Subyard/internal/ports"
 	"github.com/Subyard/Subyard/internal/resource"
-	"github.com/Subyard/Subyard/internal/testkit"
 )
 
 type securityStub struct{ state string }
@@ -19,67 +18,78 @@ func (stub securityStub) CheckSecurity(context.Context, bool, bool) (string, err
 	return stub.state, nil
 }
 
-func TestRuntimeMeasuresAndCachesSpaceNatively(t *testing.T) {
+func TestRuntimeStartsAndReusesAsyncSpaceRefresh(t *testing.T) {
 	root := t.TempDir()
-	now := time.Unix(1_700_000_000, 0)
-	incus := &testkit.Incus{ExecSteps: []testkit.IncusExecStep{{
-		Result: ports.InstanceExecResult{Stdout: []byte("1.5G\n")},
-	}}}
+	environment := fakeIncusEnvironment(t, "printf '1.5G\\n'\n")
 	yard := domain.Context{
-		YardName: "demo", IncusProject: "subyard-demo", InstanceName: "yard-demo",
+		YardName: "default", IncusProject: "subyard", InstanceName: "yard",
 		Paths: domain.RuntimePaths{DataHome: root},
 	}
 	facts, err := (Runtime{
-		Environment: map[string]string{}, Security: securityStub{state: "live"},
-		Executor: incus, Now: func() time.Time { return now },
+		Environment: environment, Security: securityStub{state: "live"},
 	}).ReadStatusFacts(context.Background(), yard, true)
 	if err != nil || len(facts.Shared) != 0 || facts.Security != "live" ||
-		facts.Space != "1.5G  (in-yard rootfs, 0s ago)" {
+		facts.Space != "in-yard size unavailable — refresh started" {
 		t.Fatalf("structured status result changed: %#v err=%v", facts, err)
 	}
-	if len(incus.ExecCalls) != 1 || incus.ExecCalls[0].Project != yard.IncusProject ||
-		incus.ExecCalls[0].Name != yard.InstanceName {
-		t.Fatalf("typed space probe was not used: %#v", incus.ExecCalls)
-	}
-	cache := filepath.Join(root, "space-demo.cache")
-	if payload, err := os.ReadFile(cache); err != nil || string(payload) != "1.5G 1700000000\n" {
-		t.Fatalf("space cache = %q err=%v", payload, err)
-	}
+	cache := filepath.Join(root, "space.cache")
+	waitSpaceCache(t, cache, "1.5G")
 	facts, err = (Runtime{
-		Environment: map[string]string{}, Executor: incus,
-		Now: func() time.Time { return now.Add(time.Second) },
+		Environment: environment,
 	}).ReadStatusFacts(context.Background(), yard, true)
-	if err != nil || facts.Space != "1.5G  (in-yard rootfs, 1s ago)" ||
-		len(incus.ExecCalls) != 1 {
+	if err != nil || !strings.HasPrefix(facts.Space, "1.5G  (in-yard rootfs, ") ||
+		strings.Contains(facts.Space, "refresh started") {
 		t.Fatalf("fresh native cache was not reused: %#v err=%v", facts, err)
 	}
 	facts, err = (Runtime{}).ReadStatusFacts(context.Background(), yard, false)
 	if err != nil || facts.Space != "—  (yard stopped; on-host size: sudo du -sh "+root+")" {
 		t.Fatalf("stopped status = %#v err=%v", facts, err)
 	}
-	if got := spaceCachePath(root, "default"); got != filepath.Join(root, "space-default.cache") {
+	if got := spaceCachePath(root, "default"); got != filepath.Join(root, "space.cache") {
 		t.Fatalf("default yard cache path = %q", got)
+	}
+	if got := spaceCachePath(root, "demo"); got != filepath.Join(root, "space-demo.cache") {
+		t.Fatalf("named yard cache path = %q", got)
 	}
 }
 
-func TestRuntimeKeepsStaleSpaceWhenRefreshFails(t *testing.T) {
+func TestRuntimeKeepsStaleSpaceWhenAsyncRefreshFails(t *testing.T) {
 	root := t.TempDir()
-	measured := time.Unix(1_700_000_000, 0)
+	measured := time.Now().Add(-2 * time.Minute).Truncate(time.Second)
 	if err := writeSpaceCache(filepath.Join(root, "space-demo.cache"), "2G", measured); err != nil {
 		t.Fatal(err)
 	}
-	incus := &testkit.Incus{ExecSteps: []testkit.IncusExecStep{{
-		Result: ports.InstanceExecResult{ExitCode: 1},
-	}}}
+	environment := fakeIncusEnvironment(t, "exit 1\n")
 	facts, err := (Runtime{
-		Environment: map[string]string{"SPACE_TTL": "1"}, Executor: incus,
-		Now: func() time.Time { return measured.Add(2 * time.Minute) },
+		Environment: mapMerge(environment, map[string]string{"SPACE_TTL": "1"}),
+		Now:         func() time.Time { return measured.Add(2 * time.Minute) },
 	}).ReadStatusFacts(context.Background(), domain.Context{
 		YardName: "demo", IncusProject: "subyard-demo", InstanceName: "yard-demo",
 		Paths: domain.RuntimePaths{DataHome: root},
 	}, true)
-	if err != nil || facts.Space != "2G  (in-yard rootfs, 2m ago, refresh failed)" {
+	if err != nil || facts.Space != "2G  (in-yard rootfs, 2m ago, refresh started)" {
 		t.Fatalf("stale status result = %#v err=%v", facts, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	figure, cachedAt := readSpaceCache(filepath.Join(root, "space-demo.cache"))
+	if figure != "2G" || !cachedAt.Equal(measured) {
+		t.Fatalf("failed refresh replaced valid cache: figure=%q measured=%s", figure, cachedAt)
+	}
+}
+
+func TestRuntimeSkipsRefreshWhenCacheCannotBeWritten(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	facts, err := (Runtime{Environment: fakeIncusEnvironment(t, "printf '1G\\n'\n")}).
+		ReadStatusFacts(context.Background(), domain.Context{
+			YardName: "demo", IncusProject: "subyard-demo", InstanceName: "yard-demo",
+			Paths: domain.RuntimePaths{DataHome: filepath.Join(blocker, "data")},
+		}, true)
+	if err != nil || facts.Space != "in-yard size unavailable" {
+		t.Fatalf("unwritable cache started expensive refresh: facts=%#v err=%v", facts, err)
 	}
 }
 
@@ -101,16 +111,16 @@ func TestRuntimeProbesPreparedResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	incus := &testkit.Incus{ExecSteps: []testkit.IncusExecStep{{
-		Result: ports.InstanceExecResult{Stdout: []byte("1G\n")},
-	}}}
+	dataHome := filepath.Join(root, "data")
+	if err := writeSpaceCache(filepath.Join(dataHome, "space.cache"), "1G", time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	facts, err := (Runtime{
 		Environment: map[string]string{"PATH": "/usr/bin:/bin"},
 		Resources:   registry.Definitions(), Program: "yard", Security: securityStub{state: "live"},
-		Executor: incus,
 	}).ReadStatusFacts(context.Background(), domain.Context{
 		IncusProject: "subyard", InstanceName: "yard",
-		Paths: domain.RuntimePaths{DataHome: filepath.Join(root, "data")},
+		Paths: domain.RuntimePaths{DataHome: dataHome},
 	}, true)
 	if err != nil || len(facts.Shared) != 1 {
 		t.Fatalf("resource status failed: %#v err=%v", facts, err)
@@ -119,4 +129,106 @@ func TestRuntimeProbesPreparedResources(t *testing.T) {
 	if status.Profile != "demo" || status.Name != "service" || status.State != "up" || status.Hint != "yard svc down" {
 		t.Fatalf("unexpected resource status: %#v", status)
 	}
+}
+
+func TestRuntimeBoundsProfileResourceProbe(t *testing.T) {
+	root := t.TempDir()
+	resources := filepath.Join(root, "config", "profiles", "demo", "resources")
+	if err := os.MkdirAll(filepath.Join(resources, "service"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(resources, "service.res"), []byte(
+		"COMMAND=svc\nHANDLER=resources/service/handler.sh\nTITLE=Service\nVERBS=up down\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := filepath.Join(resources, "service", "handler.sh")
+	if err := os.WriteFile(handler, []byte("#!/bin/sh\nsleep 2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := resource.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataHome := filepath.Join(root, "data")
+	if err := writeSpaceCache(filepath.Join(dataHome, "space.cache"), "1G", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	facts, err := (Runtime{
+		Environment:  map[string]string{"PATH": "/usr/bin:/bin"},
+		Resources:    registry.Definitions(),
+		ProbeTimeout: 20 * time.Millisecond,
+	}).ReadStatusFacts(context.Background(), domain.Context{
+		Paths: domain.RuntimePaths{DataHome: dataHome},
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("profile probe exceeded its deadline: %s", elapsed)
+	}
+	if len(facts.Shared) != 1 || facts.Shared[0].State != "?" || facts.Shared[0].Hint != "" {
+		t.Fatalf("timed out profile did not degrade independently: %#v", facts.Shared)
+	}
+}
+
+func TestRuntimeRunsOnlyOneConcurrentSpaceRefresh(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	environment := fakeIncusEnvironment(t, "printf 'x\\n' >>\"$SPACE_CALLS\"\nsleep 0.2\nprintf '3G\\n'\n")
+	environment["SPACE_CALLS"] = calls
+	runtime := Runtime{Environment: environment}
+	yard := domain.Context{
+		YardName: "demo", IncusProject: "subyard-demo", InstanceName: "yard-demo",
+		Paths: domain.RuntimePaths{DataHome: root},
+	}
+	for range 3 {
+		if _, err := runtime.ReadStatusFacts(context.Background(), yard, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitSpaceCache(t, filepath.Join(root, "space-demo.cache"), "3G")
+	payload, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(payload), "\n"); got != 1 {
+		t.Fatalf("concurrent status started %d expensive refreshes: %q", got, payload)
+	}
+}
+
+func fakeIncusEnvironment(t *testing.T, body string) map[string]string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "incus"), []byte("#!/bin/sh\nset -eu\n"+body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return map[string]string{"PATH": bin + string(os.PathListSeparator) + os.Getenv("PATH")}
+}
+
+func waitSpaceCache(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if figure, _ := readSpaceCache(path); figure == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	payload, err := os.ReadFile(path)
+	t.Fatalf("space cache did not reach %q: payload=%q err=%v", want, payload, err)
+}
+
+func mapMerge(base, extra map[string]string) map[string]string {
+	result := make(map[string]string, len(base)+len(extra))
+	for key, value := range base {
+		result[key] = value
+	}
+	for key, value := range extra {
+		result[key] = value
+	}
+	return result
 }

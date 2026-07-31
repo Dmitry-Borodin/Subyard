@@ -13,8 +13,14 @@ name derives the instance, Incus project, SSH alias, storage volume and host-dat
 ```sh
 yard -Y openclaw init
 yard @openclaw status
+yard status
+yard -Y default status
 yard yards
 ```
+
+`yard status` summarizes all local and owner-inventory yards. An explicit selector, including
+`-Y default`, requests detailed status for exactly one yard; `yard status --all` remains the
+explicit summary form.
 
 Scalar-setting precedence is:
 

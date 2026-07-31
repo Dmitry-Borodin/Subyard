@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
@@ -17,12 +18,12 @@ import (
 )
 
 type Runtime struct {
-	Environment map[string]string
-	Resources   []resource.Definition
-	Program     string
-	Security    ports.SecurityChecker
-	Executor    ports.InstanceExecutor
-	Now         func() time.Time
+	Environment  map[string]string
+	Resources    []resource.Definition
+	Program      string
+	Security     ports.SecurityChecker
+	Now          func() time.Time
+	ProbeTimeout time.Duration
 }
 
 func (runtime Runtime) ReadStatusFacts(
@@ -61,64 +62,98 @@ func (runtime Runtime) space(ctx context.Context, yard domain.Context, running b
 		ttl = time.Duration(seconds) * time.Second
 	}
 	stale := figure == "" || now.Sub(measured) > ttl
-	refreshFailed := false
-	if stale {
-		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		next, ok := runtime.measureSpace(refreshCtx, yard)
-		cancel()
-		if ok {
-			figure, measured = next, now
-			_ = writeSpaceCache(cache, next, now)
-		} else {
-			refreshFailed = figure != ""
-		}
+	refreshing := false
+	if stale && ctx.Err() == nil {
+		refreshing = runtime.startSpaceRefresh(yard, cache)
 	}
 	if figure == "" {
-		return "in-yard size unavailable — re-run status in a moment"
+		if refreshing {
+			return "in-yard size unavailable — refresh started"
+		}
+		return "in-yard size unavailable"
 	}
 	age := now.Sub(measured)
 	if age < 0 {
 		age = 0
 	}
 	note := ""
-	if refreshFailed {
-		note = ", refresh failed"
+	if stale {
+		note = ", refresh unavailable"
+		if refreshing {
+			note = ", refresh started"
+		}
 	}
 	return fmt.Sprintf("%s  (in-yard rootfs, %s ago%s)", figure, ageHuman(age), note)
 }
 
-func (runtime Runtime) measureSpace(
-	ctx context.Context,
-	yard domain.Context,
-) (string, bool) {
-	if runtime.Executor == nil {
-		return "", false
+func (runtime Runtime) startSpaceRefresh(yard domain.Context, cache string) bool {
+	directory := filepath.Dir(cache)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return false
 	}
-	result, err := runtime.Executor.Exec(ctx, yard.IncusProject, yard.InstanceName,
-		ports.InstanceExecRequest{Command: []string{"sh", "-c", `
-set --
-while read -r _ mountpoint _; do
-  case "$mountpoint" in /|/srv) ;; *) set -- "$@" "--exclude=$mountpoint" ;; esac
-done < /proc/mounts
-du -sxh "$@" / 2>/dev/null | awk '{print $1}'
-`}})
-	if err != nil || result.ExitCode != 0 {
-		return "", false
+	probe, err := os.CreateTemp(directory, ".space-refresh-probe-")
+	if err != nil {
+		return false
 	}
-	fields := strings.Fields(string(result.Stdout))
-	if len(fields) != 1 || !validSpaceFigure(fields[0]) {
-		return "", false
+	probeName := probe.Name()
+	if closeErr := probe.Close(); closeErr != nil {
+		_ = os.Remove(probeName)
+		return false
 	}
-	return fields[0], true
+	if err := os.Remove(probeName); err != nil {
+		return false
+	}
+	refresh := exec.Command(
+		"/bin/sh", "-c", spaceRefreshScript, "yard-space-refresh",
+		cache, yard.IncusProject, yard.InstanceName,
+	)
+	refresh.Env = environment(runtime.Environment)
+	refresh.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := refresh.Start(); err != nil {
+		return false
+	}
+	_ = refresh.Process.Release()
+	return true
 }
 
 func spaceCachePath(dataHome, yardName string) string {
 	suffix := ""
-	if yardName != "" {
+	if yardName != "" && yardName != "default" {
 		suffix = "-" + yardName
 	}
 	return filepath.Join(dataHome, "space"+suffix+".cache")
 }
+
+// Incus 6.0.6 returns no disk state for managed / and /srv devices on both containers and VMs,
+// so detailed status keeps size off its foreground path and refreshes this compatible cache.
+const spaceRefreshScript = `
+set -eu
+cache=$1
+project=$2
+instance=$3
+lock=$cache.lock
+temporary=$cache.tmp
+umask 077
+exec 9>"$lock"
+flock -n 9 || exit 0
+trap 'rm -f -- "$temporary"' EXIT HUP INT TERM
+if [ -n "${SUBYARD_INCUS_SOCKET:-}" ]; then
+  export INCUS_SOCKET=$SUBYARD_INCUS_SOCKET
+fi
+figure="$(
+  timeout --signal=TERM --kill-after=1s 10s \
+    incus exec "$instance" --project "$project" -- sh -c '
+      set -- /
+      grep -qs " /srv " /proc/mounts && set -- "$@" /srv
+      du -sxch "$@" 2>/dev/null | awk "END { print \$1 }"
+    '
+)" || exit 0
+printf '%s\n' "$figure" | grep -Eq '^[0-9]+([.][0-9]+)?[KMGTPEZY]?(i?B)?$' || exit 0
+[ -e "$lock" ] || exit 0
+printf '%s %s\n' "$figure" "$(date +%s)" >"$temporary"
+mv -f -- "$temporary" "$cache"
+trap - EXIT HUP INT TERM
+`
 
 func readSpaceCache(path string) (string, time.Time) {
 	payload, err := os.ReadFile(path)
@@ -197,14 +232,26 @@ func (runtime Runtime) resourceStatus(ctx context.Context, running bool) []domai
 	if program == "" {
 		program = "yard"
 	}
+	timeout := runtime.ProbeTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
 	for _, definition := range runtime.Resources {
 		status := domain.SharedResourceStatus{
 			Profile: definition.Profile, Name: definition.Name, State: "?",
 		}
 		if running {
-			probe := exec.CommandContext(ctx, definition.HandlerPath(), "is-up")
+			probeCtx, cancel := context.WithTimeout(ctx, timeout)
+			probe := exec.CommandContext(probeCtx, definition.HandlerPath(), "is-up")
 			probe.Env = environment(runtime.Environment)
-			if probe.Run() == nil {
+			err := probe.Run()
+			timedOut := probeCtx.Err() != nil
+			cancel()
+			if timedOut {
+				result = append(result, status)
+				continue
+			}
+			if err == nil {
 				status.State = "up"
 				status.Hint = program + " " + definition.Command + " " + definition.Shutdown
 			} else {

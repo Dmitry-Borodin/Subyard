@@ -5,16 +5,18 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
 )
 
 type StatusService struct {
-	Incus    ports.Incus
-	Executor ports.InstanceExecutor
-	Store    ports.ProjectStore
-	Facts    ports.StatusFactsReader
+	Incus        ports.Incus
+	Executor     ports.InstanceExecutor
+	Store        ports.ProjectStore
+	Facts        ports.StatusFactsReader
+	ProbeTimeout time.Duration
 }
 
 func (service StatusService) Read(ctx context.Context, yard domain.Context) (domain.YardStatus, error) {
@@ -53,9 +55,23 @@ func (service StatusService) Read(ctx context.Context, yard domain.Context) (dom
 	sort.Strings(status.Mounts)
 	if running && service.Executor != nil {
 		status.IP = service.execLine(ctx, yard, []string{"sh", "-c", `ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1`}, nil)
-		status.Services = strings.TrimSuffix(service.execLine(ctx, yard,
-			[]string{"sh", "-c", `systemctl is-active ssh docker 2>/dev/null | tr '\n' '/'`}, nil), "/")
-		status.VSCode = service.execLine(ctx, yard, []string{"sh", "-c", `d="/home/$DU"; printf "key=%s server=%s git-id=%s" "$([ -s "$d/.ssh/authorized_keys" ] && echo yes || echo no)" "$([ -d "$d/.vscode-server" ] && echo yes || echo not-yet)" "$([ -s "$d/.gitconfig" ] && echo yes || echo no)"`}, map[string]string{"DU": yard.DevUser})
+		status.Services, status.VSCode = "?", "?"
+		details := service.execLine(ctx, yard, []string{"sh", "-c", `
+d="/home/$DU"
+printf 'services=%s\n' "$(systemctl is-active ssh docker 2>/dev/null | tr '\n' '/' | sed 's:/$::')"
+printf 'vscode=key=%s server=%s git-id=%s\n' \
+  "$([ -s "$d/.ssh/authorized_keys" ] && echo yes || echo no)" \
+  "$([ -d "$d/.vscode-server" ] && echo yes || echo not-yet)" \
+  "$([ -s "$d/.gitconfig" ] && echo yes || echo no)"
+`}, map[string]string{"DU": yard.DevUser})
+		for _, line := range strings.Split(details, "\n") {
+			if value, ok := strings.CutPrefix(line, "services="); ok {
+				status.Services = value
+			}
+			if value, ok := strings.CutPrefix(line, "vscode="); ok {
+				status.VSCode = value
+			}
+		}
 	}
 	return status, nil
 }
@@ -66,9 +82,15 @@ func (service StatusService) execLine(
 	command []string,
 	environment map[string]string,
 ) string {
-	result, err := service.Executor.Exec(ctx, yard.IncusProject, yard.InstanceName,
+	timeout := service.ProbeTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result, err := service.Executor.Exec(probeCtx, yard.IncusProject, yard.InstanceName,
 		ports.InstanceExecRequest{Command: command, Environment: environment})
-	if err != nil {
+	if err != nil || result.ExitCode != 0 || probeCtx.Err() != nil {
 		return "?"
 	}
 	return strings.TrimSpace(string(result.Stdout))

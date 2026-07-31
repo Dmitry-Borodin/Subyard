@@ -76,13 +76,16 @@ inventory selectors use the stable `<HostID>/<yard>` identity:
 ```bash
 yard -Y openclaw init
 yard @openclaw status
+yard status
+yard @default status
 
 yard remote add srv1 me@srv1
 yard list
 yard -Y owner-host/default list
 ```
 
-Use a full selector when a short name is ambiguous. Remote yards support `sync` and `clone`;
+Use a full selector
+when a short name is ambiguous. Remote yards support `sync` and `clone`;
 `bind` is local-only. See
 [Subyard configuration](docs/configuration.md), [named yards](config/yards/README.md), and the
 [credential ledger](docs/keys.md).

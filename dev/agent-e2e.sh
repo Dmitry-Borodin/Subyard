@@ -880,6 +880,7 @@ build_bundle() {
 write_guest_command() {
 	local vm="$1" directory="$2"; shift 2
 	printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+	printf 'chown -R dev:dev %q\n' "$directory"
 	printf 'cd %q\n' "$directory/src"
 	printf 'export SUBYARD_E2E_YARD=%q\n' "$E2E_YARD"
 	printf 'export SUBYARD_E2E_PROJECT=%q\n' "$LEASE_PROJECT"
@@ -888,9 +889,9 @@ write_guest_command() {
 	printf 'export SUBYARD_E2E_SLOT=%q\n' "$LEASE_SLOT"
 	printf 'export SUBYARD_E2E_VM=%q\n' "$vm"
 	if [ "${1:-}" = ./bin/yard ]; then
-		printf './dev/build-engine.sh\n'
+		printf '/usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev ./dev/build-engine.sh\n'
 	fi
-	printf 'exec'
+	printf 'exec /usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev'
 	printf ' %q' "$@"
 	printf '\n'
 }

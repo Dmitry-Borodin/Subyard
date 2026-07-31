@@ -158,18 +158,27 @@ rm "$fixture/escaping-link"
 command_root="$TMP/command path"
 mkdir -p "$command_root/src"
 write_guest_command 2 "$command_root" sh -c \
-  'test "$SUBYARD_E2E_VM" = 2 && test "$1" = "argument with spaces"' fixture 'argument with spaces' \
+  'test "$(id -un)" = dev && test "$SUBYARD_E2E_VM" = 2 && test "$1" = "argument with spaces"' \
+  fixture 'argument with spaces' \
   > "$TMP/run.sh"
-bash "$TMP/run.sh" || fail "guest command did not preserve its argv or VM selector"
+bash -n "$TMP/run.sh" || fail "guest command is not valid shell"
+printf -v command_root_q '%q' "$command_root"
+grep -Fxq "chown -R dev:dev $command_root_q" "$TMP/run.sh" \
+  && grep -Fq 'exec /usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev sh -c' \
+    "$TMP/run.sh" \
+  && grep -Fq 'fixture argument\ with\ spaces' "$TMP/run.sh" \
+  || fail "guest command does not run as dev or preserve its argv"
 grep -Fxq 'export SUBYARD_E2E_YARD=test-yard' "$TMP/run.sh" \
   && grep -Fxq 'export SUBYARD_E2E_PROJECT=Subyard-2' "$TMP/run.sh" \
   && grep -Fxq "export SUBYARD_E2E_RUN_ID=$run_a" "$TMP/run.sh" \
   && grep -Fxq 'export SUBYARD_E2E_PURPOSE=contract-tests' "$TMP/run.sh" \
   || fail "guest command omitted public lease context"
 write_guest_command 1 "$command_root" ./bin/yard --version > "$TMP/yard-run.sh"
-grep -Fxq './dev/build-engine.sh' "$TMP/yard-run.sh" \
+grep -Fxq '/usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev ./dev/build-engine.sh' \
+  "$TMP/yard-run.sh" \
   || fail "direct guest yard command does not build its explicit development engine"
-grep -Fxq 'exec ./bin/yard --version' "$TMP/yard-run.sh" \
+grep -Fxq 'exec /usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev ./bin/yard --version' \
+  "$TMP/yard-run.sh" \
   || fail "direct guest yard command changed its argv after the development build"
 quoted="$(quote_ssh_command bash -c 'test "$1" = "argument with spaces"' _ 'argument with spaces')"
 bash -c "$quoted" || fail "direct SSH command did not preserve its argv"
@@ -376,6 +385,15 @@ grep -Fq "$long_project" <<<"$long_rendered_status" \
 guest() {
   shift
   if [ "${1:-}" = sudo ] && [ "${2:-}" = -n ]; then shift 2; fi
+  case "${1:-}" in
+    /tmp/subyard-worktree.*/run.sh)
+      sed \
+        -e '/^chown -R dev:dev /d' \
+        -e 's#^exec /usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev #exec #' \
+        "$1" | bash
+      return
+      ;;
+  esac
   "$@"
 }
 mock_bundle="$TMP/mock.tar.gz"

@@ -75,6 +75,27 @@ func fixturePublicKey(t *testing.T) string {
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 }
 
+func TestCloudConfigLeavesToolchainToExplicitReconciliation(t *testing.T) {
+	cfg := fixtureConfig(t)
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	publicKey := fixturePublicKey(t)
+	if err := os.WriteFile(cfg.keyPath()+".pub", []byte(publicKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload := (&Runtime{Config: cfg}).cloudConfig()
+	if !strings.Contains(payload, "name: dev") ||
+		!strings.Contains(payload, publicKey) {
+		t.Fatalf("cloud config omitted the dev bootstrap: %s", payload)
+	}
+	for _, duplicate := range []string{"package_update:", "packages:", "runcmd:"} {
+		if strings.Contains(payload, duplicate) {
+			t.Fatalf("cloud config retained duplicate provisioning %q: %s", duplicate, payload)
+		}
+	}
+}
+
 func TestAcquireSlotRejectsInsufficientCapacityBeforeMutation(t *testing.T) {
 	runtime := &Runtime{Config: fixtureConfig(t)}
 	runtime.AvailableBytes = func(string) (uint64, error) {
@@ -118,7 +139,7 @@ func TestInstallLeaseContextUsesBoundedAtomicGuestFile(t *testing.T) {
 	runtime := &Runtime{Config: cfg, Runner: runner}
 	leaseContext := LeaseContext{
 		SchemaVersion: LeaseAttributionSchemaVersion,
-		Project:       "Subyard/Subyard", Checkout: "checkout-a", Run: "run-a", Purpose: "unit-tests",
+		Yard:          "default", Project: "Subyard-2", Run: "run-a", Purpose: "unit-tests",
 	}
 	grant := LeaseGrant{SlotID: "slot-001", Context: &leaseContext}
 	if err := runtime.installLeaseContext(
@@ -128,8 +149,8 @@ func TestInstallLeaseContextUsesBoundedAtomicGuestFile(t *testing.T) {
 	}
 	joined := strings.Join(guestArguments, "\n")
 	for _, expected := range []string{
-		`"project":"Subyard/Subyard"`,
-		`"checkout":"checkout-a"`,
+		`"yard":"default"`,
+		`"project":"Subyard-2"`,
 		`"run":"run-a"`,
 		`"purpose":"unit-tests"`,
 		`"slot":"slot-001"`,

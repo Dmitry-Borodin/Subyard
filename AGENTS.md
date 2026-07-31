@@ -31,7 +31,7 @@ dev/agent-e2e.sh --purpose real-host-check --vm 1 -- ./tests/some-real-host-chec
 
 The runner filters private/ignored files, verifies the bundle and removes its guest worktree.
 Use human `--status`, explicit `--status --json`, bounded `--wait` and `--ssh 1|2` for diagnostics.
-Every invocation acquires a new broker slot and prints `project + checkout + run + purpose`;
+Every invocation acquires a new broker slot and prints `yard + project + run + purpose`;
 `e2e-vm-1/2` are relative to that lease, not physical slot names. Optional `--slot N` is an atomic
 broker request that fails without fallback; it is not permission to enter a physical VM directly.
 Keep stateful steps in one wrapper invocation or interactive SSH lease. Raw OpenSSH configuration is

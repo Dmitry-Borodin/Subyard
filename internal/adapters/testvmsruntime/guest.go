@@ -27,10 +27,6 @@ users:
     passwd: x
     ssh_authorized_keys:
       - ` + workerKey + "\n" + agentLine + `ssh_pwauth: false
-package_update: true
-packages: [openssh-server, sudo, git, curl, jq, ripgrep, golang-go, shellcheck]
-runcmd:
-  - [systemctl, enable, --now, ssh]
 `
 }
 
@@ -225,8 +221,8 @@ func (runtime *Runtime) installLeaseContext(
 ) error {
 	context := LeaseContext{
 		SchemaVersion: LeaseAttributionSchemaVersion,
+		Yard:          "unknown",
 		Project:       "legacy",
-		Checkout:      "unknown",
 		Run:           "unknown",
 		Purpose:       "agent-e2e",
 	}
@@ -235,13 +231,15 @@ func (runtime *Runtime) installLeaseContext(
 	}
 	payload, err := json.Marshal(struct {
 		SchemaVersion int    `json:"schema_version"`
+		Yard          string `json:"yard,omitempty"`
 		Project       string `json:"project"`
-		Checkout      string `json:"checkout"`
+		Checkout      string `json:"checkout,omitempty"`
 		Run           string `json:"run"`
 		Purpose       string `json:"purpose"`
 		Slot          string `json:"slot"`
 	}{
 		SchemaVersion: context.SchemaVersion,
+		Yard:          context.Yard,
 		Project:       context.Project,
 		Checkout:      context.Checkout,
 		Run:           context.Run,

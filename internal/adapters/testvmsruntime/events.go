@@ -478,8 +478,17 @@ func sortBrokerEvents(events []BrokerEvent) {
 }
 
 func leaseContextFromSlot(slot LeaseSlot) *LeaseContext {
+	schema := LeaseAttributionSchemaV1
+	yard := slot.Yard
+	if yard != "" || slot.Checkout == "" {
+		schema = LeaseAttributionSchemaVersion
+		if yard == "" {
+			yard = "unknown"
+		}
+	}
 	context := LeaseContext{
-		SchemaVersion: LeaseAttributionSchemaVersion,
+		SchemaVersion: schema,
+		Yard:          yard,
 		Project:       slot.Project,
 		Checkout:      slot.Checkout,
 		Run:           slot.Run,

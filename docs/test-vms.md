@@ -68,9 +68,9 @@ forwarding or Incus access.
 Inspect the redacted pool without acquiring:
 
 ```text
-SLOT     STATE        PROJECT                          CHECKOUT   RUN        PURPOSE                  AGE      EXPIRES
-slot-001 held         Subyard/Subyard                  7bd18a3c   c291a4ef   release-migration        3m12s    in 9m48s
-slot-002 available    -                                -          -          -                        -        -
+SLOT     STATE        YARD             PROJECT                          RUN        PURPOSE                  AGE      EXPIRES
+slot-001 held         default          Subyard-2                        c291a4ef   release-migration        3m12s    in 9m48s
+slot-002 available    -                -                                -          -                        -        -
 ```
 
 ```sh
@@ -78,14 +78,22 @@ dev/agent-e2e.sh --status
 dev/agent-e2e.sh --status --json
 ```
 
-The active holder is reported as `project + checkout + run + purpose`. Project is a safe repository
-label, checkout is a persistent opaque worktree ID, and run is a new public correlation ID per
-acquire. These fields are untrusted display metadata: authorization and fencing still use hidden
-lease credentials. Status never publishes controller fingerprints, lease IDs/capabilities, absolute
-checkout paths, Git credentials, command lines, guest endpoints or the full failure reason. A
+The active holder is reported as `yard + project + run + purpose`. Project is the canonical Subyard
+project name from managed workspace metadata, and run is a new public correlation ID per acquire.
+Before metadata convergence, a safe enclosing legacy project ID is reported unchanged with
+`yard=unknown`; the runner never strips a suffix or guesses a name. These fields are untrusted
+display metadata: authorization and fencing still use hidden lease credentials. Status never
+publishes controller fingerprints, lease IDs/capabilities, absolute checkout paths, Git credentials,
+command lines, guest endpoints or the full failure reason. A
 quarantined or recovering slot instead exposes bounded recovery metadata:
 `last_failure_event_id`, `incident_id`, `recovery_attempt` and `next_recovery_at`. For an available
 retained slot, the attribution columns are empty.
+
+New runners discover the broker's `attribution-v2` capability through read-only status and use the
+typed `acquire-v2` command. During a rolling update, a new broker continues to accept legacy
+schema-1 acquire requests. A new runner falls back to an opaque `<project>+<run>` legacy label only
+after the old broker explicitly rejects the unsupported command before allocation; transport
+failures and unknown outcomes are never retried.
 
 Run against both VMs of one automatically selected slot:
 
@@ -100,6 +108,7 @@ Request one exact broker slot when a coordinated run requires it:
 
 ```sh
 dev/agent-e2e.sh --slot 1 --purpose coordinated-check --vm 1 -- ./tests/some-real-host-check.sh
+SUBYARD_P0_SLOT=1 dev/e2e/p0-acceptance.sh
 ```
 
 The exact selector is part of atomic lease acquisition. A busy, quarantined, unavailable or unknown
@@ -127,7 +136,7 @@ or raw SSH access.
 
 Before guest access, the runner prints the exact assignment and the broker installs the same public
 context at `/run/subyard-e2e-lease.json`. Normal payloads also receive
-`SUBYARD_E2E_PROJECT`, `SUBYARD_E2E_CHECKOUT`, `SUBYARD_E2E_RUN_ID`,
+`SUBYARD_E2E_YARD`, `SUBYARD_E2E_PROJECT`, `SUBYARD_E2E_RUN_ID`,
 `SUBYARD_E2E_PURPOSE`, `SUBYARD_E2E_SLOT` and `SUBYARD_E2E_VM`.
 
 ## Lifecycle and fencing

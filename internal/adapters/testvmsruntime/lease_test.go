@@ -355,6 +355,36 @@ func TestLeaseStoreCombinedLabelPublishesOnlyCurrentAttribution(t *testing.T) {
 	}
 }
 
+func TestLeaseStoreV2PublishesCanonicalProjectWithoutCheckout(t *testing.T) {
+	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 1}
+	grant, err := store.AcquireV2(
+		"client", "SHA256:key", "default", "Subyard-2", "run-a", "unit-tests",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Context == nil || grant.Context.SchemaVersion != 2 ||
+		grant.Context.Yard != "default" || grant.Context.Project != "Subyard-2" ||
+		grant.Context.Checkout != "" || grant.Context.Run != "run-a" {
+		t.Fatalf("v2 grant context = %#v", grant.Context)
+	}
+	pool, err := store.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := pool.Slots[0]
+	if slot.Yard != "default" || slot.Project != "Subyard-2" ||
+		slot.Checkout != "" || slot.DisplayLabel != "Subyard-2#run-a" {
+		t.Fatalf("v2 slot = %#v", slot)
+	}
+	if _, err := store.MarkHeld(grant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Renew(grant); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLeaseStoreRejectsUnsafeAttributionBeforeMutation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "leases.json")
 	store := LeaseStore{Path: path, SlotCount: 1}

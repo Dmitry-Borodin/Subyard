@@ -133,6 +133,60 @@ func TestFacadeExactSlotAcquireIsBackwardCompatible(t *testing.T) {
 	}
 }
 
+func TestFacadeAdvertisesAndAcceptsAttributionV2(t *testing.T) {
+	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 2}
+	var output bytes.Buffer
+	facade := Facade{Store: store, Output: &output}
+	if err := facade.Run("status"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"capabilities":["attribution-v2"]`) {
+		t.Fatalf("status omitted attribution capability: %s", output.String())
+	}
+	output.Reset()
+	key := strings.Fields(fixturePublicKey(t))
+	command := strings.Join([]string{
+		"acquire-v2", "client", "SHA256:key", "default", "Subyard-2",
+		"run-a", "tests", key[0], key[1], "slot-002",
+	}, " ")
+	if err := facade.Run(command); err != nil {
+		t.Fatal(err)
+	}
+	var response facadeResponse
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Grant == nil || response.Grant.SlotID != "slot-002" ||
+		response.Grant.Context == nil || response.Grant.Context.SchemaVersion != 2 ||
+		response.Grant.Context.Yard != "default" ||
+		response.Grant.Context.Project != "Subyard-2" ||
+		response.Grant.Context.Checkout != "" {
+		t.Fatalf("v2 response = %s", output.String())
+	}
+}
+
+func TestFacadeAcceptsSafeOpaqueNewClientOldBrokerFallback(t *testing.T) {
+	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 1}
+	var output bytes.Buffer
+	facade := Facade{Store: store, Output: &output}
+	key := strings.Fields(fixturePublicKey(t))
+	command := strings.Join([]string{
+		"acquire", "client", "SHA256:key", "Subyard-2+run-a",
+		"tests", key[0], key[1], "slot-001",
+	}, " ")
+	if err := facade.Run(command); err != nil {
+		t.Fatal(err)
+	}
+	var response facadeResponse
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Grant == nil || response.Grant.SlotID != "slot-001" ||
+		response.Grant.Context != nil {
+		t.Fatalf("opaque fallback response = %s", output.String())
+	}
+}
+
 func TestFacadeReleaseReplayAndWrongCredentialsReturnLeaseLost(t *testing.T) {
 	store := LeaseStore{Path: filepath.Join(t.TempDir(), "leases.json"), SlotCount: 1}
 	var output bytes.Buffer

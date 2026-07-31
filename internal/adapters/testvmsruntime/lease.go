@@ -13,12 +13,15 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Subyard/Subyard/internal/domain"
 )
 
 const (
 	LeaseSchemaVersion            = 1
 	LeaseRecoverySchemaVersion    = 1
-	LeaseAttributionSchemaVersion = 1
+	LeaseAttributionSchemaVersion = 2
+	LeaseAttributionSchemaV1      = 1
 	LeaseTTL                      = 10 * time.Minute
 	ProvisioningTTL               = 20 * time.Minute
 )
@@ -54,6 +57,7 @@ type LeaseSlot struct {
 	ClientID              string    `json:"client_id,omitempty"`
 	ControllerFingerprint string    `json:"controller_fingerprint,omitempty"`
 	DisplayLabel          string    `json:"display_label,omitempty"`
+	Yard                  string    `json:"yard,omitempty"`
 	Project               string    `json:"project,omitempty"`
 	Checkout              string    `json:"checkout,omitempty"`
 	Run                   string    `json:"run,omitempty"`
@@ -110,8 +114,9 @@ type LeaseGrant struct {
 
 type LeaseContext struct {
 	SchemaVersion int    `json:"schema_version"`
+	Yard          string `json:"yard,omitempty"`
 	Project       string `json:"project"`
-	Checkout      string `json:"checkout"`
+	Checkout      string `json:"checkout,omitempty"`
 	Run           string `json:"run"`
 	Purpose       string `json:"purpose"`
 }
@@ -163,6 +168,40 @@ func (store LeaseStore) AcquireSlot(
 	return store.acquire(clientID, fingerprint, label, purpose, context, slotID)
 }
 
+func (store LeaseStore) AcquireV2(
+	clientID, fingerprint, yard, project, run, purpose string,
+) (LeaseGrant, error) {
+	context := LeaseContext{
+		SchemaVersion: LeaseAttributionSchemaVersion,
+		Yard:          yard, Project: project, Run: run, Purpose: purpose,
+	}
+	if err := validateLeaseContext(context); err != nil {
+		return LeaseGrant{}, err
+	}
+	return store.acquire(
+		clientID, fingerprint, contextDisplayLabel(context), purpose, &context, "",
+	)
+}
+
+func (store LeaseStore) AcquireV2Slot(
+	clientID, fingerprint, yard, project, run, purpose, slotID string,
+) (LeaseGrant, error) {
+	number, err := slotNumber(slotID, store.SlotCount)
+	if err != nil || slotID != fmt.Sprintf("slot-%03d", number) {
+		return LeaseGrant{}, fmt.Errorf("invalid slot id %q", slotID)
+	}
+	context := LeaseContext{
+		SchemaVersion: LeaseAttributionSchemaVersion,
+		Yard:          yard, Project: project, Run: run, Purpose: purpose,
+	}
+	if err := validateLeaseContext(context); err != nil {
+		return LeaseGrant{}, err
+	}
+	return store.acquire(
+		clientID, fingerprint, contextDisplayLabel(context), purpose, &context, slotID,
+	)
+}
+
 func (store LeaseStore) acquire(
 	clientID, fingerprint, label, purpose string, context *LeaseContext,
 	requestedSlot string,
@@ -209,6 +248,7 @@ func (store LeaseStore) acquire(
 			slot.ControllerFingerprint = fingerprint
 			slot.DisplayLabel = label
 			if context != nil {
+				slot.Yard = context.Yard
 				slot.Project = context.Project
 				slot.Checkout = context.Checkout
 				slot.Run = context.Run
@@ -855,6 +895,7 @@ func clearLease(slot *LeaseSlot) {
 	slot.ClientID = ""
 	slot.ControllerFingerprint = ""
 	slot.DisplayLabel = ""
+	slot.Yard = ""
 	slot.Project = ""
 	slot.Checkout = ""
 	slot.Run = ""
@@ -881,7 +922,7 @@ func legacyLeaseContext(label, purpose string) *LeaseContext {
 		return nil
 	}
 	context := LeaseContext{
-		SchemaVersion: LeaseAttributionSchemaVersion,
+		SchemaVersion: LeaseAttributionSchemaV1,
 		Project:       label[:at],
 		Checkout:      label[at+1 : hash],
 		Run:           label[hash+1:],
@@ -894,16 +935,23 @@ func legacyLeaseContext(label, purpose string) *LeaseContext {
 }
 
 func validateLeaseContext(context LeaseContext) error {
-	if context.SchemaVersion != LeaseAttributionSchemaVersion {
+	if context.SchemaVersion != LeaseAttributionSchemaV1 &&
+		context.SchemaVersion != LeaseAttributionSchemaVersion {
 		return errors.New("unsupported lease attribution schema")
+	}
+	if context.SchemaVersion == LeaseAttributionSchemaV1 {
+		if context.Yard != "" || context.Checkout == "" {
+			return errors.New("invalid schema-1 lease attribution")
+		}
+	} else if context.Yard == "" || context.Checkout != "" {
+		return errors.New("invalid schema-2 lease attribution")
 	}
 	for _, field := range []struct {
 		name    string
 		value   string
 		maximum int
 	}{
-		{name: "project", value: context.Project, maximum: 48},
-		{name: "checkout", value: context.Checkout, maximum: 24},
+		{name: "project", value: context.Project, maximum: 50},
 		{name: "run", value: context.Run, maximum: 24},
 		{name: "purpose", value: context.Purpose, maximum: 80},
 	} {
@@ -911,13 +959,46 @@ func validateLeaseContext(context LeaseContext) error {
 			return fmt.Errorf("invalid lease attribution %s", field.name)
 		}
 	}
+	if context.SchemaVersion == LeaseAttributionSchemaV1 &&
+		!safeLeaseLabel(context.Checkout, 24) {
+		return errors.New("invalid lease attribution checkout")
+	}
+	if context.SchemaVersion == LeaseAttributionSchemaVersion &&
+		!safeCanonicalYard(context.Yard) {
+		return errors.New("invalid lease attribution yard")
+	}
+	if context.SchemaVersion == LeaseAttributionSchemaVersion &&
+		!domain.SafeProjectName(context.Project) {
+		return errors.New("invalid canonical project attribution")
+	}
 	if !safeLeaseText(contextDisplayLabel(context), 80) {
 		return errors.New("lease attribution is too long")
 	}
 	return nil
 }
 
+func safeCanonicalYard(value string) bool {
+	if value == "" || len(value) > 32 {
+		return false
+	}
+	if (value[0] < 'a' || value[0] > 'z') &&
+		(value[0] < '0' || value[0] > '9') {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z') &&
+			!(character >= '0' && character <= '9') &&
+			character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 func contextDisplayLabel(context LeaseContext) string {
+	if context.SchemaVersion == LeaseAttributionSchemaVersion {
+		return context.Project + "#" + context.Run
+	}
 	return context.Project + "@" + context.Checkout + "#" + context.Run
 }
 

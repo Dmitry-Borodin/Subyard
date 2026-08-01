@@ -69,6 +69,17 @@ version, and then run `yard update --rollback`. The upgrade path
 is covered by the [source-upgrade lane](../dev/e2e/p0-source-upgrade.sh): pre-0.1 and v0.1 paths,
 reboots, old-path removal, and rollback/roll-forward for default and named yards.
 
+If guarded yard restoration fails during an owner-host boot, inspect the bounded host-side journal
+before running `yard init` or manually starting the yard:
+
+```sh
+sudo journalctl -b -u subyard-power-reconcile.service --no-pager -n 200
+```
+
+The reconciler keeps Incus autostart disabled and uses bounded systemd retries for transient Incus,
+storage, or host-network readiness failures. A persistent failure remains failed and visible in this
+journal instead of bypassing the route guards.
+
 Use two synthetic credential peers to exercise pinned SOPS/age tooling and the real SSH path:
 reciprocal trust, a shared record, an exclusive assignment move, sync, materialization and revoke.
 Also exercise a disposable remote yard through its real SSH identity and RPC transport. Repeat cold

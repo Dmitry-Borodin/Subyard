@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "minimumLayout": 1,
-  "currentLayout": 4,
+  "currentLayout": 5,
   "migrations": [
     {
       "id": "migrate-test-yard-owner",
@@ -36,9 +36,23 @@
       ]
     },
     {
-      "id": "move-legacy-assignments",
+      "id": "refresh-power-reconciler",
       "fromLayout": 3,
       "toLayout": 4,
+      "resources": ["power-reconciler-runtime"],
+      "finalizePolicy": "ordered-after-active-verify",
+      "rollbackPolicy": "reverse-before-runtime-swap",
+      "operations": [
+        {
+          "id": "power-reconciler-runtime",
+          "kind": "power-reconciler-runtime-v1"
+        }
+      ]
+    },
+    {
+      "id": "move-legacy-assignments",
+      "fromLayout": 4,
+      "toLayout": 5,
       "resources": ["migration-fixture-assignments"],
       "finalizePolicy": "remove-source-after-active-verify",
       "rollbackPolicy": "restore-recovery-before-runtime-swap",

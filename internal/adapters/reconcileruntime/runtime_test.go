@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Subyard/Subyard/internal/domain"
@@ -151,7 +152,9 @@ func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 	root := t.TempDir()
 	bin := filepath.Join(root, "bin")
 	installed := filepath.Join(root, "installed")
-	for _, directory := range []string{bin, installed} {
+	for _, directory := range []string{
+		bin, installed, filepath.Join(root, "config", "systemd"),
+	} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +170,10 @@ func TestPowerProbeSeparatesInstallFromFinalMetadata(t *testing.T) {
 	unit := filepath.Join(installed, "subyard-power-reconcile.service")
 	write(reconcilerSource, "reconciler\n", 0o700)
 	write(reconciler, "reconciler\n", 0o700)
-	write(unit, "[Service]\nExecStart="+reconciler+" _power-reconcile\n", 0o600)
+	template := "[Service]\nExecStart=@SUBYARD_POWER_RECONCILER@ _power-reconcile\nRestart=on-failure\n"
+	write(filepath.Join(root, "config", "systemd", "subyard-power-reconcile.service.in"),
+		template, 0o600)
+	write(unit, strings.ReplaceAll(template, "@SUBYARD_POWER_RECONCILER@", reconciler), 0o600)
 	write(filepath.Join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", 0o700)
 
 	incus := &testkit.Incus{

@@ -252,6 +252,57 @@ esac
 	}
 }
 
+func TestMigrationPowerReconcileIsBoundedToPowerStage(t *testing.T) {
+	root := repositoryRoot(t)
+	home := t.TempDir()
+	environment := []string{
+		"HOME=" + home,
+		"SUBYARD_OPERATOR_HOME=" + home,
+		"SUBYARD_CONFIG_HOME=" + filepath.Join(home, ".config", "subyard"),
+		"SUBYARD_HOME=" + filepath.Join(home, ".subyard"),
+		"SUBYARD_NO_AUDIT=1",
+	}
+	platform := newInitPlatformFixture()
+	var stderr bytes.Buffer
+
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"_migrate", "reconcile-power-reconciler"},
+		Environment: environment, Stderr: &stderr, InitPlatform: platform,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code == 0 ||
+		!strings.Contains(stderr.String(), "migration child is required") {
+		t.Fatalf("power reconcile accepted a public invocation: code=%d stderr=%q",
+			code, stderr.String())
+	}
+
+	stderr.Reset()
+	program, err = New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments: []string{"_migrate", "reconcile-power-reconciler"},
+		Environment: append(
+			environment,
+			"SUBYARD_INTERNAL_MIGRATION_CHILD=1",
+		),
+		Stderr: &stderr, InitPlatform: platform,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("power reconcile failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !slices.Equal(platform.applied, []ports.ReconcileStageID{ports.ReconcileStagePower}) {
+		t.Fatalf("power reconciler migration applied stages %v", platform.applied)
+	}
+	if len(platform.preflightFresh) != 0 {
+		t.Fatalf("power reconciler migration ran host preflight: %v", platform.preflightFresh)
+	}
+}
+
 func (fixture *initPlatformFixture) Teardown(context.Context) error {
 	fixture.teardowns++
 	for stage := range fixture.converged {

@@ -427,7 +427,7 @@ prepare_source_archive() {
 }
 
 reboot_vm1() {
-  local before_boot after_boot='' down=0 host_state up=0 unit_result route
+  local before_boot after_boot='' down=0 host_state up=0 unit_result='' route
   before_boot="$(ssh -F "$CONFIG" -T e2e-vm-1 -- cat /proc/sys/kernel/random/boot_id)" \
     || die 'cannot read VM1 boot ID before reboot'
   set +e
@@ -460,9 +460,21 @@ reboot_vm1() {
     running | degraded) ;;
     *) die "VM1 boot did not reach a terminal systemd state: ${host_state:-unknown}" ;;
   esac
-  unit_result="$(ssh -F "$CONFIG" -T e2e-vm-1 -- \
-    systemctl show subyard-power-reconcile.service --property=Result --value)"
-  [ "$unit_result" = success ] || die "VM1 boot power reconciliation failed: $unit_result"
+  for _ in $(seq 1 180); do
+    unit_result="$(ssh -F "$CONFIG" -T e2e-vm-1 -- \
+      systemctl show subyard-power-reconcile.service --property=Result --value)"
+    [ "$unit_result" != success ] || break
+    sleep 1
+  done
+  if [ "$unit_result" != success ]; then
+    ssh -F "$CONFIG" -T e2e-vm-1 -- \
+      systemctl show subyard-power-reconcile.service \
+        --property=LoadState --property=ActiveState --property=SubState \
+        --property=Result --property=NRestarts >&2 || true
+    ssh -F "$CONFIG" -T e2e-vm-1 -- \
+      journalctl -b -u subyard-power-reconcile.service --no-pager -n 120 >&2 || true
+    die "VM1 boot power reconciliation failed: ${unit_result:-unknown}"
+  fi
   route="$(ssh -F "$CONFIG" -T e2e-vm-1 -- ip -4 route show default)"
   [ -n "$route" ] || die 'VM1 lost its default route after reboot'
 }

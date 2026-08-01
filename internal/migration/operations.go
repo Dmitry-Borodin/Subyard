@@ -33,6 +33,8 @@ func prepareTypedOperation(
 	case OperationKindTestVMBrokerRuntimeV1:
 		state, err := testyardmigration.PrepareBrokerRuntime(ctx, testYardOptions(options))
 		return string(state), err
+	case OperationKindPowerReconcilerRuntimeV1:
+		return preparePowerReconciler(options)
 	default:
 		return "", fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
 	}
@@ -63,6 +65,8 @@ func commitTypedOperation(
 			testYardOptions(options),
 			testyardmigration.BrokerRuntimeState(before),
 		)
+	case OperationKindPowerReconcilerRuntimeV1:
+		return commitPowerReconciler(ctx, options, before)
 	default:
 		return fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
 	}
@@ -92,6 +96,8 @@ func verifyTypedOperation(
 			testYardOptions(options),
 			testyardmigration.BrokerRuntimeState(before),
 		)
+	case OperationKindPowerReconcilerRuntimeV1:
+		return verifyPowerReconciler(ctx, options, before)
 	default:
 		return fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
 	}
@@ -129,6 +135,8 @@ func rollbackTypedOperation(
 			testYardOptions(options),
 			testyardmigration.BrokerRuntimeState(before),
 		)
+	case OperationKindPowerReconcilerRuntimeV1:
+		return rollbackPowerReconciler(ctx, options, before)
 	default:
 		return fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
 	}
@@ -202,6 +210,12 @@ func reprepareTypedOperation(
 			return "", false, err
 		}
 		return string(current), true, nil
+	case OperationKindPowerReconcilerRuntimeV1:
+		current, err := preparePowerReconciler(options)
+		if err != nil {
+			return "", false, err
+		}
+		return current, current == powerReconcilerInstalled, nil
 	default:
 		return "", false, fmt.Errorf("unsupported migration operation kind %q", operation.Kind)
 	}
@@ -270,6 +284,13 @@ func validateOperationState(operation transactionOperation) error {
 		if err := testyardmigration.ValidateBrokerRuntimeState(
 			testyardmigration.BrokerRuntimeState(operation.Before),
 		); err != nil {
+			return fmt.Errorf(
+				"typed migration operation has invalid prepared state: %w",
+				err,
+			)
+		}
+	case OperationKindPowerReconcilerRuntimeV1:
+		if err := validatePowerReconcilerState(operation.Before); err != nil {
 			return fmt.Errorf(
 				"typed migration operation has invalid prepared state: %w",
 				err,

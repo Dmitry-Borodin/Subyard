@@ -1,0 +1,270 @@
+package migration
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	powerReconcilerAbsent    = "absent"
+	powerReconcilerInstalled = "installed"
+)
+
+func preparePowerReconciler(options ReleaseOptions) (string, error) {
+	reconciler := powerReconcilerPath(options, "SUBYARD_POWER_RECONCILER_PATH",
+		"/usr/local/libexec/subyard/yard-boot-reconcile")
+	unit := powerReconcilerPath(options, "SUBYARD_POWER_UNIT_PATH",
+		"/etc/systemd/system/subyard-power-reconcile.service")
+	present := false
+	for _, path := range []string{reconciler, unit} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("power reconciler path is a symbolic link: %s", path)
+		}
+		present = true
+	}
+	if present {
+		return powerReconcilerInstalled, nil
+	}
+	return powerReconcilerAbsent, nil
+}
+
+func commitPowerReconciler(
+	ctx context.Context,
+	options ReleaseOptions,
+	before string,
+) error {
+	if err := validatePowerReconcilerState(before); err != nil {
+		return err
+	}
+	if before == powerReconcilerAbsent {
+		return verifyPowerReconciler(ctx, options, before)
+	}
+	if err := runPowerReconcilerMigration(ctx, options, powerReconcilerExecutable(options)); err != nil {
+		return fmt.Errorf("update host power reconciler: %w", err)
+	}
+	if err := verifyPowerReconciler(ctx, options, before); err != nil {
+		return err
+	}
+	fmt.Fprintln(powerReconcilerOutput(options), "updated host power reconciler")
+	return nil
+}
+
+func verifyPowerReconciler(
+	ctx context.Context,
+	options ReleaseOptions,
+	before string,
+) error {
+	if err := validatePowerReconcilerState(before); err != nil {
+		return err
+	}
+	observed, err := preparePowerReconciler(options)
+	if err != nil {
+		return err
+	}
+	if observed != before {
+		return fmt.Errorf("host power reconciler changed from %s to %s during runtime migration",
+			before, observed)
+	}
+	if before == powerReconcilerAbsent {
+		return nil
+	}
+
+	executable := powerReconcilerExecutable(options)
+	reconciler := powerReconcilerPath(options, "SUBYARD_POWER_RECONCILER_PATH",
+		"/usr/local/libexec/subyard/yard-boot-reconcile")
+	if err := equalRegularFiles(executable, reconciler, true); err != nil {
+		return fmt.Errorf("installed host power reconciler is stale: %w", err)
+	}
+
+	template, err := os.ReadFile(filepath.Join(options.RepositoryRoot,
+		"config", "systemd", "subyard-power-reconcile.service.in"))
+	if err != nil {
+		return fmt.Errorf("read host power reconciler unit template: %w", err)
+	}
+	expected := bytes.ReplaceAll(template, []byte("@SUBYARD_POWER_RECONCILER@"), []byte(reconciler))
+	unit := powerReconcilerPath(options, "SUBYARD_POWER_UNIT_PATH",
+		"/etc/systemd/system/subyard-power-reconcile.service")
+	actual, err := readRegularFile(unit, false)
+	if err != nil {
+		return fmt.Errorf("read installed host power reconciler unit: %w", err)
+	}
+	if !bytes.Equal(actual, expected) {
+		return errors.New("installed host power reconciler unit is stale")
+	}
+
+	command := exec.CommandContext(ctx, "systemctl", "is-enabled", "--quiet", filepath.Base(unit))
+	command.Env = options.Environment
+	command.Stdin, command.Stdout, command.Stderr = nil, io.Discard, io.Discard
+	if err := command.Run(); err != nil {
+		return errors.New("installed host power reconciler unit is not enabled")
+	}
+	return nil
+}
+
+func rollbackPowerReconciler(
+	ctx context.Context,
+	options ReleaseOptions,
+	before string,
+) error {
+	if err := validatePowerReconcilerState(before); err != nil {
+		return err
+	}
+	if before == powerReconcilerAbsent {
+		return verifyPowerReconciler(ctx, options, before)
+	}
+	previous, err := previousPowerReconcilerOptions(options)
+	if err != nil {
+		return err
+	}
+	// The retained release predates this migration action. Run the rollback
+	// through the active candidate while sourcing the installed payload and unit
+	// from the retained release.
+	runErr := runPowerReconcilerMigration(ctx, previous, powerReconcilerExecutable(options))
+	verifyErr := verifyPowerReconciler(ctx, previous, before)
+	if verifyErr == nil {
+		return nil
+	}
+	if runErr != nil {
+		return errors.Join(
+			fmt.Errorf("restore previous host power reconciler: %w", runErr),
+			fmt.Errorf("verify previous host power reconciler: %w", verifyErr),
+		)
+	}
+	return verifyErr
+}
+
+func validatePowerReconcilerState(state string) error {
+	if state != powerReconcilerAbsent && state != powerReconcilerInstalled {
+		return fmt.Errorf("invalid prepared host power reconciler state %q", state)
+	}
+	return nil
+}
+
+func runPowerReconcilerMigration(
+	ctx context.Context,
+	options ReleaseOptions,
+	runner string,
+) error {
+	command := exec.CommandContext(ctx, runner, "_migrate", "reconcile-power-reconciler")
+	command.Env = powerReconcilerEnvironment(options, options.RepositoryRoot)
+	command.Stdin = strings.NewReader("")
+	command.Stdout, command.Stderr = powerReconcilerOutput(options), powerReconcilerError(options)
+	return command.Run()
+}
+
+func powerReconcilerExecutable(options ReleaseOptions) string {
+	if options.Executable != "" {
+		return options.Executable
+	}
+	return filepath.Join(options.RepositoryRoot, "bin", "yard-engine")
+}
+
+func previousPowerReconcilerOptions(options ReleaseOptions) (ReleaseOptions, error) {
+	if options.RuntimeRoot == "" || !filepath.IsAbs(options.RuntimeRoot) {
+		return ReleaseOptions{}, errors.New("absolute runtime root is required for power reconciler rollback")
+	}
+	root, err := filepath.EvalSymlinks(options.RuntimeRoot)
+	if err != nil {
+		return ReleaseOptions{}, fmt.Errorf("resolve runtime root: %w", err)
+	}
+	previous, err := filepath.EvalSymlinks(filepath.Join(root, "previous"))
+	if err != nil {
+		return ReleaseOptions{}, fmt.Errorf("resolve previous runtime: %w", err)
+	}
+	relative, err := filepath.Rel(filepath.Join(root, "releases"), previous)
+	if err != nil || relative == "." || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return ReleaseOptions{}, errors.New("previous runtime escapes the release store")
+	}
+	result := options
+	result.RepositoryRoot = previous
+	result.Executable = filepath.Join(previous, "bin", "yard-engine")
+	result.Environment = powerReconcilerEnvironment(result, previous)
+	return result, nil
+}
+
+func powerReconcilerEnvironment(options ReleaseOptions, repositoryRoot string) []string {
+	environment := append([]string(nil), options.Environment...)
+	for name, value := range map[string]string{
+		"SUBYARD_INTERNAL_MIGRATION_CHILD": "1",
+		"SUBYARD_REPOSITORY_ROOT":          repositoryRoot,
+		"SUBYARD_CONFIG_DIR":               filepath.Join(repositoryRoot, "config"),
+	} {
+		prefix := name + "="
+		filtered := environment[:0]
+		for _, assignment := range environment {
+			if !strings.HasPrefix(assignment, prefix) {
+				filtered = append(filtered, assignment)
+			}
+		}
+		environment = append(filtered, prefix+value)
+	}
+	return environment
+}
+
+func powerReconcilerPath(options ReleaseOptions, name, fallback string) string {
+	prefix := name + "="
+	for index := len(options.Environment) - 1; index >= 0; index-- {
+		if value, ok := strings.CutPrefix(options.Environment[index], prefix); ok && value != "" {
+			return value
+		}
+	}
+	return fallback
+}
+
+func equalRegularFiles(expected, actual string, executable bool) error {
+	expectedPayload, err := readRegularFile(expected, executable)
+	if err != nil {
+		return err
+	}
+	actualPayload, err := readRegularFile(actual, executable)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(expectedPayload, actualPayload) {
+		return errors.New("file contents differ")
+	}
+	return nil
+}
+
+func readRegularFile(path string, executable bool) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("not a regular non-symlink file")
+	}
+	if executable && info.Mode().Perm()&0o111 == 0 {
+		return nil, errors.New("file is not executable")
+	}
+	return os.ReadFile(path)
+}
+
+func powerReconcilerOutput(options ReleaseOptions) io.Writer {
+	if options.Diagnostics != nil {
+		return options.Diagnostics
+	}
+	return io.Discard
+}
+
+func powerReconcilerError(options ReleaseOptions) io.Writer {
+	if options.Stderr != nil {
+		return options.Stderr
+	}
+	return io.Discard
+}

@@ -483,14 +483,14 @@ func TestRegistryRejectsNonContiguousAndUnsafeDefinitions(t *testing.T) {
 	}
 }
 
-func TestShippedRegistryOrdersOwnerConsumersThenBrokerRefresh(t *testing.T) {
+func TestShippedRegistryOrdersLifecycleRefreshes(t *testing.T) {
 	registry, err := LoadRegistry(filepath.Join("..", "..", "config", "migrations.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(registry.Migrations) != 2 || registry.CurrentLayout != 3 {
+	if len(registry.Migrations) != 3 || registry.CurrentLayout != 4 {
 		t.Fatalf(
-			"shipped registry layout=%d migrations=%d, want layout 3 with 2 migrations",
+			"shipped registry layout=%d migrations=%d, want layout 4 with 3 migrations",
 			registry.CurrentLayout,
 			len(registry.Migrations),
 		)
@@ -507,6 +507,12 @@ func TestShippedRegistryOrdersOwnerConsumersThenBrokerRefresh(t *testing.T) {
 		broker.Operations[0].Kind != OperationKindTestVMBrokerRuntimeV1 {
 		t.Fatalf("shipped broker migration = %#v", broker)
 	}
+	power := registry.Migrations[2]
+	if power.FromLayout != 3 || power.ToLayout != 4 ||
+		len(power.Operations) != 1 ||
+		power.Operations[0].Kind != OperationKindPowerReconcilerRuntimeV1 {
+		t.Fatalf("shipped power reconciler migration = %#v", power)
+	}
 }
 
 func TestSourceUpgradeFixtureExtendsExactShippedRegistry(t *testing.T) {
@@ -515,7 +521,7 @@ func TestSourceUpgradeFixtureExtendsExactShippedRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture, err := LoadRegistry(filepath.Join(
-		"..", "..", "tests", "fixtures", "migrations", "layout-4-production-prefix.json",
+		"..", "..", "tests", "fixtures", "migrations", "layout-5-production-prefix.json",
 	))
 	if err != nil {
 		t.Fatal(err)

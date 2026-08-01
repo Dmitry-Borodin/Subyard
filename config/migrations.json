@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "minimumLayout": 1,
-  "currentLayout": 3,
+  "currentLayout": 4,
   "migrations": [
     {
       "id": "migrate-test-yard-owner",
@@ -32,6 +32,20 @@
         {
           "id": "test-vm-broker-runtime",
           "kind": "test-vm-broker-runtime-v1"
+        }
+      ]
+    },
+    {
+      "id": "refresh-power-reconciler",
+      "fromLayout": 3,
+      "toLayout": 4,
+      "resources": ["power-reconciler-runtime"],
+      "finalizePolicy": "ordered-after-active-verify",
+      "rollbackPolicy": "reverse-before-runtime-swap",
+      "operations": [
+        {
+          "id": "power-reconciler-runtime",
+          "kind": "power-reconciler-runtime-v1"
         }
       ]
     }

@@ -1230,7 +1230,11 @@ func (runtime Runtime) powerReconcilerConverged(ctx context.Context) bool {
 		return false
 	}
 	contents, err := os.ReadFile(unit)
-	if err != nil || !hasLine(string(contents), "ExecStart="+reconciler+" _power-reconcile") {
+	template, templateErr := os.ReadFile(filepath.Join(runtime.RepositoryRoot,
+		"config", "systemd", "subyard-power-reconcile.service.in"))
+	if err != nil || templateErr != nil || string(contents) != strings.ReplaceAll(
+		string(template), "@SUBYARD_POWER_RECONCILER@", reconciler,
+	) {
 		return false
 	}
 	systemctl, err := runtime.executableFromPath("systemctl")

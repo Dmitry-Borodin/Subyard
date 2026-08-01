@@ -1515,7 +1515,8 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		(arguments[0] != "paths" && arguments[0] != "check" &&
 			arguments[0] != "apply" && arguments[0] != "finalize" &&
 			arguments[0] != "rollback" && arguments[0] != "cleanup" &&
-			arguments[0] != "reconcile-test-vm-broker") {
+			arguments[0] != "reconcile-test-vm-broker" &&
+			arguments[0] != "reconcile-power-reconciler") {
 		cli.errorf("internal: invalid _migrate action")
 		return 2
 	}
@@ -1602,6 +1603,32 @@ func (cli *CLI) runMigration(ctx context.Context, yard string, arguments []strin
 		}
 		if err := reconcileMigrationTestVMs(ctx, platform); err != nil {
 			cli.errorf("state migration test VM broker reconcile: %v", err)
+			return 1
+		}
+		return 0
+	}
+	if arguments[0] == "reconcile-power-reconciler" {
+		if migrationEnvironment["SUBYARD_INTERNAL_MIGRATION_CHILD"] != "1" {
+			cli.errorf("internal: power reconciler migration child is required")
+			return 1
+		}
+		platform := cli.options.InitPlatform
+		if platform == nil {
+			if err := cli.prepareSudoPrivileges(
+				ctx, cli.options.Stderr, cli.effectiveUID(), "update",
+			); err != nil {
+				cli.errorf("state migration power reconciler privileges: %v", err)
+				return 1
+			}
+			// Rollback is dispatched by the active runtime, but the root-owned
+			// helper must come from the selected retained release.
+			cli.options.DispatcherPath = filepath.Join(
+				cli.options.RepositoryRoot, "bin", "yard-engine",
+			)
+			platform = cli.initPlatform(loaded, []domain.Context{loaded.Context})
+		}
+		if err := platform.ApplyStage(ctx, ports.ReconcileStagePower); err != nil {
+			cli.errorf("state migration power reconciler: %v", err)
 			return 1
 		}
 		return 0

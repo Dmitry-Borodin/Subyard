@@ -107,8 +107,8 @@ if [ "$ROLLBACK" = 1 ]; then
     exit 1
   fi
   if [ "$needs_apply" = 1 ]; then
-    SUBYARD_REPOSITORY_ROOT="$candidate" \
-      "$candidate/bin/yard-engine" _migrate cleanup >/dev/null \
+    SUBYARD_REPOSITORY_ROOT="$current_runtime" \
+      "$current_runtime/bin/yard-engine" _migrate cleanup >/dev/null \
       || { printf 'install-runtime-release: stale migration recovery cleanup failed\n' >&2; exit 1; }
   fi
   printf 'rolled back runtime to %s\n' \

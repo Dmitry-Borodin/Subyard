@@ -7,6 +7,7 @@ hermes-provision.sh
 hermes-restic.sh
 key-tools-install.sh
 init-project-convergence.sh
+install-runtime-release-rollback.sh
 opencode-agent-provision.sh
 orca-profile-resource.sh
 paseo-project-sync.sh

@@ -58,17 +58,9 @@ p0_guest() {
   guest "$vm" runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev \
     sh -c 'cd "$HOME"; exec "$@"' _ "$@"
 }
-p0_run_guest() {
-  local vm="$1" bundle="$2" bundle_hash="$3"; shift 3
-  run_guest "$vm" "$bundle" "$bundle_hash" bash -c '
-    parent="$(dirname "$PWD")"
-    chown -R dev:dev "$parent"
-    exec runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev "$@"
-  ' _ "$@"
-}
 run_vm() {
   local vm="$1" mode="$2" rc=0; shift 2
-  p0_run_guest "$vm" "$P0_BUNDLE" "$P0_BUNDLE_HASH" \
+  run_guest "$vm" "$P0_BUNDLE" "$P0_BUNDLE_HASH" \
     bash dev/e2e/p0-guest.sh "$mode" "$TOKEN" "$@" || rc=$?
   cleanup_guest "$vm" || return 3
   return "$rc"
@@ -80,7 +72,7 @@ direct_vm() {
 }
 run_source_vm() {
   local mode="$1" rc=0; shift
-  p0_run_guest 1 "$P0_BUNDLE" "$P0_BUNDLE_HASH" \
+  run_guest 1 "$P0_BUNDLE" "$P0_BUNDLE_HASH" \
     bash dev/e2e/p0-source-upgrade.sh "$mode" "$TOKEN" "$@" || rc=$?
   cleanup_guest 1 || return 3
   return "$rc"
@@ -358,7 +350,7 @@ home_state() {
 transport_probes() {
   local rc=0 ready=0 stopped=0 disconnect_command
   set +e
-  p0_run_guest 1 "$P0_BUNDLE" "$P0_BUNDLE_HASH" bash -c \
+  run_guest 1 "$P0_BUNDLE" "$P0_BUNDLE_HASH" bash -c \
     'test "$1" = "argument with spaces" && test "$2" = "$SUBYARD_E2E_VM"; exit 23' \
     _ 'argument with spaces' 1
   rc=$?

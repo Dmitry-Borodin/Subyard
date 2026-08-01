@@ -50,8 +50,25 @@ p0_capacity_prepare_subtree "$subtree"
 printf 'payload\n' > "$subtree/data"
 p0_capacity_remove_subtree "$subtree"
 [ ! -e "$subtree" ] || fail "marker-owned subtree survived cleanup"
+
+readonly_subtree="$P0_CAPACITY_STATE_ROOT/readonly-fixture"
+p0_capacity_prepare_subtree "$readonly_subtree"
+install -d -m 0755 "$readonly_subtree/modules"
+printf 'readonly\n' > "$readonly_subtree/modules/data"
+chmod 0444 "$readonly_subtree/modules/data"
+chmod 0555 "$readonly_subtree/modules"
+p0_capacity_remove_subtree "$readonly_subtree"
+[ ! -e "$readonly_subtree" ] || fail "read-only Go-style cache survived cleanup"
+
 p0_capacity_remove_build_cache
 [ ! -e "$P0_CAPACITY_STATE_ROOT" ] || fail "empty marker-owned root survived cleanup"
+
+stale_root="$HOME/.cache/subyard-p0-122"
+install -d -m 0700 "$stale_root/cache"
+printf '%s\n' subyard-p0-122 > "$stale_root/.subyard-p0-marker"
+chmod 0555 "$stale_root/cache"
+p0_capacity_recover_stale_roots >/dev/null
+[ ! -e "$stale_root" ] || fail "marker-owned stale allocation cache survived recovery"
 
 install -d -m 0700 "$P0_CAPACITY_STATE_ROOT"
 printf 'foreign\n' > "$P0_CAPACITY_STATE_ROOT/data"

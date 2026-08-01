@@ -102,14 +102,15 @@ type leaseRecoverySlot struct {
 }
 
 type LeaseGrant struct {
-	SlotID     string        `json:"slot_id"`
-	LeaseID    string        `json:"lease_id"`
-	Capability string        `json:"capability"`
-	LeaseEpoch uint64        `json:"lease_epoch"`
-	ExpiresAt  time.Time     `json:"expires_at"`
-	Context    *LeaseContext `json:"context,omitempty"`
-	DataUser   string        `json:"data_user,omitempty"`
-	Targets    []LeaseTarget `json:"targets,omitempty"`
+	SlotID             string        `json:"slot_id"`
+	ResourceGeneration uint64        `json:"resource_generation,omitempty"`
+	LeaseID            string        `json:"lease_id"`
+	Capability         string        `json:"capability"`
+	LeaseEpoch         uint64        `json:"lease_epoch"`
+	ExpiresAt          time.Time     `json:"expires_at"`
+	Context            *LeaseContext `json:"context,omitempty"`
+	DataUser           string        `json:"data_user,omitempty"`
+	Targets            []LeaseTarget `json:"targets,omitempty"`
 }
 
 type LeaseContext struct {
@@ -267,7 +268,8 @@ func (store LeaseStore) acquire(
 			slot.NextRecoveryAt = time.Time{}
 			slot.RecoveryStartedAt = time.Time{}
 			grant = LeaseGrant{
-				SlotID: slot.SlotID, LeaseID: leaseID, Capability: capability,
+				SlotID: slot.SlotID, ResourceGeneration: slot.ResourceGeneration,
+				LeaseID: leaseID, Capability: capability,
 				LeaseEpoch: slot.LeaseEpoch, ExpiresAt: slot.ExpiresAt,
 			}
 			if context != nil {

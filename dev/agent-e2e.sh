@@ -25,6 +25,7 @@ GUEST_IDENTITY=""
 GUEST_USER=root
 DATA_USER=""
 LEASE_SLOT=""
+LEASE_GENERATION=""
 LEASE_ID=""
 LEASE_EPOCH=""
 LEASE_CAPABILITY=""
@@ -511,6 +512,7 @@ parse_lease_grant() {
   local response_schema response_yard response_project response_checkout response_run response_purpose
   [ "$(jq -r '.status // empty' <<<"$response")" = ok ] || return 1
   LEASE_SLOT="$(jq -r '.grant.slot_id // empty' <<<"$response")"
+  LEASE_GENERATION="$(jq -r '.grant.resource_generation // empty' <<<"$response")"
   LEASE_ID="$(jq -r '.grant.lease_id // empty' <<<"$response")"
   LEASE_EPOCH="$(jq -r '.grant.lease_epoch // empty' <<<"$response")"
   LEASE_CAPABILITY="$(jq -r '.grant.capability // empty' <<<"$response")"
@@ -566,6 +568,21 @@ parse_lease_grant() {
   chmod 0600 "$GUEST_KNOWN_HOSTS"
 }
 
+resolve_lease_generation() {
+  local response
+  if [[ "$LEASE_GENERATION" =~ ^[1-9][0-9]*$ ]]; then
+    return 0
+  fi
+  response="$(facade_request status)" || die "lease generation query failed"
+  LEASE_GENERATION="$(jq -r --arg slot "$LEASE_SLOT" --argjson epoch "$LEASE_EPOCH" '
+    .pool.slots[] |
+    select(.slot_id == $slot and .lease_epoch == $epoch and .state == "held") |
+    .resource_generation
+  ' <<<"$response")"
+  [[ "$LEASE_GENERATION" =~ ^[1-9][0-9]*$ ]] \
+    || die "facade returned no resource generation for the held lease"
+}
+
 lease_grant_matches_request() {
   [ -z "$LEASE_REQUESTED_SLOT" ] || [ "$LEASE_SLOT" = "$LEASE_REQUESTED_SLOT" ]
 }
@@ -614,6 +631,7 @@ acquire_lease() {
           || die "broker returned the wrong slot and its lease could not be released"
         die "broker returned a slot other than the exact requested slot"
       fi
+      resolve_lease_generation
       write_client_config
       printf 'E2E lease: yard=%s project=%s run=%s purpose=%s slot=%s' \
         "$LEASE_YARD" "$LEASE_PROJECT" "$LEASE_RUN" "$LEASE_PURPOSE" "$LEASE_SLOT" >&2
@@ -887,6 +905,7 @@ write_guest_command() {
 	printf 'export SUBYARD_E2E_RUN_ID=%q\n' "$LEASE_RUN"
 	printf 'export SUBYARD_E2E_PURPOSE=%q\n' "$LEASE_PURPOSE"
 	printf 'export SUBYARD_E2E_SLOT=%q\n' "$LEASE_SLOT"
+	printf 'export SUBYARD_E2E_GENERATION=%q\n' "$LEASE_GENERATION"
 	printf 'export SUBYARD_E2E_VM=%q\n' "$vm"
 	if [ "${1:-}" = ./bin/yard ]; then
 		printf '/usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev ./dev/build-engine.sh\n'
@@ -934,7 +953,15 @@ run_guest() {
   guest "$vm" chmod 0700 "$directory/run.sh" </dev/null \
     || die "VM$vm command preparation failed"
   printf '\n== e2e-vm-%s ==\n' "$vm"
-  guest "$vm" "$directory/run.sh" </dev/null
+  guest "$vm" "$directory/run.sh" </dev/null 2>&1 | normalize_terminal_progress
+}
+
+normalize_terminal_progress() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    printf '%s\n' "${line##*$'\r'}"
+  done
 }
 
 run_direct_ssh() {

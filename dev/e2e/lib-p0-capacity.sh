@@ -99,10 +99,35 @@ p0_capacity_delete_tree() {
   local path="${1:?tree path is required}" owner
   owner="$(id -u)"
   if find "$path" -xdev ! -user "$owner" -print -quit 2>/dev/null | grep -q .; then
+    sudo -n find "$path" -xdev -type d -exec chmod u+rwx {} +
     sudo -n find "$path" -depth -delete
   else
+    find "$path" -xdev -type d -exec chmod u+rwx {} +
     find "$path" -depth -delete
   fi
+}
+
+p0_capacity_recover_stale_roots() {
+  local path name token marker
+  for path in "$HOME"/.cache/subyard-p0-*; do
+    [ -e "$path" ] || continue
+    [ "$path" != "$P0_CAPACITY_STATE_ROOT" ] || continue
+    [ -d "$path" ] && [ ! -L "$path" ] \
+      || p0_capacity_die "refusing stale non-directory P0 state $path" || return
+    name="${path##*/}"
+    token="${name#subyard-p0-}"
+    [[ "$token" =~ ^[0-9]+$ ]] \
+      || p0_capacity_die "refusing stale P0 state with invalid token $path" || return
+    marker="subyard-p0-$token"
+    [ "$(cat "$path/.subyard-p0-marker" 2>/dev/null)" = "$marker" ] \
+      || p0_capacity_die "refusing unmarked stale P0 state $path" || return
+    if pgrep -u "$(id -u)" -f "$path" >/dev/null 2>&1; then
+      p0_capacity_die "stale P0 state still has an active process: $path"
+      return
+    fi
+    printf '  [ .. ] recovering marker-owned stale P0 state %s\n' "$name"
+    p0_capacity_delete_tree "$path" || return
+  done
 }
 
 p0_capacity_remove_subtree() {
@@ -203,11 +228,13 @@ p0_capacity_require_persistent_path() {
 
 p0_capacity_preflight() {
   local root_available inode_available tmp_size tmp_available pool_source='' stale=''
+  local pool_state='' pool_rc query_timeout="${P0_E2E_INCUS_QUERY_TIMEOUT:-30}"
   local min_root="${P0_E2E_MIN_ROOT_AVAILABLE_BYTES:-3221225472}"
   local min_inodes="${P0_E2E_MIN_AVAILABLE_INODES:-100000}"
   local min_tmp_size="${P0_E2E_MIN_TMP_SIZE_BYTES:-536870912}"
   local min_tmp_available="${P0_E2E_MIN_TMP_AVAILABLE_BYTES:-268435456}"
 
+  p0_capacity_recover_stale_roots || return
   p0_capacity_reset_build_cache || return
   stale="$(find "$P0_CAPACITY_STATE_ROOT" -mindepth 1 -maxdepth 1 \
     ! -name .subyard-p0-marker ! -name go-build -print -quit)"
@@ -221,9 +248,25 @@ p0_capacity_preflight() {
   else
     p0_capacity_require_persistent_path "$HOME/.cache" platform-parent || return
   fi
-  if command -v incus >/dev/null 2>&1 \
-    && incus storage show default --project default >/dev/null 2>&1; then
-    pool_source="$(incus storage get default source --project default)"
+  [[ "$query_timeout" =~ ^[1-9][0-9]*$ ]] \
+    || p0_capacity_die 'Incus query timeout is invalid' || return
+  if command -v incus >/dev/null 2>&1; then
+    set +e
+    pool_state="$(timeout --foreground "$query_timeout" \
+      incus storage show default --project default 2>/dev/null)"
+    pool_rc=$?
+    set -e
+    case "$pool_rc" in
+      0) ;;
+      124|137)
+        p0_capacity_die "Incus default-pool query exceeded ${query_timeout}s"
+        return
+        ;;
+      *) pool_state='' ;;
+    esac
+  fi
+  if [ -n "$pool_state" ]; then
+    pool_source="$(sed -n 's/^  source: //p' <<<"$pool_state")"
     case "$pool_source" in
       /*) ;;
       *) p0_capacity_die "default Incus pool has an unsafe source: $pool_source"; return ;;

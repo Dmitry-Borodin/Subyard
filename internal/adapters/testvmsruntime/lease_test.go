@@ -54,6 +54,9 @@ func TestLeaseStoreAcquireSlotDoesNotFallback(t *testing.T) {
 	if grant.SlotID != "slot-002" {
 		t.Fatalf("exact acquire returned %s", grant.SlotID)
 	}
+	if grant.ResourceGeneration == 0 {
+		t.Fatal("exact acquire omitted the resource generation")
+	}
 	before, err := store.Status()
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +64,10 @@ func TestLeaseStoreAcquireSlotDoesNotFallback(t *testing.T) {
 	if before.Slots[0].State != SlotAvailable ||
 		before.Slots[1].State != SlotProvisioning {
 		t.Fatalf("unexpected exact acquire state: %#v", before.Slots)
+	}
+	if grant.ResourceGeneration != before.Slots[1].ResourceGeneration {
+		t.Fatalf("grant generation=%d slot generation=%d",
+			grant.ResourceGeneration, before.Slots[1].ResourceGeneration)
 	}
 	if _, err := store.AcquireSlot(
 		"second", "SHA256:key", "", "", "slot-002",

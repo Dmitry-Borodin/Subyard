@@ -605,6 +605,7 @@ owner() (
 	OWNER_BASELINE_IMAGES="$(incus image list --project default --format csv -c f)"
   OWNER_BASELINE_CAPTURED=1
 	bash dev/e2e/p0-real-incus.sh
+	profile_resource
   prepare_owner_image_cache_project subyard-test-yard
   owner_profile_migration_contract
   ./bin/yard -Y test-yard start --yes
@@ -1356,9 +1357,159 @@ peer_clean() {
   clean_tree "$PEER_ROOT" "$MARKER"
 }
 
+recover_stale_test_default_pool() {
+  local source state status used_by rc
+  local query_timeout="${P0_E2E_INCUS_QUERY_TIMEOUT:-30}"
+  command -v incus >/dev/null 2>&1 || return 0
+  [[ "$query_timeout" =~ ^[1-9][0-9]*$ ]] || die 'Incus query timeout is invalid'
+  set +e
+  state="$(timeout --foreground "$query_timeout" \
+    incus storage show default --project default 2>/dev/null)"
+  rc=$?
+  set -e
+  case "$rc" in
+    0) ;;
+    124|137) die "Incus default-pool query exceeded ${query_timeout}s" ;;
+    *) return 0 ;;
+  esac
+  source="$(sed -n 's/^  source: //p' <<<"$state")"
+  [ ! -e "$source" ] || return 0
+  case "$source" in
+    /tmp/subyard-hermes-profile.*/storage) ;;
+    *) return 0 ;;
+  esac
+  status="$(sed -n 's/^status: //p' <<<"$state")"
+  used_by="$(sed -n 's/^used_by: //p' <<<"$state")"
+  [ "$status" = Unavailable ] && [ "$used_by" = '[]' ] \
+    || die "refusing to recover an active stale test pool at $source"
+  printf '  [ .. ] VM%s: removing unused stale test pool at %s\n' \
+    "$SUBYARD_E2E_VM" "$source"
+  timeout --foreground 120 incus storage delete default --project default >/dev/null
+}
+
 capacity_preflight() {
+  recover_stale_test_default_pool
   p0_capacity_preflight
 }
+
+dependency_verify() {
+  local command revision='legacy'
+  local -a required=(curl git go jq rg shellcheck ssh sudo tar timeout)
+  if [ -r /var/lib/subyard/e2e-dependencies.revision ]; then
+    revision="$(cat /var/lib/subyard/e2e-dependencies.revision)"
+    [[ "$revision" =~ ^subyard-test-vms-dependencies-v[0-9]+$ ]] \
+      || die 'dependency baseline revision is invalid'
+    required+=(make)
+  elif ! command -v make >/dev/null; then
+    printf '  [warn] VM%s legacy broker baseline has no make; candidate reconciliation is required\n' \
+      "$SUBYARD_E2E_VM"
+  fi
+  for command in "${required[@]}"; do
+    command -v "$command" >/dev/null || die "dependency baseline misses $command"
+  done
+  printf 'ok: VM%s dependency baseline revision=%s go=%s shellcheck=%s\n' \
+    "$SUBYARD_E2E_VM" "$revision" "$(go env GOVERSION)" "$(shellcheck --version | awk 'NR == 2 {print $2}')"
+}
+
+dependency_bootstrap() (
+  local cold_root="$P0_CAPACITY_STATE_ROOT/dependency-bootstrap" rc
+  local download_pid='' deadline="${P0_DEPENDENCY_BOOTSTRAP_TIMEOUT:-1200}"
+  local heartbeat="${P0_DEPENDENCY_HEARTBEAT_SECONDS:-30}" started
+  cleanup_dependency_bootstrap() {
+    local cleanup_failed=0
+    rc=$?
+    trap - EXIT INT TERM
+    set +e
+    if [ -n "$download_pid" ]; then
+      kill -TERM "$download_pid" >/dev/null 2>&1 || true
+      wait "$download_pid" >/dev/null 2>&1 || true
+    fi
+    p0_capacity_remove_subtree "$cold_root" || cleanup_failed=1
+    p0_capacity_remove_build_cache || cleanup_failed=1
+    p0_capacity_remove_root_if_empty || cleanup_failed=1
+    [ "$cleanup_failed" = 0 ] || rc=3
+    exit "$rc"
+  }
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || die 'dependency bootstrap timeout is invalid'
+  [[ "$heartbeat" =~ ^[1-9][0-9]*$ ]] || die 'dependency heartbeat interval is invalid'
+  dependency_verify
+  p0_capacity_reset_build_cache
+  p0_capacity_prepare_subtree "$cold_root"
+  trap cleanup_dependency_bootstrap EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  install -d -m 0700 "$cold_root/modules"
+  printf '%s\n' "$P0_CAPACITY_MARKER" > "$cold_root/modules/.subyard-p0-marker"
+  started=$SECONDS
+  printf '  [ .. ] VM%s cold Go dependency download started deadline=%ss\n' \
+    "$SUBYARD_E2E_VM" "$deadline"
+  GOMODCACHE="$cold_root/modules" GOCACHE="$P0_CAPACITY_BUILD_CACHE" \
+    timeout --signal=TERM --kill-after=10 "$deadline" bash -c '
+      for attempt in 1 2 3; do
+        go mod download && exit 0
+        [ "$attempt" = 3 ] && break
+        delay=$((attempt * 5))
+        printf "dependency download failed (attempt %s/3); retrying in %ss\n" \
+          "$attempt" "$delay" >&2
+        sleep "$delay"
+      done
+      exit 1
+    ' &
+  download_pid=$!
+  while kill -0 "$download_pid" >/dev/null 2>&1; do
+    sleep "$heartbeat"
+    kill -0 "$download_pid" >/dev/null 2>&1 || break
+    printf '  [ .. ] VM%s cold Go dependency download heartbeat elapsed=%ss\n' \
+      "$SUBYARD_E2E_VM" "$((SECONDS - started))"
+  done
+  wait "$download_pid"
+  download_pid=''
+  printf 'ok: VM%s cold Go dependency bootstrap passed\n' "$SUBYARD_E2E_VM"
+)
+
+profile_resource() (
+  local fixture="$P0_CAPACITY_STATE_ROOT/profile-resource" handler rc setup
+  p0_capacity_prepare_root
+  p0_capacity_prepare_subtree "$fixture"
+  trap 'rc=$?; set +e; p0_capacity_remove_subtree "$fixture"; p0_capacity_remove_root_if_empty; exit "$rc"' EXIT
+  cp -a "$ROOT/config" "$fixture/config"
+  install -d -m 0700 "$fixture/config/profiles/p0-smoke/resources/p0-smoke"
+  cat > "$fixture/config/profiles/p0-smoke/resources/p0-smoke.res" <<'EOF'
+COMMAND=p0-smoke
+HANDLER=resources/p0-smoke/handler.sh
+TITLE=Dependency-free P0 smoke
+VERBS=up is-up status down
+EOF
+  handler="$fixture/config/profiles/p0-smoke/resources/p0-smoke/handler.sh"
+  cat > "$handler" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${SUBYARD_HOME:?}/p0-profile-resource.state"
+case "${1:-}" in
+  up) install -d -m 0700 "$(dirname "$state")"; printf 'up\n' > "$state" ;;
+  is-up) [ "$(cat "$state" 2>/dev/null)" = up ] ;;
+  status) [ "$(cat "$state" 2>/dev/null)" = up ] && printf 'up\n' || { printf 'down\n'; exit 1; } ;;
+  down) find "$state" -delete 2>/dev/null || true ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod 0700 "$handler"
+  ./dev/build-engine.sh
+  setup="$fixture/context"
+  # shellcheck source=tests/helpers/test-context.sh
+  . "$ROOT/tests/helpers/test-context.sh"
+  setup_test_context "$setup"
+  export HOME="$setup/home" SUBYARD_NO_AUDIT=1 SUBYARD_CONFIG_DIR="$fixture/config"
+  SUBYARD_REPOSITORY_ROOT="$fixture" "$ROOT/.build/yard" p0-smoke up --yes >/dev/null
+  SUBYARD_REPOSITORY_ROOT="$fixture" "$ROOT/.build/yard" p0-smoke is-up
+  [ "$(SUBYARD_REPOSITORY_ROOT="$fixture" "$ROOT/.build/yard" p0-smoke status)" = up ] \
+    || die 'dependency-free profile resource status failed'
+  SUBYARD_REPOSITORY_ROOT="$fixture" "$ROOT/.build/yard" p0-smoke down --yes >/dev/null
+  if SUBYARD_REPOSITORY_ROOT="$fixture" "$ROOT/.build/yard" p0-smoke is-up; then
+    die 'dependency-free profile resource survived reverse lifecycle'
+  fi
+  printf 'ok: VM%s dependency-free profile resource up/status/down\n' "$SUBYARD_E2E_VM"
+)
 
 capacity_verify_cleanup() {
   local path project
@@ -1405,6 +1556,10 @@ capacity_verify_cleanup() {
   case "$MODE" in
   capacity-preflight) capacity_preflight ;;
   capacity-verify-cleanup) capacity_verify_cleanup ;;
+  dependency-verify) dependency_verify ;;
+  dependency-bootstrap) dependency_bootstrap ;;
+  real-incus) bash dev/e2e/p0-real-incus.sh ;;
+  profile-resource) profile_resource ;;
   owner) owner ;;
   owner-migration) owner_migration ;;
   broker-recovery-owner) broker_recovery_owner ;;

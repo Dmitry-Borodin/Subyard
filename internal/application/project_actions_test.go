@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -297,6 +299,7 @@ func TestProjectExportRejectsProjectsWithoutHostCopy(t *testing.T) {
 func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
 	data := &projectDataStub{}
 	code := &vsCodeStub{}
+	workspaceDirectory := t.TempDir()
 	record := cloneRecord()
 	record.Mode, record.HostPath, record.Target = domain.ProjectSync, "/host/demo", "yard"
 	incus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{
@@ -304,8 +307,9 @@ func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
 	}}
 	runner := ProjectActionRunner{
 		Data: data, Instances: incus, VSCode: code,
-		Yard:    domain.Context{YardType: domain.YardLocal, IncusProject: "subyard", InstanceName: "yard", DevUser: "dev", DevUID: 1000},
-		Project: record, Extensions: []string{"anthropic.claude-code"},
+		WorkspaceDirectory: workspaceDirectory,
+		Yard:               domain.Context{YardType: domain.YardLocal, IncusProject: "subyard", InstanceName: "yard", DevUser: "dev", DevUID: 1000},
+		Project:            record, Extensions: []string{"anthropic.claude-code"},
 	}
 	_, message, err := runner.Run(context.Background(), domain.AdapterRequest{
 		Schema: 1, OperationID: "operation-code", Adapter: "project", Action: "code",
@@ -313,9 +317,13 @@ func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
 	if err != nil || !strings.Contains(message, "opened Demo") {
 		t.Fatalf("code failed: message=%q err=%v", message, err)
 	}
-	if len(data.requests) != 2 || data.requests[0].Command[0] != "install" ||
-		data.requests[1].Command[0] != "tee" {
-		t.Fatalf("unexpected workspace sequence: %#v", data.requests)
+	if len(data.requests) != 0 {
+		t.Fatalf("workspace descriptor was written inside the yard: %#v", data.requests)
+	}
+	workspacePath := filepath.Join(workspaceDirectory, "yard-demo-12345678.code-workspace")
+	payload, readErr := os.ReadFile(workspacePath)
+	if readErr != nil {
+		t.Fatalf("read controller workspace: %v", readErr)
 	}
 	var workspace struct {
 		Folders    []map[string]string `json:"folders"`
@@ -323,12 +331,13 @@ func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
 			Recommendations []string `json:"recommendations"`
 		} `json:"extensions"`
 	}
-	if err := json.Unmarshal(data.requests[1].Stdin, &workspace); err != nil ||
-		workspace.Folders[0]["path"] != record.YardPath || len(workspace.Extensions.Recommendations) != 1 {
+	if err := json.Unmarshal(payload, &workspace); err != nil ||
+		workspace.Folders[0]["uri"] != "vscode-remote://ssh-remote+yard"+record.YardPath ||
+		len(workspace.Extensions.Recommendations) != 1 {
 		t.Fatalf("invalid workspace: %#v err=%v", workspace, err)
 	}
 	if len(code.calls) != 1 || code.calls[0][0] != "--file-uri" ||
-		!strings.Contains(code.calls[0][1], "Demo.code-workspace") {
+		code.calls[0][1] != "file://"+workspacePath {
 		t.Fatalf("VS Code URI was not opened: %#v", code.calls)
 	}
 }

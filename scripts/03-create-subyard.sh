@@ -198,12 +198,6 @@ else
   done
 fi
 
-# Ensure it's RUNNING temporarily — provision uses `incus exec`. Final init reconciliation restores
-# the persisted desired state, so a fresh named yard is stopped again before `yard init` returns.
-state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
-[ "$state" = RUNNING ] || info "starting $INSTANCE_NAME temporarily (was: ${state:-unknown})"
-power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
-
 # --- 3. /dev/kvm passthrough (container only) --------------------------------
 echo "KVM:"
 if [ "$INSTANCE_TYPE" = vm ]; then
@@ -254,6 +248,12 @@ if ! device_exists srv; then
     pool="$SRV_POOL" source="$SRV_VOLUME" path=/srv >/dev/null
   ok "attached '$SRV_VOLUME' at /srv"
 fi
+
+# Attach boot devices before the first start. Incus 6.0 cannot hot-add virtiofs to a running VM
+# when its first PCI function is already occupied by the balloon device.
+state="$(power_state "$INCUS_PROJECT" "$INSTANCE_NAME")"
+[ "$state" = RUNNING ] || info "starting $INSTANCE_NAME temporarily (was: ${state:-unknown})"
+power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
 
 # --- summary -----------------------------------------------------------------
 echo

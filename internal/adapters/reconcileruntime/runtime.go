@@ -687,6 +687,10 @@ func (runtime Runtime) extrasContext() (map[string]string, error) {
 			}
 		}
 		for _, device := range strings.Fields(values["YARD_DEVICES"]) {
+			// The current extras adapter implements devices as container-only unix-char mounts.
+			if runtime.Yard.InstanceType == domain.InstanceVM {
+				continue
+			}
 			switch device {
 			case "kvm", "fuse", "gpu":
 				devices[device] = true
@@ -883,8 +887,16 @@ func (runtime Runtime) sshConverged(ctx context.Context) (bool, error) {
 		port = strconv.Itoa(runtime.Yard.SSHPort)
 	}
 	device := state.Instance.LocalDevices["ssh"]
+	connect := "tcp:127.0.0.1:22"
+	if runtime.Yard.InstanceType == domain.InstanceVM {
+		address := state.Instance.LocalDevices["eth0"]["ipv4.address"]
+		if address == "" || device["nat"] != "true" {
+			return false, nil
+		}
+		connect = "tcp:" + address + ":22"
+	}
 	if device["type"] != "proxy" || device["listen"] != "tcp:127.0.0.1:"+port ||
-		device["connect"] != "tcp:127.0.0.1:22" {
+		device["connect"] != connect {
 		return false, nil
 	}
 	home := runtime.Yard.Paths.OperatorHome

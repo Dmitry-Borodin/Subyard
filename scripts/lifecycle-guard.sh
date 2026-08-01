@@ -122,6 +122,9 @@ case "$action" in
     power_nm_prepare_reader || die "$POWER_ERROR"
     info "starting $INSTANCE_NAME"
     power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE" || die "$POWER_ERROR"
+    info "waiting for $INSTANCE_NAME agent"
+    incus_wait_instance_agent "$INCUS_PROJECT" "$INSTANCE_NAME" \
+      || die "instance '$INSTANCE_NAME' agent did not become ready"
     ;;
   stop)
     cur="$(state)"

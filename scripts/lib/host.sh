@@ -50,39 +50,47 @@ host_sudo() {
   fi
 }
 
-subyard_home_remove_preserving_runtime() {
-  local data_home="${1:-}" runtime_root="${2:-}" relative preserve_path entry
-  SUBYARD_PRESERVED_RUNTIME=""
-  case "$data_home:$runtime_root" in
-    /*:/*) ;;
-    *) return 2 ;;
-  esac
+subyard_home_validate_root() {
+  local data_home="${1:-}" operator_home
+  SUBYARD_VALIDATED_HOME=""
+  case "$data_home" in /*) ;; *) return 2 ;; esac
+  [ ! -L "$data_home" ] || return 2
   data_home="$(realpath -m -- "$data_home")"
-  runtime_root="$(realpath -m -- "$runtime_root")"
-  [ "$data_home" != / ] && ! path_is_broad_host_root "$data_home" || return 2
+  operator_home="$(realpath -m -- "${SUBYARD_OPERATOR_HOME:-/}")"
+  [ "$data_home" != "$operator_home" ] && ! path_is_broad_host_root "$data_home" || return 2
+  [ ! -e "$data_home" ] || [ -d "$data_home" ] || return 2
+  SUBYARD_VALIDATED_HOME="$data_home"
+}
 
-  if [ -x "$runtime_root/current/bin/yard" ]; then
-    case "$runtime_root" in
-      "$data_home")
-        SUBYARD_PRESERVED_RUNTIME="$runtime_root"
-        return 0
-        ;;
-      "$data_home"/*)
-        relative="${runtime_root#"$data_home"/}"
-        preserve_path="$data_home/${relative%%/*}"
-        SUBYARD_PRESERVED_RUNTIME="$runtime_root"
-        ;;
-    esac
+subyard_home_remove_if_empty() {
+  local data_home="${1:-}"
+  subyard_home_validate_root "$data_home" || return
+  data_home="$SUBYARD_VALIDATED_HOME"
+  [ -e "$data_home" ] || { printf '0\n'; return 0; }
+  if rmdir -- "$data_home" 2>/dev/null; then
+    printf '1\n'
+  else
+    printf '0\n'
   fi
+}
 
-  if [ -z "$SUBYARD_PRESERVED_RUNTIME" ]; then
-    rm -rf -- "$data_home"
-    return 0
+subyard_state_remove_canonical() {
+  local state_dir="${1:-}" config_home="${2:-}" yard_name="${3:-}" expected
+  case "$state_dir:$config_home" in /*:/*) ;; *) return 2 ;; esac
+  config_home="$(realpath -m -- "$config_home")"
+  ! path_is_broad_host_root "$config_home" || return 2
+  expected="$config_home/projects"
+  [ -z "$yard_name" ] || expected="$config_home/yards/$yard_name/projects"
+  if [ -L "$state_dir" ] || [ "$(realpath -m -- "$state_dir")" != "$expected" ]; then
+    printf 'preserved\n'
+  elif [ ! -e "$state_dir" ]; then
+    printf 'absent\n'
+  elif [ ! -d "$state_dir" ]; then
+    return 2
+  else
+    rm -rf -- "$state_dir"
+    printf 'removed\n'
   fi
-
-  while IFS= read -r -d '' entry; do
-    [ "$entry" = "$preserve_path" ] || rm -rf -- "$entry"
-  done < <(find "$data_home" -mindepth 1 -maxdepth 1 -print0)
 }
 
 incus_preflight() {
@@ -95,6 +103,15 @@ incus_preflight() {
     exit 1
   fi
   die "can't reach Incus — you're not in the 'incus-admin' group, or the daemon isn't running. Run 'yard init' first."
+}
+
+incus_wait_instance_agent() {
+  local project="${1:?project required}" instance="${2:?instance required}" attempt
+  for ((attempt = 0; attempt < 120; attempt++)); do
+    incus exec "$instance" --project "$project" -- true >/dev/null 2>&1 && return 0
+    [ "$attempt" -eq 119 ] || sleep 1
+  done
+  return 1
 }
 
 incus_project_has_isolated_images() {

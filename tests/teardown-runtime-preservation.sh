@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Last-yard teardown removes mutable yard data without uninstalling the verified CLI runtime.
+# Last-yard teardown never recursively removes a shared Subyard data root.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,51 +27,64 @@ grep -Fq 'STORAGE_POOL="${STORAGE_POOL:-$SRV_POOL}"' \
   "$ROOT/scripts/teardown-physical.sh" \
   || fail 'teardown does not inherit the configured yard storage pool'
 
-data_home="$TMP/default-home"
-runtime_root="$data_home/runtime"
-install -d "$runtime_root/current/bin" "$data_home/incus/storage" "$data_home/ssh" "$data_home/logs"
-printf '#!/bin/sh\nexit 0\n' > "$runtime_root/current/bin/yard"
-chmod +x "$runtime_root/current/bin/yard"
-printf 'mutable\n' > "$data_home/logs/yard.log"
+data_home="$TMP/shared-home"
+install -d "$data_home/workspaces" "$data_home/runtime/current/bin" "$data_home/logs"
+printf 'outer workspace\n' > "$data_home/workspaces/active.code-workspace"
+printf 'outer log\n' > "$data_home/logs/yard.log"
 
-subyard_home_remove_preserving_runtime "$data_home" "$runtime_root" \
-  || fail 'default runtime cleanup failed'
-[ -x "$runtime_root/current/bin/yard" ] || fail 'default installed runtime was removed'
-[ "$SUBYARD_PRESERVED_RUNTIME" = "$runtime_root" ] || fail 'default preserved runtime was not reported'
-[ ! -e "$data_home/incus" ] && [ ! -e "$data_home/ssh" ] && [ ! -e "$data_home/logs" ] \
-  || fail 'mutable default yard data remained'
+[ "$(subyard_home_remove_if_empty "$data_home")" = 0 ] || fail 'shared data-root cleanup failed'
+[ -f "$data_home/workspaces/active.code-workspace" ] || fail 'outer workspace descriptor was removed'
+[ -f "$data_home/logs/yard.log" ] || fail 'outer log was removed'
 
-custom_home="$TMP/custom-home"
-custom_runtime="$custom_home/releases/runtime"
-install -d "$custom_runtime/current/bin" "$custom_home/projects" "$custom_home/space"
-printf '#!/bin/sh\nexit 0\n' > "$custom_runtime/current/bin/yard"
-chmod +x "$custom_runtime/current/bin/yard"
+empty_home="$TMP/empty-home"
+install -d "$empty_home"
+[ "$(subyard_home_remove_if_empty "$empty_home")" = 1 ] && [ ! -e "$empty_home" ] \
+  || fail 'empty data root was not removed'
 
-subyard_home_remove_preserving_runtime "$custom_home" "$custom_runtime" \
-  || fail 'custom nested runtime cleanup failed'
-[ -x "$custom_runtime/current/bin/yard" ] || fail 'custom nested runtime was removed'
-[ ! -e "$custom_home/projects" ] && [ ! -e "$custom_home/space" ] \
-  || fail 'mutable custom yard data remained'
+outside="$TMP/outside"
+link="$TMP/data-link"
+install -d "$outside"
+ln -s "$outside" "$link"
+if subyard_home_remove_if_empty "$link"; then
+  fail 'symlink data root was accepted'
+fi
+[ -d "$outside" ] || fail 'symlink target was removed'
 
-external_home="$TMP/external-home"
-external_runtime="$TMP/external-runtime"
-install -d "$external_home/data" "$external_runtime/current/bin"
-printf '#!/bin/sh\nexit 0\n' > "$external_runtime/current/bin/yard"
-chmod +x "$external_runtime/current/bin/yard"
-
-subyard_home_remove_preserving_runtime "$external_home" "$external_runtime" \
-  || fail 'external runtime cleanup failed'
-[ ! -e "$external_home" ] || fail 'yard data home remained for an external runtime'
-[ -x "$external_runtime/current/bin/yard" ] || fail 'external runtime was removed'
-
-incomplete_home="$TMP/incomplete-home"
-install -d "$incomplete_home/runtime/current/bin" "$incomplete_home/data"
-subyard_home_remove_preserving_runtime "$incomplete_home" "$incomplete_home/runtime" \
-  || fail 'incomplete runtime cleanup failed'
-[ ! -e "$incomplete_home" ] || fail 'incomplete runtime incorrectly blocked cleanup'
-
-if subyard_home_remove_preserving_runtime / /runtime; then
+if subyard_home_remove_if_empty /; then
   fail 'broad data root was accepted'
 fi
 
-printf 'ok: last-yard teardown preserves only an installed runtime\n'
+config_home="$TMP/config"
+default_state="$config_home/projects"
+named_state="$config_home/yards/demo/projects"
+custom_state="$TMP/custom-state"
+install -d "$default_state" "$named_state" "$custom_state"
+printf 'default\n' > "$default_state/demo.json"
+printf 'named\n' > "$named_state/demo.json"
+printf 'custom\n' > "$custom_state/demo.json"
+
+[ "$(subyard_state_remove_canonical "$default_state" "$config_home" '')" = removed ] \
+  || fail 'canonical default-yard state was not removed'
+[ ! -e "$default_state" ] || fail 'canonical default-yard state remained'
+[ "$(subyard_state_remove_canonical "$named_state" "$config_home" demo)" = removed ] \
+  || fail 'canonical named-yard state was not removed'
+[ ! -e "$named_state" ] || fail 'canonical named-yard state remained'
+[ "$(subyard_state_remove_canonical "$custom_state" "$config_home" '')" = preserved ] \
+  || fail 'custom state path was not preserved'
+[ -f "$custom_state/demo.json" ] || fail 'custom state was removed'
+
+state_target="$TMP/state-target"
+state_link="$config_home/projects"
+install -d "$state_target" "$(dirname "$state_link")"
+printf 'foreign\n' > "$state_target/foreign.json"
+ln -s "$state_target" "$state_link"
+[ "$(subyard_state_remove_canonical "$state_link" "$config_home" '')" = preserved ] \
+  || fail 'symlink state path was not preserved'
+[ -f "$state_target/foreign.json" ] || fail 'symlink state target was removed'
+
+if grep -RE 'rm -rf.*SUBYARD_HOME|subyard_home_remove_preserving_runtime' \
+  "$ROOT/scripts" >/dev/null; then
+  fail 'production teardown still contains broad Subyard-home cleanup'
+fi
+
+printf 'ok: last-yard teardown preserves every non-empty shared data root\n'

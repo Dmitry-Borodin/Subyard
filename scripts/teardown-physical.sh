@@ -25,11 +25,6 @@ SRV_POOL="${SRV_POOL:-default}"
 SRV_VOLUME="${SRV_VOLUME:-yard-srv}"
 STORAGE_POOL="${STORAGE_POOL:-$SRV_POOL}"
 BRIDGE="${INCUS_BRIDGE:-${INCUS_NETWORK:-incusbr0}}"
-RUNTIME_ROOT_RAW="${YARD_RUNTIME_ROOT:-$SUBYARD_HOME/runtime}"
-case "$RUNTIME_ROOT_RAW" in
-  /*) RUNTIME_ROOT="$(realpath -m -- "$RUNTIME_ROOT_RAW")" ;;
-  *) die "YARD_RUNTIME_ROOT must be an absolute path" ;;
-esac
 
 YARD_SNIP="subyard${YARD_NAME:+-$YARD_NAME}.config"
 YARD_STATE_DIR="${SUBYARD_STATE_DIR:-$SUBYARD_CONFIG_HOME/projects}"
@@ -39,6 +34,9 @@ KEEP_DATA="${SUBYARD_TEARDOWN_KEEP_DATA:-}"
 case "$KEEP_DATA" in 0 | 1) ;; *) die "prepared teardown mode is required" ;; esac
 KEEP_SHARED="${SUBYARD_TEARDOWN_KEEP_SHARED:-}"
 case "$KEEP_SHARED" in 0 | 1) ;; *) die "prepared shared-infrastructure mode is required" ;; esac
+subyard_home_validate_root "$SUBYARD_HOME" \
+  || die "refusing unsafe Subyard data root: $SUBYARD_HOME"
+SUBYARD_HOME="$SUBYARD_VALIDATED_HOME"
 require_root "removing the NetworkManager guard, ufw rules, and the Incus storage data needs root"
 
 if [ "$KEEP_DATA" = 0 ] && command -v incus >/dev/null 2>&1 && ! incus info >/dev/null 2>&1; then
@@ -152,7 +150,15 @@ if [ -f "$known" ] && [ -n "${SSH_PORT:-}" ]; then
     || die "could not clear this yard's SSH host-key entry"
   ok "cleared this yard's host-key entry ([127.0.0.1]:$SSH_PORT) from known_hosts"
 fi
-rm -rf "$YARD_STATE_DIR" && ok "removed yard state $YARD_STATE_DIR"
+state_cleanup="$(subyard_state_remove_canonical \
+  "$YARD_STATE_DIR" "$SUBYARD_CONFIG_HOME" "${YARD_NAME:-}")" \
+  || die "refusing unsafe yard state path: $YARD_STATE_DIR"
+case "$state_cleanup" in
+  removed) ok "removed yard state $YARD_STATE_DIR" ;;
+  absent) ok "yard state already absent: $YARD_STATE_DIR" ;;
+  preserved) warn "kept non-canonical yard state path: $YARD_STATE_DIR" ;;
+  *) die "unexpected yard state cleanup result" ;;
+esac
 if [ -n "${YARD_NAME:-}" ]; then
   rmdir "$SUBYARD_CONFIG_HOME/yards/$YARD_NAME" 2>/dev/null || true
   rmdir "$SUBYARD_CONFIG_HOME/yards" 2>/dev/null || true
@@ -163,12 +169,12 @@ rm -f "$YARD_SPACE_CACHE" "$YARD_SPACE_CACHE.lock" "$YARD_SPACE_CACHE.tmp" 2>/de
 if [ "$KEEP_DATA" = 1 ]; then
   ok "kept data: $STORAGE_PATH (and $SUBYARD_HOME)"
 elif [ "$pool_gone" = 1 ]; then
-  subyard_home_remove_preserving_runtime "$SUBYARD_HOME" "$RUNTIME_ROOT" \
+  data_home_removed="$(subyard_home_remove_if_empty "$SUBYARD_HOME")" \
     || die "refusing to remove unsafe Subyard data root: $SUBYARD_HOME"
-  if [ -n "$SUBYARD_PRESERVED_RUNTIME" ]; then
-    ok "removed $SUBYARD_HOME yard data; kept installed runtime $SUBYARD_PRESERVED_RUNTIME"
+  if [ "$data_home_removed" = 1 ]; then
+    ok "removed empty Subyard data root $SUBYARD_HOME"
   else
-    ok "removed $SUBYARD_HOME (storage data, ssh keys, logs)"
+    ok "kept non-empty Subyard data root $SUBYARD_HOME; teardown only removes selected-yard state"
   fi
 else
   warn "kept $STORAGE_PATH and shared $SUBYARD_HOME/{ssh,logs} — another yard still uses the pool"

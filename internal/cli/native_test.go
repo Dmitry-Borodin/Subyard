@@ -85,7 +85,6 @@ esac
 		Instances: map[string]ports.InstanceInfo{"subyard/yard": {
 			Status: "Running", Devices: map[string]map[string]string{"ssh": {"type": "proxy"}},
 		}},
-		ExecSteps: []testkit.IncusExecStep{{}, {}},
 	}
 	codeClient := &nativeVSCodeStub{}
 	var codeStderr bytes.Buffer
@@ -100,7 +99,9 @@ esac
 	if code := codeProgram.Run(context.Background()); code != 0 {
 		t.Fatalf("code failed: code=%d stderr=%q", code, codeStderr.String())
 	}
-	if len(codeClient.calls) != 1 || len(incus.ExecCalls) != 2 {
+	wantWorkspace := filepath.Join(configHome, "workspaces", "yard-demo-12345678.code-workspace")
+	if len(codeClient.calls) != 1 || codeClient.calls[0][1] != "file://"+wantWorkspace ||
+		len(incus.ExecCalls) != 0 {
 		t.Fatalf("code launch drifted: vscode=%#v exec=%#v", codeClient.calls, incus.ExecCalls)
 	}
 
@@ -835,6 +836,7 @@ case "${1:-}" in
   info) exit 0 ;;
   list) cat "$state" ;;
   start) printf 'RUNNING\n' > "$state"; printf 'start\n' >> "$log" ;;
+  exec) exit 0 ;;
   *) exit 90 ;;
 esac
 `, statePath, logPath), 0o700)

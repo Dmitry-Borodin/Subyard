@@ -242,6 +242,9 @@ grep -Fq 'guest 1 \' "$ROOT/dev/e2e/p0-acceptance.sh" \
 grep -Fq 'set_requested_slot "$SUBYARD_P0_SLOT" SUBYARD_P0_SLOT' \
   "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 exact-slot environment does not reach the atomic lease request"
+grep -Fq 'run_guest "$vm" "$P0_BUNDLE" "$P0_BUNDLE_HASH" \' \
+  "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail "P0 acceptance repeats the leased runner's dev privilege transition"
 grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity-verify-cleanup' "$ROOT/dev/e2e/p0-acceptance.sh" \
   && grep -Fq 'capacity_report' "$ROOT/dev/e2e/p0-acceptance.sh" \

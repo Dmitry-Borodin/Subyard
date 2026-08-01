@@ -351,7 +351,7 @@ func TestSSHProbeOwnsProxyAndClientConfig(t *testing.T) {
 		Incus: incus, Executor: incus,
 		Yard: domain.Context{
 			YardName: "default", IncusProject: "subyard", InstanceName: "yard",
-			SSHHost: "yard", SSHPort: 2222,
+			SSHHost: "yard", SSHPort: 2222, InstanceType: domain.InstanceContainer,
 			Paths: domain.RuntimePaths{OperatorHome: home, DataHome: subyardHome},
 		},
 		Environment: []string{"PATH=" + bin},
@@ -373,6 +373,16 @@ func TestSSHProbeOwnsProxyAndClientConfig(t *testing.T) {
 	}
 	runtime.Yard.YardName = "demo"
 	assertStage(t, runtime, "ssh", true, "matching named-yard SSH state")
+
+	runtime.Yard.InstanceType = domain.InstanceVM
+	incus.Reconcile.Instance.LocalDevices["eth0"] = map[string]string{"ipv4.address": "10.0.0.2"}
+	incus.Reconcile.Instance.LocalDevices["ssh"] = map[string]string{
+		"type": "proxy", "listen": "tcp:127.0.0.1:2222",
+		"connect": "tcp:10.0.0.2:22", "nat": "true",
+	}
+	assertStage(t, runtime, "ssh", true, "matching VM NAT proxy")
+	incus.Reconcile.Instance.LocalDevices["ssh"]["nat"] = "false"
+	assertStage(t, runtime, "ssh", false, "VM non-NAT proxy")
 }
 
 func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
@@ -625,6 +635,11 @@ func TestExtrasDesiredStateIsParsedAndValidatedInGo(t *testing.T) {
 		values["SUBYARD_EXTRAS_CAPABILITIES"] != "fuse rootless-docker" ||
 		values["SUBYARD_EXTRAS_DEVICES"] != "gpu" {
 		t.Fatalf("unexpected extras context: %#v", values)
+	}
+	runtime.Yard.InstanceType = domain.InstanceVM
+	values, err = runtime.extrasContext()
+	if err != nil || values["SUBYARD_EXTRAS_DEVICES"] != "" {
+		t.Fatalf("VM inherited container-only device extras: %#v, %v", values, err)
 	}
 	writeProfile("bad", "YARD_MOUNTS='../escape:/srv/cache:rw:0755'\n")
 	if _, err := runtime.extrasContext(); err == nil {

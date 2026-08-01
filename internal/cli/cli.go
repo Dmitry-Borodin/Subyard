@@ -2530,8 +2530,9 @@ func (cli *CLI) executeStructuredCommand(
 		orchestrator.Runner = application.ProjectActionRunner{
 			Data: cli.projectDataPlane(), Devices: cli.projectDeviceManager(), Archive: cli.projectArchiver(),
 			Exports: cli.projectExportStore(loaded), Instances: incusPort, VSCode: cli.projectVSCode(),
-			Extensions: strings.Fields(cli.env["CODE_RECOMMENDED_EXTENSIONS"]),
-			Yard:       loaded.Context, Project: project.Record,
+			Extensions:         strings.Fields(cli.env["CODE_RECOMMENDED_EXTENSIONS"]),
+			WorkspaceDirectory: filepath.Join(loaded.Context.Paths.ConfigHome, "workspaces"),
+			Yard:               loaded.Context, Project: project.Record,
 			SoftRemove: project.Environment["SUBYARD_PROJECT_REMOVE_SOFT"] == "1",
 		}
 		request := domain.AdapterRequest{

@@ -77,10 +77,29 @@ ok "public key: $PUBKEY_FILE"
 
 # --- 2. proxy device (idempotent) --------------------------------------------
 echo "SSH proxy:"
+proxy_connect=tcp:127.0.0.1:22
+proxy_nat=
+proxy_args=(bind=host)
+if [ "${INSTANCE_TYPE:-container}" = vm ]; then
+  # Incus 6.0 requires a static NIC address for the VM-only NAT proxy mode. Keep the
+  # address DHCP selected on first boot, then reserve it on the inherited eth0 device.
+  vm_ipv4="$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c 4 \
+    | tr ',' '\n' | awk '/^[0-9]+\./ {sub(/ .*/, ""); print; exit}')"
+  [ -n "$vm_ipv4" ] || die "VM '$INSTANCE_NAME' has no IPv4 address for its SSH proxy"
+  if device_exists eth0; then
+    incus config device set "$INSTANCE_NAME" eth0 ipv4.address="$vm_ipv4" "${PROJ[@]}"
+  else
+    incus config device override "$INSTANCE_NAME" eth0 ipv4.address="$vm_ipv4" "${PROJ[@]}"
+  fi
+  proxy_connect="tcp:$vm_ipv4:22"
+  proxy_nat=true
+  proxy_args+=(nat=true)
+fi
 if device_exists ssh; then
   if [ "$(dev_get ssh type)" = proxy ] \
     && [ "$(dev_get ssh listen)" = "tcp:127.0.0.1:$SSH_PORT" ] \
-    && [ "$(dev_get ssh connect)" = tcp:127.0.0.1:22 ]; then
+    && [ "$(dev_get ssh connect)" = "$proxy_connect" ] \
+    && { [ -z "$proxy_nat" ] || [ "$(dev_get ssh nat)" = "$proxy_nat" ]; }; then
     ok "proxy device 'ssh' already attached"
   else
     warn "proxy device 'ssh' drifted — re-attaching on 127.0.0.1:$SSH_PORT"
@@ -89,7 +108,7 @@ if device_exists ssh; then
 fi
 if ! device_exists ssh; then
   incus config device add "$INSTANCE_NAME" ssh proxy "${PROJ[@]}" \
-    listen="tcp:127.0.0.1:$SSH_PORT" connect=tcp:127.0.0.1:22 bind=host >/dev/null
+    listen="tcp:127.0.0.1:$SSH_PORT" connect="$proxy_connect" "${proxy_args[@]}" >/dev/null
   ok "added proxy 127.0.0.1:$SSH_PORT -> yard:22"
 fi
 

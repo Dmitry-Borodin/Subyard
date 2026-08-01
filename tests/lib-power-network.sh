@@ -16,6 +16,7 @@ export MOCK_SUDO_LOG="$tmp/sudo.log"
 export MOCK_NM_LOG="$tmp/nm.log"
 export MOCK_NM_COUNT="$tmp/nm.count"
 export MOCK_INCUS_LOG="$tmp/incus.log"
+export MOCK_INCUS_EXEC_COUNT="$tmp/incus-exec.count"
 export MOCK_SUDO_AUTH="$tmp/sudo.auth"
 
 cat > "$tmp/bin/systemctl" <<'SH'
@@ -93,6 +94,11 @@ case "${1:-}" in
   list) printf 'STOPPED\n' ;;
   start) printf 'start\n' >> "$MOCK_INCUS_LOG" ;;
   stop) printf 'stop\n' >> "$MOCK_INCUS_LOG"; exit "${MOCK_INCUS_STOP_RC:-0}" ;;
+  exec)
+    n=0; [ ! -f "$MOCK_INCUS_EXEC_COUNT" ] || n="$(cat "$MOCK_INCUS_EXEC_COUNT")"
+    n=$((n + 1)); printf '%s\n' "$n" > "$MOCK_INCUS_EXEC_COUNT"
+    [ "$n" -ge "${MOCK_INCUS_EXEC_READY_AFTER:-1}" ]
+    ;;
   *) exit 90 ;;
 esac
 SH
@@ -113,11 +119,11 @@ reset_case() {
   : > "$MOCK_SUDO_LOG"
   : > "$MOCK_NM_LOG"
   : > "$MOCK_INCUS_LOG"
-  rm -f "$MOCK_NM_COUNT" "$MOCK_SUDO_AUTH"
+  rm -f "$MOCK_NM_COUNT" "$MOCK_SUDO_AUTH" "$MOCK_INCUS_EXEC_COUNT"
   POWER_ERROR=''
   export MOCK_NM_STATE=active MOCK_UID=1000 MOCK_SUDO_V_RC=0 MOCK_SUDO_N_RC=0 \
     MOCK_SUDO_REQUIRE_V=1 MOCK_NM_MODE=valid MOCK_RELOAD_RC=0 MOCK_NMCLI_RC=1 \
-    MOCK_INCUS_STOP_RC=0
+    MOCK_INCUS_STOP_RC=0 MOCK_INCUS_EXEC_READY_AFTER=1
 }
 
 reset_case
@@ -196,6 +202,11 @@ CONTROL_PLANE_ROOT="$ROOT"
 # shellcheck source=tests/helpers/source-control-plane.sh
 . "$ROOT/tests/helpers/source-control-plane.sh"
 reset_case
+MOCK_INCUS_EXEC_READY_AFTER=2
+incus_wait_instance_agent test-project test-yard || fail "instance agent did not become ready"
+[ "$(cat "$MOCK_INCUS_EXEC_COUNT")" = 2 ] || fail "instance agent wait did not retry"
+
+reset_case
 MOCK_UID=0
 guard_conf="$tmp/NetworkManager/conf.d/zz-subyard-unmanaged.conf"
 umask 077
@@ -220,5 +231,10 @@ fi
 if grep -Fq 'incus launch' "$ROOT/scripts/03-create-subyard.sh"; then
   fail "instance creation still bypasses the guarded start"
 fi
+srv_line="$(grep -nF 'incus config device add "$INSTANCE_NAME" srv disk' "$ROOT/scripts/03-create-subyard.sh" | cut -d: -f1)"
+start_line="$(grep -nF 'power_start_guarded "$INCUS_PROJECT" "$INSTANCE_NAME" "$BRIDGE"' "$ROOT/scripts/03-create-subyard.sh" | cut -d: -f1)"
+[ "$srv_line" -lt "$start_line" ] || fail "VM /srv can still be hot-added after the first start"
+grep -Fq 'incus_wait_instance_agent "$INCUS_PROJECT" "$INSTANCE_NAME"' \
+  "$ROOT/scripts/lifecycle-guard.sh" || fail "yard start can return before the VM agent is ready"
 
 printf 'ok: NetworkManager power guard\n'

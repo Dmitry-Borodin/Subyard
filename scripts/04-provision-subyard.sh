@@ -39,6 +39,11 @@ announce_confirm "Subyard Phase 3 — provision the yard ($INSTANCE_NAME)" \
   "On the host: copy global Claude/Codex instructions into the yard, if present." \
   "This pulls packages from the network and changes the yard's userspace (not the host system)."
 
+# RUNNING precedes guest-agent readiness for VMs. Wait before the first mutating exec.
+info "waiting for $INSTANCE_NAME agent"
+incus_wait_instance_agent "$INCUS_PROJECT" "$INSTANCE_NAME" \
+  || die "instance '$INSTANCE_NAME' agent did not become ready"
+
 incus config set "$INSTANCE_NAME" user.subyard.ccusage_version pending "${PROJ[@]}" \
   || die "could not invalidate ccusage convergence"
 
@@ -66,9 +71,39 @@ if ! command -v yq >/dev/null 2>&1; then
     -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq
 fi
 
+# A yard may itself host a nested Incus bridge. Keep Docker from changing the yard's global
+# FORWARD policy to DROP; Docker's own bridge isolation rules remain in place. Write this before
+# first install/start so nested networking is also correct on fresh yards and after reboot.
+install -d -m 0755 /etc/docker
+docker_config=/etc/docker/daemon.json
+docker_config_changed=0
+if [ -e "$docker_config" ]; then
+  jq -e 'type == "object"' "$docker_config" >/dev/null \
+    || { echo "$docker_config must contain a JSON object" >&2; exit 1; }
+  if ! jq -e '."ip-forward-no-drop" == true' "$docker_config" >/dev/null; then
+    docker_config_tmp="$(mktemp /etc/docker/.daemon.json.XXXXXX)"
+    jq '. + {"ip-forward-no-drop": true}' "$docker_config" > "$docker_config_tmp"
+    install -m 0644 "$docker_config_tmp" "$docker_config"
+    rm -f "$docker_config_tmp"
+    docker_config_changed=1
+  fi
+else
+  docker_config_tmp="$(mktemp /etc/docker/.daemon.json.XXXXXX)"
+  printf '%s\n' '{"ip-forward-no-drop":true}' > "$docker_config_tmp"
+  install -m 0644 "$docker_config_tmp" "$docker_config"
+  rm -f "$docker_config_tmp"
+  docker_config_changed=1
+fi
+
 # Docker Engine + Compose plugin (official convenience script; Debian/Ubuntu aware).
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
+elif [ "$docker_config_changed" = 1 ]; then
+  systemctl restart docker
+  # Upgrade convergence: an older Docker start may already have installed the DROP policy.
+  command -v iptables >/dev/null 2>&1 \
+    && iptables -S FORWARD | grep -qx -- '-P FORWARD DROP' \
+    && iptables -P FORWARD ACCEPT
 fi
 
 # Groups + unprivileged dev user (Stage 1: dev is in docker group; agents are not).

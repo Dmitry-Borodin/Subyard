@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -18,16 +20,17 @@ import (
 )
 
 type ProjectActionRunner struct {
-	Data       ports.YardExecutor
-	Devices    ports.InstanceDeviceManager
-	Archive    ports.DirectoryArchiver
-	Exports    ports.ProjectExportStore
-	Instances  ports.Incus
-	VSCode     ports.VSCode
-	Extensions []string
-	Yard       domain.Context
-	Project    domain.ProjectRecord
-	SoftRemove bool
+	Data               ports.YardExecutor
+	Devices            ports.InstanceDeviceManager
+	Archive            ports.DirectoryArchiver
+	Exports            ports.ProjectExportStore
+	Instances          ports.Incus
+	VSCode             ports.VSCode
+	Extensions         []string
+	WorkspaceDirectory string
+	Yard               domain.Context
+	Project            domain.ProjectRecord
+	SoftRemove         bool
 }
 
 var workspaceUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
@@ -144,27 +147,48 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("invalid recommended VS Code extension %q", extension)
 		}
 	}
-	workspaceName := workspaceUnsafe.ReplaceAllString(runner.Project.Name, "_")
-	workspace := filepath.Join("/home", runner.Yard.DevUser, ".subyard", "workspaces", workspaceName+".code-workspace")
+	if !filepath.IsAbs(runner.WorkspaceDirectory) {
+		return "", errors.New("controller workspace directory must be absolute")
+	}
+	workspaceName := workspaceUnsafe.ReplaceAllString(
+		runner.Project.SSHHost+"-"+runner.Project.ProjectID, "_",
+	)
+	workspace := filepath.Join(runner.WorkspaceDirectory, workspaceName+".code-workspace")
+	remoteURI := (&url.URL{
+		Scheme: "vscode-remote", Host: "ssh-remote+" + runner.Project.SSHHost,
+		Path: runner.Project.YardPath,
+	}).String()
 	payload, err := json.Marshal(map[string]any{
-		"folders":    []map[string]string{{"name": runner.Project.Name, "path": runner.Project.YardPath}},
+		"folders":    []map[string]string{{"name": runner.Project.Name, "uri": remoteURI}},
 		"extensions": map[string]any{"recommendations": extensions},
 	})
 	if err != nil {
 		return "", err
 	}
-	dev := uint32(runner.Yard.DevUID)
-	if err := runner.execute(ctx, "create VS Code workspace directory", ports.InstanceExecRequest{
-		Command: []string{"install", "-d", "--", filepath.Dir(workspace)}, User: dev, Group: dev,
-	}); err != nil {
+	if err := os.MkdirAll(runner.WorkspaceDirectory, 0o700); err != nil {
 		return "", err
 	}
-	if err := runner.execute(ctx, "write VS Code workspace", ports.InstanceExecRequest{
-		Command: []string{"tee", workspace}, Stdin: append(payload, '\n'), User: dev, Group: dev,
-	}); err != nil {
+	temporary, err := os.CreateTemp(runner.WorkspaceDirectory, ".workspace-*")
+	if err != nil {
 		return "", err
 	}
-	uri := "vscode-remote://ssh-remote+" + runner.Project.SSHHost + workspace
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if _, err := temporary.Write(append(payload, '\n')); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if err := temporary.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(temporaryPath, workspace); err != nil {
+		return "", err
+	}
+	uri := (&url.URL{Scheme: "file", Path: workspace}).String()
 	message := ""
 	if runner.Project.Target != "" && runner.Project.Target != "yard" {
 		message = fmt.Sprintf(

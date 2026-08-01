@@ -364,6 +364,13 @@ const (
 	CommandMutate CommandEffect = "mutate"
 )
 
+type ConfirmationPolicy string
+
+const (
+	ConfirmationNever    ConfirmationPolicy = "never"
+	ConfirmationRequired ConfirmationPolicy = "required"
+)
+
 type RemotePolicy string
 
 const (
@@ -383,16 +390,18 @@ const (
 type CommandPolicy struct {
 	Name         string
 	Effect       CommandEffect
+	Confirmation ConfirmationPolicy
 	RemotePolicy RemotePolicy
 	Consequences []string
 }
 
 type OperationPlan struct {
-	OperationID  string          `json:"operationId"`
-	Command      string          `json:"command"`
-	Effect       CommandEffect   `json:"effect"`
-	Target       ExecutionTarget `json:"target"`
-	Consequences []string        `json:"consequences,omitempty"`
-	Confirmed    bool            `json:"confirmed"`
-	CreatedAt    time.Time       `json:"createdAt"`
+	OperationID  string             `json:"operationId"`
+	Command      string             `json:"command"`
+	Effect       CommandEffect      `json:"effect"`
+	Confirmation ConfirmationPolicy `json:"confirmation"`
+	Target       ExecutionTarget    `json:"target"`
+	Consequences []string           `json:"consequences,omitempty"`
+	Confirmed    bool               `json:"confirmed"`
+	CreatedAt    time.Time          `json:"createdAt"`
 }

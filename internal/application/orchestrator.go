@@ -36,7 +36,8 @@ func (orchestrator *Orchestrator) Prepare(yard domain.Context, policy domain.Com
 	if orchestrator.Clock == nil || orchestrator.IDs == nil {
 		return domain.OperationPlan{}, errors.New("clock and ID source are required")
 	}
-	if policy.Name == "" || (policy.Effect != domain.CommandRead && policy.Effect != domain.CommandMutate) {
+	if policy.Name == "" || (policy.Effect != domain.CommandRead && policy.Effect != domain.CommandMutate) ||
+		(policy.Confirmation != domain.ConfirmationNever && policy.Confirmation != domain.ConfirmationRequired) {
 		return domain.OperationPlan{}, errors.New("invalid command policy")
 	}
 	if policy.RemotePolicy != domain.RemoteOnController && policy.RemotePolicy != domain.RemoteOnOwner &&
@@ -52,24 +53,26 @@ func (orchestrator *Orchestrator) Prepare(yard domain.Context, policy domain.Com
 		return domain.OperationPlan{}, errors.New("ID source returned an invalid operation ID")
 	}
 	return domain.OperationPlan{
-		OperationID: operationID, Command: policy.Name, Effect: policy.Effect, Target: target,
+		OperationID: operationID, Command: policy.Name, Effect: policy.Effect,
+		Confirmation: policy.Confirmation, Target: target,
 		Consequences: append([]string(nil), policy.Consequences...),
-		Confirmed:    policy.Effect == domain.CommandRead, CreatedAt: orchestrator.Clock.Now().UTC(),
+		Confirmed:    policy.Confirmation == domain.ConfirmationNever, CreatedAt: orchestrator.Clock.Now().UTC(),
 	}, nil
 }
 
 func (orchestrator *Orchestrator) Confirm(ctx context.Context, plan domain.OperationPlan, assumeYes bool) (domain.OperationPlan, error) {
 	if !domain.SafeID(plan.OperationID) || plan.Command == "" ||
-		(plan.Effect != domain.CommandRead && plan.Effect != domain.CommandMutate) {
+		(plan.Effect != domain.CommandRead && plan.Effect != domain.CommandMutate) ||
+		(plan.Confirmation != domain.ConfirmationNever && plan.Confirmation != domain.ConfirmationRequired) {
 		return domain.OperationPlan{}, errors.New("invalid operation plan")
 	}
-	if plan.Effect == domain.CommandRead || plan.Confirmed || assumeYes {
+	if plan.Confirmation == domain.ConfirmationNever || plan.Confirmed || assumeYes {
 		plan.Confirmed = true
 		return plan, nil
 	}
 	if !plan.Confirmed {
 		if orchestrator.Prompt == nil {
-			return domain.OperationPlan{}, errors.New("mutating operation requires a prompt port")
+			return domain.OperationPlan{}, errors.New("operation requires a prompt port")
 		}
 		accepted, err := orchestrator.Prompt.Confirm(ctx, plan.Command, plan.Consequences)
 		if err != nil {

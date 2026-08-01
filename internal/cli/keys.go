@@ -103,7 +103,9 @@ func (cli *CLI) runKeys(
 	}
 	orchestrator := cli.operationOrchestrator(cli.env["SUBYARD_OPERATION_ID"], loaded, nil, &definition)
 	plan, err := orchestrator.Plan(ctx, loaded.Context, domain.CommandPolicy{
-		Name: name, Effect: prepared.Effect, RemotePolicy: domain.RemotePolicy(definition.Remote),
+		Name: name, Effect: prepared.Effect,
+		Confirmation: resolveConfirmationPolicy(definition, prepared.Effect),
+		RemotePolicy: domain.RemotePolicy(definition.Remote),
 		Consequences: prepared.Consequences,
 	}, assumeYes)
 	if err != nil {

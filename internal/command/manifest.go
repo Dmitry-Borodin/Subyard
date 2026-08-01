@@ -11,7 +11,7 @@ import (
 	"unicode"
 )
 
-const fieldCount = 13
+const fieldCount = 14
 
 type RemotePlane string
 
@@ -28,6 +28,14 @@ const (
 	EffectMutate Effect = "mutate"
 )
 
+type Confirmation string
+
+const (
+	ConfirmationNever    Confirmation = "never"
+	ConfirmationRequired Confirmation = "required"
+	ConfirmationDynamic  Confirmation = "dynamic"
+)
+
 type Visibility string
 
 const (
@@ -36,19 +44,20 @@ const (
 )
 
 type Definition struct {
-	Name       string
-	Aliases    []string
-	Handler    string
-	Arg0       string
-	Remote     RemotePlane
-	Effect     Effect
-	Visibility Visibility
-	Section    string
-	Completion string
-	Display    string
-	Summary    string
-	Options    []string
-	Verbs      []string
+	Name         string
+	Aliases      []string
+	Handler      string
+	Arg0         string
+	Remote       RemotePlane
+	Effect       Effect
+	Confirmation Confirmation
+	Visibility   Visibility
+	Section      string
+	Completion   string
+	Display      string
+	Summary      string
+	Options      []string
+	Verbs        []string
 }
 
 type Manifest struct {
@@ -71,19 +80,20 @@ func Parse(reader io.Reader) (Manifest, error) {
 			return Manifest{}, fmt.Errorf("command manifest line %d has %d fields, expected %d", lineNumber, len(fields), fieldCount)
 		}
 		definition := Definition{
-			Name:       fields[0],
-			Aliases:    splitNonEmpty(fields[1], ","),
-			Handler:    fields[2],
-			Arg0:       fields[3],
-			Remote:     RemotePlane(fields[4]),
-			Effect:     Effect(fields[5]),
-			Visibility: Visibility(fields[6]),
-			Section:    fields[7],
-			Completion: fields[8],
-			Display:    fields[9],
-			Summary:    fields[10],
-			Options:    strings.Fields(fields[11]),
-			Verbs:      strings.Fields(fields[12]),
+			Name:         fields[0],
+			Aliases:      splitNonEmpty(fields[1], ","),
+			Handler:      fields[2],
+			Arg0:         fields[3],
+			Remote:       RemotePlane(fields[4]),
+			Effect:       Effect(fields[5]),
+			Confirmation: Confirmation(fields[6]),
+			Visibility:   Visibility(fields[7]),
+			Section:      fields[8],
+			Completion:   fields[9],
+			Display:      fields[10],
+			Summary:      fields[11],
+			Options:      strings.Fields(fields[12]),
+			Verbs:        strings.Fields(fields[13]),
 		}
 		if err := definition.Validate(); err != nil {
 			return Manifest{}, fmt.Errorf("command manifest line %d: %w", lineNumber, err)
@@ -126,6 +136,9 @@ func (definition Definition) Validate() error {
 	}
 	if definition.Effect != EffectRead && definition.Effect != EffectMutate {
 		return fmt.Errorf("invalid effect %q", definition.Effect)
+	}
+	if !slices.Contains([]Confirmation{ConfirmationNever, ConfirmationRequired, ConfirmationDynamic}, definition.Confirmation) {
+		return fmt.Errorf("invalid confirmation policy %q", definition.Confirmation)
 	}
 	if definition.Visibility != VisibilityPublic && definition.Visibility != VisibilityHidden {
 		return fmt.Errorf("invalid visibility %q", definition.Visibility)
@@ -215,6 +228,7 @@ func (definition Definition) Row() string {
 		definition.Arg0,
 		string(definition.Remote),
 		string(definition.Effect),
+		string(definition.Confirmation),
 		string(definition.Visibility),
 		definition.Section,
 		definition.Completion,

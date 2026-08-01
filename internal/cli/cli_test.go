@@ -35,7 +35,7 @@ func TestValidatedContextIsHandedToShellAdapterWithoutReload(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	manifest := "show||show.sh||local|read|public|lifecycle|simple|show|show context||\n"
+	manifest := "show||show.sh||local|read|never|public|lifecycle|simple|show|show context||\n"
 	writeCLIFile(t, filepath.Join(root, "config", "commands.registry"), manifest, 0o600)
 	for _, name := range []string{"incus.project.env", "subyard.env", "host.env", "agents.env", "ports.env"} {
 		writeCLIFile(t, filepath.Join(root, "config", name), "", 0o600)
@@ -98,9 +98,9 @@ func TestOldYardTeardownRequiresCanonicalTemplateMigration(t *testing.T) {
 		}
 	}
 	writeCLIFile(t, filepath.Join(root, "config", "commands.registry"), strings.Join([]string{
-		"teardown|uninstall|99-teardown.sh||forward|mutate|public|lifecycle|teardown|teardown|delete the yard|--keep-data --yes --help|",
-		"list||@list||local|read|public|projects|simple|list|list projects currently registered in yards|--live --help|",
-		"yards||@yards||local|read|public|lifecycle|simple|yards|list registered local and remote yards|--help|",
+		"teardown|uninstall|99-teardown.sh||forward|mutate|required|public|lifecycle|teardown|teardown|delete the yard|--keep-data --yes --help|",
+		"list||@list||local|read|never|public|projects|simple|list|list projects currently registered in yards|--live --help|",
+		"yards||@yards||local|read|never|public|lifecycle|simple|yards|list registered local and remote yards|--help|",
 	}, "\n")+"\n", 0o600)
 	for _, name := range []string{"incus.project.env", "subyard.env", "host.env", "agents.env", "ports.env"} {
 		writeCLIFile(t, filepath.Join(root, "config", name), "", 0o600)

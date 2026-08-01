@@ -2300,6 +2300,27 @@ func structuredCommandContext(loaded config.Loaded) map[string]string {
 
 const cliProgramName = "yard"
 
+func resolveConfirmationPolicy(
+	definition command.Definition,
+	effect domain.CommandEffect,
+) domain.ConfirmationPolicy {
+	if definition.Confirmation == command.ConfirmationDynamic {
+		if effect == domain.CommandRead {
+			return domain.ConfirmationNever
+		}
+		return domain.ConfirmationRequired
+	}
+	return domain.ConfirmationPolicy(definition.Confirmation)
+}
+
+func resolveCommandConfirmation(
+	definition command.Definition,
+	policy domain.CommandPolicy,
+) domain.CommandPolicy {
+	policy.Confirmation = resolveConfirmationPolicy(definition, policy.Effect)
+	return policy
+}
+
 func commandPolicy(
 	definition command.Definition,
 	yard domain.Context,
@@ -2452,6 +2473,7 @@ func (cli *CLI) runStructuredCommand(
 	if teardownRun != nil {
 		policy = teardownRun.policy(definition, loaded.Context)
 	}
+	policy = resolveCommandConfirmation(definition, policy)
 	plan, err := orchestrator.Plan(ctx, loaded.Context,
 		policy, assumeYes)
 	if err != nil {
@@ -3203,6 +3225,7 @@ func (handler *rpcHandler) Handle(ctx context.Context, call rpc.Call, emit rpc.E
 		if releaseRun != nil {
 			policy = releaseRun.policy(definition)
 		}
+		policy = resolveCommandConfirmation(definition, policy)
 		orchestrator := handler.cli.operationOrchestrator(call.OperationID, loaded, nil, nil)
 		plan, err := orchestrator.Prepare(loaded.Context, policy)
 		if err != nil {

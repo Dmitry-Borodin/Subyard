@@ -7,7 +7,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 export SUBYARD_NO_AUDIT=1
 
 rows="$(sed -n '/^[[:space:]]*#/d; /^[[:space:]]*$/d; p' "$ROOT/config/commands.registry")"
-core="$(awk -F'|' '$7 == "public" { print $1 }' <<<"$rows")"
+core="$(awk -F'|' '$8 == "public" { print $1 }' <<<"$rows")"
 listed="$($ROOT/bin/yard --list)"
 resources="$($ROOT/bin/yard --resources | cut -f1)"
 expected="$(printf '%s\n%s\n' "$core" "$resources" | awk 'NF')"
@@ -18,7 +18,7 @@ manifest="$($ROOT/bin/yard --command-manifest)"
 help="$($ROOT/bin/yard --help)"
 
 seen=' '
-while IFS='|' read -r name aliases handler arg0 remote effect visibility section completion display summary options verbs; do
+while IFS='|' read -r name aliases handler arg0 remote effect confirmation visibility section completion display summary options verbs; do
   : "$arg0" "$remote" "$section" "$summary"
   case "$handler" in @*) ;; *) [ -x "$ROOT/scripts/$handler" ] || fail "$name handler is missing: $handler" ;; esac
   [ "$($ROOT/bin/yard --command-completion "$name")" = "$completion" ] \
@@ -30,6 +30,7 @@ while IFS='|' read -r name aliases handler arg0 remote effect visibility section
   [ "$($ROOT/bin/yard --command-effect "$name")" = "$effect" ] \
     || fail "$name command effect drifted"
   case "$effect" in read | mutate) ;; *) fail "$name has invalid command effect: $effect" ;; esac
+  case "$confirmation" in never | required | dynamic) ;; *) fail "$name has invalid confirmation policy: $confirmation" ;; esac
   case "$seen" in *" $name "*) fail "duplicate command/alias: $name" ;; esac
   seen+="$name "
   if [ -n "$aliases" ]; then
@@ -45,6 +46,11 @@ while IFS='|' read -r name aliases handler arg0 remote effect visibility section
     grep -Fq "$display" <<<"$help" || fail "$name missing from generated help"
   fi
 done <<<"$rows"
+
+for name in code shell start; do
+  awk -F'|' -v name="$name" '$1 == name && $7 == "never" { found=1 } END { exit !found }' <<<"$rows" \
+    || fail "$name must not require confirmation"
+done
 
 ! grep -q "cmds='check\|cmds=( check" "$ROOT/completions/yard.bash" "$ROOT/completions/yard.zsh" \
   || fail "completion contains a duplicate fallback command list"

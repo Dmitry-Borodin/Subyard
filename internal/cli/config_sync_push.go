@@ -104,7 +104,7 @@ func (cli *CLI) runConfigSyncPush(
 		cli.env["SUBYARD_OPERATION_ID"], loaded, nil, nil,
 	)
 	operation, err := orchestrator.Prepare(loaded.Context, domain.CommandPolicy{
-		Name: "config sync push", Effect: domain.CommandMutate,
+		Name: "config sync push", Effect: domain.CommandMutate, Confirmation: domain.ConfirmationRequired,
 		RemotePolicy: domain.RemoteOnOwner, Consequences: consequences,
 	})
 	if err != nil {

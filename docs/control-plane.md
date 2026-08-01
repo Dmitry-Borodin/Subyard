@@ -45,11 +45,14 @@ a prepared bundle. A separate first-install bootstrap is excluded from release r
 `config/commands.registry` is pipe-delimited:
 
 ```text
-name|aliases|handler|arg0|remote|effect|visibility|section|completion|display|summary|options|verbs
+name|aliases|handler|arg0|remote|effect|confirmation|visibility|section|completion|display|summary|options|verbs
 ```
 
 - `remote` is `local`, `forward`, or `deny`.
 - `effect` is conservatively `read` or `mutate`; a mixed command is `mutate`.
+- `confirmation` is `never`, `required`, or `dynamic`. Missing and unknown values fail closed.
+  `code`, `shell`, and `start` are explicit prompt-free launch/session actions; `--yes` only skips
+  an action whose resolved policy is `required`.
 - `handler` is a script under `scripts/`, or a reserved dispatcher adapter such as `@help`/`@rpc`.
 - `completion` names a provider consumed by both Bash and Zsh completion; `options` and `verbs`
   carry their shared token lists.

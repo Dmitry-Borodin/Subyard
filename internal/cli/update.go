@@ -78,6 +78,7 @@ func (cli *CLI) prepareRelease(ctx context.Context, loaded config.Loaded, argume
 
 func (execution *releaseExecution) policy(definition command.Definition) domain.CommandPolicy {
 	return domain.CommandPolicy{Name: "update", Effect: execution.prepared.Effect,
+		Confirmation: resolveConfirmationPolicy(definition, execution.prepared.Effect),
 		RemotePolicy: domain.RemotePolicy(definition.Remote), Consequences: execution.prepared.Consequences}
 }
 

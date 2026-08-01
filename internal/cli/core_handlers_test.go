@@ -180,5 +180,8 @@ func TestTeardownKeepsSharedIncusForAnotherRegisteredLocalYard(t *testing.T) {
 }
 
 func testDefinition(name string) command.Definition {
-	return command.Definition{Name: name, Effect: command.EffectMutate, Remote: command.RemoteForward}
+	return command.Definition{
+		Name: name, Effect: command.EffectMutate,
+		Confirmation: command.ConfirmationRequired, Remote: command.RemoteForward,
+	}
 }

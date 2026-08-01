@@ -87,11 +87,13 @@ esac
 		}},
 	}
 	codeClient := &nativeVSCodeStub{}
+	codePrompt := &testkit.Prompt{}
 	var codeStderr bytes.Buffer
 	codeProgram, err := New(Options{
 		RepositoryRoot: root, DispatcherPath: dispatcher, Program: "yard",
-		Arguments: []string{"code", "Demo", "--yes"}, Environment: environment, WorkingDir: root,
-		Incus: incus, Executor: incus, ProjectVSCode: codeClient, Stderr: &codeStderr,
+		Arguments: []string{"code", "Demo"}, Environment: environment, WorkingDir: root,
+		Stdin: strings.NewReader(""), Incus: incus, Executor: incus,
+		ProjectVSCode: codeClient, Prompt: codePrompt, Stderr: &codeStderr,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +103,8 @@ esac
 	}
 	wantWorkspace := filepath.Join(configHome, "workspaces", "yard-demo-12345678.code-workspace")
 	if len(codeClient.calls) != 1 || codeClient.calls[0][1] != "file://"+wantWorkspace ||
-		len(incus.ExecCalls) != 0 {
+		len(incus.ExecCalls) != 0 || len(codePrompt.Seen) != 0 ||
+		strings.Contains(codeStderr.String(), "Proceed?") {
 		t.Fatalf("code launch drifted: vscode=%#v exec=%#v", codeClient.calls, incus.ExecCalls)
 	}
 
@@ -317,7 +320,7 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 	cliRunner := &testkit.ScriptedAdapter{Steps: []testkit.AdapterStep{{Result: domain.AdapterResult{
 		Schema: 1, OperationID: "operation-cli", Status: "ok",
 	}}}}
-	prompt := &testkit.Prompt{Answers: []bool{true}}
+	prompt := &testkit.Prompt{}
 	var stdout, stderr bytes.Buffer
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard", Arguments: []string{"start"},
@@ -332,7 +335,7 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 	if code := program.Run(context.Background()); code != 0 {
 		t.Fatalf("structured CLI start failed: code=%d stderr=%q", code, stderr.String())
 	}
-	if len(prompt.Seen) != 1 || len(cliRunner.Requests) != 1 ||
+	if len(prompt.Seen) != 0 || strings.Contains(stderr.String(), "Proceed?") || len(cliRunner.Requests) != 1 ||
 		cliRunner.Requests[0].Adapter != "lifecycle" || cliRunner.Requests[0].Action != "start" ||
 		!slices.Equal(cliRunner.Requests[0].Arguments, []string{"start"}) ||
 		cliRunner.Requests[0].Context["SUBYARD_CONFIG_LOADED"] != "1" ||
@@ -363,7 +366,8 @@ func TestStructuredStartSharesPlanAndAdapterAcrossCLIAndRPC(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := planResult.(domain.OperationPlan)
-	if plan.Confirmed || plan.Effect != domain.CommandMutate || len(plan.Consequences) != 3 {
+	if !plan.Confirmed || plan.Confirmation != domain.ConfirmationNever ||
+		plan.Effect != domain.CommandMutate || len(plan.Consequences) != 3 {
 		t.Fatalf("RPC returned an invalid plan: %#v", plan)
 	}
 	if _, err := handler.Handle(context.Background(), rpc.Call{
@@ -1835,27 +1839,27 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		}
 	}
 	manifest := strings.Join([]string{
-		"init||@init||forward|mutate|public|lifecycle|simple|init|init|--configs --reset --yes --help|",
-		"start||@lifecycle||forward|mutate|public|lifecycle|simple|start|start|--yes --help|",
-		"stop||@lifecycle||forward|mutate|public|lifecycle|simple|stop|stop|--force --yes --help|",
-		"provision||@provision||forward|mutate|public|lifecycle|profiles|provision [profile]|provision|-l --list --yes --help|",
-		"test-vms||@test-vms||forward|mutate|public|lifecycle|simple|test-vms <command>|test-vms|--slot -n -f --yes --help|logs status revoke recover",
-		"teardown||@teardown||forward|mutate|public|lifecycle|teardown|teardown|teardown|--keep-data --yes --help|",
-		"status||@status||forward|read|public|lifecycle|status|status|status|--all --help|",
-		"logs||@logs||forward|read|public|lifecycle|simple|logs|logs|-f -n --yes --help|",
-		"usage||@usage||forward|read|public|lifecycle|simple|usage|usage|--help|",
-		"shell||@shell||forward|mutate|public|lifecycle|project-shell|shell|shell|--root --yes --help|",
-		"clone||@project||local|mutate|public|projects|clone|clone <url>|clone|--target --yes --help|",
-		"code||@project||local|mutate|public|projects|project|code [project]|code|--yes --help|",
-		"remove||@project||local|mutate|public|projects|remove|remove [project]|remove|--soft --yes --help|",
-		"yards||@yards||local|read|public|lifecycle|simple|yards|yards|--help|",
-		"remote||@remote||local|mutate|public|remote|remote|remote|remote|--yard --yes --help|add repair-key remove list",
-		"update||@update||local|mutate|public|lifecycle|simple|update|update|--check --version --offline --rollback --force --yes --help|",
-		"list||@list||local|read|public|projects|simple|list|list|--live --help|",
-		"_info||@info||local|read|hidden|internal|none|_info|info||",
-		"_authorize||@authorize||forward|mutate|hidden|internal|none|_authorize|authorize||",
-		"rpc||@rpc||local|mutate|hidden|internal|none|rpc --stdio|rpc|--stdio|",
-		"_state||@state||local|mutate|hidden|internal|none|_state|state||",
+		"init||@init||forward|mutate|required|public|lifecycle|simple|init|init|--configs --reset --yes --help|",
+		"start||@lifecycle||forward|mutate|never|public|lifecycle|simple|start|start|--yes --help|",
+		"stop||@lifecycle||forward|mutate|required|public|lifecycle|simple|stop|stop|--force --yes --help|",
+		"provision||@provision||forward|mutate|required|public|lifecycle|profiles|provision [profile]|provision|-l --list --yes --help|",
+		"test-vms||@test-vms||forward|mutate|dynamic|public|lifecycle|simple|test-vms <command>|test-vms|--slot -n -f --yes --help|logs status revoke recover",
+		"teardown||@teardown||forward|mutate|required|public|lifecycle|teardown|teardown|teardown|--keep-data --yes --help|",
+		"status||@status||forward|read|never|public|lifecycle|status|status|status|--all --help|",
+		"logs||@logs||forward|read|never|public|lifecycle|simple|logs|logs|-f -n --yes --help|",
+		"usage||@usage||forward|read|never|public|lifecycle|simple|usage|usage|--help|",
+		"shell||@shell||forward|mutate|never|public|lifecycle|project-shell|shell|shell|--root --yes --help|",
+		"clone||@project||local|mutate|required|public|projects|clone|clone <url>|clone|--target --yes --help|",
+		"code||@project||local|mutate|never|public|projects|project|code [project]|code|--yes --help|",
+		"remove||@project||local|mutate|required|public|projects|remove|remove [project]|remove|--soft --yes --help|",
+		"yards||@yards||local|read|never|public|lifecycle|simple|yards|yards|--help|",
+		"remote||@remote||local|mutate|dynamic|public|remote|remote|remote|remote|--yard --yes --help|add repair-key remove list",
+		"update||@update||local|mutate|dynamic|public|lifecycle|simple|update|update|--check --version --offline --rollback --force --yes --help|",
+		"list||@list||local|read|never|public|projects|simple|list|list|--live --help|",
+		"_info||@info||local|read|never|hidden|internal|none|_info|info||",
+		"_authorize||@authorize||forward|mutate|required|hidden|internal|none|_authorize|authorize||",
+		"rpc||@rpc||local|mutate|required|hidden|internal|none|rpc --stdio|rpc|--stdio|",
+		"_state||@state||local|mutate|required|hidden|internal|none|_state|state||",
 	}, "\n") + "\n"
 	writeCLIFile(t, filepath.Join(root, "config", "commands.registry"), manifest, 0o600)
 	for _, name := range []string{"incus.project.env", "subyard.env", "host.env", "agents.env", "ports.env"} {

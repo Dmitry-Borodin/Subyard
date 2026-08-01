@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const guestDependencyRevision = "subyard-test-vms-dependencies-v1"
+
 func (runtime *Runtime) cloudConfig() string {
 	publicKey, _ := os.ReadFile(runtime.Config.keyPath() + ".pub")
 	workerKey, _ := normalizedPublicKey(string(publicKey))
@@ -123,20 +125,32 @@ systemctl reload ssh`
 }
 
 func (runtime *Runtime) ensureGuestTools(ctx context.Context, vm string) error {
-	const check = `command -v git >/dev/null &&
+	const check = `test "$(cat /var/lib/subyard/e2e-dependencies.revision 2>/dev/null)" = "$DEPENDENCY_REVISION" &&
+command -v git >/dev/null &&
 command -v curl >/dev/null &&
 command -v jq >/dev/null &&
 command -v rg >/dev/null &&
 command -v go >/dev/null &&
+command -v make >/dev/null &&
 command -v shellcheck >/dev/null &&
 command -v sshd >/dev/null &&
 command -v sudo >/dev/null`
-	if _, err := runtime.guest(ctx, vm, nil, "sh", "-c", check); err != nil {
+	dependencyEnvironment := []string{"DEPENDENCY_REVISION=" + guestDependencyRevision}
+	if _, err := runtime.guest(ctx, vm, dependencyEnvironment, "sh", "-c", check); err != nil {
 		if err := runtime.progress(ctx, "installing test toolchain in "+vm, func() error {
 			const install = `export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq git curl jq ripgrep golang-go shellcheck openssh-server sudo`
-			_, err := runtime.guest(ctx, vm, nil, "sh", "-eu", "-c", install)
+apt_options='Acquire::Retries=3'
+timeout --foreground 900 apt-get -o "$apt_options" -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
+timeout --foreground 900 apt-get -o "$apt_options" -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y -qq --no-install-recommends \
+  build-essential ca-certificates curl expect git golang-go jq make openssh-client openssh-server ripgrep shellcheck sudo tar xz-utils
+install -d -m 0755 /var/lib/subyard
+temp="$(mktemp /var/lib/subyard/.e2e-dependencies.XXXXXX)"
+trap 'rm -f "$temp"' EXIT
+printf '%s\n' "$DEPENDENCY_REVISION" > "$temp"
+chmod 0644 "$temp"
+mv -f "$temp" /var/lib/subyard/e2e-dependencies.revision
+trap - EXIT`
+			_, err := runtime.guest(ctx, vm, dependencyEnvironment, "sh", "-eu", "-c", install)
 			return err
 		}); err != nil {
 			return err
@@ -249,12 +263,39 @@ func (runtime *Runtime) installLeaseContext(
 	if err != nil {
 		return err
 	}
-	const install = `target=/run/subyard-e2e-lease.json
-temp="$(mktemp /run/.subyard-e2e-lease.XXXXXX)"
-trap 'rm -f "$temp"' EXIT
+	const install = `state=/var/lib/subyard/e2e-lease-context.json
+target=/run/subyard-e2e-lease.json
+unit=/etc/systemd/system/subyard-e2e-lease-context.service
+install -d -m 0755 /var/lib/subyard
+temp="$(mktemp /var/lib/subyard/.e2e-lease-context.XXXXXX)"
+unit_temp="$(mktemp /etc/systemd/system/.subyard-e2e-lease-context.XXXXXX)"
+trap 'rm -f "$temp" "$unit_temp"' EXIT
 printf "%s\n" "$LEASE_CONTEXT" > "$temp"
-chmod 0444 "$temp"
-mv -f "$temp" "$target"
+chmod 0600 "$temp"
+mv -f "$temp" "$state"
+cat > "$unit_temp" <<'EOF'
+[Unit]
+Description=Restore active Subyard E2E lease context after guest reboot
+Before=ssh.service
+ConditionPathExists=/var/lib/subyard/e2e-lease-context.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/install -m 0444 -o root -g root /var/lib/subyard/e2e-lease-context.json /run/subyard-e2e-lease.json
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 0644 "$unit_temp"
+if ! cmp -s "$unit_temp" "$unit"; then
+  mv -f "$unit_temp" "$unit"
+  systemctl daemon-reload
+else
+  rm -f "$unit_temp"
+fi
+systemctl enable subyard-e2e-lease-context.service >/dev/null
+systemctl restart subyard-e2e-lease-context.service
+cmp -s "$state" "$target"
 trap - EXIT`
 	if _, err := runtime.guest(ctx, vm, []string{
 		"LEASE_CONTEXT=" + string(payload),
@@ -262,6 +303,12 @@ trap - EXIT`
 		return fmt.Errorf("%s lease context: %w", vm, err)
 	}
 	return nil
+}
+
+func (runtime *Runtime) removeLeaseContext(ctx context.Context, vm string) error {
+	_, err := runtime.guest(ctx, vm, nil, "rm", "-f",
+		"/run/subyard-e2e-lease.json", "/var/lib/subyard/e2e-lease-context.json")
+	return err
 }
 
 func (runtime *Runtime) recordHostKey(ctx context.Context, vm string) error {

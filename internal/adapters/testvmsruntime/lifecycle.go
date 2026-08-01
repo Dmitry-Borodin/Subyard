@@ -480,7 +480,10 @@ func (runtime *Runtime) stopRetainedWithEvidence(ctx context.Context) (stopEvide
 		}
 		if strings.TrimSpace(state) == "RUNNING" {
 			evidence.guestKeyCleanupAttempts++
-			keyCleanupErr := runtime.installManagedGuestKeys(ctx, vm)
+			keyCleanupErr := errors.Join(
+				runtime.installManagedGuestKeys(ctx, vm),
+				runtime.removeLeaseContext(ctx, vm),
+			)
 			stopErr := runtime.stopRunningVM(ctx, vm)
 			if stopErr != nil {
 				return evidence, errors.Join(keyCleanupErr, stopErr)
@@ -491,7 +494,7 @@ func (runtime *Runtime) stopRetainedWithEvidence(ctx context.Context) (stopEvide
 				// forwarding key was already fenced above, so a verified stop closes access.
 				// The next acquire replaces guest lease keys before publishing forwarding.
 				fmt.Fprintf(runtime.Stderr,
-					"test-vms: %s guest key cleanup deferred until the next acquire; VM stopped\n",
+					"test-vms: %s guest lease cleanup deferred until the next acquire; VM stopped\n",
 					vm)
 			}
 		} else if strings.TrimSpace(state) != "STOPPED" {
@@ -517,7 +520,7 @@ func (runtime *Runtime) recordStopOutcome(
 		cause := error(nil)
 		if evidence.guestKeyCleanupDeferred != 0 {
 			cause = fmt.Errorf(
-				"guest key cleanup deferred for %d of %d running VMs after verified stop",
+				"guest lease cleanup deferred for %d of %d running VMs after verified stop",
 				evidence.guestKeyCleanupDeferred,
 				evidence.guestKeyCleanupAttempts,
 			)

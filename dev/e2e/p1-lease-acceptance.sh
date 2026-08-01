@@ -126,6 +126,7 @@ wait_for_guest_access() {
 
 hold_lease() (
   local client="$1" purpose="$2" requested_slot="$3" ready_temp
+  local before_boot after_boot='' down=0 up=0
   export SUBYARD_E2E_STATE_DIR="$STATE_PARENT/$client"
   export SUBYARD_E2E_YARD="$YARD"
   # shellcheck source=dev/agent-e2e.sh
@@ -164,6 +165,40 @@ hold_lease() (
     '.schema_version == 2 and .yard == $yard and .project == $project and
       (has("checkout") | not) and .run == $run and .purpose == $purpose' \
     /run/subyard-e2e-lease.json >/dev/null
+
+  if [ "$client" = b ] && [ "${P1_LEASE_REBOOT_VERIFY:-1}" = 1 ]; then
+    before_boot="$(guest 1 cat /proc/sys/kernel/random/boot_id)"
+    guest 1 systemctl reboot >/dev/null 2>&1 || true
+    for _ in $(seq 1 60); do
+      if ! ssh -F "$CLIENT_CONFIG" -T -o ConnectTimeout=2 e2e-vm-1 -- true \
+        </dev/null >/dev/null 2>&1; then
+        down=1
+        break
+      fi
+      sleep 1
+    done
+    [ "$down" = 1 ] || die 'leased guest did not go down for reboot'
+    for _ in $(seq 1 180); do
+      after_boot="$(ssh -F "$CLIENT_CONFIG" -T -o ConnectTimeout=3 e2e-vm-1 -- \
+        cat /proc/sys/kernel/random/boot_id 2>/dev/null)" || after_boot=''
+      if [ -n "$after_boot" ] && [ "$after_boot" != "$before_boot" ]; then
+        up=1
+        break
+      fi
+      sleep 1
+    done
+    [ "$up" = 1 ] || die 'leased guest did not return with a new boot ID'
+    guest 1 jq -e \
+      --arg yard "$LEASE_YARD" \
+      --arg project "$LEASE_PROJECT" \
+      --arg run "$LEASE_RUN" \
+      --arg purpose "$LEASE_PURPOSE" \
+      '.schema_version == 2 and .yard == $yard and .project == $project and
+        .run == $run and .purpose == $purpose' \
+      /run/subyard-e2e-lease.json >/dev/null
+    guest 1 systemctl is-enabled --quiet subyard-e2e-lease-context.service
+    guest 1 ip route show default | grep -q .
+  fi
 
   umask 077
   printf '%s\n' "$(lease_command renew)" > "$STATE_PARENT/$client.stale-renew"

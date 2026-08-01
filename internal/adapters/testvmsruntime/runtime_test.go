@@ -160,9 +160,29 @@ func TestInstallLeaseContextUsesBoundedAtomicGuestFile(t *testing.T) {
 		}
 	}
 	call := strings.Join(runner.calls[0], " ")
-	if !strings.Contains(call, "mktemp /run/.subyard-e2e-lease.XXXXXX") ||
-		!strings.Contains(call, `mv -f "$temp" "$target"`) {
-		t.Fatalf("guest context is not atomic: %s", call)
+	for _, expected := range []string{
+		"mktemp /var/lib/subyard/.e2e-lease-context.XXXXXX",
+		`mv -f "$temp" "$state"`,
+		"subyard-e2e-lease-context.service",
+		"systemctl enable",
+		`cmp -s "$state" "$target"`,
+	} {
+		if !strings.Contains(call, expected) {
+			t.Fatalf("guest context omitted reboot-safe atomic contract %q: %s", expected, call)
+		}
+	}
+}
+
+func TestRemoveLeaseContextClearsRuntimeAndPersistentState(t *testing.T) {
+	runner := &fakeRunner{}
+	runtime := &Runtime{Config: fixtureConfig(t), Runner: runner}
+	if err := runtime.removeLeaseContext(context.Background(), "e2e-vm-1"); err != nil {
+		t.Fatal(err)
+	}
+	call := strings.Join(runner.calls[0], " ")
+	if !strings.Contains(call, "/run/subyard-e2e-lease.json") ||
+		!strings.Contains(call, "/var/lib/subyard/e2e-lease-context.json") {
+		t.Fatalf("lease cleanup omitted state: %s", call)
 	}
 }
 
@@ -234,7 +254,7 @@ func TestReleaseStopsRebootingGuestWhenKeyCleanupIsTemporarilyUnavailable(t *tes
 		"incus stop e2e-vm-1 --project "+cfg.Project+" --timeout 60") {
 		t.Fatal("release did not stop the rebooting guest after key cleanup failed")
 	}
-	if !strings.Contains(warnings.String(), "guest key cleanup deferred") {
+	if !strings.Contains(warnings.String(), "guest lease cleanup deferred") {
 		t.Fatalf("deferred cleanup warning = %q", warnings.String())
 	}
 }

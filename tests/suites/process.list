@@ -1,0 +1,14 @@
+# Existing host-free contracts that invoke the real yard process and representative Shell leaves.
+cli-contract.sh
+command-registry.sh
+init-extras-convergence.sh
+init-network-convergence.sh
+init-project-convergence.sh
+lifecycle-guard.sh
+orca-profile-resource.sh
+profile-resource-lifecycle.sh
+project-registry-convergence.sh
+remote-projects.sh
+yard-keys.sh
+yard-shell.sh
+yard-usage.sh

@@ -52,6 +52,14 @@ E2E_VM_DISK=20GiB
 E2E_VM_BOOT_TIMEOUT=300
 ```
 
+The retained guest disks are the prepared dependency layer; Subyard does not maintain a second
+custom image that could silently drift from `images:debian/13/cloud`. Before every lease is exposed,
+the broker verifies a versioned baseline and reconciles it with bounded APT retries/timeouts. The
+baseline includes the Go bootstrap, compiler/build utilities, ShellCheck, Git, curl, jq, ripgrep,
+SSH and archive tools. Its revision marker changes with the package contract. Go's exact toolchain
+and modules remain selected by `go.mod`; reusable module/toolchain and APT caches survive with the
+retained disk, while every P0 run owns and removes its separate Go build cache.
+
 ## Agent workflow
 
 Prepare the persistent controller identity once:
@@ -103,6 +111,45 @@ dev/agent-e2e.sh --wait 20m --purpose host-free-suite -- ./tests/run.sh
 dev/e2e/p0-acceptance.sh
 dev/agent-e2e.sh --purpose real-host-check --vm 1 -- ./tests/some-real-host-check.sh
 ```
+
+### Test lanes and gates
+
+`dev/e2e/p0-acceptance.sh` without arguments is the only continuous P0 release gate. Addressable
+lanes are diagnostics: they shorten a rerun after a late failure but never turn a partial pass into
+a fresh-install release result.
+
+| Lane | Prerequisites and timeout | Mutable scope | Classification |
+| --- | --- | --- | --- |
+| `./tests/run.sh` | Go toolchain; bounded by CI | temporary host-free roots and `.build/yard` | required host-free gate |
+| `dev/process-coverage.sh` | Go toolchain; selected host-free process contracts | `.build/coverage` and test-owned temporary roots | diagnostic coverage gate |
+| `boundary` | one broker lease; SSH connect deadlines | read-only facade, routes and negative probes | required inside continuous P0 |
+| `dependencies` | retained guest baseline; 20-minute cold Go download deadline | marker-owned cold caches only | periodic targeted bootstrap diagnostic |
+| `real-incus` | VM1, KVM, persistent Incus pool; 15-minute mutation deadlines | marked project, container, VM and image aliases | required through `release` in continuous P0 |
+| `profile-resource` | VM1 and current candidate | temporary dependency-free resource/state | required through `release` in continuous P0 |
+| `release` | both VMs, capacity preflight; bounded nested install/boot deadlines | fresh candidate yards, current and legacy convergence | targeted diagnostic; required inside continuous P0 |
+| `source-upgrade` | VM1 and two bounded reboots | marked source-install/migration fixture | targeted diagnostic; required inside continuous P0 |
+| `reboot-verify` | held VM1 lease; two 3-minute boot windows | guest reboot only | targeted transport/recovery diagnostic |
+| `peer` | both VMs and synthetic keys | marked cross-owner RPC, project and credential fixtures | targeted diagnostic; required inside continuous P0 |
+| `peer-cleanup`, `cleanup` | same retained allocation | exact marked fixtures and run worktrees | standalone idempotent cleanup/verifier |
+| no argument (`full`) | all prerequisites above | union of the marked scopes | mandatory continuous release gate |
+
+Android/GPU, real credentials and external-service profiles use separate explicitly prerequisite-
+gated lanes. A generic dependency-free resource pass does not report those handlers green.
+
+List or run one lane:
+
+```sh
+dev/e2e/p0-acceptance.sh --list-lanes
+dev/e2e/p0-acceptance.sh --lane peer
+SUBYARD_P0_SLOT=1 dev/e2e/p0-acceptance.sh --lane source-upgrade --resume
+```
+
+Each phase prints its bundle hash and duration. The runner keeps one bounded, redacted JSON evidence
+record per public run and one checkpoint per slot under its private controller state. A checkpoint
+contains only slot resource generation, bundle hash, passed lanes and marker-owned inventory. Resume
+fails closed after slot rebuild, selection of another slot or any public worktree change. Evidence
+never contains lease credentials, guest endpoints, command payloads, controller paths or ambient
+environment. The latest 20 records are retained.
 
 Request one exact broker slot when a coordinated run requires it:
 

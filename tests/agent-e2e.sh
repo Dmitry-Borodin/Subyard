@@ -106,6 +106,7 @@ LEASE_PROJECT=Subyard-2
 LEASE_CHECKOUT=
 LEASE_RUN="$run_a"
 LEASE_PURPOSE=contract-tests
+LEASE_GENERATION=7
 BROKER_ATTRIBUTION_V2=1
 lease_request="$(lease_acquire_request client SHA256:key ssh-ed25519 keyblob)"
 [ "$lease_request" = \
@@ -172,6 +173,7 @@ grep -Fxq 'export SUBYARD_E2E_YARD=test-yard' "$TMP/run.sh" \
   && grep -Fxq 'export SUBYARD_E2E_PROJECT=Subyard-2' "$TMP/run.sh" \
   && grep -Fxq "export SUBYARD_E2E_RUN_ID=$run_a" "$TMP/run.sh" \
   && grep -Fxq 'export SUBYARD_E2E_PURPOSE=contract-tests' "$TMP/run.sh" \
+  && grep -Fxq 'export SUBYARD_E2E_GENERATION=7' "$TMP/run.sh" \
   || fail "guest command omitted public lease context"
 write_guest_command 1 "$command_root" ./bin/yard --version > "$TMP/yard-run.sh"
 grep -Fxq '/usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=dev ./dev/build-engine.sh' \
@@ -182,6 +184,18 @@ grep -Fxq 'exec /usr/sbin/runuser -u dev -- env HOME=/home/dev USER=dev LOGNAME=
   || fail "direct guest yard command changed its argv after the development build"
 quoted="$(quote_ssh_command bash -c 'test "$1" = "argument with spaces"' _ 'argument with spaces')"
 bash -c "$quoted" || fail "direct SSH command did not preserve its argv"
+
+normalized_progress="$({
+  printf 'download 1%%\rdownload 80%%\rdownload 100%%\n'
+  printf 'plain output\n'
+  printf 'apt 95%%\rapt 100%%\r\n'
+  printf 'final line without newline'
+} | normalize_terminal_progress)"
+[ "$normalized_progress" = "$(printf '%s\n%s\n%s\n%s' \
+  'download 100%' 'plain output' 'apt 100%' 'final line without newline')" ] \
+  || fail "runner did not coalesce terminal progress to its final update"
+grep -Fq '2>&1 | normalize_terminal_progress' "$ROOT/dev/agent-e2e.sh" \
+  || fail "normal guest streams bypass terminal-progress normalization"
 
 mkdir -p "$TMP/direct-bin"
 cat > "$TMP/direct-bin/ssh" <<'SH'
@@ -235,6 +249,23 @@ grep -Fq 'run_vm "$vm" capacity-preflight' "$ROOT/dev/e2e/p0-acceptance.sh" \
 grep -Fq 'P0_E2E_MIN_PEAK_MEMORY_RESERVE_BYTES:-67108864' \
   "$ROOT/dev/e2e/p0-acceptance.sh" \
   || fail "P0 acceptance does not keep only the 64 MiB minimum peak memory reserve"
+lane_inventory="$("$ROOT/dev/e2e/p0-acceptance.sh" --list-lanes)"
+for lane in boundary transport dependencies real-incus profile-resource release source-upgrade \
+  reboot-verify peer peer-cleanup cleanup; do
+  grep -qx "$lane" <<<"$lane_inventory" || fail "P0 lane inventory omitted $lane"
+done
+grep -Fq $'full\tboundary transport release source-upgrade peer cleanup' <<<"$lane_inventory" \
+  || fail 'continuous P0 gate lost a mandatory public-contract phase'
+grep -Fq '.allocation == {slot: $slot, resource_generation: $generation}' \
+  "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && grep -Fq '.bundle_hash == $bundle' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && grep -Fq "die 'checkpoint does not match this allocation generation and exact bundle hash'" \
+    "$ROOT/dev/e2e/p0-acceptance.sh" \
+  || fail 'P0 resume checkpoint does not fail closed on allocation or bundle drift'
+grep -Fq 'P0_CURRENT_PHASE=final-verify' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && grep -Fq 'run_phase cleanup cleanup_lane' "$ROOT/dev/e2e/p0-acceptance.sh" \
+  && [ "$(grep -c '^    verify_boundary$' "$ROOT/dev/e2e/p0-acceptance.sh")" -eq 1 ] \
+  || fail 'continuous P0 can skip final cleanup or boundary verification'
 grep -Fq 'prepare_slot "$slot"' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
   && grep -Fq 'LEASE_PURPOSE=acceptance-prepare' \
     "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
@@ -243,10 +274,37 @@ grep -Fq 'prepare_slot "$slot"' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
   && grep -Fq 'fstrim -av' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
   && grep -Fq 'dump_broker_diagnostics' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
   || fail "P1 acceptance does not prepare first-boot slots sequentially with diagnostics"
+grep -Fq 'systemctl is-enabled --quiet subyard-e2e-lease-context.service' \
+  "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq '/proc/sys/kernel/random/boot_id' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  && grep -Fq '/run/subyard-e2e-lease.json' "$ROOT/dev/e2e/p1-lease-acceptance.sh" \
+  || fail 'lease acceptance does not verify context restoration after a holder reboot'
+grep -Fq 'go build -cover' "$ROOT/dev/process-coverage.sh" \
+  && grep -Fq 'go tool covdata merge' "$ROOT/dev/process-coverage.sh" \
+  && grep -Fq 'SUBYARD_SHELL_COVERAGE_LOG' "$ROOT/dev/process-coverage.sh" \
+  && grep -Fq 'bundle_hash' "$ROOT/dev/process-coverage.sh" \
+  || fail 'process coverage does not merge an instrumented yard with Shell inventory evidence'
 grep -Fq 'reclaim_owner_lease_capacity' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'owner lease fixture pool reserve' "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'OWNER_BASELINE_IMAGES' "$ROOT/dev/e2e/p0-guest.sh" \
   || fail "P0 owner lane does not reclaim only test-owned migration capacity"
+grep -Fq '/tmp/subyard-hermes-profile.*/storage' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq '[ "$status" = Unavailable ] && [ "$used_by" = '\''[]'\'' ]' \
+    "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail 'P0 preflight does not narrowly recover an unused stale test pool'
+grep -Fq 'cold Go dependency download heartbeat elapsed=' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'dependency download failed (attempt %s/3); retrying in %ss' \
+    "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'timeout --signal=TERM --kill-after=10' "$ROOT/dev/e2e/p0-guest.sh" \
+  || fail 'dependency bootstrap lacks bounded retry and heartbeat progress'
+grep -Fq 'Incus default-pool query exceeded' "$ROOT/dev/e2e/p0-guest.sh" \
+  && grep -Fq 'timeout --foreground "$query_timeout"' \
+    "$ROOT/dev/e2e/lib-p0-capacity.sh" \
+  || fail 'P0 capacity preflight can hang on a partial Incus daemon'
+grep -Fq 'p0_capacity_recover_stale_roots' "$ROOT/dev/e2e/lib-p0-capacity.sh" \
+  && grep -Fq 'stale P0 state still has an active process' \
+    "$ROOT/dev/e2e/lib-p0-capacity.sh" \
+  || fail 'P0 preflight cannot distinguish orphaned from active marker-owned cache state'
 grep -Fq 'OWNER_DIAGNOSTIC_DEV_UID="${P0_E2E_DIAGNOSTIC_DEV_UID:-1001}"' \
   "$ROOT/dev/e2e/p0-guest.sh" \
   && grep -Fq 'chown -R "$OWNER_DIAGNOSTIC_DEV_UID:$OWNER_DIAGNOSTIC_DEV_UID" "$bound"' \
@@ -288,10 +346,11 @@ grep -Fq '"$candidate_yard" _migrate finalize' \
 
 ensure_identity
 lease_blob="$(awk '{print $2}' "$IDENTITY.pub")"
-lease_response="$(printf '{"schema_version":1,"status":"ok","grant":{"slot_id":"slot-001","lease_id":"aabb","capability":"ccdd","lease_epoch":3,"data_user":"subyard-e2e-slot-1","targets":[{"selector":1,"name":"e2e-vm-1","address":"10.42.1.11","host_key_type":"ssh-ed25519","host_key_blob":"%s"},{"selector":2,"name":"e2e-vm-2","address":"10.42.1.12","host_key_type":"ssh-ed25519","host_key_blob":"%s"}]}}' "$lease_blob" "$lease_blob")"
+lease_response="$(printf '{"schema_version":1,"status":"ok","grant":{"slot_id":"slot-001","resource_generation":5,"lease_id":"aabb","capability":"ccdd","lease_epoch":3,"data_user":"subyard-e2e-slot-1","targets":[{"selector":1,"name":"e2e-vm-1","address":"10.42.1.11","host_key_type":"ssh-ed25519","host_key_blob":"%s"},{"selector":2,"name":"e2e-vm-2","address":"10.42.1.12","host_key_type":"ssh-ed25519","host_key_blob":"%s"}]}}' "$lease_blob" "$lease_blob")"
 parse_lease_grant "$lease_response" \
   || fail "valid lease grant was rejected"
 [ "$LEASE_SLOT" = slot-001 ] && [ "$DATA_USER" = subyard-e2e-slot-1 ] \
+  && [ "$LEASE_GENERATION" = 5 ] \
   && [ "${VM_IP[1]}" = 10.42.1.11 ] && [ "${VM_IP[2]}" = 10.42.1.12 ] \
   || fail "lease grant did not materialize exact fenced transport state"
 if (parse_lease_grant '{"status":"ok","grant":{"capability":"secret"}}') >/dev/null 2>&1; then

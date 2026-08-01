@@ -27,7 +27,8 @@ mapfile -t unformatted < <(gofmt -l "$ROOT/cmd" "$ROOT/internal")
   || { printf 'FAIL: tracked/source-tree bootstrap engine must not return\n' >&2; exit 1; }
 
 mapfile -t actual_tests < <(find "$ROOT/tests" -maxdepth 1 -type f -name '*.sh' ! -name run.sh -printf '%f\n' | sort)
-mapfile -t declared_tests < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' "$ROOT"/tests/suites/*.list | sort)
+mapfile -t declared_tests < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' \
+  "$ROOT"/tests/suites/{unit,contract,integration}.list | sort)
 [ "${#actual_tests[@]}" -eq "${#declared_tests[@]}" ] \
   || { printf 'FAIL: test suite manifests omit or duplicate a top-level test\n' >&2; exit 1; }
 for i in "${!actual_tests[@]}"; do

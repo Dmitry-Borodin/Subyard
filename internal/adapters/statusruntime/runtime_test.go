@@ -3,12 +3,14 @@ package statusruntime
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ports"
 	"github.com/Subyard/Subyard/internal/resource"
 )
 
@@ -16,6 +18,150 @@ type securityStub struct{ state string }
 
 func (stub securityStub) CheckSecurity(context.Context, bool, bool) (string, error) {
 	return stub.state, nil
+}
+
+type spaceExecutorStub struct {
+	result ports.InstanceExecResult
+	err    error
+	calls  []ports.InstanceExecRequest
+}
+
+func (stub *spaceExecutorStub) Exec(
+	_ context.Context,
+	_, _ string,
+	request ports.InstanceExecRequest,
+) (ports.InstanceExecResult, error) {
+	stub.calls = append(stub.calls, request)
+	return stub.result, stub.err
+}
+
+func TestRuntimeReadsAndRefreshesSpaceSynchronously(t *testing.T) {
+	root := t.TempDir()
+	oldTime := time.Unix(100, 0)
+	newTime := time.Unix(200, 0)
+	cache := filepath.Join(root, "space-demo.cache")
+	if err := writeSpaceCache(cache, "2G", oldTime); err != nil {
+		t.Fatal(err)
+	}
+	executor := &spaceExecutorStub{result: ports.InstanceExecResult{Stdout: []byte("3G\n")}}
+	runtime := Runtime{Executor: executor, Now: func() time.Time { return newTime }}
+	yard := domain.Context{
+		YardName: "demo", IncusProject: "subyard-demo", InstanceName: "yard-demo",
+		Paths: domain.RuntimePaths{DataHome: root},
+	}
+	cached, ok := runtime.ReadSpace(yard)
+	if !ok || cached.Figure != "2G" || !cached.MeasuredAt.Equal(oldTime) {
+		t.Fatalf("cached measurement = %#v ok=%v", cached, ok)
+	}
+	refreshed, err := runtime.RefreshSpace(context.Background(), yard)
+	if err != nil || refreshed.Figure != "3G" || !refreshed.MeasuredAt.Equal(newTime) {
+		t.Fatalf("refreshed measurement = %#v err=%v", refreshed, err)
+	}
+	if len(executor.calls) != 1 || len(executor.calls[0].Command) != 3 ||
+		executor.calls[0].Command[0] != "sh" || executor.calls[0].Command[1] != "-c" ||
+		!strings.Contains(executor.calls[0].Command[2], "du -skx") ||
+		!strings.Contains(executor.calls[0].Command[2], "/srv") {
+		t.Fatalf("refresh command = %#v", executor.calls)
+	}
+	stored, ok := runtime.ReadSpace(yard)
+	if !ok || stored != refreshed {
+		t.Fatalf("stored measurement = %#v ok=%v, want %#v", stored, ok, refreshed)
+	}
+	executor.result = ports.InstanceExecResult{Stdout: []byte("1..2G\n")}
+	if _, err := runtime.RefreshSpace(context.Background(), yard); err == nil {
+		t.Fatal("refresh accepted an invalid measurement")
+	}
+	stored, ok = runtime.ReadSpace(yard)
+	if !ok || stored != refreshed {
+		t.Fatalf("invalid refresh changed cache: %#v ok=%v, want %#v", stored, ok, refreshed)
+	}
+}
+
+func TestSpaceMeasureCommandFailsWhenDuFails(t *testing.T) {
+	directory := t.TempDir()
+	du := filepath.Join(directory, "du")
+	if err := os.WriteFile(du, []byte("#!/bin/sh\nprintf '9\\t/\\n'\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "-c", spaceMeasureCommand)
+	command.Env = append(os.Environ(), "PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("measurement succeeded after du failure: %q", output)
+	}
+}
+
+func TestSpaceMeasureCommandAddsMountedSrvSeparately(t *testing.T) {
+	directory := t.TempDir()
+	calls := filepath.Join(directory, "calls")
+	if err := os.WriteFile(filepath.Join(directory, "grep"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statScript := "#!/bin/sh\ncase \"$*\" in */srv) printf '2\\n' ;; *) printf '1\\n' ;; esac\n"
+	if err := os.WriteFile(filepath.Join(directory, "stat"), []byte(statScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	duScript := `#!/bin/sh
+printf '%s\n' "$*" >>"$SPACE_CALLS"
+printf '512\tpath\n'
+`
+	if err := os.WriteFile(filepath.Join(directory, "du"), []byte(duScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "-c", spaceMeasureCommand)
+	command.Env = append(os.Environ(),
+		"PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"SPACE_CALLS="+calls,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil || string(output) != "1M\n" {
+		t.Fatalf("measurement output=%q err=%v", output, err)
+	}
+	payload, err := os.ReadFile(calls)
+	if err != nil || strings.Count(string(payload), "\n") != 2 ||
+		!strings.Contains(string(payload), "/srv") {
+		t.Fatalf("du calls=%q err=%v", payload, err)
+	}
+}
+
+func TestSpaceMeasureCommandDoesNotDoubleCountSameDeviceSrv(t *testing.T) {
+	directory := t.TempDir()
+	calls := filepath.Join(directory, "calls")
+	for name, script := range map[string]string{
+		"grep": "#!/bin/sh\nexit 0\n",
+		"stat": "#!/bin/sh\nprintf '1\\n'\n",
+		"du":   "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$SPACE_CALLS\"\nprintf '1024\\tpath\\n'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.Command("sh", "-c", spaceMeasureCommand)
+	command.Env = append(os.Environ(),
+		"PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"SPACE_CALLS="+calls,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil || string(output) != "1M\n" {
+		t.Fatalf("measurement output=%q err=%v", output, err)
+	}
+	payload, err := os.ReadFile(calls)
+	if err != nil || strings.Count(string(payload), "\n") != 1 || strings.Contains(string(payload), "/srv") {
+		t.Fatalf("du calls=%q err=%v", payload, err)
+	}
+}
+
+func TestValidSpaceFigureUsesStrictGrammar(t *testing.T) {
+	for _, value := range []string{"0", "1G", "1.5GiB", "12MB"} {
+		if !validSpaceFigure(value) {
+			t.Errorf("validSpaceFigure(%q) = false", value)
+		}
+	}
+	for _, value := range []string{"", ".", "1..2", "G", "1.5.2G", "1 GB", "-1G"} {
+		if validSpaceFigure(value) {
+			t.Errorf("validSpaceFigure(%q) = true", value)
+		}
+	}
 }
 
 func TestRuntimeStartsAndReusesAsyncSpaceRefresh(t *testing.T) {

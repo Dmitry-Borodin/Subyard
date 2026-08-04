@@ -61,6 +61,7 @@ yard start | stop                  Manage the yard instance
 yard security                      Audit the host boundary
 yard sync | bind | clone           Add a project
 yard list                          List projects
+yard space [--refresh]             Show disk usage for every local yard
 yard shell | code [project]        Open a project session
 yard export | remove [project]     Copy out or remove a project
 yard provision [profile]           Apply a project profile
@@ -80,11 +81,17 @@ yard -Y openclaw init
 yard @openclaw status
 yard status
 yard @default status
+yard space
+yard @openclaw space --refresh
 
 yard remote add srv1 me@srv1
 yard list
 yard -Y owner-host/default list
 ```
+
+`yard space` reads the latest cached measurement for every local yard. Use
+`yard space --refresh` to synchronously recalculate all running local yards, or
+combine `space` with `-Y`/`@name` to inspect or refresh only one yard.
 
 Use a full selector
 when a short name is ambiguous. Remote yards support `sync` and `clone`;

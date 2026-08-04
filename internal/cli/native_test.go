@@ -31,6 +31,36 @@ func (stub statusFactsStub) ReadStatusFacts(context.Context, domain.Context, boo
 	return stub.value, nil
 }
 
+type spaceIncusStub struct {
+	*testkit.Incus
+	instanceErrors map[string]error
+}
+
+type spaceAdvancingExecutor struct {
+	clock  *testkit.ManualClock
+	result ports.InstanceExecResult
+}
+
+func (executor spaceAdvancingExecutor) Exec(
+	context.Context,
+	string,
+	string,
+	ports.InstanceExecRequest,
+) (ports.InstanceExecResult, error) {
+	executor.clock.Advance(5 * time.Second)
+	return executor.result, nil
+}
+
+func (stub spaceIncusStub) Instance(
+	ctx context.Context,
+	project, name string,
+) (ports.InstanceInfo, error) {
+	if err := stub.instanceErrors[project+"/"+name]; err != nil {
+		return ports.InstanceInfo{}, err
+	}
+	return stub.Incus.Instance(ctx, project, name)
+}
+
 func TestNativeCodeAndShellDoNotStartCredentialAutoSync(t *testing.T) {
 	root, environment, stateDirectory := nativeFixture(t)
 	store, err := state.NewFileStore(stateDirectory)
@@ -1148,6 +1178,271 @@ func TestNativeStatusUsesTypedPortsAndRendersParityFields(t *testing.T) {
 	}
 }
 
+func TestSpaceListsEveryLocalYardFromCache(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	configHome := environmentValue(environment, "SUBYARD_CONFIG_HOME")
+	dataHome := environmentValue(environment, "SUBYARD_HOME")
+	if err := os.MkdirAll(filepath.Join(configHome, "yards"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dataHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(configHome, "yards", "demo.env"), "SSH_PORT=3333\n", 0o600)
+	writeCLIFile(t, filepath.Join(dataHome, "space.cache"), "1G 90\n", 0o600)
+	writeCLIFile(t, filepath.Join(dataHome, "space-demo.cache"), "2G 80\n", 0o600)
+	incus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{
+		"subyard/yard":           {Status: "Running"},
+		"subyard-demo/yard-demo": {Status: "Stopped"},
+	}}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"space"},
+		Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+		Incus: incus, Executor: incus, Clock: testkit.NewManualClock(time.Unix(100, 0)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("space failed: code=%d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	want := fmt.Sprintf("%-16s %-12s %8s %s\n", "YARD", "STATE", "USED", "MEASURED") +
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "default", "RUNNING", "1G", "10s ago") +
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "demo", "STOPPED", "2G", "20s ago")
+	if stdout.String() != want || len(incus.ExecCalls) != 0 {
+		t.Fatalf("space output = %q, want %q; exec=%#v", stdout.String(), want, incus.ExecCalls)
+	}
+}
+
+func TestSpaceRefreshesOnlyRunningYards(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	configHome := environmentValue(environment, "SUBYARD_CONFIG_HOME")
+	dataHome := environmentValue(environment, "SUBYARD_HOME")
+	if err := os.MkdirAll(filepath.Join(configHome, "yards"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dataHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(configHome, "yards", "demo.env"), "SSH_PORT=3333\n", 0o600)
+	writeCLIFile(t, filepath.Join(configHome, "yards", "new.env"), "SSH_PORT=4444\n", 0o600)
+	writeCLIFile(t, filepath.Join(dataHome, "space.cache"), "1G 90\n", 0o600)
+	writeCLIFile(t, filepath.Join(dataHome, "space-demo.cache"), "2G 80\n", 0o600)
+	incus := &testkit.Incus{
+		Instances: map[string]ports.InstanceInfo{
+			"subyard/yard":           {Status: "Running"},
+			"subyard-demo/yard-demo": {Status: "Stopped"},
+		},
+		ExecSteps: []testkit.IncusExecStep{{
+			Result: ports.InstanceExecResult{Stdout: []byte("3G\n")},
+		}},
+	}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"space", "--refresh"},
+		Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+		Incus: incus, Executor: incus, Clock: testkit.NewManualClock(time.Unix(100, 0)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("space refresh failed: code=%d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, expected := range []string{
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "default", "RUNNING", "3G", "0s ago"),
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "demo", "STOPPED", "2G", "20s ago"),
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "new", "NOT_CREATED", "—", "never"),
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("space refresh omitted %q: %q", expected, stdout.String())
+		}
+	}
+	if len(incus.ExecCalls) != 1 || incus.ExecCalls[0].Project != "subyard" ||
+		incus.ExecCalls[0].Name != "yard" {
+		t.Fatalf("space refreshed unexpected yards: %#v", incus.ExecCalls)
+	}
+}
+
+func TestSpaceRefreshTimestampsEachCompletedMeasurement(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	dataHome := environmentValue(environment, "SUBYARD_HOME")
+	if err := os.MkdirAll(dataHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	clock := testkit.NewManualClock(time.Unix(100, 0))
+	incus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{
+		"subyard/yard": {Status: "Running"},
+	}}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"space", "--refresh"},
+		Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+		Incus: incus,
+		Executor: spaceAdvancingExecutor{
+			clock: clock, result: ports.InstanceExecResult{Stdout: []byte("3G\n")},
+		},
+		Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 0 {
+		t.Fatalf("space refresh failed: code=%d stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	contents, readErr := os.ReadFile(filepath.Join(dataHome, "space.cache"))
+	if readErr != nil || string(contents) != "3G 105\n" || !strings.Contains(stdout.String(), "3G 0s ago") {
+		t.Fatalf("completion timestamp: cache=%q err=%v output=%q", contents, readErr, stdout.String())
+	}
+}
+
+func TestSpaceRefreshContinuesAfterFailureAndPreservesCache(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	configHome := environmentValue(environment, "SUBYARD_CONFIG_HOME")
+	dataHome := environmentValue(environment, "SUBYARD_HOME")
+	if err := os.MkdirAll(filepath.Join(configHome, "yards"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dataHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(configHome, "yards", "demo.env"), "SSH_PORT=3333\n", 0o600)
+	defaultCache := filepath.Join(dataHome, "space.cache")
+	writeCLIFile(t, defaultCache, "1G 90\n", 0o600)
+	writeCLIFile(t, filepath.Join(dataHome, "space-demo.cache"), "2G 80\n", 0o600)
+	incus := &testkit.Incus{
+		Instances: map[string]ports.InstanceInfo{
+			"subyard/yard":           {Status: "Running"},
+			"subyard-demo/yard-demo": {Status: "Running"},
+		},
+		ExecSteps: []testkit.IncusExecStep{
+			{Err: errors.New("measurement failed")},
+			{Result: ports.InstanceExecResult{Stdout: []byte("4G\n")}},
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"space", "--refresh"},
+		Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+		Incus: incus, Executor: incus, Clock: testkit.NewManualClock(time.Unix(100, 0)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 {
+		t.Fatalf("space refresh code=%d, want 1; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, expected := range []string{
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "default", "RUNNING", "1G", "10s ago"),
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "demo", "RUNNING", "4G", "0s ago"),
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("space refresh omitted %q: %q", expected, stdout.String())
+		}
+	}
+	if !strings.Contains(stderr.String(), "space: default: refresh:") || len(incus.ExecCalls) != 2 {
+		t.Fatalf("space refresh did not report and continue: stderr=%q exec=%#v", stderr.String(), incus.ExecCalls)
+	}
+	contents, readErr := os.ReadFile(defaultCache)
+	if readErr != nil || string(contents) != "1G 90\n" {
+		t.Fatalf("failed refresh changed cache: contents=%q err=%v", contents, readErr)
+	}
+}
+
+func TestSpaceRefreshReportsStateFailureAndContinues(t *testing.T) {
+	root, environment, _ := nativeFixture(t)
+	configHome := environmentValue(environment, "SUBYARD_CONFIG_HOME")
+	dataHome := environmentValue(environment, "SUBYARD_HOME")
+	if err := os.MkdirAll(filepath.Join(configHome, "yards"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dataHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(configHome, "yards", "demo.env"), "SSH_PORT=3333\n", 0o600)
+	writeCLIFile(t, filepath.Join(dataHome, "space.cache"), "1G 90\n", 0o600)
+	writeCLIFile(t, filepath.Join(dataHome, "space-demo.cache"), "2G 80\n", 0o600)
+	executor := &testkit.Incus{
+		Instances: map[string]ports.InstanceInfo{
+			"subyard-demo/yard-demo": {Status: "Running"},
+		},
+		ExecSteps: []testkit.IncusExecStep{{
+			Result: ports.InstanceExecResult{Stdout: []byte("4G\n")},
+		}},
+	}
+	incus := spaceIncusStub{
+		Incus: executor,
+		instanceErrors: map[string]error{
+			"subyard/yard": errors.New("state unavailable"),
+		},
+	}
+	var stdout, stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard", Arguments: []string{"space", "--refresh"},
+		Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+		Incus: incus, Executor: executor, Clock: testkit.NewManualClock(time.Unix(100, 0)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 {
+		t.Fatalf("space refresh code=%d, want 1; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, expected := range []string{
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "default", "UNKNOWN", "1G", "10s ago"),
+		fmt.Sprintf("%-16s %-12s %8s %s\n", "demo", "RUNNING", "4G", "0s ago"),
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Fatalf("space refresh omitted %q: %q", expected, stdout.String())
+		}
+	}
+	if !strings.Contains(stderr.String(), "space: default: state: state unavailable") ||
+		len(executor.ExecCalls) != 1 || executor.ExecCalls[0].Name != "yard-demo" {
+		t.Fatalf("space refresh did not report and continue: stderr=%q exec=%#v", stderr.String(), executor.ExecCalls)
+	}
+}
+
+func TestSpaceHonorsExplicitYardSelectors(t *testing.T) {
+	for _, arguments := range [][]string{{"-Y", "demo", "space"}, {"@demo", "space"}} {
+		t.Run(strings.Join(arguments, " "), func(t *testing.T) {
+			root, environment, _ := nativeFixture(t)
+			configHome := environmentValue(environment, "SUBYARD_CONFIG_HOME")
+			dataHome := environmentValue(environment, "SUBYARD_HOME")
+			if err := os.MkdirAll(filepath.Join(configHome, "yards"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(dataHome, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeCLIFile(t, filepath.Join(configHome, "yards", "demo.env"), "SSH_PORT=3333\n", 0o600)
+			writeCLIFile(t, filepath.Join(dataHome, "space.cache"), "1G 90\n", 0o600)
+			writeCLIFile(t, filepath.Join(dataHome, "space-demo.cache"), "2G 80\n", 0o600)
+			incus := &testkit.Incus{Instances: map[string]ports.InstanceInfo{
+				"subyard/yard":           {Status: "Running"},
+				"subyard-demo/yard-demo": {Status: "Stopped"},
+			}}
+			var stdout, stderr bytes.Buffer
+			program, err := New(Options{
+				RepositoryRoot: root, Program: "yard", Arguments: arguments,
+				Environment: environment, WorkingDir: root, Stdout: &stdout, Stderr: &stderr,
+				Incus: incus, Executor: incus, Clock: testkit.NewManualClock(time.Unix(100, 0)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code := program.Run(context.Background()); code != 0 {
+				t.Fatalf("selected space failed: code=%d stderr=%q", code, stderr.String())
+			}
+			want := fmt.Sprintf("%-16s %-12s %8s %s\n", "YARD", "STATE", "USED", "MEASURED") +
+				fmt.Sprintf("%-16s %-12s %8s %s\n", "demo", "STOPPED", "2G", "20s ago")
+			if stdout.String() != want {
+				t.Fatalf("selected space output = %q, want %q", stdout.String(), want)
+			}
+		})
+	}
+}
+
 func TestStatusRoutesSummaryAndExplicitYardSelectors(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1849,6 +2144,7 @@ func nativeFixture(t *testing.T) (string, []string, string) {
 		"test-vms||@test-vms||forward|mutate|dynamic|public|lifecycle|simple|test-vms <command>|test-vms|--slot -n -f --yes --help|logs status revoke recover",
 		"teardown||@teardown||forward|mutate|required|public|lifecycle|teardown|teardown|teardown|--keep-data --yes --help|",
 		"status||@status||forward|read|never|public|lifecycle|status|status|status|--all --help|",
+		"space||@space||local|read|never|public|lifecycle|simple|space|space|--refresh --help|",
 		"logs||@logs||forward|read|never|public|lifecycle|simple|logs|logs|-f -n --yes --help|",
 		"usage||@usage||forward|read|never|public|lifecycle|simple|usage|usage|--help|",
 		"shell||@shell||forward|mutate|never|public|lifecycle|project-shell|shell|shell|--root --yes --help|",

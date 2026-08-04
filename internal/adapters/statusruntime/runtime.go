@@ -2,10 +2,12 @@ package statusruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,8 +24,14 @@ type Runtime struct {
 	Resources    []resource.Definition
 	Program      string
 	Security     ports.SecurityChecker
+	Executor     ports.InstanceExecutor
 	Now          func() time.Time
 	ProbeTimeout time.Duration
+}
+
+type SpaceMeasurement struct {
+	Figure     string
+	MeasuredAt time.Time
 }
 
 func (runtime Runtime) ReadStatusFacts(
@@ -124,8 +132,95 @@ func spaceCachePath(dataHome, yardName string) string {
 	return filepath.Join(dataHome, "space"+suffix+".cache")
 }
 
+func (runtime Runtime) ReadSpace(yard domain.Context) (SpaceMeasurement, bool) {
+	dataHome := yard.Paths.DataHome
+	if dataHome == "" {
+		dataHome = runtime.Environment["SUBYARD_HOME"]
+	}
+	figure, measuredAt := readSpaceCache(spaceCachePath(dataHome, yard.YardName))
+	return SpaceMeasurement{Figure: figure, MeasuredAt: measuredAt}, figure != ""
+}
+
+func (runtime Runtime) RefreshSpace(
+	ctx context.Context,
+	yard domain.Context,
+) (SpaceMeasurement, error) {
+	if runtime.Executor == nil {
+		return SpaceMeasurement{}, errors.New("space refresh requires an instance executor")
+	}
+	dataHome := yard.Paths.DataHome
+	if dataHome == "" {
+		dataHome = runtime.Environment["SUBYARD_HOME"]
+	}
+	cache := spaceCachePath(dataHome, yard.YardName)
+	if err := os.MkdirAll(filepath.Dir(cache), 0o700); err != nil {
+		return SpaceMeasurement{}, fmt.Errorf("prepare space cache: %w", err)
+	}
+	lock, err := os.OpenFile(cache+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return SpaceMeasurement{}, fmt.Errorf("open space cache lock: %w", err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return SpaceMeasurement{}, fmt.Errorf("lock space cache: %w", err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
+	result, err := runtime.Executor.Exec(ctx, yard.IncusProject, yard.InstanceName,
+		ports.InstanceExecRequest{Command: []string{"sh", "-c", spaceMeasureCommand}})
+	if err != nil {
+		return SpaceMeasurement{}, fmt.Errorf("measure in-yard space: %w", err)
+	}
+	fields := strings.Fields(string(result.Stdout))
+	if result.ExitCode != 0 || len(fields) != 1 || !validSpaceFigure(fields[0]) {
+		return SpaceMeasurement{}, errors.New("measure in-yard space: invalid result")
+	}
+	measuredAt := time.Now()
+	if runtime.Now != nil {
+		measuredAt = runtime.Now()
+	}
+	measurement := SpaceMeasurement{Figure: fields[0], MeasuredAt: measuredAt}
+	if err := writeSpaceCache(cache, measurement.Figure, measurement.MeasuredAt); err != nil {
+		return SpaceMeasurement{}, fmt.Errorf("write space cache: %w", err)
+	}
+	return measurement, nil
+}
+
 // Incus 6.0.6 returns no disk state for managed / and /srv devices on both containers and VMs,
 // so detailed status keeps size off its foreground path and refreshes this compatible cache.
+const spaceMeasureCommand = `
+set -- /
+if grep -qs " /srv " /proc/mounts; then
+  root_device="$(stat -c %d / 2>/dev/null)" || exit
+  srv_device="$(stat -c %d /srv 2>/dev/null)" || exit
+  [ "$root_device" = "$srv_device" ] || set -- "$@" /srv
+fi
+total=0
+for path do
+  output="$(du -skx "$path" 2>/dev/null)" || exit
+  size="$(printf "%s\n" "$output" | awk "NR == 1 { print \$1 }")"
+  case "$size" in ""|*[!0-9]*) exit 1 ;; esac
+  total=$((total + size))
+done
+awk -v size="$total" "
+BEGIN {
+  split(\"K M G T P E Z Y\", units)
+  unit = 1
+  while (size >= 1024 && unit < 8) {
+    size /= 1024
+    unit++
+  }
+  if (size >= 10 || size == int(size))
+    printf \"%.0f%s\\n\", size, units[unit]
+  else
+    printf \"%.1f%s\\n\", size, units[unit]
+}"
+`
+
+const spaceFigurePattern = `[0-9]+([.][0-9]+)?[KMGTPEZY]?(i?B)?`
+
+var spaceFigureRegexp = regexp.MustCompile("^" + spaceFigurePattern + "$")
+
 const spaceRefreshScript = `
 set -eu
 cache=$1
@@ -143,12 +238,9 @@ fi
 figure="$(
   timeout --signal=TERM --kill-after=1s 10s \
     incus exec "$instance" --project "$project" -- sh -c '
-      set -- /
-      grep -qs " /srv " /proc/mounts && set -- "$@" /srv
-      du -sxch "$@" 2>/dev/null | awk "END { print \$1 }"
-    '
+` + spaceMeasureCommand + `'
 )" || exit 0
-printf '%s\n' "$figure" | grep -Eq '^[0-9]+([.][0-9]+)?[KMGTPEZY]?(i?B)?$' || exit 0
+printf '%s\n' "$figure" | grep -Eq '^` + spaceFigurePattern + `$' || exit 0
 [ -e "$lock" ] || exit 0
 printf '%s %s\n' "$figure" "$(date +%s)" >"$temporary"
 mv -f -- "$temporary" "$cache"
@@ -200,16 +292,7 @@ func writeSpaceCache(path, figure string, measured time.Time) error {
 }
 
 func validSpaceFigure(value string) bool {
-	if value == "" || len(value) > 32 {
-		return false
-	}
-	for _, character := range value {
-		if (character < '0' || character > '9') && character != '.' &&
-			!strings.ContainsRune("KMGTPEZYiB", character) {
-			return false
-		}
-	}
-	return true
+	return len(value) <= 32 && spaceFigureRegexp.MatchString(value)
 }
 
 func ageHuman(age time.Duration) string {

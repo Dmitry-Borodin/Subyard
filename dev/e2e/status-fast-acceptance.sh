@@ -94,7 +94,7 @@ for target in "$DEFAULT_PROJECT/$DEFAULT_INSTANCE" "$NAMED_PROJECT/$NAMED_INSTAN
   [ "$ready" = 1 ] || fail "$target agent did not become ready"
   incus exec "$instance" --project "$project" -- sh -c \
     'dd if=/dev/zero of=/root/status-root bs=1M count=2 2>/dev/null
-     dd if=/dev/zero of=/srv/status-srv bs=1M count=3 2>/dev/null
+     fallocate -l 128M /srv/status-srv
      sync'
 done
 
@@ -151,6 +151,80 @@ check_detail() {
 check_detail default "$DATA_HOME/space.cache" yard -Y default
 check_detail named-vm "$DATA_HOME/space-demo.cache" demo -Y demo
 [ ! -e "$DATA_HOME/space-default.cache" ] || fail "legacy default cache name was recreated"
+
+space_output="$(yard space)"
+grep -Fq 'YARD' <<<"$space_output" || fail "space table omitted header"
+grep -Eq '^default[[:space:]]+RUNNING[[:space:]]+' <<<"$space_output" \
+  || fail "space table omitted default container"
+grep -Eq '^demo[[:space:]]+RUNNING[[:space:]]+' <<<"$space_output" \
+  || fail "space table omitted named VM"
+
+default_before="$(awk 'NF == 2 { print $2 }' "$DATA_HOME/space.cache")"
+named_before="$(awk 'NF == 2 { print $2 }' "$DATA_HOME/space-demo.cache")"
+while [ "$(date +%s)" -le "$default_before" ] || [ "$(date +%s)" -le "$named_before" ]; do
+  sleep 0.1
+done
+refreshed="$(yard space --refresh)"
+grep -Eq '^default[[:space:]]+RUNNING[[:space:]]+' <<<"$refreshed" \
+  || fail "space refresh omitted default container"
+grep -Eq '^demo[[:space:]]+RUNNING[[:space:]]+' <<<"$refreshed" \
+  || fail "space refresh omitted named VM"
+[ "$(awk 'NF == 2 { print $2 }' "$DATA_HOME/space.cache")" -gt "$default_before" ] \
+  || fail "space refresh did not update default cache"
+[ "$(awk 'NF == 2 { print $2 }' "$DATA_HOME/space-demo.cache")" -gt "$named_before" ] \
+  || fail "space refresh did not update named cache"
+
+assert_cache_includes_srv() {
+  local name="$1" project="$2" instance="$3" cache="$4"
+  local root_device srv_device root_figure total_figure cached_figure
+  root_device="$(incus exec "$instance" --project "$project" -- stat -c %d /)"
+  srv_device="$(incus exec "$instance" --project "$project" -- stat -c %d /srv)"
+  root_figure="$(measure_figure "$project" "$instance" /)"
+  total_figure="$root_figure"
+  if [ "$root_device" != "$srv_device" ]; then
+    total_figure="$(measure_figure "$project" "$instance" / /srv)"
+    [ "$total_figure" != "$root_figure" ] \
+      || fail "$name fixture does not distinguish /srv: root=$root_figure total=$total_figure"
+  fi
+  cached_figure="$(awk 'NF == 2 { print $1 }' "$cache")"
+  [ "$cached_figure" = "$total_figure" ] \
+    || fail "$name cache does not include /srv: cache=$cached_figure total=$total_figure"
+}
+
+measure_figure() {
+  local project="$1" instance="$2"
+  shift 2
+  incus exec "$instance" --project "$project" -- sh -c '
+total=0
+for path do
+  output="$(du -skx "$path" 2>/dev/null)" || exit
+  size="$(printf "%s\n" "$output" | awk "NR == 1 { print \$1 }")"
+  case "$size" in ""|*[!0-9]*) exit 1 ;; esac
+  total=$((total + size))
+done
+awk -v size="$total" "
+BEGIN {
+  split(\"K M G T P E Z Y\", units)
+  unit = 1
+  while (size >= 1024 && unit < 8) {
+    size /= 1024
+    unit++
+  }
+  if (size >= 10 || size == int(size))
+    printf \"%.0f%s\\n\", size, units[unit]
+  else
+    printf \"%.1f%s\\n\", size, units[unit]
+}"' space-measure "$@"
+}
+
+assert_cache_includes_srv default "$DEFAULT_PROJECT" "$DEFAULT_INSTANCE" "$DATA_HOME/space.cache"
+assert_cache_includes_srv named-vm "$NAMED_PROJECT" "$NAMED_INSTANCE" "$DATA_HOME/space-demo.cache"
+
+selected_space="$(yard @demo space)"
+grep -Eq '^demo[[:space:]]+RUNNING[[:space:]]+' <<<"$selected_space" \
+  || fail "@demo space omitted selected yard"
+! grep -Eq '^default[[:space:]]' <<<"$selected_space" \
+  || fail "@demo space included an unselected yard"
 
 grep -Fq 'demo  RUNNING' < <(yard @demo status) || fail "@demo selector did not stay detailed"
 grep -Fq 'demo  RUNNING' < <(yard -Y status-owner/demo status) \
@@ -244,4 +318,4 @@ grep -Fq 'remote-owner/remote' "$FIXTURE/stale.out" \
 grep -Fq 'Warning: owner inventory refresh:' "$FIXTURE/stale.err" \
   || fail "stale remote inventory warning was lost"
 
-printf 'ok: status summary routing, cache-first container/VM detail and scoped RPC\n'
+printf 'ok: status routing, all-yard space refresh, cache-first container/VM detail and scoped RPC\n'

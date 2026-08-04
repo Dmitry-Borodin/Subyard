@@ -367,6 +367,8 @@ func (cli *CLI) Run(ctx context.Context) int {
 		return cli.runConfig(ctx, loaded, commandArguments)
 	case "@status":
 		return cli.runStatus(ctx, loaded, explicit, commandArguments)
+	case "@space":
+		return cli.runSpace(ctx, loaded, explicit, commandArguments)
 	case "@info":
 		return cli.runOwnerInfo(ctx, loaded)
 	case "@yards":

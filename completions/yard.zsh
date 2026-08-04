@@ -58,21 +58,40 @@ _yard_config_home() {
   ( source "$repo/config/host.env" >/dev/null 2>&1; print -r -- "${SUBYARD_CONFIG_HOME:-}" )
 }
 
-# Project names from machine-local state ($SUBYARD_CONFIG_HOME/projects/*.json) — the
-# same names `yard list` shows and `yard code <name>` resolves. No jq: pull "name" via sed.
+# Project selectors from the native bounded inventory. If an older/missing engine cannot provide
+# it, fall back to local state and qualify every project with the local HostID so duplicate names
+# still resolve. Project names are SafeProjectName values, so they never contain JSON escapes.
 _yard_projects() {
-  local home d f name inventory
-  inventory="$(yard list --complete-projects 2>/dev/null)"
-  if [[ -n $inventory ]]; then
+  local home d f name inventory host_id='' yard
+  local -A emitted
+  if inventory="$(yard list --complete-projects 2>/dev/null)" && [[ -n $inventory ]]; then
     print -r -- ${(f)inventory}
     return 0
   fi
   home="$(_yard_config_home)" || return 0
+  [[ -n $home ]] || return 0
+  [[ ! -r $home/host-id ]] || IFS= read -r host_id < "$home/host-id"
   d="$home/projects"
-  [[ -n $home && -d $d ]] || return 0
   for f in $d/*.json(N); do
-    name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$f" | head -n1)"
-    [[ -n $name ]] && print -r -- "$name"
+    name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' "$f" | head -n1)"
+    [[ -n $name ]] || continue
+    if [[ -n $host_id ]]; then
+      print -r -- "$name/$host_id"
+    elif [[ -z ${emitted[$name]:-} ]]; then
+      emitted[$name]=1; print -r -- "$name"
+    fi
+  done
+  for d in "$home"/yards/*/projects(N/); do
+    yard="$(basename "$(dirname "$d")")"
+    for f in $d/*.json(N); do
+      name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' "$f" | head -n1)"
+      [[ -n $name ]] || continue
+      if [[ -n $host_id ]]; then
+        print -r -- "$name/$yard/$host_id"
+      elif [[ -z ${emitted[$name]:-} ]]; then
+        emitted[$name]=1; print -r -- "$name"
+      fi
+    done
   done
 }
 

@@ -53,9 +53,9 @@ _yard_config_home() {
   ( . "$repo/config/host.env" >/dev/null 2>&1; printf '%s\n' "${SUBYARD_CONFIG_HOME:-}" )
 }
 
-# Project names from machine-local state ($SUBYARD_CONFIG_HOME/projects/*.json) — the
-# same names `yard list` shows and `yard code <name>` resolves. No jq: pull the "name"
-# field with sed so completion stays dependency-free.
+# Project selectors from the native bounded inventory. If an older/missing engine cannot provide
+# it, fall back to local state and qualify every project with the local HostID so duplicate names
+# still resolve. Project names are SafeProjectName values, so they never contain JSON escapes.
 _yard_projects() {
   local home inventory
   if inventory="$("${1:-yard}" list --complete-projects 2>/dev/null)" && [ -n "$inventory" ]; then
@@ -63,12 +63,37 @@ _yard_projects() {
     return 0
   fi
   home="$(_yard_config_home "$1")" || return 0
-  local d="$home/projects" f name
-  [ -n "$home" ] && [ -d "$d" ] || return 0
+  [ -n "$home" ] || return 0
+  local d f name host_id="" yard emitted=""
+  [ ! -r "$home/host-id" ] || IFS= read -r host_id <"$home/host-id"
+  d="$home/projects"
   for f in "$d"/*.json; do
     [ -e "$f" ] || continue
-    name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$f" | head -n1)"
-    [ -n "$name" ] && printf '%s\n' "$name"
+    name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' "$f" | head -n1)"
+    [ -n "$name" ] || continue
+    if [ -n "$host_id" ]; then
+      printf '%s/%s\n' "$name" "$host_id"
+    elif case $'\n'"$emitted" in *$'\n'"$name"$'\n'*) true;; *) false;; esac; then
+      :
+    else
+      emitted="${emitted}${name}"$'\n'; printf '%s\n' "$name"
+    fi
+  done
+  for d in "$home"/yards/*/projects; do
+    [ -d "$d" ] || continue
+    yard="$(basename "$(dirname "$d")")"
+    for f in "$d"/*.json; do
+      [ -e "$f" ] || continue
+      name="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' "$f" | head -n1)"
+      [ -n "$name" ] || continue
+      if [ -n "$host_id" ]; then
+        printf '%s/%s/%s\n' "$name" "$yard" "$host_id"
+      elif case $'\n'"$emitted" in *$'\n'"$name"$'\n'*) true;; *) false;; esac; then
+        :
+      else
+        emitted="${emitted}${name}"$'\n'; printf '%s\n' "$name"
+      fi
+    done
   done
 }
 

@@ -101,8 +101,9 @@ esac
 	if code := codeProgram.Run(context.Background()); code != 0 {
 		t.Fatalf("code failed: code=%d stderr=%q", code, codeStderr.String())
 	}
-	wantWorkspace := filepath.Join(configHome, "workspaces", "yard-demo-12345678.code-workspace")
-	if len(codeClient.calls) != 1 || codeClient.calls[0][1] != "file://"+wantWorkspace ||
+	wantRemote := "vscode-remote://ssh-remote+yard/srv/workspaces/demo-12345678/src"
+	if len(codeClient.calls) != 1 || codeClient.calls[0][0] != "--folder-uri" ||
+		codeClient.calls[0][1] != wantRemote ||
 		len(incus.ExecCalls) != 0 || len(codePrompt.Seen) != 0 ||
 		strings.Contains(codeStderr.String(), "Proceed?") {
 		t.Fatalf("code launch drifted: vscode=%#v exec=%#v", codeClient.calls, incus.ExecCalls)

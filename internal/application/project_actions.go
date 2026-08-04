@@ -188,7 +188,6 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 	if err := os.Rename(temporaryPath, workspace); err != nil {
 		return "", err
 	}
-	uri := (&url.URL{Scheme: "file", Path: workspace}).String()
 	message := ""
 	if runner.Project.Target != "" && runner.Project.Target != "yard" {
 		message = fmt.Sprintf(
@@ -197,9 +196,9 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 		)
 	}
 	if runner.VSCode == nil {
-		return message + "VS Code CLI is unavailable; open manually:\n  code --file-uri " + uri + "\n", nil
+		return message + "VS Code CLI is unavailable; open manually:\n  code --folder-uri " + remoteURI + "\n", nil
 	}
-	if _, err := runner.VSCode.Run(ctx, "--file-uri", uri); err != nil {
+	if _, err := runner.VSCode.Run(ctx, "--folder-uri", remoteURI); err != nil {
 		return "", err
 	}
 	return message + fmt.Sprintf("opened %s (%s:%s) in VS Code\n", runner.Project.Name, runner.Project.SSHHost, runner.Project.YardPath), nil

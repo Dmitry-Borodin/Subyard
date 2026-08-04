@@ -336,8 +336,8 @@ func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
 		len(workspace.Extensions.Recommendations) != 1 {
 		t.Fatalf("invalid workspace: %#v err=%v", workspace, err)
 	}
-	if len(code.calls) != 1 || code.calls[0][0] != "--file-uri" ||
-		code.calls[0][1] != "file://"+workspacePath {
+	if len(code.calls) != 1 || code.calls[0][0] != "--folder-uri" ||
+		code.calls[0][1] != "vscode-remote://ssh-remote+yard"+record.YardPath {
 		t.Fatalf("VS Code URI was not opened: %#v", code.calls)
 	}
 }

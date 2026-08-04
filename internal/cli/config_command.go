@@ -1075,6 +1075,9 @@ func (cli *CLI) configTargetDrift(
 	if errors.Is(err, ports.ErrInstanceNotFound) {
 		return "absent", false, nil
 	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "absent", false, nil
+	}
 	if err != nil {
 		return "", false, err
 	}

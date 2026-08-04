@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 release="$TMP/release"
+export SUBYARD_INCUS_SOCKET="$TMP/missing-incus.socket"
 export SUBYARD_OPERATOR_HOME="$TMP/home"
 export SUBYARD_CONFIG_HOME="$TMP/config"
 export SUBYARD_HOME="$TMP/data"

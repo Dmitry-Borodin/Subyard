@@ -651,6 +651,17 @@ grep -Fq 'FAILED_HOTFIX_VERSION=0.4.2' \
   && grep -Fq 'published 0.4.0 -> broken 0.4.2 -> recovered 0.4.3 hotfix lane passed' \
     "$ROOT/dev/e2e/release-migration-catch-up.sh" \
   || fail "release catch-up does not reproduce and recover the exact broken 0.4.2 transaction"
+grep -Fq 'require_operator_password_sudo' \
+  "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  && grep -Fq 'assert_operator_password_sudo' \
+    "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  && grep -Fq 'restore_operator_passwordless_sudo' \
+    "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  && grep -Fq 'operator unexpectedly retained passwordless sudo' \
+    "$ROOT/dev/e2e/p0-source-upgrade.sh" \
+  && [ "$(grep -Fc '  require_operator_password_sudo' \
+    "$ROOT/dev/e2e/p0-source-upgrade.sh")" -eq 2 ] \
+  || fail "P0 source-upgrade reboots do not preserve a password-required operator boundary"
 grep -Fq 'dev/agent-e2e.sh --wait 20m --vm both' \
   "$ROOT/dev/e2e/release-migration-consumer.sh" \
   && grep -Fq 'dev/agent-e2e.sh --verify-boundary' \

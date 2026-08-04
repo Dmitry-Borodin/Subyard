@@ -199,8 +199,46 @@ cleanup_fixture() {
   p0_capacity_remove_root_if_empty
 }
 
+set_operator_sudo_policy() {
+  local policy="$1" rule sudoers_tmp
+  case "$policy" in
+    passwordless) rule='NOPASSWD: ALL' ;;
+    password) rule='ALL' ;;
+    *) die "invalid operator sudo policy: $policy" ;;
+  esac
+  sudoers_tmp="$(mktemp /tmp/subyard-p0-sudoers.XXXXXX)"
+  printf '%s ALL=(root) %s\n' "$OPERATOR" "$rule" > "$sudoers_tmp"
+  sudo -n visudo -cf "$sudoers_tmp" >/dev/null
+  sudo -n install -o root -g root -m 0440 "$sudoers_tmp" "$SUDOERS"
+  find "$sudoers_tmp" -delete
+}
+
+assert_operator_password_sudo() {
+  local rc
+  operator_env sudo -k
+  set +e
+  operator_env sudo -n true >/dev/null 2>&1
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || die 'operator unexpectedly retained passwordless sudo'
+}
+
+require_operator_password_sudo() {
+  printf '%s:%s\n' "$OPERATOR" 'subyard-disposable-power-fixture' | sudo -n chpasswd
+  set_operator_sudo_policy password
+  assert_operator_password_sudo
+  printf '  [ ok ] fixture operator requires a sudo password across reboot\n'
+}
+
+restore_operator_passwordless_sudo() {
+  set_operator_sudo_policy passwordless
+  operator_env sudo -k
+  operator_env sudo -n true >/dev/null 2>&1 \
+    || die 'fixture operator passwordless sudo was not restored'
+}
+
 prepare_operator() {
-  local sudoers_tmp uid
+  local uid
   ! id "$OPERATOR" >/dev/null 2>&1 || die "fixture user $OPERATOR already exists"
   [ ! -e "$RELEASE_ROOT" ] || die "fixture release root already exists"
   [ ! -e "$OPERATOR_PARENT_MODE" ] \
@@ -210,10 +248,7 @@ prepare_operator() {
   sudo -n chmod o+x "$HOME"
   sudo -n useradd --create-home --home-dir "$OPERATOR_HOME" --shell /bin/bash "$OPERATOR"
   sudo -n usermod -aG incus-admin "$OPERATOR"
-  sudoers_tmp="$(mktemp /tmp/subyard-p0-sudoers.XXXXXX)"
-  printf '%s ALL=(root) NOPASSWD: ALL\n' "$OPERATOR" > "$sudoers_tmp"
-  sudo -n install -o root -g root -m 0440 "$sudoers_tmp" "$SUDOERS"
-  find "$sudoers_tmp" -delete
+  set_operator_sudo_policy passwordless
   sudo -n loginctl enable-linger "$OPERATOR"
   uid="$(operator_uid)"
   sudo -n systemctl start "user@$uid.service"
@@ -783,6 +818,7 @@ prepare() {
     || die 'default and named yard desired power is not persisted before reboot'
   operator_env test ! -e "$OPERATOR_HOME/go-invoked" \
     || die 'production operator cycle invoked Go'
+  require_operator_password_sudo
   printf 'ok: exact source-linked %s upgraded without Go; migration is prepared for reboot\n' \
     "$SOURCE_REVISION"
 }
@@ -796,11 +832,13 @@ load_rebooted_fixture() {
   id "$OPERATOR" >/dev/null 2>&1 || die 'fixture operator disappeared after reboot'
   assert_fixture_project
   assert_fixture_project "$DEFAULT_PROJECT"
+  assert_operator_password_sudo
 }
 
 resume() {
   load_rebooted_fixture
   wait_for_running_yards || die 'boot reconciler did not restore default and named yards'
+  restore_operator_passwordless_sudo
   verify_prepared_versioned_migration
   candidate_migrate apply >/dev/null
   verify_prepared_versioned_migration
@@ -816,6 +854,7 @@ resume() {
   operator_env test ! -e "$OPERATOR_HOME/go-invoked" \
     || die 'v0.1-style update invoked Go'
   install_power_retry_probe
+  require_operator_password_sudo
   printf 'ok: prepared migration resumed through the v0.1 installer and is committed for reboot\n'
 }
 
@@ -832,6 +871,7 @@ finish() {
   [ "$(sudo -n systemctl show subyard-power-reconcile.service --property=Result --value)" = success ] \
     || die 'updated boot power reconciliation did not finish successfully'
   verify_power_retry_probe
+  restore_operator_passwordless_sudo
   operator_yard status >/dev/null
   operator_yard check
   operator_yard -Y "$YARD_NAME" status >/dev/null

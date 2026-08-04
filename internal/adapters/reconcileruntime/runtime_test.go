@@ -2,7 +2,9 @@ package reconcileruntime
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -392,21 +394,25 @@ func TestSSHProbeOwnsProxyAndClientConfig(t *testing.T) {
 }
 
 func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
-	steps := func(stat string) []testkit.IncusExecStep {
+	steps := func(stat, configHash string) []testkit.IncusExecStep {
 		return []testkit.IncusExecStep{
 			{}, {}, {Result: ports.InstanceExecResult{Stdout: []byte("dev:x:1000:1000::/home/dev:/bin/bash\n")}},
 			{Result: ports.InstanceExecResult{Stdout: []byte(stat + "\n")}},
 			{Result: ports.InstanceExecResult{Stdout: []byte(" 7f 45 4c 46\n")}},
 			{Result: ports.InstanceExecResult{Stdout: []byte("ccusage 1.2.3\n")}},
-			{}, {}, {Result: ports.InstanceExecResult{ExitCode: 1}, Err: errors.New("not a link")},
+			{Result: ports.InstanceExecResult{Stdout: []byte(configHash + "  config\n")}},
+			{}, {Result: ports.InstanceExecResult{ExitCode: 1}, Err: errors.New("not a link")},
 		}
 	}
 	instructions := filepath.Join(t.TempDir(), "AGENTS.md")
-	if err := os.WriteFile(instructions, []byte("fixture\n"), 0o600); err != nil {
+	payload := []byte("fixture\n")
+	if err := os.WriteFile(instructions, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
 	incus := &testkit.Incus{
-		ServerInfo: ports.ServerInfo{Environment: "incus"}, ExecSteps: steps("regular file|755|0:0"),
+		ServerInfo: ports.ServerInfo{Environment: "incus"},
+		ExecSteps:  steps("regular file|755|0:0", digest),
 		Reconcile: ports.ReconcileState{InstanceFound: true, Instance: ports.InstanceInfo{
 			Status: "Running", Config: map[string]string{"user.subyard.ccusage_version": "1.2.3"},
 		}},
@@ -418,10 +424,22 @@ func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
 	}
 	assertStage(t, runtime, "provision", true, "matching running provision state")
 	if command := incus.ExecCalls[6].Request.Command; len(command) != 3 ||
-		command[2] != "/home/dev/.config/opencode/AGENTS.md" {
+		command[0] != "sha256sum" || command[2] != "/home/dev/.config/opencode/AGENTS.md" {
 		t.Fatalf("OpenCode instructions were not checked natively: %#v", command)
 	}
-	incus.ExecSteps = steps("regular file|777|0:0")
+	if err := os.WriteFile(instructions, []byte("updated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	incus.ExecSteps = steps("regular file|755|0:0", digest)
+	assertStage(t, runtime, "provision", false, "stale materialized agent config")
+	missing := steps("regular file|755|0:0", digest)
+	missing[6] = testkit.IncusExecStep{
+		Result: ports.InstanceExecResult{ExitCode: 1}, Err: errors.New("missing config"),
+	}
+	incus.ExecSteps = missing
+	assertStage(t, runtime, "provision", false, "missing materialized agent config")
+
+	incus.ExecSteps = steps("regular file|777|0:0", digest)
 	assertStage(t, runtime, "provision", false, "wrong ccusage mode")
 
 	incus.Reconcile.Instance = ports.InstanceInfo{Status: "Stopped", Config: map[string]string{

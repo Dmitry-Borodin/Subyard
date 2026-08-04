@@ -45,7 +45,7 @@ func (runtime Runtime) RefreshConfigs(ctx context.Context) error {
 	fmt.Fprintf(output, "Refresh agent instructions and configs in %s\n", runtime.Yard.InstanceName)
 	copied := make(map[string]bool)
 	for _, file := range files {
-		info, statErr := os.Stat(file.source)
+		info, statErr := os.Lstat(file.source)
 		if statErr != nil {
 			if os.IsNotExist(statErr) {
 				fmt.Fprintf(output, "  [ ok ] %s: no source — skipping\n", file.label)

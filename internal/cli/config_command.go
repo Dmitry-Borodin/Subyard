@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -1041,6 +1040,7 @@ type dispatcherConfigApplier struct {
 	environment map[string]string
 	stdout      io.Writer
 	stderr      io.Writer
+	applyDrift  bool
 }
 
 func (applier dispatcherConfigApplier) ApplyConfig(ctx context.Context, yard string) error {
@@ -1048,7 +1048,11 @@ func (applier dispatcherConfigApplier) ApplyConfig(ctx context.Context, yard str
 	if yard != "" && yard != "default" {
 		arguments = append(arguments, "-Y", yard)
 	}
-	arguments = append(arguments, "init", "--configs", "--yes")
+	if applier.applyDrift {
+		arguments = append(arguments, "config", "apply", "--yes")
+	} else {
+		arguments = append(arguments, "init", "--configs", "--yes")
+	}
 	command := exec.CommandContext(ctx, applier.path, arguments...)
 	command.Env = environmentList(applier.environment, map[string]string{"ASSUME_YES": "1"})
 	command.Stdin = strings.NewReader("")
@@ -1141,23 +1145,7 @@ func effectiveConfigAssets(loaded config.Loaded) ([]configAsset, error) {
 }
 
 func hashRegularFile(path string) (string, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", errors.New("source is not a regular non-symlink file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+	return config.HashRegularFile(path)
 }
 
 func validateManagedConfigTree(root string) error {

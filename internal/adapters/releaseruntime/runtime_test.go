@@ -28,15 +28,19 @@ func TestPrepareValidatesOptionsAndKeepsChecksMutating(t *testing.T) {
 		t.Fatalf("invalid help operation: %#v, %q, %v", help, output.String(), err)
 	}
 	check, err := release.Prepare(context.Background(), []string{"--version", "1.2.3", "--check"})
-	if err != nil || check.Effect != domain.CommandMutate {
+	if err != nil || check.Effect != domain.CommandMutate || check.RefreshConfigs {
 		t.Fatalf("update check can write its cache and must stay mutating: %#v, %v", check, err)
 	}
 	update, err := release.Prepare(context.Background(), []string{"--version", "1.2.3"})
-	if err != nil ||
+	if err != nil || !update.RefreshConfigs ||
 		!strings.Contains(strings.Join(update.Consequences, " "), "lifecycle migration") ||
 		strings.Contains(strings.Join(check.Consequences, " "), "lifecycle migration") {
 		t.Fatalf("release migration consequences are incomplete: update=%#v check=%#v err=%v",
 			update.Consequences, check.Consequences, err)
+	}
+	rollback, err := release.Prepare(context.Background(), []string{"--rollback"})
+	if err != nil || !rollback.RefreshConfigs {
+		t.Fatalf("rollback must refresh materialized config: %#v, %v", rollback, err)
 	}
 	for _, arguments := range [][]string{
 		{"--offline"},

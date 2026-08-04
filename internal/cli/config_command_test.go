@@ -213,6 +213,35 @@ func TestConfigStatusAndApplyAllLocalExcludeRemoteYards(t *testing.T) {
 	}
 }
 
+func TestDispatcherConfigApplierSelectsDirectAndDriftAwareCommands(t *testing.T) {
+	root := t.TempDir()
+	capture := filepath.Join(root, "arguments")
+	dispatcher := filepath.Join(root, "yard")
+	writeConfigCommandFile(t, dispatcher, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\n", 0o700)
+	for _, test := range []struct {
+		name       string
+		applyDrift bool
+		want       string
+	}{
+		{name: "direct", want: "-Y\nnamed\ninit\n--configs\n--yes\n"},
+		{name: "drift-aware", applyDrift: true, want: "-Y\nnamed\nconfig\napply\n--yes\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			applier := dispatcherConfigApplier{
+				path: dispatcher, environment: map[string]string{"CAPTURE": capture},
+				applyDrift: test.applyDrift,
+			}
+			if err := applier.ApplyConfig(context.Background(), "named"); err != nil {
+				t.Fatal(err)
+			}
+			arguments, err := os.ReadFile(capture)
+			if err != nil || string(arguments) != test.want {
+				t.Fatalf("dispatcher arguments = %q, want %q, err=%v", arguments, test.want, err)
+			}
+		})
+	}
+}
+
 func TestConfigStatusDetectsGuestDriftWithoutPrintingContents(t *testing.T) {
 	root, _, _, environment := configCommandFixture(t)
 	loaded := loadConfigCommandContext(t, root, environment, "default")

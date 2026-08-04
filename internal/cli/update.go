@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 
@@ -16,7 +17,10 @@ import (
 
 type releaseAdapter struct{ prepared releaseruntime.Prepared }
 
-type releaseExecution struct{ prepared releaseruntime.Prepared }
+type releaseExecution struct {
+	prepared releaseruntime.Prepared
+	yard     string
+}
 
 func (adapter releaseAdapter) Run(ctx context.Context, request domain.AdapterRequest, _ io.Reader) (domain.AdapterResult, string, error) {
 	if request.Adapter != "release" || request.Action != "execute" {
@@ -73,7 +77,7 @@ func (cli *CLI) prepareRelease(ctx context.Context, loaded config.Loaded, argume
 	if err != nil {
 		return nil, err
 	}
-	return &releaseExecution{prepared: prepared}, nil
+	return &releaseExecution{prepared: prepared, yard: loaded.Context.YardName}, nil
 }
 
 func (execution *releaseExecution) policy(definition command.Definition) domain.CommandPolicy {
@@ -88,5 +92,17 @@ func (cli *CLI) executeRelease(ctx context.Context, orchestrator *application.Or
 	result, _, err := orchestrator.RunAdapter(ctx, plan, domain.AdapterRequest{
 		Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID, Adapter: "release", Action: "execute",
 	}, nil)
+	if err == nil && result.Status == "ok" && execution.prepared.RefreshConfigs {
+		applier := cli.options.Config
+		if applier == nil {
+			applier = dispatcherConfigApplier{
+				path: cli.options.DispatcherPath, environment: cli.baseEnv,
+				stdout: cli.options.Stdout, stderr: cli.options.Stderr, applyDrift: true,
+			}
+		}
+		if err := applier.ApplyConfig(ctx, execution.yard); err != nil {
+			return result, fmt.Errorf("refresh materialized agent configuration: %w", err)
+		}
+	}
 	return result, err
 }

@@ -104,6 +104,37 @@ func TestRefreshConfigsRejectsPathsOutsideDeveloperHome(t *testing.T) {
 	}
 }
 
+func TestRefreshConfigsRejectsSymlinkSourceBeforeGuestMutation(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "config.toml")
+	if err := os.WriteFile(target, []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "linked.toml")
+	if err := os.Symlink(target, source); err != nil {
+		t.Fatal(err)
+	}
+	incus := runningIncus(0)
+	runtime := Runtime{
+		Environment: []string{
+			"AGENTS=codex",
+			"AGENT_codex_CONFIG=" + source,
+			"AGENT_codex_CONFIG_DEST=.codex/config.toml",
+		},
+		Incus: incus, Executor: incus,
+		Yard: domain.Context{
+			IncusProject: "subyard", InstanceName: "yard", DevUser: "dev",
+		},
+	}
+	if err := runtime.RefreshConfigs(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("symlink source error = %v", err)
+	}
+	if len(incus.ExecCalls) != 0 {
+		t.Fatalf("symlink source caused guest execution: %#v", incus.ExecCalls)
+	}
+}
+
 func TestApplyGitIdentityUsesTypedDeveloperCommands(t *testing.T) {
 	incus := runningIncus(3)
 	runtime := Runtime{

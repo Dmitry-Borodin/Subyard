@@ -26,9 +26,10 @@ type Config struct {
 }
 
 type Prepared struct {
-	Effect       domain.CommandEffect
-	Consequences []string
-	run          func(context.Context) error
+	Effect         domain.CommandEffect
+	Consequences   []string
+	RefreshConfigs bool
+	run            func(context.Context) error
 }
 
 func (prepared Prepared) Execute(ctx context.Context) error {
@@ -66,9 +67,10 @@ func (runtime *Runtime) Prepare(ctx context.Context, arguments []string) (Prepar
 	if options.rollback {
 		return Prepared{Effect: domain.CommandMutate, Consequences: []string{
 			"verify and reactivate the previous immutable runtime",
+			"refresh materialized agent configuration",
 		}, run: func(ctx context.Context) error {
 			return runtime.install(ctx, "--runtime-root", options.root, "--rollback")
-		}}, nil
+		}, RefreshConfigs: true}, nil
 	}
 	if options.version == "" {
 		if options.offline {
@@ -93,12 +95,14 @@ func (runtime *Runtime) Prepare(ctx context.Context, arguments []string) (Prepar
 		consequences = append(
 			consequences,
 			"apply every required ordered config and lifecycle migration",
+			"refresh materialized agent configuration",
 		)
 	}
 	return Prepared{
-		Effect:       domain.CommandMutate,
-		Consequences: consequences,
-		run:          func(ctx context.Context) error { return runtime.execute(ctx, options) },
+		Effect:         domain.CommandMutate,
+		Consequences:   consequences,
+		RefreshConfigs: !options.check,
+		run:            func(ctx context.Context) error { return runtime.execute(ctx, options) },
 	}, nil
 }
 

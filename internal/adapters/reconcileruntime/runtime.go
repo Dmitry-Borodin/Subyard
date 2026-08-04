@@ -1050,12 +1050,19 @@ func (runtime Runtime) provisionConverged(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	for _, file := range configFiles {
-		if regularFile(file.source) {
-			if ok, err := runtime.guestCheck(
-				ctx, []string{"test", "-f", file.destination},
-			); err != nil || !ok {
-				return false, err
-			}
+		hostHash, err := config.HashRegularFile(file.source)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		result, ok, err := runtime.guestObserve(
+			ctx, []string{"sha256sum", "--", file.destination},
+		)
+		fields := strings.Fields(string(result.Stdout))
+		if err != nil || !ok || len(fields) == 0 || fields[0] != hostHash {
+			return false, err
 		}
 	}
 	sudoers := "/etc/sudoers.d/90-subyard-" + user

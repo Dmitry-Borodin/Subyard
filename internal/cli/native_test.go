@@ -31,13 +31,6 @@ func (stub statusFactsStub) ReadStatusFacts(context.Context, domain.Context, boo
 	return stub.value, nil
 }
 
-type nativeVSCodeStub struct{ calls [][]string }
-
-func (stub *nativeVSCodeStub) Run(_ context.Context, arguments ...string) ([]byte, error) {
-	stub.calls = append(stub.calls, append([]string(nil), arguments...))
-	return nil, nil
-}
-
 func TestNativeCodeAndShellDoNotStartCredentialAutoSync(t *testing.T) {
 	root, environment, stateDirectory := nativeFixture(t)
 	store, err := state.NewFileStore(stateDirectory)
@@ -73,10 +66,15 @@ case "$1" in
   exec) printf '%s\n' "$*" > "$INCUS_LOG" ;;
 esac
 `, 0o700)
+	codeLog := filepath.Join(root, "code.log")
+	writeCLIFile(t, filepath.Join(bin, "code"), `#!/bin/sh
+printf '%s\0' "$@" > "$CODE_LOG"
+`, 0o700)
 	path := bin + string(os.PathListSeparator) + os.Getenv("PATH")
 	t.Setenv("PATH", path)
 	environment = append(environment,
 		"PATH="+path,
+		"CODE_LOG="+codeLog,
 		"DISPATCH_LOG="+dispatchLog,
 		"INCUS_LOG="+incusLog,
 	)
@@ -86,14 +84,13 @@ esac
 			Status: "Running", Devices: map[string]map[string]string{"ssh": {"type": "proxy"}},
 		}},
 	}
-	codeClient := &nativeVSCodeStub{}
 	codePrompt := &testkit.Prompt{}
 	var codeStderr bytes.Buffer
 	codeProgram, err := New(Options{
 		RepositoryRoot: root, DispatcherPath: dispatcher, Program: "yard",
 		Arguments: []string{"code", "Demo"}, Environment: environment, WorkingDir: root,
 		Stdin: strings.NewReader(""), Incus: incus, Executor: incus,
-		ProjectVSCode: codeClient, Prompt: codePrompt, Stderr: &codeStderr,
+		Prompt: codePrompt, Stderr: &codeStderr,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,11 +99,11 @@ esac
 		t.Fatalf("code failed: code=%d stderr=%q", code, codeStderr.String())
 	}
 	wantRemote := "vscode-remote://ssh-remote+yard/srv/workspaces/demo-12345678/src"
-	if len(codeClient.calls) != 1 || codeClient.calls[0][0] != "--folder-uri" ||
-		codeClient.calls[0][1] != wantRemote ||
+	codeArguments, readErr := os.ReadFile(codeLog)
+	if readErr != nil || string(codeArguments) != "--folder-uri\x00"+wantRemote+"\x00" ||
 		len(incus.ExecCalls) != 0 || len(codePrompt.Seen) != 0 ||
 		strings.Contains(codeStderr.String(), "Proceed?") {
-		t.Fatalf("code launch drifted: vscode=%#v exec=%#v", codeClient.calls, incus.ExecCalls)
+		t.Fatalf("code launch drifted: arguments=%q readErr=%v exec=%#v", codeArguments, readErr, incus.ExecCalls)
 	}
 
 	var shellStderr bytes.Buffer
@@ -419,9 +416,10 @@ func TestUpdateUsesThePreparedReleaseAcrossRPCPlanAndExecute(t *testing.T) {
 		"YARD_RELEASE_CACHE="+cache,
 		"RELEASE_CAPTURE="+capture,
 	)
+	configApplier := &recordingConfigApplier{}
 	program, err := New(Options{
 		RepositoryRoot: root, Program: "yard", Environment: environment,
-		Clock: testkit.NewManualClock(time.Unix(100, 0)),
+		Clock: testkit.NewManualClock(time.Unix(100, 0)), Config: configApplier,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -433,7 +431,7 @@ func TestUpdateUsesThePreparedReleaseAcrossRPCPlanAndExecute(t *testing.T) {
 	handler := &rpcHandler{cli: program, loaded: loaded, plans: make(map[string]rpcPlannedOperation)}
 	params, _ := json.Marshal(map[string]any{
 		"command": "update", "arguments": []string{
-			"--version", "1.2.3", "--runtime-root", runtimeRoot, "--check",
+			"--version", "1.2.3", "--runtime-root", runtimeRoot,
 		},
 	})
 	result, err := handler.Handle(context.Background(), rpc.Call{
@@ -457,9 +455,11 @@ func TestUpdateUsesThePreparedReleaseAcrossRPCPlanAndExecute(t *testing.T) {
 		t.Fatal(err)
 	}
 	arguments, err := os.ReadFile(capture)
-	if err != nil || !strings.Contains(string(arguments), "--check") ||
-		!slices.Equal(events, []string{"operation.started", "operation.finished"}) {
-		t.Fatalf("release RPC bypassed its prepared operation: args=%q events=%q err=%v", arguments, events, err)
+	if err != nil || slices.Contains(strings.Fields(string(arguments)), "--check") ||
+		!slices.Equal(events, []string{"operation.started", "operation.finished"}) ||
+		!slices.Equal(configApplier.yards, []string{"default"}) {
+		t.Fatalf("release RPC bypassed its prepared operation: args=%q events=%q configs=%q err=%v",
+			arguments, events, configApplier.yards, err)
 	}
 }
 

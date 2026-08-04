@@ -98,9 +98,11 @@ printf '%s\0' "$@" > "$CODE_LOG"
 	if code := codeProgram.Run(context.Background()); code != 0 {
 		t.Fatalf("code failed: code=%d stderr=%q", code, codeStderr.String())
 	}
-	wantRemote := "vscode-remote://ssh-remote+yard/srv/workspaces/demo-12345678/src"
+	wantWorkspace := filepath.Join(
+		configHome, "workspaces", "eWFyZA.demo-12345678", "Demo.code-workspace",
+	)
 	codeArguments, readErr := os.ReadFile(codeLog)
-	if readErr != nil || string(codeArguments) != "--folder-uri\x00"+wantRemote+"\x00" ||
+	if readErr != nil || string(codeArguments) != wantWorkspace+"\x00" ||
 		len(incus.ExecCalls) != 0 || len(codePrompt.Seen) != 0 ||
 		strings.Contains(codeStderr.String(), "Proceed?") {
 		t.Fatalf("code launch drifted: arguments=%q readErr=%v exec=%#v", codeArguments, readErr, incus.ExecCalls)

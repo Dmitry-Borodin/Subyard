@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -320,7 +321,9 @@ func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
 	if len(data.requests) != 0 {
 		t.Fatalf("workspace descriptor was written inside the yard: %#v", data.requests)
 	}
-	workspacePath := filepath.Join(workspaceDirectory, "yard-demo-12345678.code-workspace")
+	workspacePath := filepath.Join(
+		workspaceDirectory, "eWFyZA.demo-12345678", "Demo.code-workspace",
+	)
 	payload, readErr := os.ReadFile(workspacePath)
 	if readErr != nil {
 		t.Fatalf("read controller workspace: %v", readErr)
@@ -336,9 +339,50 @@ func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
 		len(workspace.Extensions.Recommendations) != 1 {
 		t.Fatalf("invalid workspace: %#v err=%v", workspace, err)
 	}
-	if len(code.calls) != 1 || code.calls[0][0] != "--folder-uri" ||
-		code.calls[0][1] != "vscode-remote://ssh-remote+yard"+record.YardPath {
-		t.Fatalf("VS Code URI was not opened: %#v", code.calls)
+	if len(code.calls) != 1 || !slices.Equal(code.calls[0], []string{workspacePath}) {
+		t.Fatalf("VS Code workspace was not opened: %#v", code.calls)
+	}
+}
+
+func TestProjectCodeWorkspaceNamespaceSeparatesHostAndProjectIdentity(t *testing.T) {
+	workspaceDirectory := t.TempDir()
+	code := &vsCodeStub{}
+	for _, identity := range []struct{ host, projectID string }{
+		{host: "a-b", projectID: "c"},
+		{host: "a", projectID: "b-c"},
+	} {
+		record := cloneRecord()
+		record.SSHHost, record.ProjectID = identity.host, identity.projectID
+		record.YardPath = "/srv/workspaces/" + identity.projectID + "/src"
+		runner := ProjectActionRunner{
+			Data: &projectDataStub{}, VSCode: code, WorkspaceDirectory: workspaceDirectory,
+			Yard: domain.Context{YardType: domain.YardRemote}, Project: record,
+		}
+		if _, _, err := runner.Run(context.Background(), domain.AdapterRequest{
+			Schema: 1, OperationID: "operation-code", Adapter: "project", Action: "code",
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(code.calls) != 2 || code.calls[0][0] == code.calls[1][0] {
+		t.Fatalf("workspace identities collided: %#v", code.calls)
+	}
+}
+
+func TestProjectCodeManualFallbackUsesPositionalControllerDescriptor(t *testing.T) {
+	record := cloneRecord()
+	workspaceDirectory := filepath.Join(t.TempDir(), "directory with spaces")
+	runner := ProjectActionRunner{
+		Data: &projectDataStub{}, WorkspaceDirectory: workspaceDirectory,
+		Yard: domain.Context{YardType: domain.YardRemote}, Project: record,
+	}
+	_, message, err := runner.Run(context.Background(), domain.AdapterRequest{
+		Schema: 1, OperationID: "operation-code", Adapter: "project", Action: "code",
+	}, nil)
+	if err != nil || !strings.Contains(message, "'code' '") ||
+		!strings.Contains(message, "Demo.code-workspace'") ||
+		strings.Contains(message, "--file-uri") || strings.Contains(message, "--folder-uri") {
+		t.Fatalf("manual workspace launch drifted: message=%q err=%v", message, err)
 	}
 }
 

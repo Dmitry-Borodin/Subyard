@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
+	"github.com/Subyard/Subyard/internal/shellquote"
 	"github.com/Subyard/Subyard/internal/state"
 )
 
@@ -33,7 +35,6 @@ type ProjectActionRunner struct {
 	SoftRemove         bool
 }
 
-var workspaceUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 var extensionToken = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 const projectHooksDispatcher = "/usr/local/libexec/subyard/projects-changed"
@@ -150,10 +151,10 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 	if !filepath.IsAbs(runner.WorkspaceDirectory) {
 		return "", errors.New("controller workspace directory must be absolute")
 	}
-	workspaceName := workspaceUnsafe.ReplaceAllString(
-		runner.Project.SSHHost+"-"+runner.Project.ProjectID, "_",
-	)
-	workspace := filepath.Join(runner.WorkspaceDirectory, workspaceName+".code-workspace")
+	workspaceName := base64.RawURLEncoding.EncodeToString([]byte(runner.Project.SSHHost)) +
+		"." + runner.Project.ProjectID
+	workspaceNamespace := filepath.Join(runner.WorkspaceDirectory, workspaceName)
+	workspace := filepath.Join(workspaceNamespace, runner.Project.Name+".code-workspace")
 	remoteURI := (&url.URL{
 		Scheme: "vscode-remote", Host: "ssh-remote+" + runner.Project.SSHHost,
 		Path: runner.Project.YardPath,
@@ -165,10 +166,10 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(runner.WorkspaceDirectory, 0o700); err != nil {
+	if err := os.MkdirAll(workspaceNamespace, 0o700); err != nil {
 		return "", err
 	}
-	temporary, err := os.CreateTemp(runner.WorkspaceDirectory, ".workspace-*")
+	temporary, err := os.CreateTemp(workspaceNamespace, ".workspace-*")
 	if err != nil {
 		return "", err
 	}
@@ -196,9 +197,10 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 		)
 	}
 	if runner.VSCode == nil {
-		return message + "VS Code CLI is unavailable; open manually:\n  code --folder-uri " + remoteURI + "\n", nil
+		return message + "VS Code CLI is unavailable; open manually:\n  " +
+			shellquote.Command([]string{"code", workspace}) + "\n", nil
 	}
-	if _, err := runner.VSCode.Run(ctx, "--folder-uri", remoteURI); err != nil {
+	if _, err := runner.VSCode.Run(ctx, workspace); err != nil {
 		return "", err
 	}
 	return message + fmt.Sprintf("opened %s (%s:%s) in VS Code\n", runner.Project.Name, runner.Project.SSHHost, runner.Project.YardPath), nil

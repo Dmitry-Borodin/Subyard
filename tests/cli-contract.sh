@@ -169,7 +169,7 @@ zsh_fallback="$(TEST_ROOT="$ROOT" SUBYARD_CONFIG_HOME="$CLI_TMP/config" zsh -fc 
 zsh_prefix="$(TEST_ROOT="$ROOT" SUBYARD_CONFIG_HOME="$CLI_TMP/config" zsh -f <<'ZSH'
 zmodload zsh/zpty
 zpty -b completion zsh -fi
-zpty -w completion $'autoload -Uz compinit; compinit -D\n'
+zpty -w completion $'autoload -Uz compinit; compinit -D -i\n'
 zpty -w completion $'yard() { case "$1" in --list) print -r -- code ;; --command-completion) print -r -- project ;; --command-options|--command-verbs) ;; list) return 2 ;; esac }\n'
 zpty -w completion "source ${(q)TEST_ROOT}/completions/yard.zsh"$'\n'
 zpty -w completion $'compdef _yard yard\nbindkey -e\nbindkey "^Xc" complete-word\nreport_buffer() { print -r -- "RESULT:$BUFFER"; }\nzle -N report_buffer\nbindkey "^Xr" report_buffer\nprint -r -- READY\n'

@@ -32,14 +32,18 @@ install -d "$data_home/workspaces" "$data_home/runtime/current/bin" "$data_home/
 printf 'outer workspace\n' > "$data_home/workspaces/active.code-workspace"
 printf 'outer log\n' > "$data_home/logs/yard.log"
 
-[ "$(subyard_home_remove_if_empty "$data_home")" = 0 ] || fail 'shared data-root cleanup failed'
+[ "$(subyard_home_remove_if_empty "$data_home")" = retained ] || fail 'shared data-root cleanup failed'
 [ -f "$data_home/workspaces/active.code-workspace" ] || fail 'outer workspace descriptor was removed'
 [ -f "$data_home/logs/yard.log" ] || fail 'outer log was removed'
 
 empty_home="$TMP/empty-home"
 install -d "$empty_home"
-[ "$(subyard_home_remove_if_empty "$empty_home")" = 1 ] && [ ! -e "$empty_home" ] \
+[ "$(subyard_home_remove_if_empty "$empty_home")" = removed ] && [ ! -e "$empty_home" ] \
   || fail 'empty data root was not removed'
+
+absent_home="$TMP/absent-home"
+[ "$(subyard_home_remove_if_empty "$absent_home")" = absent ] \
+  || fail 'absent data root was reported as retained'
 
 outside="$TMP/outside"
 link="$TMP/data-link"

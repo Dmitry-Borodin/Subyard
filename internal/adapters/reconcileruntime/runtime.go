@@ -1005,6 +1005,13 @@ func (runtime Runtime) provisionConverged(ctx context.Context) (bool, error) {
 	if ok, err := runtime.guestCheck(ctx, commandCheck); err != nil || !ok {
 		return false, err
 	}
+	forwardingCheck := []string{"sh", "-c", `
+jq -e '."ip-forward-no-drop" == true' /etc/docker/daemon.json >/dev/null \
+  && ! iptables -S FORWARD 2>/dev/null | grep -qx -- '-P FORWARD DROP'
+`}
+	if ok, err := runtime.guestCheck(ctx, forwardingCheck); err != nil || !ok {
+		return false, err
+	}
 	checks, err := runtime.provisionAgentChecks()
 	if err != nil {
 		return false, err

@@ -66,11 +66,11 @@ subyard_home_remove_if_empty() {
   local data_home="${1:-}"
   subyard_home_validate_root "$data_home" || return
   data_home="$SUBYARD_VALIDATED_HOME"
-  [ -e "$data_home" ] || { printf '0\n'; return 0; }
+  [ -e "$data_home" ] || { printf 'absent\n'; return 0; }
   if rmdir -- "$data_home" 2>/dev/null; then
-    printf '1\n'
+    printf 'removed\n'
   else
-    printf '0\n'
+    printf 'retained\n'
   fi
 }
 
@@ -182,6 +182,16 @@ ufw_rules_set_probe_access() {
     *) return 2 ;;
   esac
   chgrp "$group" "$rules" && chmod 0640 "$rules"
+}
+
+incus_instance_primary_ipv4() {
+  local project="${1:?incus_instance_primary_ipv4 needs a project}"
+  local instance="${2:?incus_instance_primary_ipv4 needs an instance}"
+  incus exec "$instance" --project "$project" -- sh -eu -c '
+    interface="$(ip -4 route show default | awk "NR == 1 { for (i=1; i<=NF; i++) if (\$i == \"dev\") { print \$(i+1); exit } }")"
+    [ -n "$interface" ]
+    ip -4 -o address show dev "$interface" scope global
+  ' 2>/dev/null | awk 'NR == 1 { split($4, address, "/"); print address[1] }'
 }
 
 zabbly_suite() {

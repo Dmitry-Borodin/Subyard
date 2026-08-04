@@ -171,11 +171,12 @@ if [ "$KEEP_DATA" = 1 ]; then
 elif [ "$pool_gone" = 1 ]; then
   data_home_removed="$(subyard_home_remove_if_empty "$SUBYARD_HOME")" \
     || die "refusing to remove unsafe Subyard data root: $SUBYARD_HOME"
-  if [ "$data_home_removed" = 1 ]; then
-    ok "removed empty Subyard data root $SUBYARD_HOME"
-  else
-    ok "kept non-empty Subyard data root $SUBYARD_HOME; teardown only removes selected-yard state"
-  fi
+  case "$data_home_removed" in
+    removed) ok "removed empty Subyard data root $SUBYARD_HOME" ;;
+    absent) ok "Subyard data root already absent: $SUBYARD_HOME" ;;
+    retained) ok "kept non-empty Subyard data root $SUBYARD_HOME; teardown only removes selected-yard state" ;;
+    *) die "unexpected Subyard data-root cleanup result" ;;
+  esac
 else
   warn "kept $STORAGE_PATH and shared $SUBYARD_HOME/{ssh,logs} — another yard still uses the pool"
 fi

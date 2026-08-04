@@ -74,6 +74,15 @@ fi
 # A yard may itself host a nested Incus bridge. Keep Docker from changing the yard's global
 # FORWARD policy to DROP; Docker's own bridge isolation rules remain in place. Write this before
 # first install/start so nested networking is also correct on fresh yards and after reboot.
+docker_forwarding_converge() {
+  local config_changed="${1:?docker_forwarding_converge needs config state}"
+  [ "$config_changed" != 1 ] || systemctl restart docker
+  command -v iptables >/dev/null 2>&1 \
+    && iptables -S FORWARD | grep -qx -- '-P FORWARD DROP' \
+    && iptables -P FORWARD ACCEPT
+  return 0
+}
+
 install -d -m 0755 /etc/docker
 docker_config=/etc/docker/daemon.json
 docker_config_changed=0
@@ -98,12 +107,8 @@ fi
 # Docker Engine + Compose plugin (official convenience script; Debian/Ubuntu aware).
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
-elif [ "$docker_config_changed" = 1 ]; then
-  systemctl restart docker
-  # Upgrade convergence: an older Docker start may already have installed the DROP policy.
-  command -v iptables >/dev/null 2>&1 \
-    && iptables -S FORWARD | grep -qx -- '-P FORWARD DROP' \
-    && iptables -P FORWARD ACCEPT
+else
+  docker_forwarding_converge "$docker_config_changed"
 fi
 
 # Groups + unprivileged dev user (Stage 1: dev is in docker group; agents are not).

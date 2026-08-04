@@ -83,8 +83,7 @@ proxy_args=(bind=host)
 if [ "${INSTANCE_TYPE:-container}" = vm ]; then
   # Incus 6.0 requires a static NIC address for the VM-only NAT proxy mode. Keep the
   # address DHCP selected on first boot, then reserve it on the inherited eth0 device.
-  vm_ipv4="$(incus list "$INSTANCE_NAME" "${PROJ[@]}" -f csv -c 4 \
-    | tr ',' '\n' | awk '/^[0-9]+\./ {sub(/ .*/, ""); print; exit}')"
+  vm_ipv4="$(incus_instance_primary_ipv4 "$INCUS_PROJECT" "$INSTANCE_NAME")"
   [ -n "$vm_ipv4" ] || die "VM '$INSTANCE_NAME' has no IPv4 address for its SSH proxy"
   if device_exists eth0; then
     incus config device set "$INSTANCE_NAME" eth0 ipv4.address="$vm_ipv4" "${PROJ[@]}"

@@ -95,6 +95,10 @@ case "${1:-}" in
   start) printf 'start\n' >> "$MOCK_INCUS_LOG" ;;
   stop) printf 'stop\n' >> "$MOCK_INCUS_LOG"; exit "${MOCK_INCUS_STOP_RC:-0}" ;;
   exec)
+    if [[ " $* " = *" -- sh -eu -c "* ]]; then
+      printf '%s\n' "${MOCK_INCUS_ETH0_ADDRESS:-}"
+      exit 0
+    fi
     n=0; [ ! -f "$MOCK_INCUS_EXEC_COUNT" ] || n="$(cat "$MOCK_INCUS_EXEC_COUNT")"
     n=$((n + 1)); printf '%s\n' "$n" > "$MOCK_INCUS_EXEC_COUNT"
     [ "$n" -ge "${MOCK_INCUS_EXEC_READY_AFTER:-1}" ]
@@ -201,6 +205,9 @@ DEV_UID="$(id -u)"
 CONTROL_PLANE_ROOT="$ROOT"
 # shellcheck source=tests/helpers/source-control-plane.sh
 . "$ROOT/tests/helpers/source-control-plane.sh"
+export MOCK_INCUS_ETH0_ADDRESS='2: eth0    inet 10.88.0.42/24 brd 10.88.0.255 scope global dynamic eth0'
+[ "$(incus_instance_primary_ipv4 test-project test-yard)" = 10.88.0.42 ] \
+  || fail "VM address selection did not use the default-route interface's global IPv4"
 reset_case
 MOCK_INCUS_EXEC_READY_AFTER=2
 incus_wait_instance_agent test-project test-yard || fail "instance agent did not become ready"

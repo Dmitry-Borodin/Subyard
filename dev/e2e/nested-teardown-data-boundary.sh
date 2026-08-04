@@ -38,6 +38,40 @@ setting() {
   printf '%s\n' "$value"
 }
 
+assert_outer_vm_ssh_address() {
+  local stage="$1" primary_interface eth0 foreign pinned connect
+  primary_interface="$(incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- \
+    ip -4 route show default \
+    | awk 'NR == 1 { for (i=1; i<=NF; i++) if ($i == "dev") { print $(i+1); exit } }')"
+  eth0="$(incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- \
+    ip -4 -o address show dev "$primary_interface" scope global \
+    | awk 'NR == 1 { split($4, address, "/"); print address[1] }')"
+  foreign="$(incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- \
+    ip -4 -o address show dev aaa0 scope global \
+    | awk 'NR == 1 { split($4, address, "/"); print address[1] }')"
+  pinned="$(incus config device get "$OUTER_INSTANCE" eth0 ipv4.address \
+    --project "$OUTER_PROJECT")"
+  connect="$(incus config device get "$OUTER_INSTANCE" ssh connect \
+    --project "$OUTER_PROJECT")"
+  [ -n "$eth0" ] || die "$stage: outer VM eth0 has no global IPv4"
+  [ -n "$foreign" ] || die "$stage: foreign IPv4 fixture is missing"
+  [ "$eth0" != "$foreign" ] || die "$stage: primary and foreign interfaces share an IPv4"
+  [ "$pinned" = "$eth0" ] || die "$stage: eth0 pinned $pinned instead of $eth0"
+  [ "$connect" = "tcp:$eth0:22" ] \
+    || die "$stage: SSH proxy connects to $connect instead of tcp:$eth0:22"
+  incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- true >/dev/null \
+    || die "$stage: outer VM agent is unreachable"
+}
+
+ensure_outer_foreign_ipv4() {
+  incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- sh -eu -c '
+    ip link show aaa0 >/dev/null 2>&1 || ip link add aaa0 type dummy
+    ip -4 address show dev aaa0 | grep -q "172.31.255.1/24" \
+      || ip address add 172.31.255.1/24 dev aaa0
+    ip link set aaa0 up
+  '
+}
+
 cleanup() {
   local rc=$?
   trap - EXIT INT TERM
@@ -114,6 +148,25 @@ yard init --yes
 yard start --yes
 [ "$(incus config get "$OUTER_INSTANCE" user.subyard.managed --project "$OUTER_PROJECT")" = true ] \
   || die 'outer instance is not marker-owned'
+ensure_outer_foreign_ipv4
+assert_outer_vm_ssh_address fresh-init
+docker_pid_before="$(incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- \
+  systemctl show docker.service --property=MainPID --value)"
+incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- \
+  iptables -P FORWARD DROP
+yard init --yes
+assert_outer_vm_ssh_address repeated-init
+[ "$(incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- \
+  iptables -S FORWARD | head -n 1)" = '-P FORWARD ACCEPT' ] \
+  || die 'repeated init retained stale FORWARD DROP'
+[ "$(incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" -- \
+  systemctl show docker.service --property=MainPID --value)" = "$docker_pid_before" ] \
+  || die 'repeated init restarted Docker without config drift'
+yard stop --yes
+yard start --yes
+ensure_outer_foreign_ipv4
+yard init --yes
+assert_outer_vm_ssh_address restart-init
 
 printf '  [ .. ] syncing the exact candidate into the outer yard\n'
 yard sync "$ROOT" --name NestedBoundary --target yard --yes >/dev/null
@@ -125,7 +178,8 @@ outer_source="/srv/workspaces/$project_id/src"
 
 yard code "$project_id" --yes > "$STATE/code.out"
 outer_ssh="$(setting SSH_HOST)"
-descriptor="$SUBYARD_CONFIG_HOME/workspaces/$outer_ssh-$project_id.code-workspace"
+outer_ssh_namespace="$(printf '%s' "$outer_ssh" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+descriptor="$SUBYARD_CONFIG_HOME/workspaces/$outer_ssh_namespace.$project_id/NestedBoundary.code-workspace"
 [ -f "$descriptor" ] || die 'controller-local workspace descriptor is missing'
 jq -e --arg uri "vscode-remote://ssh-remote+$outer_ssh$outer_source" \
   '.folders == [{name:"NestedBoundary", uri:$uri}]' "$descriptor" >/dev/null \

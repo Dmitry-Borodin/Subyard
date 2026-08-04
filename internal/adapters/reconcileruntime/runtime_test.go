@@ -396,7 +396,7 @@ func TestSSHProbeOwnsProxyAndClientConfig(t *testing.T) {
 func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
 	steps := func(stat, configHash string) []testkit.IncusExecStep {
 		return []testkit.IncusExecStep{
-			{}, {}, {Result: ports.InstanceExecResult{Stdout: []byte("dev:x:1000:1000::/home/dev:/bin/bash\n")}},
+			{}, {}, {}, {Result: ports.InstanceExecResult{Stdout: []byte("dev:x:1000:1000::/home/dev:/bin/bash\n")}},
 			{Result: ports.InstanceExecResult{Stdout: []byte(stat + "\n")}},
 			{Result: ports.InstanceExecResult{Stdout: []byte(" 7f 45 4c 46\n")}},
 			{Result: ports.InstanceExecResult{Stdout: []byte("ccusage 1.2.3\n")}},
@@ -423,7 +423,7 @@ func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
 		Environment: []string{"CCUSAGE_VERSION=1.2.3", "HOST_OPENCODE_AGENTS_MD=" + instructions},
 	}
 	assertStage(t, runtime, "provision", true, "matching running provision state")
-	if command := incus.ExecCalls[6].Request.Command; len(command) != 3 ||
+	if command := incus.ExecCalls[7].Request.Command; len(command) != 3 ||
 		command[0] != "sha256sum" || command[2] != "/home/dev/.config/opencode/AGENTS.md" {
 		t.Fatalf("OpenCode instructions were not checked natively: %#v", command)
 	}
@@ -433,11 +433,17 @@ func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
 	incus.ExecSteps = steps("regular file|755|0:0", digest)
 	assertStage(t, runtime, "provision", false, "stale materialized agent config")
 	missing := steps("regular file|755|0:0", digest)
-	missing[6] = testkit.IncusExecStep{
+	missing[7] = testkit.IncusExecStep{
 		Result: ports.InstanceExecResult{ExitCode: 1}, Err: errors.New("missing config"),
 	}
 	incus.ExecSteps = missing
 	assertStage(t, runtime, "provision", false, "missing materialized agent config")
+	forwardDrop := steps("regular file|755|0:0", digest)
+	forwardDrop[1] = testkit.IncusExecStep{
+		Result: ports.InstanceExecResult{ExitCode: 1}, Err: errors.New("FORWARD DROP"),
+	}
+	incus.ExecSteps = forwardDrop
+	assertStage(t, runtime, "provision", false, "stale Docker forwarding policy")
 
 	incus.ExecSteps = steps("regular file|777|0:0", digest)
 	assertStage(t, runtime, "provision", false, "wrong ccusage mode")

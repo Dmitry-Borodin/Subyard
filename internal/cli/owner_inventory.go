@@ -26,6 +26,39 @@ type cliOwnerSource struct {
 	loaded config.Loaded
 }
 
+func canonicalYardIdentity(loaded config.Loaded) (string, error) {
+	yard := loaded.Context.YardName
+	if loaded.Context.YardType == domain.YardLocal {
+		hostID, _, err := configsync.ResolveHostID(
+			loaded.Context.Paths.ConfigHome, loaded.Environment,
+		)
+		if err != nil {
+			return "", err
+		}
+		return hostID + "/" + yard, nil
+	}
+	if loaded.Context.YardType != domain.YardRemote {
+		return "", errors.New("canonical yard identity requires a local or remote yard")
+	}
+	if loaded.Context.RemoteYard != "" {
+		yard = loaded.Context.RemoteYard
+	} else {
+		yard = "default"
+	}
+	connections, err := (ownerinventory.Connections{
+		Root: filepath.Join(loaded.Context.Paths.DataHome, "owner-inventory"),
+	}).List()
+	if err != nil {
+		return "", err
+	}
+	for _, connection := range connections {
+		if connection.Destination == loaded.Context.RemoteDest {
+			return connection.HostID + "/" + yard, nil
+		}
+	}
+	return "", fmt.Errorf("canonical owner is not registered for remote yard %q", yard)
+}
+
 func (source cliOwnerSource) HostID(context.Context) (string, error) {
 	hostID, pending, err := configsync.ResolveHostID(
 		source.loaded.Context.Paths.ConfigHome, source.loaded.Environment,

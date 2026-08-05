@@ -2,11 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Subyard/Subyard/internal/config"
 	"github.com/Subyard/Subyard/internal/domain"
+	"github.com/Subyard/Subyard/internal/ownerinventory"
 )
 
 func inventoryResult(hostID, yard, project string) ownerInventoryResult {
@@ -47,6 +51,92 @@ func TestCompactProjectListOwner(t *testing.T) {
 				t.Fatalf("compactProjectListOwner(%q) = %q, want %q", test.value, got, test.want)
 			}
 		})
+	}
+}
+
+func TestCanonicalYardIdentity(t *testing.T) {
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	dataHome := filepath.Join(root, "data")
+	if err := os.MkdirAll(configHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, filepath.Join(configHome, "host-id"), "local-owner\n", 0o600)
+	if err := (ownerinventory.Connections{Root: filepath.Join(dataHome, "owner-inventory")}).Write(
+		ownerinventory.Connection{
+			HostID: "remote-owner", Destination: "dev@remote.example",
+			Yards: map[string]ownerinventory.YardRoute{
+				"default":  {SSHHost: "yard-remote"},
+				"openclaw": {SSHHost: "yard-remote-openclaw"},
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		yard domain.Context
+		want string
+	}{
+		{
+			name: "local default",
+			yard: domain.Context{YardName: "default", YardType: domain.YardLocal},
+			want: "local-owner/default",
+		},
+		{
+			name: "local named",
+			yard: domain.Context{YardName: "openclaw", YardType: domain.YardLocal},
+			want: "local-owner/openclaw",
+		},
+		{
+			name: "remote default explicit",
+			yard: domain.Context{
+				YardName: "default", YardType: domain.YardRemote,
+				RemoteDest: "dev@remote.example", RemoteYard: "default",
+			},
+			want: "remote-owner/default",
+		},
+		{
+			name: "remote default implicit",
+			yard: domain.Context{
+				YardName: "local-route-name", YardType: domain.YardRemote,
+				RemoteDest: "dev@remote.example",
+			},
+			want: "remote-owner/default",
+		},
+		{
+			name: "remote named",
+			yard: domain.Context{
+				YardName: "openclaw", YardType: domain.YardRemote,
+				RemoteDest: "dev@remote.example", RemoteYard: "openclaw",
+			},
+			want: "remote-owner/openclaw",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.yard.Paths.ConfigHome = configHome
+			test.yard.Paths.DataHome = dataHome
+			got, err := canonicalYardIdentity(config.Loaded{Context: test.yard})
+			if err != nil || got != test.want {
+				t.Fatalf("canonicalYardIdentity() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalYardIdentityRejectsUnknownRemoteOwner(t *testing.T) {
+	root := t.TempDir()
+	_, err := canonicalYardIdentity(config.Loaded{Context: domain.Context{
+		YardName: "default", YardType: domain.YardRemote, RemoteDest: "dev@missing.example",
+		Paths: domain.RuntimePaths{
+			ConfigHome: filepath.Join(root, "config"),
+			DataHome:   filepath.Join(root, "data"),
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "canonical owner") {
+		t.Fatalf("unknown remote owner was accepted: %v", err)
 	}
 }
 

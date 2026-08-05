@@ -2583,7 +2583,7 @@ func (cli *CLI) executeStructuredCommand(
 			Exports: cli.projectExportStore(loaded), Instances: incusPort, VSCode: cli.projectVSCode(),
 			Extensions:         strings.Fields(cli.env["CODE_RECOMMENDED_EXTENSIONS"]),
 			WorkspaceDirectory: filepath.Join(loaded.Context.Paths.ConfigHome, "workspaces"),
-			Yard:               loaded.Context, Project: project.Record,
+			Yard:               loaded.Context, Project: project.Record, YardIdentity: project.YardIdentity,
 			SoftRemove: project.Environment["SUBYARD_PROJECT_REMOVE_SOFT"] == "1",
 		}
 		request := domain.AdapterRequest{

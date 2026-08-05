@@ -30,6 +30,7 @@ const (
 
 type projectExecution struct {
 	Loaded         config.Loaded
+	YardIdentity   string
 	Arguments      []string
 	Environment    map[string]string
 	Record         domain.ProjectRecord
@@ -287,12 +288,20 @@ func (cli *CLI) prepareExistingProject(
 	if err != nil {
 		return nil, err
 	}
+	yardIdentity := ""
+	if name == "code" {
+		yardIdentity, err = canonicalYardIdentity(selectedLoaded)
+		if err != nil {
+			return nil, err
+		}
+	}
 	store, err := openProjectStore(ctx, selectedLoaded.Context.Paths.StateDir)
 	if err != nil {
 		return nil, err
 	}
 	execution := &projectExecution{
-		Loaded: selectedLoaded, Arguments: arguments, Environment: projectSnapshot(match.Record, true),
+		Loaded: selectedLoaded, YardIdentity: yardIdentity,
+		Arguments: arguments, Environment: projectSnapshot(match.Record, true),
 		Record: match.Record, Store: store,
 	}
 	if name == "remove" {

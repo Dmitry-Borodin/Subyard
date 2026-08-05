@@ -30,6 +30,7 @@ type ProjectActionRunner struct {
 	VSCode             ports.VSCode
 	Extensions         []string
 	WorkspaceDirectory string
+	YardIdentity       string
 	Yard               domain.Context
 	Project            domain.ProjectRecord
 	SoftRemove         bool
@@ -136,6 +137,9 @@ func (runner ProjectActionRunner) notifyProjectsChanged(ctx context.Context) str
 }
 
 func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
+	if runner.YardIdentity == "" {
+		return "", errors.New("canonical yard identity is required for VS Code")
+	}
 	if err := runner.codeTargetReady(ctx); err != nil {
 		return "", err
 	}
@@ -163,7 +167,10 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 	payload, err := json.Marshal(map[string]any{
 		"remoteAuthority": remoteAuthority,
 		"folders":         []map[string]string{{"name": runner.Project.Name, "uri": remoteURI}},
-		"extensions":      map[string]any{"recommendations": extensions},
+		"settings": map[string]string{
+			"window.title": "${rootNameShort} — Yard SSH: " + runner.YardIdentity,
+		},
+		"extensions": map[string]any{"recommendations": extensions},
 	})
 	if err != nil {
 		return "", err

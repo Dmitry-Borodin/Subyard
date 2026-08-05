@@ -78,6 +78,7 @@ func TestNativeCodeAndShellDoNotStartCredentialAutoSync(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(configHome, "keys"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	writeCLIFile(t, filepath.Join(configHome, "host-id"), "owner-a\n", 0o600)
 	writeCLIFile(t, filepath.Join(configHome, "keys", "identity.json"), "{}\n", 0o600)
 	dispatchLog := filepath.Join(root, "credential-dispatch.log")
 	dispatcher := filepath.Join(root, "dispatcher")
@@ -136,6 +137,20 @@ printf '%s\0' "$@" > "$CODE_LOG"
 		len(incus.ExecCalls) != 0 || len(codePrompt.Seen) != 0 ||
 		strings.Contains(codeStderr.String(), "Proceed?") {
 		t.Fatalf("code launch drifted: arguments=%q readErr=%v exec=%#v", codeArguments, readErr, incus.ExecCalls)
+	}
+	workspacePayload, err := os.ReadFile(wantWorkspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workspace struct {
+		RemoteAuthority string            `json:"remoteAuthority"`
+		Settings        map[string]string `json:"settings"`
+	}
+	if err := json.Unmarshal(workspacePayload, &workspace); err != nil ||
+		workspace.RemoteAuthority != "ssh-remote+yard" ||
+		workspace.Settings["window.title"] != "${rootNameShort} — Yard SSH: owner-a/default" ||
+		strings.Contains(workspace.Settings["window.title"], "yard-") {
+		t.Fatalf("code workspace identity drifted: workspace=%#v err=%v", workspace, err)
 	}
 
 	var shellStderr bytes.Buffer
@@ -1877,6 +1892,7 @@ func TestProjectSelectionRoutesAcrossYardsBeforeAdapter(t *testing.T) {
 	if err := os.MkdirAll(yardRegistry, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	writeCLIFile(t, filepath.Join(configHome, "host-id"), "owner-a\n", 0o600)
 	writeCLIFile(t, filepath.Join(yardRegistry, "other.env"), "SSH_PORT=2233\n", 0o600)
 	otherState := filepath.Join(yardRegistry, "other", "projects")
 	store, err := state.NewFileStore(otherState)
@@ -1908,6 +1924,7 @@ func TestProjectSelectionRoutesAcrossYardsBeforeAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if execution.Loaded.Context.YardName != "other" ||
+		execution.YardIdentity != "owner-a/other" ||
 		execution.Environment["SUBYARD_PROJECT_ID"] != record.ProjectID ||
 		execution.Environment["SUBYARD_PROJECT_SSH_HOST"] != "yard-other" {
 		t.Fatalf("project was not routed before adapter launch: %#v", execution)

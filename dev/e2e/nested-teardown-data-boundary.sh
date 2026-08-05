@@ -181,10 +181,15 @@ outer_ssh="$(setting SSH_HOST)"
 outer_ssh_namespace="$(printf '%s' "$outer_ssh" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
 descriptor="$SUBYARD_CONFIG_HOME/workspaces/$outer_ssh_namespace.$project_id/NestedBoundary.code-workspace"
 [ -f "$descriptor" ] || die 'controller-local workspace descriptor is missing'
+IFS= read -r outer_host_id < "$SUBYARD_CONFIG_HOME/host-id"
+[ -n "$outer_host_id" ] || die 'controller HostID is missing'
+expected_title="\${rootNameShort} — Yard SSH: $outer_host_id/$OUTER_YARD"
 jq -e \
   --arg authority "ssh-remote+$outer_ssh" \
   --arg uri "vscode-remote://ssh-remote+$outer_ssh$outer_source" \
-  '.remoteAuthority == $authority and .folders == [{name:"NestedBoundary", uri:$uri}]' \
+  --arg title "$expected_title" \
+  '.remoteAuthority == $authority and .folders == [{name:"NestedBoundary", uri:$uri}] and
+    .settings["window.title"] == $title' \
   "$descriptor" >/dev/null \
   || die 'workspace descriptor does not select the expected Remote-SSH workspace'
 

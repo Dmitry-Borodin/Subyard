@@ -311,6 +311,7 @@ func TestProjectCodeWritesRemoteWorkspaceAndOpensDescriptor(t *testing.T) {
 		WorkspaceDirectory: workspaceDirectory,
 		Yard:               domain.Context{YardType: domain.YardLocal, IncusProject: "subyard", InstanceName: "yard", DevUser: "dev", DevUID: 1000},
 		Project:            record, Extensions: []string{"anthropic.claude-code"},
+		YardIdentity: "owner/default",
 	}
 	_, message, err := runner.Run(context.Background(), domain.AdapterRequest{
 		Schema: 1, OperationID: "operation-code", Adapter: "project", Action: "code",
@@ -331,6 +332,7 @@ func TestProjectCodeWritesRemoteWorkspaceAndOpensDescriptor(t *testing.T) {
 	var workspace struct {
 		RemoteAuthority string              `json:"remoteAuthority"`
 		Folders         []map[string]string `json:"folders"`
+		Settings        map[string]string   `json:"settings"`
 		Extensions      struct {
 			Recommendations []string `json:"recommendations"`
 		} `json:"extensions"`
@@ -340,6 +342,7 @@ func TestProjectCodeWritesRemoteWorkspaceAndOpensDescriptor(t *testing.T) {
 		len(workspace.Folders) != 1 ||
 		workspace.Folders[0]["name"] != "Demo" ||
 		workspace.Folders[0]["uri"] != "vscode-remote://ssh-remote+yard"+record.YardPath ||
+		workspace.Settings["window.title"] != "${rootNameShort} — Yard SSH: owner/default" ||
 		!slices.Equal(workspace.Extensions.Recommendations, []string{"anthropic.claude-code"}) {
 		t.Fatalf("invalid workspace: %#v err=%v", workspace, err)
 	}
@@ -361,6 +364,7 @@ func TestProjectCodeWorkspaceNamespaceSeparatesHostAndProjectIdentity(t *testing
 		runner := ProjectActionRunner{
 			Data: &projectDataStub{}, VSCode: code, WorkspaceDirectory: workspaceDirectory,
 			Yard: domain.Context{YardType: domain.YardRemote}, Project: record,
+			YardIdentity: "owner/default",
 		}
 		if _, _, err := runner.Run(context.Background(), domain.AdapterRequest{
 			Schema: 1, OperationID: "operation-code", Adapter: "project", Action: "code",
@@ -373,12 +377,27 @@ func TestProjectCodeWorkspaceNamespaceSeparatesHostAndProjectIdentity(t *testing
 	}
 }
 
+func TestProjectCodeRequiresCanonicalYardIdentity(t *testing.T) {
+	code := &vsCodeStub{}
+	runner := ProjectActionRunner{
+		Data: &projectDataStub{}, VSCode: code, WorkspaceDirectory: t.TempDir(),
+		Yard: domain.Context{YardType: domain.YardRemote}, Project: cloneRecord(),
+	}
+	_, _, err := runner.Run(context.Background(), domain.AdapterRequest{
+		Schema: 1, OperationID: "operation-code", Adapter: "project", Action: "code",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "canonical yard identity") || len(code.calls) != 0 {
+		t.Fatalf("code accepted a missing yard identity: calls=%#v err=%v", code.calls, err)
+	}
+}
+
 func TestProjectCodeManualFallbackUsesPositionalControllerDescriptor(t *testing.T) {
 	record := cloneRecord()
 	workspaceDirectory := filepath.Join(t.TempDir(), "directory with spaces")
 	runner := ProjectActionRunner{
 		Data: &projectDataStub{}, WorkspaceDirectory: workspaceDirectory,
 		Yard: domain.Context{YardType: domain.YardRemote}, Project: record,
+		YardIdentity: "owner/default",
 	}
 	_, message, err := runner.Run(context.Background(), domain.AdapterRequest{
 		Schema: 1, OperationID: "operation-code", Adapter: "project", Action: "code",

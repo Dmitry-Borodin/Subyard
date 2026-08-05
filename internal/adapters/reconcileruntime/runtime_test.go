@@ -432,6 +432,19 @@ func TestProvisionProbeChecksGuestAndStoppedMarker(t *testing.T) {
 	}
 	incus.ExecSteps = steps("regular file|755|0:0", digest)
 	assertStage(t, runtime, "provision", false, "stale materialized agent config")
+	linkedInstructions := filepath.Join(filepath.Dir(instructions), "linked-AGENTS.md")
+	if err := os.Symlink(instructions, linkedInstructions); err != nil {
+		t.Fatal(err)
+	}
+	runtime.Environment = []string{
+		"CCUSAGE_VERSION=1.2.3", "HOST_OPENCODE_AGENTS_MD=" + linkedInstructions,
+	}
+	linkedDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("updated\n")))
+	incus.ExecSteps = steps("regular file|755|0:0", linkedDigest)
+	assertStage(t, runtime, "provision", true, "symlinked host instructions")
+	runtime.Environment = []string{
+		"CCUSAGE_VERSION=1.2.3", "HOST_OPENCODE_AGENTS_MD=" + instructions,
+	}
 	missing := steps("regular file|755|0:0", digest)
 	missing[7] = testkit.IncusExecStep{
 		Result: ports.InstanceExecResult{ExitCode: 1}, Err: errors.New("missing config"),

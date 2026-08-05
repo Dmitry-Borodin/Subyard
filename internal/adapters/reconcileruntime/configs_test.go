@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
@@ -132,6 +134,108 @@ func TestRefreshConfigsRejectsSymlinkSourceBeforeGuestMutation(t *testing.T) {
 	}
 	if len(incus.ExecCalls) != 0 {
 		t.Fatalf("symlink source caused guest execution: %#v", incus.ExecCalls)
+	}
+}
+
+func TestRefreshConfigsFollowsHostInstructionSymlink(t *testing.T) {
+	root := t.TempDir()
+	claudeDirectory := filepath.Join(root, ".claude")
+	dotfilesDirectory := filepath.Join(root, "dotfiles", "agents")
+	for _, directory := range []string{claudeDirectory, dotfilesDirectory} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload := []byte("operator instructions\n")
+	target := filepath.Join(dotfilesDirectory, "AGENTS.md")
+	if err := os.WriteFile(target, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(claudeDirectory, "CLAUDE.md")
+	if err := os.Symlink("../dotfiles/agents/AGENTS.md", source); err != nil {
+		t.Fatal(err)
+	}
+	incus := runningIncus(1)
+	runtime := Runtime{
+		Environment: []string{"HOST_CLAUDE_MD=" + source},
+		Incus:       incus, Executor: incus,
+		Yard: domain.Context{
+			IncusProject: "subyard", InstanceName: "yard", DevUser: "dev",
+		},
+	}
+	if err := runtime.RefreshConfigs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(incus.ExecCalls) != 1 ||
+		incus.ExecCalls[0].Request.Command[5] != "/home/dev/.claude/CLAUDE.md" ||
+		!bytes.Equal(incus.ExecCalls[0].Request.Stdin, payload) {
+		t.Fatalf("symlinked Claude instructions were not copied: %#v", incus.ExecCalls)
+	}
+}
+
+func TestHostInstructionSourceRejectsDanglingSymlink(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "CLAUDE.md")
+	if err := os.Symlink("missing.md", source); err != nil {
+		t.Fatal(err)
+	}
+	file := guestConfigFile{
+		label: "Claude instructions", source: source, followSymlinks: true,
+	}
+	for _, operation := range guestConfigSourceOperations() {
+		t.Run(operation.name, func(t *testing.T) {
+			err := operation.run(file)
+			if err == nil || os.IsNotExist(err) || !strings.Contains(err.Error(), "not a regular file") {
+				t.Fatalf("dangling symlink error = %v", err)
+			}
+		})
+	}
+}
+
+func TestHostInstructionSourceRejectsFIFOWithoutBlocking(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "instructions.fifo")
+	if err := syscall.Mkfifo(target, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "CLAUDE.md")
+	if err := os.Symlink("instructions.fifo", source); err != nil {
+		t.Fatal(err)
+	}
+	file := guestConfigFile{
+		label: "Claude instructions", source: source, followSymlinks: true,
+	}
+	for _, operation := range guestConfigSourceOperations() {
+		t.Run(operation.name, func(t *testing.T) {
+			result := make(chan error, 1)
+			go func() { result <- operation.run(file) }()
+			select {
+			case err := <-result:
+				if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+					t.Fatalf("FIFO error = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("opening the FIFO source blocked")
+			}
+		})
+	}
+}
+
+func guestConfigSourceOperations() []struct {
+	name string
+	run  func(guestConfigFile) error
+} {
+	return []struct {
+		name string
+		run  func(guestConfigFile) error
+	}{
+		{name: "read", run: func(file guestConfigFile) error {
+			_, err := file.readSource()
+			return err
+		}},
+		{name: "hash", run: func(file guestConfigFile) error {
+			_, err := file.sourceHash()
+			return err
+		}},
 	}
 }
 

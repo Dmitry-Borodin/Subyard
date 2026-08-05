@@ -2,6 +2,7 @@ package reconcileruntime
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -9,15 +10,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/Subyard/Subyard/internal/domain"
 	"github.com/Subyard/Subyard/internal/ports"
 )
 
 type guestConfigFile struct {
-	label       string
-	source      string
-	destination string
+	label          string
+	source         string
+	destination    string
+	followSymlinks bool
 }
 
 func (runtime Runtime) RefreshConfigs(ctx context.Context) error {
@@ -45,19 +48,12 @@ func (runtime Runtime) RefreshConfigs(ctx context.Context) error {
 	fmt.Fprintf(output, "Refresh agent instructions and configs in %s\n", runtime.Yard.InstanceName)
 	copied := make(map[string]bool)
 	for _, file := range files {
-		info, statErr := os.Lstat(file.source)
-		if statErr != nil {
-			if os.IsNotExist(statErr) {
+		payload, err := file.readSource()
+		if err != nil {
+			if os.IsNotExist(err) {
 				fmt.Fprintf(output, "  [ ok ] %s: no source — skipping\n", file.label)
 				continue
 			}
-			return statErr
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%s source is not a regular file", file.label)
-		}
-		payload, err := os.ReadFile(file.source)
-		if err != nil {
 			return err
 		}
 		if err := runtime.writeGuestFile(ctx, file.destination, payload); err != nil {
@@ -138,11 +134,11 @@ func (runtime Runtime) guestConfigFiles() ([]guestConfigFile, error) {
 	home := "/home/" + user
 	files := []guestConfigFile{
 		{label: "Claude instructions", source: runtime.environmentValue("HOST_CLAUDE_MD"),
-			destination: home + "/.claude/CLAUDE.md"},
+			destination: home + "/.claude/CLAUDE.md", followSymlinks: true},
 		{label: "Codex instructions", source: runtime.environmentValue("HOST_CODEX_AGENTS_MD"),
-			destination: home + "/.codex/AGENTS.md"},
+			destination: home + "/.codex/AGENTS.md", followSymlinks: true},
 		{label: "OpenCode instructions", source: runtime.environmentValue("HOST_OPENCODE_AGENTS_MD"),
-			destination: home + "/.config/opencode/AGENTS.md"},
+			destination: home + "/.config/opencode/AGENTS.md", followSymlinks: true},
 	}
 	for _, agent := range strings.Fields(runtime.environmentValue("AGENTS")) {
 		if !domain.SafeName(agent) {
@@ -166,6 +162,60 @@ func (runtime Runtime) guestConfigFiles() ([]guestConfigFile, error) {
 		}
 	}
 	return files, nil
+}
+
+func (file guestConfigFile) openSource() (*os.File, error) {
+	pathInfo, err := os.Lstat(file.source)
+	if err != nil {
+		return nil, err
+	}
+	flags := os.O_RDONLY | syscall.O_NONBLOCK
+	if !file.followSymlinks {
+		flags |= syscall.O_NOFOLLOW
+		if !pathInfo.Mode().IsRegular() || pathInfo.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%s source is not a regular file", file.label)
+		}
+	}
+	source, err := os.OpenFile(file.source, flags, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s source is not a regular file", file.label)
+		}
+		return nil, err
+	}
+	info, err := source.Stat()
+	if err != nil {
+		_ = source.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() ||
+		!file.followSymlinks && !os.SameFile(pathInfo, info) {
+		_ = source.Close()
+		return nil, fmt.Errorf("%s source is not a regular file", file.label)
+	}
+	return source, nil
+}
+
+func (file guestConfigFile) readSource() ([]byte, error) {
+	source, err := file.openSource()
+	if err != nil {
+		return nil, err
+	}
+	defer source.Close()
+	return io.ReadAll(source)
+}
+
+func (file guestConfigFile) sourceHash() (string, error) {
+	source, err := file.openSource()
+	if err != nil {
+		return "", err
+	}
+	defer source.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, source); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func (runtime Runtime) writeGuestFile(ctx context.Context, destination string, payload []byte) error {

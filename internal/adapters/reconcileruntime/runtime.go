@@ -1057,7 +1057,7 @@ jq -e '."ip-forward-no-drop" == true' /etc/docker/daemon.json >/dev/null \
 		return false, err
 	}
 	for _, file := range configFiles {
-		hostHash, err := config.HashRegularFile(file.source)
+		hostHash, err := file.sourceHash()
 		if os.IsNotExist(err) {
 			continue
 		}

@@ -155,13 +155,15 @@ func (runner ProjectActionRunner) code(ctx context.Context) (string, error) {
 		"." + runner.Project.ProjectID
 	workspaceNamespace := filepath.Join(runner.WorkspaceDirectory, workspaceName)
 	workspace := filepath.Join(workspaceNamespace, runner.Project.Name+".code-workspace")
+	remoteAuthority := "ssh-remote+" + runner.Project.SSHHost
 	remoteURI := (&url.URL{
-		Scheme: "vscode-remote", Host: "ssh-remote+" + runner.Project.SSHHost,
+		Scheme: "vscode-remote", Host: remoteAuthority,
 		Path: runner.Project.YardPath,
 	}).String()
 	payload, err := json.Marshal(map[string]any{
-		"folders":    []map[string]string{{"name": runner.Project.Name, "uri": remoteURI}},
-		"extensions": map[string]any{"recommendations": extensions},
+		"remoteAuthority": remoteAuthority,
+		"folders":         []map[string]string{{"name": runner.Project.Name, "uri": remoteURI}},
+		"extensions":      map[string]any{"recommendations": extensions},
 	})
 	if err != nil {
 		return "", err

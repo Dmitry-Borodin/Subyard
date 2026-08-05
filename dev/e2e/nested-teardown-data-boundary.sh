@@ -181,9 +181,12 @@ outer_ssh="$(setting SSH_HOST)"
 outer_ssh_namespace="$(printf '%s' "$outer_ssh" | base64 -w0 | tr '+/' '-_' | tr -d '=')"
 descriptor="$SUBYARD_CONFIG_HOME/workspaces/$outer_ssh_namespace.$project_id/NestedBoundary.code-workspace"
 [ -f "$descriptor" ] || die 'controller-local workspace descriptor is missing'
-jq -e --arg uri "vscode-remote://ssh-remote+$outer_ssh$outer_source" \
-  '.folders == [{name:"NestedBoundary", uri:$uri}]' "$descriptor" >/dev/null \
-  || die 'workspace descriptor does not contain the remote folder URI'
+jq -e \
+  --arg authority "ssh-remote+$outer_ssh" \
+  --arg uri "vscode-remote://ssh-remote+$outer_ssh$outer_source" \
+  '.remoteAuthority == $authority and .folders == [{name:"NestedBoundary", uri:$uri}]' \
+  "$descriptor" >/dev/null \
+  || die 'workspace descriptor does not select the expected Remote-SSH workspace'
 
 outer_dev() {
   timeout --foreground "$COMMAND_TIMEOUT" incus exec "$OUTER_INSTANCE" --project "$OUTER_PROJECT" \

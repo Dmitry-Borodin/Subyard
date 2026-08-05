@@ -297,7 +297,7 @@ func TestProjectExportRejectsProjectsWithoutHostCopy(t *testing.T) {
 	}
 }
 
-func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
+func TestProjectCodeWritesRemoteWorkspaceAndOpensDescriptor(t *testing.T) {
 	data := &projectDataStub{}
 	code := &vsCodeStub{}
 	workspaceDirectory := t.TempDir()
@@ -329,14 +329,18 @@ func TestProjectCodeWritesWorkspaceSyncsExtensionsAndOpensURI(t *testing.T) {
 		t.Fatalf("read controller workspace: %v", readErr)
 	}
 	var workspace struct {
-		Folders    []map[string]string `json:"folders"`
-		Extensions struct {
+		RemoteAuthority string              `json:"remoteAuthority"`
+		Folders         []map[string]string `json:"folders"`
+		Extensions      struct {
 			Recommendations []string `json:"recommendations"`
 		} `json:"extensions"`
 	}
 	if err := json.Unmarshal(payload, &workspace); err != nil ||
+		workspace.RemoteAuthority != "ssh-remote+yard" ||
+		len(workspace.Folders) != 1 ||
+		workspace.Folders[0]["name"] != "Demo" ||
 		workspace.Folders[0]["uri"] != "vscode-remote://ssh-remote+yard"+record.YardPath ||
-		len(workspace.Extensions.Recommendations) != 1 {
+		!slices.Equal(workspace.Extensions.Recommendations, []string{"anthropic.claude-code"}) {
 		t.Fatalf("invalid workspace: %#v err=%v", workspace, err)
 	}
 	if len(code.calls) != 1 || !slices.Equal(code.calls[0], []string{workspacePath}) {

@@ -71,6 +71,7 @@ project_selectors="$({
 # A source/runtime version skew can make the native completion provider unavailable. The local
 # fallback must still emit safe, working project-first selectors instead of greedy JSON tails.
 mkdir -p "$CLI_TMP/config/projects" "$CLI_TMP/config/yards/dev/projects"
+printf '%s\n' 'fixture' >"$CLI_TMP/config/yards/dev.env"
 printf '%s\n' 'CarbonX1' >"$CLI_TMP/config/host-id"
 printf '%s\n' \
   '{"schema":1,"projectId":"subyard-12345678","name":"Subyard","hostPath":"/host/Subyard","target":"yard"}' \
@@ -124,22 +125,41 @@ bash_no_host_id="$({
 
 printf '%s\n' 'CarbonX1' >"$CLI_TMP/config/host-id"
 command -v zsh >/dev/null 2>&1 || fail 'zsh is required for CLI completion contracts'
+zsh -f "$ROOT/tests/helpers/zsh-completion-buffers.zsh" "$ROOT/completions/yard.zsh" "$ROOT" \
+  || fail 'Zsh native multi-record completion corrupted the command buffer'
+
+zsh_profiles="$(TEST_ROOT="$ROOT" zsh -fc '
+  source "$TEST_ROOT/completions/yard.zsh"
+  _yard_repo() { print -r -- "$TEST_ROOT" }
+  _yard_profiles
+' | sort)"
+[ "$zsh_profiles" = "$profiles" ] || fail "Zsh completion joined profile records: $zsh_profiles"
+
 for shell in bash zsh; do
   native_projects="$({
     if [ "$shell" = bash ]; then
       TEST_ROOT="$ROOT" SUBYARD_CONFIG_HOME="$CLI_TMP/config" bash -c '
-        yard() { [ "$1" = list ] && [ "$2" = --complete-projects ] && printf "%s\\n" "Native/Owner"; }
+        yard() {
+          [ "$1" = list ] && [ "$2" = --complete-projects ] &&
+            printf "%s\\n" "Native Project/Owner" "Subyard/owner-a" skills
+        }
         source "$TEST_ROOT/completions/yard.bash"; _yard_projects yard
       '
     else
       TEST_ROOT="$ROOT" SUBYARD_CONFIG_HOME="$CLI_TMP/config" zsh -fc '
-        yard() { [[ $1 == list && $2 == --complete-projects ]] && print -r -- Native/Owner }
+        yard() {
+          if [[ $1 == list && $2 == --complete-projects ]]; then
+            print -r -- "Native Project/Owner"
+            print -r -- Subyard/owner-a
+            print -r -- skills
+          fi
+        }
         source "$TEST_ROOT/completions/yard.zsh"; _yard_projects
       '
     fi
   })"
-  [ "$native_projects" = 'Native/Owner' ] ||
-    fail "$shell native project provider did not take precedence: $native_projects"
+  [ "$native_projects" = $'Native Project/Owner\nSubyard/owner-a\nskills' ] ||
+    fail "$shell native project records were not preserved: $native_projects"
 
   empty_native_projects="$({
     if [ "$shell" = bash ]; then
@@ -157,6 +177,29 @@ for shell in bash zsh; do
   [ "$empty_native_projects" = $'Subyard/CarbonX1\nSubyard/dev/CarbonX1' ] ||
     fail "$shell empty native project provider did not fall back: $empty_native_projects"
 done
+
+zsh_native_yards="$(TEST_ROOT="$ROOT" zsh -fc '
+  yard() {
+    if [[ $1 == list && $2 == --complete-yards ]]; then
+      print -r -- default
+      print -r -- owner/dev
+    fi
+  }
+  source "$TEST_ROOT/completions/yard.zsh"
+  _yard_yards
+')"
+[ "$zsh_native_yards" = $'default\nowner/dev' ] ||
+  fail "Zsh native yard records were not preserved: $zsh_native_yards"
+
+zsh_fallback_yards="$(TEST_ROOT="$ROOT" TEST_CONFIG_HOME="$CLI_TMP/config" zsh -fc '
+  yard() { return 2 }
+  source "$TEST_ROOT/completions/yard.zsh"
+  _yard_repo() { return 1 }
+  _yard_config_home() { print -r -- "$TEST_CONFIG_HOME" }
+  _yard_yards
+' | sort)"
+[ "$zsh_fallback_yards" = $'default\ndev' ] ||
+  fail "Zsh fallback yard records were not preserved: $zsh_fallback_yards"
 
 zsh_fallback="$(TEST_ROOT="$ROOT" SUBYARD_CONFIG_HOME="$CLI_TMP/config" zsh -fc '
     yard() { return 2 }

@@ -17,7 +17,7 @@ _yard_profiles() {
   [[ -d $d ]] || return 0
   local -a profiles
   profiles=( $d/*/profile.conf(N:h:t) )
-  print -r -- $profiles
+  print -r -l -- $profiles
 }
 
 # Registry yard names: 'default' plus every *.env basename under private/yards/ and
@@ -28,7 +28,7 @@ _yard_yards() {
   local -a names dirs
   inventory="$(yard list --complete-yards 2>/dev/null)"
   if [[ -n $inventory ]]; then
-    print -r -- ${(f)inventory}
+    print -r -- "$inventory"
     return 0
   fi
   names=( default )
@@ -40,7 +40,7 @@ _yard_yards() {
     [[ -d $d ]] || continue
     for f in $d/*.env(N); do names+=( ${f:t:r} ); done
   done
-  print -r -- ${(u)names}
+  print -r -l -- ${(u)names}
 }
 
 # _arguments action: complete a yard name for -Y/--yard.
@@ -65,7 +65,7 @@ _yard_projects() {
   local home d f name inventory host_id='' yard
   local -A emitted
   if inventory="$(yard list --complete-projects 2>/dev/null)" && [[ -n $inventory ]]; then
-    print -r -- ${(f)inventory}
+    print -r -- "$inventory"
     return 0
   fi
   home="$(_yard_config_home)" || return 0

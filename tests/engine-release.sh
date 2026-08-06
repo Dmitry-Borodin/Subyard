@@ -176,6 +176,10 @@ HOME="$standalone_home" PATH=/usr/bin:/bin SHELL=/bin/bash \
   bash --noprofile --rcfile "$standalone_home/.bashrc" -ic \
   'command -v yard >/dev/null && complete -p yard >/dev/null' >/dev/null 2>&1 \
   || fail 'standalone installer did not activate Bash completion'
+zsh -f "$ROOT/tests/helpers/zsh-completion-buffers.zsh" \
+  "$standalone_home/.subyard/runtime/current/completions/yard.zsh" \
+  "$standalone_home/.subyard/runtime/current" \
+  || fail 'standalone runtime Zsh completion corrupted the command buffer'
 HOME="$standalone_home" SUBYARD_HOME="$standalone_home/.subyard" \
   SUBYARD_CONFIG_HOME="$standalone_home/.config/subyard" YARD_BIN_DIR="$standalone_bin" \
   YARD_SHELL_RC="$standalone_home/.bashrc" YARD_LOGIN_RC="$standalone_home/.profile" \

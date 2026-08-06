@@ -29,6 +29,7 @@ type Prepared struct {
 	Effect         domain.CommandEffect
 	Consequences   []string
 	RefreshConfigs bool
+	ActiveLauncher string
 	run            func(context.Context) error
 }
 
@@ -70,7 +71,7 @@ func (runtime *Runtime) Prepare(ctx context.Context, arguments []string) (Prepar
 			"refresh materialized agent configuration",
 		}, run: func(ctx context.Context) error {
 			return runtime.install(ctx, "--runtime-root", options.root, "--rollback")
-		}, RefreshConfigs: true}, nil
+		}, RefreshConfigs: true, ActiveLauncher: filepath.Join(options.root, "current", "bin", "yard")}, nil
 	}
 	if options.version == "" {
 		if options.offline {
@@ -102,6 +103,7 @@ func (runtime *Runtime) Prepare(ctx context.Context, arguments []string) (Prepar
 		Effect:         domain.CommandMutate,
 		Consequences:   consequences,
 		RefreshConfigs: !options.check,
+		ActiveLauncher: filepath.Join(options.root, "current", "bin", "yard"),
 		run:            func(ctx context.Context) error { return runtime.execute(ctx, options) },
 	}, nil
 }

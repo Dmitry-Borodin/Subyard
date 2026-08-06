@@ -96,6 +96,87 @@ func TestCloudConfigLeavesToolchainToExplicitReconciliation(t *testing.T) {
 	}
 }
 
+func TestEnsureGuestToolsReconcilesZshOnRetainedVM(t *testing.T) {
+	cfg := fixtureConfig(t)
+	var checkedZsh, installedZsh, usedCurrentRevision bool
+	runner := &fakeRunner{handler: func(
+		_ string, arguments, _ []string, _ io.Reader,
+	) ([]byte, []byte, error) {
+		joined := strings.Join(arguments, " ")
+		switch {
+		case strings.Contains(joined, "e2e-dependencies.revision") &&
+			strings.Contains(joined, "command -v git"):
+			checkedZsh = strings.Contains(joined, "command -v zsh")
+			usedCurrentRevision = strings.Contains(joined,
+				"DEPENDENCY_REVISION=subyard-test-vms-dependencies-v2")
+			return nil, nil, errors.New("retained VM is missing zsh")
+		case strings.Contains(joined, "apt-get") && strings.Contains(joined, "build-essential"):
+			installedZsh = strings.Contains(joined, " zsh")
+			if !installedZsh {
+				return nil, nil, errors.New("toolchain install omitted zsh")
+			}
+			return nil, nil, nil
+		case strings.Contains(joined, "passwd --status dev"):
+			return []byte("dev P 2026-08-06 0 99999 7 -1\n"), nil, nil
+		case strings.Contains(joined, "sshd -T"):
+			return []byte("passwordauthentication no\n"), nil, nil
+		default:
+			return nil, nil, nil
+		}
+	}}
+	runtime := &Runtime{
+		Config: cfg, Runner: runner, Stdout: io.Discard, Now: time.Now,
+	}
+	if err := runtime.ensureGuestTools(context.Background(), "e2e-vm-2"); err != nil {
+		t.Fatal(err)
+	}
+	if !checkedZsh || !installedZsh || !usedCurrentRevision {
+		t.Fatalf("zsh reconciliation is incomplete: checked=%t installed=%t current-revision=%t",
+			checkedZsh, installedZsh, usedCurrentRevision)
+	}
+}
+
+func TestEnsureVMRetriesTransientRemoteImageLookup(t *testing.T) {
+	cfg := fixtureConfig(t)
+	initAttempts := 0
+	sleeps := 0
+	runner := &fakeRunner{handler: func(
+		name string, arguments, _ []string, _ io.Reader,
+	) ([]byte, []byte, error) {
+		joined := strings.Join(arguments, " ")
+		switch {
+		case joined == "info e2e-vm-1 --project "+cfg.Project:
+			return nil, nil, errors.New("not found")
+		case strings.HasPrefix(joined, "init "+cfg.Image+" e2e-vm-1 --vm"):
+			initAttempts++
+			if initAttempts < 3 {
+				return nil, nil, &CommandError{
+					Name: name, Args: arguments, ExitCode: 1,
+					Message: "Failed getting remote image info: " +
+						"Failed getting image: The requested image couldn't be found",
+				}
+			}
+			return nil, nil, nil
+		default:
+			return nil, nil, nil
+		}
+	}}
+	runtime := &Runtime{
+		Config: cfg, Runner: runner, Stdout: io.Discard, Now: time.Now,
+		Sleep: func(context.Context, time.Duration) error {
+			sleeps++
+			return nil
+		},
+	}
+	if err := runtime.ensureVM(context.Background(), "e2e-vm-1"); err != nil {
+		t.Fatal(err)
+	}
+	if initAttempts != 3 || sleeps != 2 {
+		t.Fatalf("remote image retries = attempts %d, sleeps %d; want 3, 2",
+			initAttempts, sleeps)
+	}
+}
+
 func TestAcquireSlotRejectsInsufficientCapacityBeforeMutation(t *testing.T) {
 	runtime := &Runtime{Config: fixtureConfig(t)}
 	runtime.AvailableBytes = func(string) (uint64, error) {

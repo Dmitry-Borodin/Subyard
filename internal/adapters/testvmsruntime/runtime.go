@@ -390,11 +390,7 @@ func (runtime *Runtime) ensureVM(ctx context.Context, vm string) error {
 		}
 	} else {
 		if err := runtime.progress(ctx, "creating "+vm+" from "+cfg.Image, func() error {
-			_, err := runtime.incus(ctx, "init", cfg.Image, vm, "--vm", "--project", cfg.Project,
-				"-c", "limits.cpu="+strconv.Itoa(cfg.CPU),
-				"-c", "limits.memory="+cfg.Memory,
-				"-c", "user.subyard.managed="+managedMarker)
-			return err
+			return runtime.initVM(ctx, vm)
 		}); err != nil {
 			return err
 		}
@@ -424,6 +420,39 @@ func (runtime *Runtime) ensureVM(ctx context.Context, vm string) error {
 		_, err = runtime.incus(ctx, "config", "unset", vm, "raw.apparmor", "--project", cfg.Project)
 	}
 	return err
+}
+
+func (runtime *Runtime) initVM(ctx context.Context, vm string) error {
+	cfg := runtime.Config
+	sleep := runtime.Sleep
+	if sleep == nil {
+		sleep = sleepContext
+	}
+	const attempts = 4
+	for attempt := 1; attempt <= attempts; attempt++ {
+		_, err := runtime.incus(ctx, "init", cfg.Image, vm, "--vm", "--project", cfg.Project,
+			"-c", "limits.cpu="+strconv.Itoa(cfg.CPU),
+			"-c", "limits.memory="+cfg.Memory,
+			"-c", "user.subyard.managed="+managedMarker)
+		if err == nil || !remoteImageLookupError(err) || attempt == attempts {
+			return err
+		}
+		delay := time.Duration(attempt*5) * time.Second
+		fmt.Fprintf(runtime.Stdout,
+			"  [warn] remote image lookup failed for %s; retrying init (%d/%d) in %s\n",
+			vm, attempt+1, attempts, delay)
+		if err := sleep(ctx, delay); err != nil {
+			return err
+		}
+	}
+	panic("unreachable")
+}
+
+func remoteImageLookupError(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "failed getting remote image info") ||
+		(strings.Contains(message, "failed getting image") &&
+			strings.Contains(message, "requested image couldn't be found"))
 }
 
 func (runtime *Runtime) tightenProject(ctx context.Context) error {

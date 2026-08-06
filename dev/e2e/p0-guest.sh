@@ -1394,7 +1394,7 @@ capacity_preflight() {
 
 dependency_verify() {
   local command revision='legacy'
-  local -a required=(curl git go jq rg shellcheck ssh sudo tar timeout)
+  local -a required=(curl git go jq rg shellcheck ssh sudo tar timeout zsh)
   if [ -r /var/lib/subyard/e2e-dependencies.revision ]; then
     revision="$(cat /var/lib/subyard/e2e-dependencies.revision)"
     [[ "$revision" =~ ^subyard-test-vms-dependencies-v[0-9]+$ ]] \

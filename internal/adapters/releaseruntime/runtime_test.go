@@ -33,13 +33,22 @@ func TestPrepareValidatesOptionsAndKeepsChecksMutating(t *testing.T) {
 	}
 	update, err := release.Prepare(context.Background(), []string{"--version", "1.2.3"})
 	if err != nil || !update.RefreshConfigs ||
+		update.ActiveLauncher != filepath.Join(home, ".subyard", "runtime", "current", "bin", "yard") ||
 		!strings.Contains(strings.Join(update.Consequences, " "), "lifecycle migration") ||
 		strings.Contains(strings.Join(check.Consequences, " "), "lifecycle migration") {
 		t.Fatalf("release migration consequences are incomplete: update=%#v check=%#v err=%v",
 			update.Consequences, check.Consequences, err)
 	}
-	rollback, err := release.Prepare(context.Background(), []string{"--rollback"})
-	if err != nil || !rollback.RefreshConfigs {
+	explicitRoot := filepath.Join(home, "explicit-runtime")
+	explicit, err := release.Prepare(context.Background(), []string{
+		"--version", "1.2.3", "--runtime-root", explicitRoot,
+	})
+	if err != nil || explicit.ActiveLauncher != filepath.Join(explicitRoot, "current", "bin", "yard") {
+		t.Fatalf("explicit runtime launcher is invalid: %#v, %v", explicit, err)
+	}
+	rollback, err := release.Prepare(context.Background(), []string{"--runtime-root", explicitRoot, "--rollback"})
+	if err != nil || !rollback.RefreshConfigs ||
+		rollback.ActiveLauncher != filepath.Join(explicitRoot, "current", "bin", "yard") {
 		t.Fatalf("rollback must refresh materialized config: %#v, %v", rollback, err)
 	}
 	for _, arguments := range [][]string{

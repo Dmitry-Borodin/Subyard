@@ -510,6 +510,221 @@ func TestUpdateUsesThePreparedReleaseAcrossRPCPlanAndExecute(t *testing.T) {
 	}
 }
 
+func TestUpdateRefreshesConfigsWithActivatedRuntimeLauncher(t *testing.T) {
+	for _, test := range []struct {
+		name                                      string
+		arguments                                 func(string) []string
+		defaultRoot, sameVersion, inheritedEngine bool
+	}{
+		{
+			name: "default-root update", arguments: func(string) []string {
+				return []string{"update", "--yes", "--version", "1.2.3"}
+			}, defaultRoot: true,
+		},
+		{
+			name: "explicit-root update", arguments: func(root string) []string {
+				return []string{"update", "--yes", "--version", "1.2.3", "--runtime-root", root}
+			},
+		},
+		{
+			name: "explicit-root same-version", arguments: func(root string) []string {
+				return []string{"update", "--yes", "--version", "1.2.3", "--runtime-root", root}
+			}, sameVersion: true,
+		},
+		{
+			name: "explicit-root rollback", arguments: func(root string) []string {
+				return []string{"update", "--yes", "--runtime-root", root, "--rollback"}
+			},
+		},
+		{
+			name: "explicit-root ignores inherited engine", arguments: func(root string) []string {
+				return []string{"update", "--yes", "--version", "1.2.3", "--runtime-root", root}
+			}, inheritedEngine: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, environment, runtimeRoot := updateReleaseFixture(t)
+			if test.defaultRoot {
+				runtimeRoot = filepath.Join(root, "data", "runtime")
+			}
+			if test.sameVersion {
+				engine := filepath.Join(runtimeRoot, "current", "bin", "yard-engine")
+				if err := os.MkdirAll(filepath.Dir(engine), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				writeCLIFile(t, engine,
+					"#!/bin/sh\nprintf 'yard 1.2.3\\n'\n", 0o700)
+			}
+			oldDispatcher := filepath.Join(root, "old-dispatcher")
+			oldLog := filepath.Join(root, "old-dispatcher.log")
+			activeLog := filepath.Join(root, "active-launcher.log")
+			writeCLIFile(t, oldDispatcher, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$OLD_DISPATCHER_LOG\"\nexit 97\n", 0o700)
+			environment = append(environment, "OLD_DISPATCHER_LOG="+oldLog, "ACTIVE_CAPTURE="+activeLog)
+			if test.inheritedEngine {
+				environment = append(environment, "YARD_ENGINE_PATH="+oldDispatcher)
+			}
+
+			program, err := New(Options{
+				RepositoryRoot: root, DispatcherPath: oldDispatcher, Program: "yard",
+				Arguments: test.arguments(runtimeRoot), Environment: environment, WorkingDir: root,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code := program.Run(context.Background()); code != 0 {
+				t.Fatalf("update failed: code=%d", code)
+			}
+			activeArguments, err := os.ReadFile(activeLog)
+			if err != nil || string(activeArguments) != "config apply --yes\n" {
+				t.Fatalf("active launcher arguments = %q, err=%v", activeArguments, err)
+			}
+			if payload, err := os.ReadFile(oldLog); err == nil {
+				t.Fatalf("old dispatcher refreshed configs: %q", payload)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestUpdateRefreshesAfterOperationFinishedRecordError(t *testing.T) {
+	root, environment, runtimeRoot := updateReleaseFixture(t)
+	oldDispatcher := filepath.Join(root, "old-dispatcher")
+	oldLog := filepath.Join(root, "old-dispatcher.log")
+	activeLog := filepath.Join(root, "active-launcher.log")
+	writeCLIFile(t, oldDispatcher, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$OLD_DISPATCHER_LOG\"\nexit 97\n", 0o700)
+	environment = append(environment, "OLD_DISPATCHER_LOG="+oldLog, "ACTIVE_CAPTURE="+activeLog)
+	var stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, DispatcherPath: oldDispatcher, Program: "yard",
+		Arguments:   []string{"update", "--yes", "--version", "1.2.3", "--runtime-root", runtimeRoot},
+		Environment: environment, WorkingDir: root, Stderr: &stderr,
+		Audit: &finishedOperationAudit{err: errors.New("operation finished sentinel")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stderr.String(), "operation finished sentinel") {
+		t.Fatalf("update recording failure = code=%d stderr=%q", code, stderr.String())
+	}
+	activeArguments, err := os.ReadFile(activeLog)
+	if err != nil || string(activeArguments) != "config apply --yes\n" {
+		t.Fatalf("active launcher did not refresh after record failure: %q, err=%v", activeArguments, err)
+	}
+	if payload, err := os.ReadFile(oldLog); err == nil {
+		t.Fatalf("old dispatcher refreshed configs: %q", payload)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateJoinsRefreshAndOperationFinishedErrors(t *testing.T) {
+	root, environment, runtimeRoot := updateReleaseFixture(t)
+	var stderr bytes.Buffer
+	program, err := New(Options{
+		RepositoryRoot: root, Program: "yard",
+		Arguments:   []string{"update", "--yes", "--version", "1.2.3", "--runtime-root", runtimeRoot},
+		Environment: environment, WorkingDir: root, Stderr: &stderr,
+		Audit:  &finishedOperationAudit{err: errors.New("operation finished sentinel")},
+		Config: failingConfigApplier{err: errors.New("config applier sentinel")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := program.Run(context.Background()); code != 1 ||
+		!strings.Contains(stderr.String(), "operation finished sentinel") ||
+		!strings.Contains(stderr.String(), "config applier sentinel") {
+		t.Fatalf("update combined failure = code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestUpdateReportsActivatedRuntimeWhenConfigRefreshFails(t *testing.T) {
+	for _, test := range []struct {
+		name, yard, retry string
+	}{
+		{name: "default", yard: "default", retry: "yard config apply"},
+		{name: "named", yard: "named", retry: "yard -Y named config apply"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, environment, runtimeRoot := updateReleaseFixture(t)
+			if test.yard != "default" {
+				path := filepath.Join(
+					environmentValue(environment, "SUBYARD_CONFIG_HOME"), "yards", test.yard, "config.env",
+				)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				writeCLIFile(t, path, "", 0o600)
+			}
+			var stderr bytes.Buffer
+			program, err := New(Options{
+				RepositoryRoot: root, Program: "yard",
+				Arguments:   []string{"-Y", test.yard, "update", "--yes", "--version", "1.2.3", "--runtime-root", runtimeRoot},
+				Environment: append(environment, "PRIVATE_CONFIG_VALUE=must-not-appear"), WorkingDir: root,
+				Config: failingConfigApplier{err: errors.New("config applier sentinel")}, Stderr: &stderr,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code := program.Run(context.Background()); code != 1 ||
+				!strings.Contains(stderr.String(), "runtime activation completed") ||
+				!strings.Contains(stderr.String(), test.retry) ||
+				strings.Contains(stderr.String(), "must-not-appear") {
+				t.Fatalf("update refresh failure = code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
+type failingConfigApplier struct{ err error }
+
+func (applier failingConfigApplier) ApplyConfig(context.Context, string) error { return applier.err }
+
+type finishedOperationAudit struct {
+	err    error
+	events []domain.OperationEvent
+}
+
+func (sink *finishedOperationAudit) WriteAudit(_ context.Context, event domain.OperationEvent) error {
+	sink.events = append(sink.events, event)
+	if event.Kind == "operation.finished" {
+		return sink.err
+	}
+	return nil
+}
+
+func updateReleaseFixture(t *testing.T) (string, []string, string) {
+	t.Helper()
+	root, environment, _ := nativeFixture(t)
+	assets := filepath.Join(root, "release")
+	cache := filepath.Join(root, "cache")
+	runtimeRoot := filepath.Join(root, "runtime")
+	if err := os.MkdirAll(assets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := "subyard-1.2.3-linux-" + runtime.GOARCH + ".tar.gz"
+	for _, suffix := range []string{"", ".sha256", ".manifest.json", ".provenance.json"} {
+		writeCLIFile(t, filepath.Join(assets, name+suffix), "fixture", 0o600)
+	}
+	writeCLIFile(t, filepath.Join(root, "scripts", "install-runtime-release.sh"), `#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--runtime-root) root="$2"; shift 2 ;;
+	*) shift ;;
+	esac
+done
+mkdir -p "$root/current/bin"
+printf '%s\n' '#!/bin/sh' 'if [ -n "${YARD_ENGINE_PATH:-}" ]; then exec "$YARD_ENGINE_PATH" "$@"; fi' 'printf "%s\\n" "$*" >> "$ACTIVE_CAPTURE"' > "$root/current/bin/yard"
+chmod 700 "$root/current/bin/yard"
+`, 0o700)
+	return root, append(environment,
+		"YARD_RELEASE_BASE_URL=file://"+assets,
+		"YARD_RELEASE_CACHE="+cache,
+	), runtimeRoot
+}
+
 func TestNetworkManagerPrivilegesAuthorizeBeforeBoundedAdapter(t *testing.T) {
 	root, environment, _ := nativeFixture(t)
 	bin := filepath.Join(root, "bin")

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const guestDependencyRevision = "subyard-test-vms-dependencies-v1"
+const guestDependencyRevision = "subyard-test-vms-dependencies-v2"
 
 func (runtime *Runtime) cloudConfig() string {
 	publicKey, _ := os.ReadFile(runtime.Config.keyPath() + ".pub")
@@ -134,7 +134,8 @@ command -v go >/dev/null &&
 command -v make >/dev/null &&
 command -v shellcheck >/dev/null &&
 command -v sshd >/dev/null &&
-command -v sudo >/dev/null`
+command -v sudo >/dev/null &&
+command -v zsh >/dev/null`
 	dependencyEnvironment := []string{"DEPENDENCY_REVISION=" + guestDependencyRevision}
 	if _, err := runtime.guest(ctx, vm, dependencyEnvironment, "sh", "-c", check); err != nil {
 		if err := runtime.progress(ctx, "installing test toolchain in "+vm, func() error {
@@ -142,7 +143,7 @@ command -v sudo >/dev/null`
 apt_options='Acquire::Retries=3'
 timeout --foreground 900 apt-get -o "$apt_options" -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update -qq
 timeout --foreground 900 apt-get -o "$apt_options" -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y -qq --no-install-recommends \
-  build-essential ca-certificates curl expect git golang-go jq make openssh-client openssh-server ripgrep shellcheck sudo tar xz-utils
+  build-essential ca-certificates curl expect git golang-go jq make openssh-client openssh-server ripgrep shellcheck sudo tar xz-utils zsh
 install -d -m 0755 /var/lib/subyard
 temp="$(mktemp /var/lib/subyard/.e2e-dependencies.XXXXXX)"
 trap 'rm -f "$temp"' EXIT

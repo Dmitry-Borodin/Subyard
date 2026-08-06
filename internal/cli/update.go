@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path/filepath"
 
 	"github.com/Subyard/Subyard/internal/adapters/releaseruntime"
@@ -89,20 +90,30 @@ func (execution *releaseExecution) policy(definition command.Definition) domain.
 func (cli *CLI) executeRelease(ctx context.Context, orchestrator *application.Orchestrator,
 	plan domain.OperationPlan, execution *releaseExecution) (domain.AdapterResult, error) {
 	orchestrator.Runner = releaseAdapter{prepared: execution.prepared}
-	result, _, err := orchestrator.RunAdapter(ctx, plan, domain.AdapterRequest{
+	result, _, runErr := orchestrator.RunAdapter(ctx, plan, domain.AdapterRequest{
 		Schema: shelladapter.ProtocolSchema, OperationID: plan.OperationID, Adapter: "release", Action: "execute",
 	}, nil)
-	if err == nil && result.Status == "ok" && execution.prepared.RefreshConfigs {
+	if result.Status == "ok" && execution.prepared.RefreshConfigs {
 		applier := cli.options.Config
 		if applier == nil {
+			environment := maps.Clone(cli.baseEnv)
+			delete(environment, "YARD_ENGINE_PATH")
 			applier = dispatcherConfigApplier{
-				path: cli.options.DispatcherPath, environment: cli.baseEnv,
+				path: execution.prepared.ActiveLauncher, environment: environment,
 				stdout: cli.options.Stdout, stderr: cli.options.Stderr, applyDrift: true,
 			}
 		}
-		if err := applier.ApplyConfig(ctx, execution.yard); err != nil {
-			return result, fmt.Errorf("refresh materialized agent configuration: %w", err)
+		if applyErr := applier.ApplyConfig(ctx, execution.yard); applyErr != nil {
+			retry := "yard config apply"
+			if execution.yard != "" && execution.yard != "default" {
+				retry = "yard -Y " + execution.yard + " config apply"
+			}
+			refreshErr := fmt.Errorf("runtime activation completed, but refreshing materialized agent configuration failed: %w; retry with: %s", applyErr, retry)
+			if runErr != nil {
+				return result, errors.Join(runErr, refreshErr)
+			}
+			return result, refreshErr
 		}
 	}
-	return result, err
+	return result, runErr
 }
